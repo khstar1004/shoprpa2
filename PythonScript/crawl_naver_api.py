@@ -251,11 +251,10 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         config (configparser.ConfigParser): ConfigParser object containing configuration.
 
     Returns:
-        list: A list of dictionaries, each containing 'original_row', 'naver_data', 'product_type'.
-              'naver_data' is a list of product dictionaries from the API search,
-              including an 'image_path' key if download was successful.
+        pd.DataFrame: A DataFrame containing all original columns plus the crawled data columns
     """
-    results_map = {} # Use map for easier updates: {index: result_dict}
+    # Store all results in a dictionary first
+    results_map = {}  # Use map for easier updates: {index: result_dict}
     total_products = len(product_rows)
     
     # Get config values using ConfigParser methods
@@ -265,46 +264,14 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         naver_client_id = config.get('API_Keys', 'naver_client_id', fallback='')
         naver_client_secret = config.get('API_Keys', 'naver_client_secret', fallback='')
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
-        # Get maximum concurrent API requests
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
         
-        # Log config values
         logging.info(f"🟢 Naver API Configuration: ID={naver_client_id[:4]}..., Secret={naver_client_secret[:4]}..., Limit={naver_scrape_limit}, Max Concurrent={max_concurrent_api}")
     except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
         logging.error(f"Error reading required configuration for Naver crawl: {e}. Aborting Naver crawl.")
-        # Populate results with errors for all rows
-        for idx, row in product_rows.iterrows():
-             results_map[idx] = {'original_row': row, 'naver_data': None, 'product_type': row.get('구분', 'A')}
-        return [res for res in results_map.values() if res is not None]
+        return product_rows  # Return original DataFrame if config error
 
     logging.info(f"🟢 --- Starting Naver product crawl for {total_products} products (Async) ---")
-    logging.info(f"🟢 Configuration: Image Dir='{image_target_dir}', Use BG Removal={use_bg_removal}, Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}")
-
-    # Validate essential config before proceeding
-    if not naver_client_id or not naver_client_secret:
-        logging.error("🟢 Naver API credentials missing in config [API_Keys]. Cannot crawl Naver.")
-        for idx, row in product_rows.iterrows():
-            results_map[idx] = {'original_row': row, 'naver_data': None, 'product_type': row.get('구분', 'A')}
-        return [res for res in results_map.values() if res is not None]
-
-    # Log first few product names we'll be crawling
-    sample_products = [row.get('상품명', '[이름 없음]') for idx, row in product_rows.head(min(5, len(product_rows))).iterrows()]
-    if len(product_rows) > 5:
-        sample_products.append(f"... and {len(product_rows)-5} more")
-    logging.info(f"🟢 Products to crawl: {', '.join(sample_products)}")
-
-    can_download_images = bool(image_target_dir)
-    if not can_download_images:
-        logging.warning("🟢 Image target directory not specified in config [Paths]. Images will not be downloaded.")
-    else:
-        # Make sure target directory exists
-        if not os.path.exists(image_target_dir):
-            try:
-                os.makedirs(image_target_dir)
-                logging.info(f"🟢 Created image target directory: {image_target_dir}")
-            except Exception as e:
-                logging.error(f"🟢 Failed to create image target directory: {e}")
-                can_download_images = False
 
     # Create a semaphore to limit concurrent API requests
     api_semaphore = asyncio.Semaphore(max_concurrent_api)
@@ -314,189 +281,109 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     async with get_async_httpx_client(config=config) as client:
         for idx, row in product_rows.iterrows():
             product_name = row.get('상품명', '')
-            product_type = row.get('구분', 'A')
             reference_price = 0
             try:
                 ref_price_val = row.get('판매단가(V포함)')
                 reference_price = int(float(ref_price_val)) if pd.notna(ref_price_val) else 0
             except (ValueError, TypeError):
-                 logging.warning(f"🟢 Could not parse reference price '{ref_price_val}' for product '{product_name}' (Row {idx}). Using 0.")
-                 reference_price = 0
+                reference_price = 0
 
             if not product_name:
                 logging.warning(f"🟢 Skipping row index {idx}: Missing product name.")
-                results_map[idx] = {'original_row': row, 'naver_data': None, 'product_type': product_type}
                 continue
             
             api_search_tasks.append(
-                asyncio.create_task( 
-                    _run_single_naver_search(idx, row, product_name, product_type, reference_price, client, config, naver_scrape_limit, api_semaphore),
-                    name=f"naver_search_{idx}" 
+                asyncio.create_task(
+                    _run_single_naver_search(idx, row, product_name, row.get('구분', 'A'), reference_price, client, config, naver_scrape_limit, api_semaphore)
                 )
             )
 
-        logging.info(f"🟢 Submitted {len(api_search_tasks)} Naver API search tasks.")
-        api_results_list = await asyncio.gather(*api_search_tasks, return_exceptions=True)
-        logging.info(f"🟢 Finished processing {len(api_results_list)} Naver API search results.")
+        # Gather all API search results
+        api_results = await asyncio.gather(*api_search_tasks, return_exceptions=True)
         
-        # Count successful and failed results
-        success_count = 0
-        error_count = 0
-        empty_results_count = 0
+        # Process image downloads for successful results
+        image_tasks = []
+        image_info_map = {}
         
-        # --- Process API results and prepare image download tasks ---
-        image_download_tasks = []
-        image_info_map = {} # Maps image task future to (original_idx, item_dict, target_path)
-        bg_removal_tasks = [] # New list for background removal tasks
-        bg_removal_info_map = {} # Map future to (item_dict, target_path, bg_removed_path)
-
-        processed_api_count = 0
-        for result_or_exc in api_results_list:
-            processed_api_count += 1
-            if isinstance(result_or_exc, Exception):
-                logging.error(f"🟢 API search task failed with exception: {result_or_exc}")
-                error_count += 1
-                continue 
-            elif result_or_exc is None:
-                 logging.error("🟢 Received None from a successful API search task. Skipping.")
-                 error_count += 1
-                 continue
-
-            idx, original_row, product_type, api_results = result_or_exc
-            results_map[idx] = {
-                'original_row': original_row,
-                'naver_data': api_results, 
-                'product_type': product_type
-            }
-            
-            if api_results and len(api_results) > 0:
-                success_count += 1
-                logging.info(f"🟢 Found {len(api_results)} results for product '{original_row.get('상품명', '')}' (Row {idx})")
-            else:
-                empty_results_count += 1
-                logging.warning(f"🟢 No results found for product '{original_row.get('상품명', '')}' (Row {idx})")
-
-            if api_results and can_download_images:
-                for item in api_results:
-                    image_url = item.get('image_url')
-                    if image_url:
-                        try:
-                            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
-                            file_ext = os.path.splitext(urlparse(image_url).path)[1] or '.jpg'
-                            file_ext = ''.join(c for c in file_ext if c.isalnum() or c == '.')[:5]
-                            if not file_ext.startswith('.') or len(file_ext) < 2: file_ext = '.jpg'
-
-                            target_filename = f"naver_{url_hash}{file_ext}"
-                            target_path = os.path.join(image_target_dir, target_filename)
-                            item['image_path_original'] = target_path
-                            item['image_path'] = None # Initialize
-                            
-                            img_task = asyncio.create_task(
-                                download_image_async(image_url, target_path, client, config=config),
-                                name=f"naver_img_dl_{idx}_{url_hash[:6]}"
-                            )
-                            image_download_tasks.append(img_task)
-                            image_info_map[img_task] = (idx, item, target_path)
-                        except Exception as e:
-                            logging.error(f"🟢 Error preparing download task for image {image_url} (Row {idx}): {e}")
-
-        # --- Summary of API results ---
-        logging.info(f"🟢 API search results summary: Success={success_count}, Empty={empty_results_count}, Errors={error_count}")
-        
-        # --- Await Image Downloads --- 
-        logging.info(f"🟢 Submitted {len(image_download_tasks)} Naver image download tasks.")
-        download_results = await asyncio.gather(*image_download_tasks, return_exceptions=True)
-        logging.info(f"🟢 Finished processing {len(download_results)} Naver image download results.")
-
-        # --- Process Downloads & Submit Background Removal Tasks --- 
-        processed_download_count = 0
-        for task, result_or_exc in zip(image_download_tasks, download_results):
-            processed_download_count += 1
-            original_idx, item_dict, target_path = image_info_map.get(task, (None, None, None))
-
-            if original_idx is None or item_dict is None:
-                logging.error("🟢 Could not find mapping info for a completed download task. Skipping.")
+        for result in api_results:
+            if isinstance(result, Exception) or result is None:
                 continue
-
-            if isinstance(result_or_exc, Exception):
-                logging.error(f"🟢 Download failed for {item_dict.get('image_url', '[URL missing]')} (Row {original_idx}): {result_or_exc}")
-                item_dict['image_path'] = None
-                item_dict['image_path_original'] = None
-            elif result_or_exc is False:
-                logging.warning(f"🟢 Download function reported failure for {item_dict.get('image_url', '[URL missing]')} (Row {original_idx}). Saved path: {target_path}")
-                item_dict['image_path'] = None
-                item_dict['image_path_original'] = target_path # Keep original path even if download failed
-            else:
-                # Download successful!
-                item_dict['image_path_original'] = target_path # Original is always the initially downloaded one
-                item_dict['image_path'] = target_path # Default to original if no BG removal
-
-                if use_bg_removal:
-                    try:
-                        target_path_obj = Path(target_path)
-                        bg_removed_filename = f"{target_path_obj.stem}_no_bg{target_path_obj.suffix}"
-                        bg_removed_path = target_path_obj.with_name(bg_removed_filename)
-                        
-                        # Create and add the async background removal task
-                        bg_task = asyncio.create_task(
-                            remove_background_async(str(target_path_obj), str(bg_removed_path)),
-                            name=f"naver_bg_rem_{original_idx}_{target_path_obj.stem[:6]}"
-                        )
-                        bg_removal_tasks.append(bg_task)
-                        bg_removal_info_map[bg_task] = (item_dict, target_path, str(bg_removed_path))
-                    except Exception as e:
-                        logging.error(f"🟢 Error preparing background removal task for {target_path} (Row {original_idx}): {e}")
-                        # Keep original image path if BG removal prep fails
-                        item_dict['image_path'] = target_path 
-
-        # --- Await Background Removal Tasks --- 
-        if bg_removal_tasks:
-            logging.info(f"🟢 Submitted {len(bg_removal_tasks)} Naver background removal tasks.")
-            bg_removal_results = await asyncio.gather(*bg_removal_tasks, return_exceptions=True)
-            logging.info(f"🟢 Finished processing {len(bg_removal_results)} Naver background removal results.")
-            
-            # --- Process Background Removal Results --- 
-            processed_bg_count = 0
-            for task, result_or_exc in zip(bg_removal_tasks, bg_removal_results):
-                processed_bg_count += 1
-                item_dict, original_path, bg_removed_path = bg_removal_info_map.get(task, (None, None, None))
                 
-                if item_dict is None:
-                    logging.error("🟢 Could not find mapping info for a completed BG removal task. Skipping.")
+            idx, row, product_type, naver_data = result
+            if not naver_data:
+                continue
+                
+            # Process each product's images
+            for item in naver_data:
+                image_url = item.get('image_url')
+                if not image_url or not image_target_dir:
                     continue
-                
-                if isinstance(result_or_exc, Exception):
-                    logging.error(f"🟢 Background removal failed for {original_path}: {result_or_exc}")
-                    item_dict['image_path'] = original_path # Fallback to original
-                elif result_or_exc is False:
-                    logging.warning(f"🟢 Background removal function reported failure for {original_path}. Using original image.")
-                    item_dict['image_path'] = original_path # Fallback to original
-                else:
-                    # Background removal successful!
-                    logging.debug(f"🟢 Background removal successful for {original_path}. Using: {bg_removed_path}")
-                    item_dict['image_path'] = bg_removed_path
-                    # Optional: Delete original if desired and different from bg_removed?
-                    # if original_path != bg_removed_path and Path(original_path).exists():
-                    #     try: os.remove(original_path); logging.debug(f"Deleted original: {original_path}")
-                    #     except OSError as e: logging.warning(f"Could not delete original {original_path}: {e}")
-        else:
-            logging.info("🟢 No background removal tasks to process.")
+                    
+                try:
+                    url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
+                    file_ext = os.path.splitext(urlparse(image_url).path)[1] or '.jpg'
+                    target_filename = f"naver_{url_hash}{file_ext}"
+                    target_path = os.path.join(image_target_dir, target_filename)
+                    
+                    img_task = asyncio.create_task(
+                        download_image_async(image_url, target_path, client, config=config)
+                    )
+                    image_tasks.append(img_task)
+                    image_info_map[img_task] = (idx, item, target_path)
+                except Exception as e:
+                    logging.error(f"Error preparing image download: {e}")
+                    
+        # Wait for all image downloads to complete
+        if image_tasks:
+            image_results = await asyncio.gather(*image_tasks, return_exceptions=True)
             
+            # Process image results and update data
+            for task, result in zip(image_tasks, image_results):
+                idx, item, target_path = image_info_map[task]
+                if isinstance(result, Exception):
+                    logging.error(f"Image download failed: {result}")
+                    continue
+                    
+                if result:
+                    item['image_path'] = target_path
+                    
+                    # Handle background removal if enabled
+                    if use_bg_removal:
+                        try:
+                            bg_removed_path = target_path.replace('.jpg', '_no_bg.jpg')
+                            if await remove_background_async(target_path, bg_removed_path):
+                                item['image_path'] = bg_removed_path
+                        except Exception as e:
+                            logging.error(f"Background removal failed: {e}")
 
-    logging.info(f"🟢 --- Finished Naver product crawl. Processed {processed_api_count} API results, {processed_download_count} downloads, {len(bg_removal_tasks)} BG removals. ---")
+    # Create final DataFrame with all data
+    final_df = product_rows.copy()
     
-    # Count results with data
-    results_with_data = sum(1 for res in results_map.values() if res is not None and res.get('naver_data'))
-    logging.info(f"🟢 Final results stats: Total rows={len(results_map)}, With data={results_with_data}, No data={len(results_map)-results_with_data}")
+    # Add new columns for Naver data
+    final_df['네이버_상품명'] = '-'
+    final_df['네이버_가격'] = '-'
+    final_df['네이버_판매처'] = '-'
+    final_df['네이버_링크'] = '-'
+    final_df['네이버_이미지'] = '-'
     
-    # If no results found, log a clear warning
-    if results_with_data == 0:
-        logging.error("🟢 !!!! NO NAVER RESULTS FOUND FOR ANY PRODUCTS !!!!")
-        logging.error("🟢 Check API keys, rate limits, and network connectivity")
-    
-    # Return the final results structured correctly
-    final_results = [res for res in results_map.values() if res is not None]
-    return final_results
+    # Update DataFrame with crawled data
+    for result in api_results:
+        if isinstance(result, Exception) or result is None:
+            continue
+            
+        idx, _, _, naver_data = result
+        if not naver_data:
+            continue
+            
+        # Use the first (best) match
+        best_match = naver_data[0]
+        final_df.at[idx, '네이버_상품명'] = best_match.get('name', '-')
+        final_df.at[idx, '네이버_가격'] = str(best_match.get('price', '-'))
+        final_df.at[idx, '네이버_판매처'] = best_match.get('seller', '-')
+        final_df.at[idx, '네이버_링크'] = best_match.get('link', '-')
+        final_df.at[idx, '네이버_이미지'] = best_match.get('image_path', '-')
+
+    return final_df
 
 
 async def _run_single_naver_search(idx, row, product_name, product_type, reference_price, client, config, naver_scrape_limit, api_semaphore):
@@ -655,32 +542,34 @@ async def _test_main():
             
         # Now test the full crawl_naver_products function
         print("\nTesting full crawl_naver_products function...")
-        results = await crawl_naver_products(
+        results_df = await crawl_naver_products(
             product_rows=test_df,
             config=config 
         )
 
-        print(f"--- Test Results ({len(results)} rows processed) ---")
-        logging.info(f"--- Test Results ({len(results)} rows processed) ---")
+        print(f"--- Test Results ({len(results_df)} rows processed) ---")
+        logging.info(f"--- Test Results ({len(results_df)} rows processed) ---")
         
-        # Count how many rows have actual data
-        rows_with_data = sum(1 for r in results if r.get('naver_data'))
-        print(f"Results with data: {rows_with_data}/{len(results)}")
-        logging.info(f"Results with data: {rows_with_data}/{len(results)}")
+        # Count how many rows have actual Naver data
+        rows_with_data = sum(1 for x in results_df['네이버_상품명'] if x != '-' and pd.notna(x))
+        print(f"Results with Naver data: {rows_with_data}/{len(results_df)}")
+        logging.info(f"Results with Naver data: {rows_with_data}/{len(results_df)}")
         
         # Log example data for each product
-        for i, result in enumerate(results):
-            original_name = result.get('original_row', {}).get('상품명', 'Unknown')
-            naver_data = result.get('naver_data', [])
-            if naver_data:
-                first_item = naver_data[0]
-                print(f"Product {i+1}: '{original_name}' - Found {len(naver_data)} results")
-                print(f"  First match: {first_item.get('name')} - ₩{first_item.get('price')} - {first_item.get('seller')}")
-                logging.info(f"Product {i+1}: '{original_name}' - Found {len(naver_data)} results")
-                logging.info(f"  First match: {first_item.get('name')} - ₩{first_item.get('price')} - {first_item.get('seller')}")
+        for idx, row in results_df.iterrows():
+            original_name = row['상품명']
+            naver_name = row['네이버_상품명']
+            naver_price = row['네이버_가격']
+            naver_seller = row['네이버_판매처']
+            
+            if naver_name != '-' and pd.notna(naver_name):
+                print(f"Product {idx+1}: '{original_name}'")
+                print(f"  Naver match: {naver_name} - ₩{naver_price} - {naver_seller}")
+                logging.info(f"Product {idx+1}: '{original_name}'")
+                logging.info(f"  Naver match: {naver_name} - ₩{naver_price} - {naver_seller}")
             else:
-                print(f"Product {i+1}: '{original_name}' - No results found")
-                logging.warning(f"Product {i+1}: '{original_name}' - No results found")
+                print(f"Product {idx+1}: '{original_name}' - No Naver results found")
+                logging.warning(f"Product {idx+1}: '{original_name}' - No Naver results found")
         
         if rows_with_data == 0:
             print("⛔ TEST FAILED: No data was returned for any products!")

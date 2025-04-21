@@ -897,6 +897,7 @@ def add_hyperlinks(file_path, link_column_map):
 def create_final_output_excel(df, output_path):
     """
     Create the final Excel file with proper formatting and styling.
+    All data processing is done before writing to Excel.
     
     Args:
         df: DataFrame containing the formatted data
@@ -906,63 +907,65 @@ def create_final_output_excel(df, output_path):
         Path to the created Excel file
     """
     try:
-        # Define the columns to keep
-        columns_to_keep = [
+        # Clean column names by removing non-breaking spaces and regular spaces from start/end
+        df = df.copy()  # Create a copy to avoid modifying the original
+        df.columns = [col.strip().replace('\xa0', '') if isinstance(col, str) else col for col in df.columns]
+        
+        # Define the fixed column order
+        fixed_columns = [
             '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
             '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)',
             '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
             '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명',
-            '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+            '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지',
+            '네이버_상품명', '네이버_가격', '네이버_판매처', '네이버_링크', '네이버_이미지'
         ]
         
-        # Filter the DataFrame to only include the specified columns
-        df = df[columns_to_keep]
+        # Create a new DataFrame with all required columns while preserving existing data
+        new_columns = [col for col in fixed_columns if col not in df.columns]
+        for col in new_columns:
+            df[col] = '-'
+            
+        # Reorder columns according to fixed_columns, keeping any additional columns at the end
+        extra_columns = [col for col in df.columns if col not in fixed_columns]
+        final_columns = fixed_columns + extra_columns
+        df = df.reindex(columns=final_columns)
         
-        # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # First save with basic formatting
-        df.to_excel(output_path, index=False)
-        
-        # Now open with openpyxl for additional formatting
-        workbook = load_workbook(output_path)
-        worksheet = workbook.active
-        
-        # Process image columns
-        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
-        process_image_cells(worksheet, image_columns)
-        
-        # Apply other formatting
-        # Define formats for headers
-        header_fill = PatternFill(start_color="D7E4BC", end_color="D7E4BC", fill_type="solid")
-        header_font = Font(bold=True)
-        header_alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
-        
-        # Format headers
-        for col_num, column_title in enumerate(df.columns, 1):
-            cell = worksheet.cell(row=1, column=col_num)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = header_alignment
-        
-        # Format numeric columns
+        # Format numeric columns before writing
         numeric_columns = [
             '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
             '가격차이(2)', '가격차이(2)(%)', '가격차이(3)', '가격차이(3)(%)'
         ]
         
-        number_format = '#,##0'
         for col in numeric_columns:
             if col in df.columns:
-                col_idx = df.columns.get_loc(col) + 1
-                for row in range(2, worksheet.max_row + 1):
-                    cell = worksheet.cell(row=row, column=col_idx)
-                    try:
-                        if cell.value and cell.value != '-':
-                            cell.number_format = number_format
-                    except:
-                        continue
+                df[col] = df[col].apply(lambda x: f"{float(x):,.0f}" if pd.notna(x) and str(x).strip() != '-' else x)
+                
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
+        # Write DataFrame to Excel
+        df.to_excel(output_path, index=False)
+        
+        # Apply formatting with openpyxl
+        workbook = load_workbook(output_path)
+        worksheet = workbook.active
+        
+        # Process image columns
+        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', '네이버_이미지']
+        process_image_cells(worksheet, image_columns)
+        
+        # Format headers
+        header_fill = PatternFill(start_color="D7E4BC", end_color="D7E4BC", fill_type="solid")
+        header_font = Font(bold=True)
+        header_alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+        
+        for col_num, column_title in enumerate(df.columns, 1):
+            cell = worksheet.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+            
         # Auto-adjust column widths
         for col in worksheet.columns:
             max_length = 0
@@ -981,7 +984,22 @@ def create_final_output_excel(df, output_path):
                     pass
             adjusted_width = (max_length + 2)
             worksheet.column_dimensions[column].width = min(adjusted_width, 50)
+            
+        # Add borders to all cells
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
+        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, 
+                                     min_col=1, max_col=worksheet.max_column):
+            for cell in row:
+                cell.border = thin_border
+                if cell.row > 1:  # Skip header row
+                    cell.alignment = Alignment(vertical='center')
+                    
         # Save the final formatted file
         workbook.save(output_path)
         
