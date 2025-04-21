@@ -5,27 +5,23 @@ import argparse
 import time
 import asyncio
 import multiprocessing
-import pandas as pd # Added back as it's used for DataFrame checks/creation
-from concurrent.futures import ThreadPoolExecutor # Keep, might be used internally by some sync functions
-import configparser # Import configparser
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
+import configparser
 import hashlib
 import datetime
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, _init_worker_matcher
-from data_processing import process_input_file, filter_results, format_product_data_for_output # Added format_product_data_for_output
-from excel_utils import create_final_output_excel # Added new excel output function
+from data_processing import process_input_file, filter_results, format_product_data_for_output
+from excel_utils import create_final_output_excel
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
-from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config # Import the refactored config loader
-
-# --- Global Variables (Keep essential ones) ---
-# CONFIG = None # Loaded via initialize_environment
-# gpu_available_detected = False # Set via initialize_environment
+from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
-    main_start_time = time.time() # Renamed for clarity
+    main_start_time = time.time()
     logging.info("========= RPA Process Starting ========")
 
     # --- Concurrency Settings ---
@@ -60,25 +56,25 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
     logging.info("[Step 1/7] Clearing temporary files...")
     clear_temp_files(config)
     logging.info(f"[Step 1/7] Temporary files cleared. Duration: {time.time() - step_start_time:.2f} sec")
-    if progress_queue: progress_queue.put(("status", "Cleared temporary files"))
+    if progress_queue: progress_queue.emit("status", "Cleared temporary files")
 
     # 2. Process Input File
     step_start_time = time.time()
     logging.info("[Step 2/7] Reading and processing input Excel file...")
-    if progress_queue: progress_queue.put(("status", "Reading input file..."))
+    if progress_queue: progress_queue.emit("status", "Reading input file...")
     haoreum_df, input_filename = process_input_file(config) # Now uses chunking internally
     if haoreum_df is None or haoreum_df.empty:
         logging.error("No valid input data found or read error. Exiting.")
-        if progress_queue: progress_queue.put(("error", "No input data"))
+        if progress_queue: progress_queue.emit("error", "No input data")
         return
     total_products = len(haoreum_df)
     logging.info(f"[Step 2/7] Input file processed. Found {total_products} products. Duration: {time.time() - step_start_time:.2f} sec")
-    if progress_queue: progress_queue.put(("status", f"Read {total_products} products from input."))
+    if progress_queue: progress_queue.emit("status", f"Read {total_products} products from input.")
 
     # 2.5 Preprocess Haoreum Images from Input
     step_start_time = time.time()
     logging.info("[Step 3/7] Preprocessing images from input file (if any)...")
-    if progress_queue: progress_queue.put(("status", "Preprocessing input images..."))
+    if progress_queue: progress_queue.emit("status", "Preprocessing input images...")
     # This uses ThreadPoolExecutor internally, could be wrapped in to_thread if it blocks significantly
     # For now, assume it's acceptable as it's primarily I/O bound.
     input_file_image_map = await preprocess_and_download_images(
@@ -91,23 +87,23 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
     )
     processed_count = len(input_file_image_map)
     logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
-    if progress_queue: progress_queue.put(("status", "Finished preprocessing input images."))
+    if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
 
     # 3. Crawl External Data Concurrently
     step_start_time = time.time()
     logging.info("[Step 4/7] Starting concurrent crawls (Kogift, Naver, Haereum URLs)...")
-    if progress_queue: progress_queue.put(("status", "Crawling external sites..."))
+    if progress_queue: progress_queue.emit("status", "Crawling external sites...")
     kogift_crawl_results, naver_crawl_results, haereum_image_url_map = None, None, None # Init
     try:
         # Pass ConfigParser object to crawl_all_sources
         kogift_crawl_results, naver_crawl_results, haereum_image_url_map = await crawl_all_sources(haoreum_df, config)
         logging.info(f"[Step 4/7] Concurrent crawls finished. Duration: {time.time() - step_start_time:.2f} sec")
-        if progress_queue: progress_queue.put(("status", "Finished concurrent crawls."))
+        if progress_queue: progress_queue.emit("status", "Finished concurrent crawls.")
     except Exception as crawl_err:
         logging.error(f"[Step 4/7] Error during crawl_all_sources execution: {crawl_err}", exc_info=True)
         logging.info(f"[Step 4/7] Concurrent crawls failed. Duration: {time.time() - step_start_time:.2f} sec")
         kogift_crawl_results, naver_crawl_results, haereum_image_url_map = [], [], {} # Set empty defaults
-        if progress_queue: progress_queue.put(("error", "Crawling failed"))
+        if progress_queue: progress_queue.emit("error", "Crawling failed")
 
     # --- Process Crawl Results (Handle potential failures) ---
     kogift_crawl_results = kogift_crawl_results if kogift_crawl_results is not None else []
@@ -116,7 +112,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
     if not kogift_crawl_results: logging.warning("Kogift crawl resulted in empty data.")
     if not naver_crawl_results: logging.warning("Naver crawl resulted in empty data.")
     if not haereum_image_url_map: logging.warning("Haereum URL crawl resulted in empty data.")
-
 
     # --- Merge & Download Crawled Haereum Data ---
     merge_dl_start_time = time.time()
@@ -138,8 +133,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
     haoreum_df['해오름이미지경로'] = haoreum_df['Code'].map(crawled_haereum_image_path_map).fillna('')
     added_path_count = (haoreum_df['해오름이미지경로'] != '').sum()
     logging.info(f"Downloaded and merged {added_path_count} crawled Haereum images. Duration: {time.time() - merge_dl_start_time:.2f} sec")
-    if progress_queue: progress_queue.put(("status", "Processed crawled Haereum images."))
-
+    if progress_queue: progress_queue.emit("status", "Processed crawled Haereum images.")
 
     # --- Prepare Data for Matching ---
     map_prep_start_time = time.time()
@@ -270,11 +264,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         else:
             logging.warning("다운로드할 고려기프트 이미지 URL이 없습니다.")
 
-
     # 4. Match Products (Run in thread to avoid blocking asyncio loop)
     step_start_time = time.time()
     logging.info(f"[Step 5/7] Starting product matching (GPU: {gpu_available}, CPU Workers: {matcher_workers})...")
-    if progress_queue: progress_queue.put(("status", "Matching products..."))
+    if progress_queue: progress_queue.emit("status", "Matching products...")
     matched_df = pd.DataFrame() # Initialize empty DataFrame
     try:
         # Use ThreadPoolExecutor instead of asyncio.to_thread
@@ -299,21 +292,19 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         logging.error(f"[Step 5/7] Error during product matching: {match_err}", exc_info=True)
         logging.info(f"[Step 5/7] Product matching failed. Duration: {time.time() - step_start_time:.2f} sec")
         # matched_df remains empty
-        if progress_queue: progress_queue.put(("error", "Matching failed"))
-
+        if progress_queue: progress_queue.emit("error", "Matching failed")
 
     if matched_df.empty:
         logging.warning("Matching resulted in an empty DataFrame. No data to filter or output.")
         total_time = time.time() - main_start_time
         logging.info(f"========= RPA Process Finished (No Matching Results) - Total Time: {total_time:.2f} sec ==========")
-        if progress_queue: progress_queue.put(("finished", True))
+        if progress_queue: progress_queue.emit("finished", "True")
         return # Exit early
-
 
     # 5. Filter Results
     step_start_time = time.time()
     logging.info(f"[Step 6/7] Filtering {len(matched_df)} matched rows...")
-    if progress_queue: progress_queue.put(("status", "Filtering results..."))
+    if progress_queue: progress_queue.emit("status", "Filtering results...")
     filtered_df = filter_results(matched_df, config, progress_queue)
     filter_count = len(filtered_df)
     logging.info(f"[Step 6/7] Filtering finished. {filter_count} rows remaining. Duration: {time.time() - step_start_time:.2f} sec")
@@ -322,9 +313,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         logging.warning("Filtering removed all rows. No data to output.")
         total_time = time.time() - main_start_time
         logging.info(f"========= RPA Process Finished (No Filtered Output) - Total Time: {total_time:.2f} sec ==========")
-        if progress_queue: progress_queue.put(("finished", True))
+        if progress_queue: progress_queue.emit("finished", "True")
         return # Exit early
-
 
     # 6. Save and Format Output File
     step_start_time = time.time()
@@ -370,53 +360,39 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
     else:
         logging.error("[Step 7/7] Could not determine input filename base, cannot save output file with standard naming.")
 
-
     # --- Final Summary ---
     total_time = time.time() - main_start_time
     logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
     if progress_queue:
-        progress_queue.put(("finished", True))
-        progress_queue.put(("final_path", output_path if output_path else "Error")) # Send final path or error
+        progress_queue.emit("finished", "True")
+        progress_queue.emit("final_path", output_path if output_path else "Error") # Send final path or error
 
-
-if __name__ == "__main__":
-    # --- Initialization ---
+def run_cli():
+    """Run the RPA process in CLI mode"""
     parser = argparse.ArgumentParser(description="Run ShopRPA process.")
-    parser.add_argument("-c", "--config", default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.ini'), help="Path to configuration file (config.ini).")
+    parser.add_argument("-c", "--config", default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.ini'), 
+                      help="Path to configuration file (config.ini).")
     args = parser.parse_args()
 
-    # Initialize environment (loads config, sets up logging, detects gpu, ensures dirs, validates)
+    # Initialize environment and run RPA
     CONFIG, gpu_available_detected, validation_passed = initialize_environment(args.config)
-
     if not validation_passed:
-         logging.error("Environment validation failed. Exiting.")
-         sys.exit(1)
+        logging.error("Environment validation failed. Exiting.")
+        sys.exit(1)
 
-    # Multiprocessing setup for 'process' mode (if needed by match_products)
-    # Note: _init_worker_matcher might need adjustments if used with asyncio.to_thread
-    if CONFIG.get('Settings', 'MATCHER_EXECUTOR_TYPE', fallback='thread').lower() == 'process':
-         # Ensure spawn method for compatibility, especially on Windows/macOS
-        if sys.platform.startswith('win') or sys.platform.startswith('darwin'):
-             try:
-                  if multiprocessing.get_start_method(allow_none=True) != 'spawn':
-                       multiprocessing.set_start_method('spawn', force=True)
-                       logging.info("Set multiprocessing start method to 'spawn'.")
-             except Exception as e:
-                  logging.warning(f"Could not force multiprocessing start method to 'spawn': {e}")
-        logging.info(f"Using multiprocessing start method: {multiprocessing.get_start_method()}")
-        # Worker initialization (_init_worker_matcher) happens within match_products when ProcessPoolExecutor is created.
-
-    # --- Run Main Process using asyncio ---
     try:
-        # Pass None for progress_queue if running standalone
         asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=None))
     except KeyboardInterrupt:
         logging.warning("RPA process interrupted by user.")
-        print("\nProcess interrupted by user.") # User feedback
+        print("\nProcess interrupted by user.")
     except Exception as e:
-        logging.critical(f"An unhandled exception occurred in the main async process: {e}", exc_info=True)
-        # Consider more user-friendly error message here if needed
+        logging.critical(f"An unhandled exception occurred: {e}", exc_info=True)
         print(f"\nAn critical error occurred: {e}")
         sys.exit(1)
-    finally:
-        logging.info("========= Main script execution finished ==========")
+
+if __name__ == "__main__":
+    # Check if running in CLI mode
+    if len(sys.argv) > 1 and sys.argv[1] == "--cli":
+        run_cli()
+    else:
+        print("Please use --cli flag to run in command line mode, or use the GUI application.")

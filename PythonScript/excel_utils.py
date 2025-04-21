@@ -962,7 +962,17 @@ def create_final_output_excel(df, output_path):
         
         for col in numeric_columns:
             if col in df.columns:
+<<<<<<< HEAD
                 df[col] = df[col].apply(format_numeric)
+=======
+                # Convert to numeric first, handling errors
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Format only non-null values
+                mask = df[col].notna()
+                df.loc[mask, col] = df.loc[mask, col].apply(lambda x: f"{float(x):,.0f}")
+                # Replace NaN with '-'
+                df[col] = df[col].fillna('-')
+>>>>>>> hotfix
                 
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

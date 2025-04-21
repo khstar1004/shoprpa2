@@ -4,6 +4,7 @@ import time
 import pandas as pd
 import threading
 import logging
+<<<<<<< HEAD
 import configparser
 import shutil
 
@@ -40,15 +41,57 @@ class RPAWorker(QThread):
         self.progress_queue = Queue()
         self.progress_timer = QTimer(self)
         self.progress_timer.timeout.connect(self.check_progress_queue)
+=======
+from datetime import datetime
+import traceback
+import asyncio
+
+# Import your existing modules
+from excel_utils import create_final_output_excel, filter_dataframe
+from matching_logic import process_matching
+from data_processing import process_input_data, process_input_file
+from utils import setup_logging, load_config
+from main_rpa import main, initialize_environment
+
+class WorkerThread(QThread):
+    progress = pyqtSignal(str, str)  # (type, message)
+    finished = pyqtSignal(bool, str)  # (success, output_path)
+    
+    def __init__(self, config_path):
+        super().__init__()
+        self.config_path = config_path
+>>>>>>> hotfix
         
     def run(self):
         """Execute the RPA process in a separate thread"""
         self.running = True
         
         try:
+<<<<<<< HEAD
             if run_rpa is None:
                 self.error.emit("main_rpa 모듈을 로드할 수 없습니다. 설치를 확인하세요.")
                 return
+=======
+            # Initialize environment
+            CONFIG, gpu_available_detected, validation_passed = initialize_environment(self.config_path)
+            
+            if not validation_passed:
+                self.progress.emit("error", "Environment validation failed")
+                self.finished.emit(False, "")
+                return
+
+            # Set up progress queue
+            self.progress_queue = self.progress
+
+            # Run RPA process
+            asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=self.progress_queue))
+            
+        except Exception as e:
+            self.progress.emit("error", f"An error occurred: {str(e)}")
+            self.finished.emit(False, "")
+        finally:
+            self.progress.emit("finished", "True")
+>>>>>>> hotfix
 
             # Pass settings to the backend via environment variables
             os.environ['SHOPRPA_TEXT_THRESHOLD'] = str(self.settings.get('text_threshold', 0.7))
@@ -314,6 +357,7 @@ class ShopRPAApp(QMainWindow):
         self.image_weight.setValue(0.3)
         advanced_layout.addWidget(self.image_weight, 2, 1)
         
+<<<<<<< HEAD
         settings_layout.addWidget(advanced_group)
         
         # Save settings button
@@ -594,3 +638,67 @@ def main():
 
 if __name__ == "__main__":
     main() 
+=======
+    def browse_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "엑셀 파일 선택",
+            "",
+            "Excel Files (*.xlsx *.xls)"
+        )
+        if file_name:
+            self.file_label.setText(f"선택된 파일: {os.path.basename(file_name)}")
+            self.input_file = file_name
+            
+    def start_processing(self):
+        """Start the RPA process"""
+        try:
+            # Disable start button
+            self.start_btn.setEnabled(False)
+            
+            # Clear status text
+            self.status_text.clear()
+            
+            # Get config path
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+            
+            # Create and start worker thread
+            self.worker = WorkerThread(config_path)
+            self.worker.progress.connect(self.update_progress)
+            self.worker.finished.connect(self.processing_finished)
+            self.worker.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"처리 시작 중 오류 발생: {str(e)}")
+            self.start_btn.setEnabled(True)
+    
+    def update_progress(self, type, message):
+        """Update progress and status"""
+        if type == "status":
+            self.status_text.append(f"상태: {message}")
+        elif type == "error":
+            self.status_text.append(f"오류: {message}")
+            QMessageBox.warning(self, "오류", message)
+        elif type == "finished":
+            self.status_text.append("처리 완료")
+    
+    def processing_finished(self, success, output_path):
+        """Handle processing completion"""
+        self.start_btn.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "완료", f"처리가 완료되었습니다.\n출력 파일: {output_path}")
+        else:
+            QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
+
+if __name__ == "__main__":
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"Error starting GUI: {str(e)}")
+        logging.error(f"Error starting GUI: {str(e)}", exc_info=True) 
+
+>>>>>>> hotfix

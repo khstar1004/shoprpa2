@@ -1251,3 +1251,6 @@ def combine_match_results(df_input, kogift_matches, naver_matches, config):
     
     logging.info(f"Combined match results: Final dataframe has {len(df_combined)} rows")
     return df_combined 
+
+# Alias for backward compatibility
+match_products = process_matching
