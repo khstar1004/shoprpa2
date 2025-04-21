@@ -177,32 +177,32 @@ def format_product_data_for_output(input_df, kogift_results, naver_results):
                     break
                     
             if image_url:
-                output_df.at[idx, '고려기프트 이미지'] = str(image_url)  # Ensure string type
+                output_df.loc[idx, '고려기프트 이미지'] = str(image_url)  # Use loc instead of at
                 logging.debug(f"Added Kogift image URL for '{product_name}': {image_url[:50]}...")
             
             # Link
             for link_field in ['link', 'href', 'url']:
                 if link_field in best_match and best_match[link_field]:
-                    output_df.at[idx, '고려기프트 상품링크'] = str(best_match[link_field])  # Ensure string type
+                    output_df.loc[idx, '고려기프트 상품링크'] = str(best_match[link_field])  # Use loc instead of at
                     break
             
             # Price
             kogift_price = best_match.get('price', 0)
             if isinstance(kogift_price, (int, float)) and kogift_price > 0:
-                output_df.at[idx, '판매단가(V포함)(2)'] = float(kogift_price)  # Ensure float type
+                output_df.loc[idx, '판매단가(V포함)(2)'] = float(kogift_price)  # Use loc instead of at
                 
                 # Calculate price difference only if haoreum_price is valid
                 if haoreum_price > 0:
                     price_diff = kogift_price - haoreum_price
-                    output_df.at[idx, '가격차이(2)'] = float(price_diff)  # Ensure float type
+                    output_df.loc[idx, '가격차이(2)'] = float(price_diff)  # Use loc instead of at
                     
                     # Calculate percentage
                     price_diff_pct = (price_diff / haoreum_price) * 100
-                    output_df.at[idx, '가격차이(2)(%)'] = float(round(price_diff_pct, 1))  # Ensure float type
+                    output_df.loc[idx, '가격차이(2)(%)'] = float(round(price_diff_pct, 1))  # Use loc instead of at
             
             # Quantity
             quantity = best_match.get('quantity', '-')
-            output_df.at[idx, '기본수량(2)'] = str(quantity)  # Ensure string type
+            output_df.loc[idx, '기본수량(2)'] = str(quantity)  # Use loc instead of at
             
         # Process Naver data
         naver_data = naver_results.get(product_name, [])
@@ -217,36 +217,36 @@ def format_product_data_for_output(input_df, kogift_results, naver_results):
                     break
                     
             if image_url:
-                output_df.at[idx, '네이버 이미지'] = str(image_url)  # Ensure string type
+                output_df.loc[idx, '네이버 이미지'] = str(image_url)  # Use loc instead of at
                 logging.debug(f"Added Naver image URL for '{product_name}': {image_url[:50]}...")
             
             # Links
             for link_field in ['link', 'href', 'url']:
                 if link_field in best_match and best_match[link_field]:
-                    output_df.at[idx, '네이버 쇼핑 링크'] = str(best_match[link_field])  # Ensure string type
+                    output_df.loc[idx, '네이버 쇼핑 링크'] = str(best_match[link_field])  # Use loc instead of at
                     break
             
             # Price
             naver_price = best_match.get('price', 0)
             if isinstance(naver_price, (int, float)) and naver_price > 0:
-                output_df.at[idx, '판매단가(V포함)(3)'] = float(naver_price)  # Ensure float type
+                output_df.loc[idx, '판매단가(V포함)(3)'] = float(naver_price)  # Use loc instead of at
                 
                 # Calculate price difference only if haoreum_price is valid
                 if haoreum_price > 0:
                     price_diff = naver_price - haoreum_price
-                    output_df.at[idx, '가격차이(3)'] = float(price_diff)  # Ensure float type
+                    output_df.loc[idx, '가격차이(3)'] = float(price_diff)  # Use loc instead of at
                     
                     # Calculate percentage
                     price_diff_pct = (price_diff / haoreum_price) * 100
-                    output_df.at[idx, '가격차이(3)(%)'] = float(round(price_diff_pct, 1))  # Ensure float type
+                    output_df.loc[idx, '가격차이(3)(%)'] = float(round(price_diff_pct, 1))  # Use loc instead of at
                 
             # Seller name
             seller = best_match.get('seller', '-')
-            output_df.at[idx, '공급사명'] = str(seller)  # Ensure string type
+            output_df.loc[idx, '공급사명'] = str(seller)  # Use loc instead of at
             
             # Quantity
             quantity = best_match.get('quantity', '-')
-            output_df.at[idx, '기본수량(3)'] = str(quantity)  # Ensure string type
+            output_df.loc[idx, '기본수량(3)'] = str(quantity)  # Use loc instead of at
     
     # Log summary of image URLs
     image_count = {}

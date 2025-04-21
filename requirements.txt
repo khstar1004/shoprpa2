@@ -22,4 +22,5 @@ pygetwindow>=0.0.9
 plyer>=2.1.0
 selenium>=4.10.0
 aiofiles>=23.1.0
-chardet>=5.1.0 
+chardet>=5.1.0
+xlsxwriter>=3.1.2 

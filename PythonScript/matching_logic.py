@@ -246,7 +246,7 @@ class ProductMatcher:
         self.minimum_combined_score = config.getfloat('Matching', 'minimum_combined_score', fallback=0.4)
         
         # Category-specific thresholds
-        self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=False)
+        self.use_category_thresholds = True
         self.category_thresholds = self._load_category_thresholds(config)
         
         # Image feature caching

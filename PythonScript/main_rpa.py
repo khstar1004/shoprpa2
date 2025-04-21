@@ -351,7 +351,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 # Only update cells that need it
                 update_mask = haoreum_img_missing & haoreum_url_present
                 if update_mask.any():
-                    formatted_df.loc[update_mask, '본사 이미지'] = formatted_df.loc[update_mask, '해오름이미지URL']
+                    # Convert image URLs to string type before assignment
+                    formatted_df.loc[update_mask, '본사 이미지'] = formatted_df.loc[update_mask, '해오름이미지URL'].astype(str)
                     logging.info(f"Updated {update_mask.sum()} missing Haereum images with crawled URLs")
             
             input_filename_base = input_filename.rsplit('.', 1)[0]
