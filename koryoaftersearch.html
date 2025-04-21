@@ -1,0 +1,128 @@
+아래는 전체 HTML 코드에서 크롤링 시 유용한 정보(제품 목록, 페이징, 필터/정렬 등)를 추출하기 위한 주요 HTML 구조와 CSS 선택자(selector)를 정리한 내용입니다.
+https://adpanchok.co.kr/ez/mall.php?cat=013001000
+---
+
+### 1. 제품 목록(Product Listing) 영역
+
+**컨테이너**  
+- 제품 목록 전체는 `<div class="product_lists">` 안에 있습니다.
+
+**개별 제품 요소**  
+각 제품은 다음과 같이 `<div class="product">` 태그로 구성되어 있습니다.
+
+- **제품 이미지 & 링크**  
+  - 이미지는 `<div class="pic">` 내부의 `<a>` 태그 안의 `<img>` 태그  
+    - 선택자: `.product .pic a img`  
+    - **속성**: `src` (이미지 URL)  
+  - 제품 상세 페이지 링크: `<div class="pic"> > a`  
+    - 선택자: `.product .pic a`  
+    - **속성**: `href`
+
+- **모델 번호**  
+  - `<div class="model">` 태그 안에 텍스트(예: "A481006")와 때때로 버튼 아이콘가 포함되어 있음  
+    - 선택자: `.product .model`  
+    - **텍스트 내용**: 모델 번호
+
+- **제품 이름**  
+  - `<div class="name">` 내부의 `<a>` 태그  
+    - 선택자: `.product .name a`  
+    - **텍스트 내용**: 제품명  
+    - **속성**: `href` (제품 상세 페이지 링크, 경우에 따라 이미지 링크와 동일)
+
+- **가격**  
+  - `<div class="price">` 태그 내 텍스트  
+    - 선택자: `.product .price`  
+    - **텍스트 내용**: 가격 (예: "13,200원")
+
+- **추가 아이콘(옵션)**  
+  - `<div class="icon">` 태그에는 품절표시나 추가 정보 아이콘 등이 들어갈 수 있음  
+    - 선택자: `.product .icon`
+
+---
+
+### 2. 페이징(Pagination) 영역
+
+**컨테이너**  
+- 페이징 정보는 `<div class="custom_paging">` 내에 있습니다.
+
+**페이지 번호 및 네비게이션**  
+- 페이지 번호:  
+  - 선택자: `.custom_paging .num`  
+  - 각 번호는 `<div class="num">` 태그로 되어 있습니다.
+- 이전/다음 화살표:  
+  - 선택자: `.custom_paging .arrow`  
+  - 클릭 시 페이지 이동을 위한 링크 역할
+
+---
+
+### 3. 필터링 및 정렬 요소
+
+**전체 폼**  
+- 제품 목록, 정렬, 필터 상태 등은 `<form name="zlist_form">` 내에 포함되어 있습니다.
+
+**정렬 옵션**  
+- 정렬 항목은 상단의 탭 영역에 있으며, 각 옵션은 `<div class="order-item">`로 표시됩니다.
+  - 선택자: `.order-item`  
+  - **data-type 속성**: "r" (추천순), "n" (신상품순), "l" (낮은가격순), "h" (높은가격순)
+
+**페이지당 레코드 수**  
+- `<select name="recnum" class="recnum">`  
+  - 선택자: `select.recnum`  
+  - 옵션 예시: "100개씩", "200개씩" 등
+
+**필터 체크박스**  
+- 필터 항목(예: 인기상품, 증정이벤트, 무료배송, 당일발송 등)은 다음 요소에 있습니다.
+  - 선택자: `.list_search .list-item.check`  
+  - 각 항목에는 **data-type 속성**이 있어 필터 유형을 구분합니다.
+
+**가격 범위 입력**  
+- 가격 범위는 두 개의 텍스트 입력 필드로 구성되어 있습니다.
+  - 선택자: `input[name="pp1"]` (최저가격), `input[name="pp2"]` (최고가격)  
+  - 이 입력 필드들은 `<div class="in_price">` 내부에 배치되어 있습니다.
+
+**재검색(키워드) 입력**  
+- 결과 내 재검색을 위한 입력창:
+  - 선택자: `#re_keyword`  
+  - **속성**: `value` (검색어)
+
+---
+
+### 4. 기타 참고 요소
+
+**Breadcrumb (카테고리 경로)**  
+- 상단 카테고리 내비게이션은 `<div class="breadcrumb__wrapper">`에 위치합니다.
+  - 내부의 `<a>` 태그들을 통해 상위/하위 카테고리 링크를 확인할 수 있습니다.
+
+**제품 총 개수 정보**  
+- 제품 총 개수는 `<div class="list_info">` 내에 있으며, `<div>총 <span>1,975</span> 개의 상품이 있습니다.</div>` 형식으로 표시됩니다.
+  - 선택자: `.list_info > div > span`
+
+---
+
+### 요약된 선택자 목록
+
+- **제품 목록 컨테이너**: `.product_lists`
+- **개별 제품**: `.product`
+  - **이미지**: `.product .pic a img`
+  - **제품 링크**: `.product .pic a` (href)
+  - **모델 번호**: `.product .model`
+  - **제품명**: `.product .name a`
+  - **가격**: `.product .price`
+  - **추가 아이콘**: `.product .icon`
+- **페이징 영역**: `.custom_paging`
+  - **페이지 번호**: `.custom_paging .num`
+  - **화살표**: `.custom_paging .arrow`
+- **폼 전체**: `form[name="zlist_form"]`
+- **정렬 옵션**: `.order-item`
+- **페이지당 표시 개수**: `select.recnum`
+- **필터 체크 항목**: `.list_search .list-item.check`
+- **가격 입력**: `input[name="pp1"]`, `input[name="pp2"]`
+- **재검색 입력**: `#re_keyword`
+- **Breadcrumb**: `.breadcrumb__wrapper`
+- **제품 총 개수**: `.list_info > div > span`
+
+---
+
+이와 같이 위의 요소와 선택자들을 이용하면 원하는 제품 정보, 페이지네이션, 필터 및 정렬 상태 등을 효과적으로 크롤링할 수 있습니다.
+
+필요에 따라 이 구조를 바탕으로 추가적인 데이터(예, 광고나 스크립트 등 불필요한 부분은 제외)를 필터링하여 사용하시면 됩니다.

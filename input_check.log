@@ -1,0 +1,11 @@
+2025-04-20 01:08:24,674 - INFO - Checking input file: C:\RPA\Input\test1.xlsx
+2025-04-20 01:08:24,674 - INFO - Input file exists. Size: 15667 bytes
+2025-04-20 01:08:25,404 - INFO - Excel file read successfully. Shape: (72, 26)
+2025-04-20 01:08:25,404 - INFO - Columns found: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-20 01:08:25,405 - INFO - Validating data types...
+2025-04-20 01:08:25,405 - INFO - Sample data from input file:
+2025-04-20 01:08:25,413 - INFO -   구분  담당자      업체명  업체코드    Code  중분류카테고리                           상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크  기본수량(2)  판매가(V포함)(2)  판매단가(V포함)(2)  가격차이(2)  가격차이(2)(%)  고려기프트 상품링크  기본수량(3)  판매단가(V포함)(3)  가격차이(3)  가격차이(3)(%)  공급사명  네이버 쇼핑 링크  공급사 상품링크  본사 이미지  고려기프트 이미지  네이버 이미지
+0  A  김균아  세종기업(주)   517  432849  방향제/디퓨져               차량용디퓨저세트 NEO-2.       30      15593  http://www.jclgift.com/product/product_view.asp?p_idx=432849      NaN          NaN           NaN      NaN         NaN         NaN      NaN           NaN      NaN         NaN   NaN        NaN       NaN     NaN        NaN      NaN
+1  A  김균아  세종기업(주)   517  432811  방향제/디퓨져  센티드우드블럭 디퓨저세트(20ml) DWA-3202       30      15593  http://www.jclgift.com/product/product_view.asp?p_idx=432811      NaN          NaN           NaN      NaN         NaN         NaN      NaN           NaN      NaN         NaN   NaN        NaN       NaN     NaN        NaN      NaN
+2  A  김균아  세종기업(주)   517  432787  방향제/디퓨져               차량용 디퓨저세트 NEO-2       50      15593  http://www.jclgift.com/product/product_view.asp?p_idx=432787      NaN          NaN           NaN      NaN         NaN         NaN      NaN           NaN      NaN         NaN   NaN        NaN       NaN     NaN        NaN      NaN
+2025-04-20 01:08:25,414 - INFO - Input file validation completed successfully.

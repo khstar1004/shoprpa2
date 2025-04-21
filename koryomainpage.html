@@ -1,0 +1,170 @@
+https://adpanchok.co.kr/ez/index.php
+
+아래는 첨부해주신 HTML 전체 코드에서 크롤링 시 유용할 만한 영역(섹션), 선택자, 구조 등을 정리한 내용입니다.  
+실제 크롤링을 진행할 때는 아래 구조와 선택자를 참고하여 원하는 데이터(상품명, 가격, 이미지, 링크 등)를 추출할 수 있습니다.
+
+---
+
+## 1. 전체 페이지 구조  
+전체 페이지는 크게 다음과 같은 영역으로 구성되어 있습니다.  
+- **헤더 영역 (Navigation / 상단 메뉴, 로고, 검색바 등)**  
+  - 상단 네비게이션, 회원가입/로그인 링크, 고객센터, 회사소개 등 정보가 포함되어 있음.
+- **메인 콘텐츠 영역**  
+  - **메인 슬라이더 (메인 배너) 영역**  
+  - **테마 기획전 (Theme Exhibition) 영역**  
+  - **인기 브랜드 (Popular Brands) 영역**  
+  - **베스트100 (Best 100) 상품 영역**  
+  - **자주찾는 카테고리, 이벤트 등**  
+- **하단 영역 (Footer)**  
+  - 이용약관, 개인정보취급방침, 회사 정보, 계좌정보, 이미지맵으로 된 링크 등이 있음.
+- **추가 레이어/팝업 영역**  
+  - 채팅 상담창 (클릭 시 나타나는 레이어, 클래스: `.cc_layout`)  
+  - 파일 다운로드 선택 등
+
+---
+
+## 2. 주요 영역 및 선택자  
+
+### A. 메인 슬라이더 영역  
+- **컨테이너**:  
+  - 최상위 래퍼: `.main_slide__wrapper`  
+  - 내부 컨테이너: `.main_slide__container`  
+- **슬라이드 아이템**:  
+  - 각 슬라이드는 Owl Carousel를 사용하고 있으며, 각 아이템은 `<div class="item">` 내부에 링크(`<a>`)와 이미지(`<img>`)를 포함  
+  - 예시 선택자:  
+    - 슬라이더 이미지:  
+      ```css
+      .main_slide__container .item a img
+      ```
+    - 슬라이더 링크 URL:  
+      ```css
+      .main_slide__container .item a
+      ```
+
+### B. 테마 기획전 영역  
+- **타이틀 및 설명**:  
+  - 타이틀 영역: `.main_plan_title_area`  
+    - 타이틀 텍스트는 내부 `<div class="main_plan_title_1">` 및 `<div class="main_plan_title_2">` 등으로 구성  
+- **슬라이드/컨텐츠 영역**:  
+  - 슬라이드 컨테이너: `.main_plan_slides`  
+  - 각 슬라이드 아이템: `.main_plan_slide`  
+  - 내부 구성:  
+    - 각 슬라이드는 2개 이상의 “행”으로 나뉘며,  
+      - 행(Row): `.main_plan_row`  
+      - 개별 박스(상품/기획전): `.main_plan_box`  
+      - 링크와 이미지: 내부 `<a>` 태그 및 `<div class="main_plan_img">` 안의 `<img>`  
+- **예시 선택자**:  
+  ```css
+  .main_plan_slide .main_plan_box a
+  .main_plan_slide .main_plan_box a img
+  ```
+
+### C. 인기 브랜드 영역  
+- **타이틀 영역**:  
+  - 브랜드 제목 영역: `.brand_title_area`  
+- **브랜드 슬라이더**:  
+  - 슬라이더 컨테이너: `.brand_slide`  
+  - 각 브랜드는 내부 `<div class="pb_slide">` 안의 여러 `<div class="pb_boxes">`로 구성  
+  - 개별 브랜드 아이템: 각 `<a>` 태그 안에 `<img>` 태그  
+  - 추가적으로 이미지에는 롤오버 효과를 위한 `data-ori` (원본 이미지)와 `data-rollover` (마우스 오버 시 이미지) 속성이 있음.  
+- **예시 선택자**:  
+  ```css
+  .brand_slide .pb_boxes a img
+  ```
+
+### D. 베스트100 상품 영역  
+- **타이틀**:  
+  - 상단 타이틀: `.best100_title` 내부의 `.best100_title_1` 및 `.best100_title_2`  
+- **카테고리 탭 (필터)**:  
+  - 카테고리 컨테이너: `.best100_cat`  
+  - 각 탭 버튼: 내부의 `<div class="div_td">`  
+    - 활성화된 탭에는 `.active` 클래스가 붙음  
+- **상품 목록**:  
+  - 각 탭의 상품 목록 컨테이너: `.best100_tab`  
+  - 상품 행: `.product_row`  
+  - 개별 상품 아이템: `.product`  
+    - 상품 번호: `.no`  
+    - 이미지: `.img img`  
+    - 상품명: `.name`  
+    - 가격: `.price`  
+  - 각 상품은 보통 `<a>` 태그로 감싸져 있으며, ID 형식이 `"mb_X_Y"` (예: `mb_0_0`, `mb_0_1` 등)로 구분되어 있음.  
+- **예시 선택자**:  
+  ```css
+  .best100_tab .product a
+  .best100_tab .product .img img
+  .best100_tab .product .name
+  .best100_tab .product .price
+  ```
+
+### E. 자주찾는 카테고리 및 이벤트  
+- **자주찾는 카테고리**:  
+  - 이 영역은 이미지와 링크가 포함된 테이블 형태로 구성되어 있습니다.  
+  - 특정 테이블이나 div 영역에 별도의 클래스가 없는 경우, 부모 영역(예: 인기도 영역 바로 아래 부분)의 컨테이너를 기준으로 선택할 수 있습니다.
+- **이벤트 영역**:  
+  - 이벤트 섹션은 이미지맵(`<map>` 태그)과 테이블 형태로 구성되어 있으며, 이벤트 이미지 링크들이 포함되어 있습니다.  
+  - 이벤트 영역의 선택은 테이블 내의 `<a>` 태그를 활용하거나, 이미지의 alt 속성(예: "메인 이벤트") 등을 기준으로 할 수 있습니다.
+
+### F. 기타 (Footer 및 기타 레이어)  
+- **Footer 영역**:  
+  - 하단 영역은 `.bottom__wrapper` 및 `.bottom__container` 클래스가 있음.  
+  - 두 개 이상의 이미지맵:  
+    - 이미지맵 이름: `footer1`, `footer2`, `footer3`  
+    - 각 map 내부 `<area>` 태그로 링크와 좌표가 정의되어 있습니다.
+- **채팅/상담 레이어 (비회원/회원 상담)**:  
+  - 토글 버튼: `.cc_btn_open`  
+  - 채팅 상담 레이어: `.cc_layout` (클래스에 추가로 `ez` 또는 `m` 버전이 있음)  
+  - 내부 요소:  
+    - 헤더: `.cc_head1`, `.cc_head2`, `.cc_title_div`, `.cc_title`  
+    - 닫기 버튼: `.cc_btn_close`  
+    - 로그인 폼(회원 상담): 내부 폼 태그, 인풋 요소 (예: `.cc_in_id`, `.cc_in_pw`)  
+    - 비회원 상담 폼: 입력 필드, 전화번호 입력(`.cc_in_tel1`, `.cc_in_tel2`, `.cc_in_tel3`) 등  
+- **다운로드 선택**:  
+  - `<select id="down_file">` 등
+
+---
+
+## 3. 크롤링 시 유용한 추가 정보  
+- **상품 데이터 추출**:  
+  - 베스트100, 인기 상품, 슬라이더 상품 등에서 상품명, 가격, 이미지 URL, 링크 URL 등은 각각 위에 언급한 선택자를 통해 추출 가능  
+  - 각 상품의 ID나 번호(예: `<div class="no"><span>1</span></div>`)로 순서를 파악할 수 있음.
+- **슬라이더 및 캐러셀**:  
+  - Owl Carousel 또는 Slick Slider 플러그인을 사용하고 있으므로, 슬라이드 아이템은 동적으로 추가/순환될 수 있으므로 페이지 로드 후 해당 DOM 구조를 확인 필요.
+- **이미지맵**:  
+  - footer나 이벤트 영역에 사용된 `<map>`과 `<area>` 태그를 통해 링크 주소와 좌표 정보를 파악 가능.
+- **채팅 상담 및 팝업**:  
+  - 상담창의 경우 버튼 클릭 시 동적으로 나타나는 레이어(.cc_layout)를 이용하여 상담 관련 정보를 추출하거나 자동화할 수 있음.
+
+---
+
+## 4. 예시 코드 (jQuery 기반 선택자 사용 예시)
+
+```javascript
+// 메인 슬라이더 이미지 추출
+var sliderImages = $('.main_slide__container .item a img').map(function() {
+    return $(this).attr('src');
+}).get();
+
+// 베스트100 첫 번째 탭의 상품명, 가격, 링크 추출
+var bestProducts = $('.best100_tab').first().find('.product').map(function() {
+    return {
+        number: $(this).find('.no span').text(),
+        name: $(this).find('.name').text().trim(),
+        price: $(this).find('.price').text().trim(),
+        link: $(this).closest('a').attr('href'),
+        image: $(this).find('.img img').attr('src')
+    };
+}).get();
+
+console.log(sliderImages, bestProducts);
+```
+
+---
+
+## 5. 정리  
+- **헤더, 메인, 푸터** 등 전체 영역별로 각각 의미 있는 클래스와 id (예: `.main_slide__wrapper`, `.main_plan_title_area`, `.brand_slide`, `.best100_area`, `.bottom__wrapper`, 등)를 활용할 수 있음  
+- 각 영역 내에 상품, 이미지, 링크 등 크롤링할 대상 요소들이 명확하게 구분되어 있음  
+- 추가로 슬라이더, 탭 전환, 이미지맵 등 동적 요소들은 자바스크립트를 통해 처리되고 있으므로, 크롤링 시 페이지 로딩 후 최종 DOM 상태를 확인하는 것이 좋습니다.
+
+이와 같이 각 섹션과 주요 선택자, HTML 구조를 정리하여 크롤링 스크립트 작성에 참고할 수 있습니다.
+
+혹시 추가적으로 더 필요한 정보나 특정 영역에 대한 세부 분석이 필요하시면 말씀해주세요!

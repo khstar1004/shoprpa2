@@ -1,0 +1,404 @@
+import os
+import logging
+import numpy as np
+from PIL import Image
+from rembg import remove, new_session
+import tensorflow as tf
+from typing import Union, Optional, Dict, List, Tuple, Any
+import asyncio
+from pathlib import Path
+import requests
+from io import BytesIO
+import configparser
+import tempfile
+
+# Load config
+config = configparser.ConfigParser()
+config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+try:
+    config.read(config_path, encoding='utf-8')
+    # Get image directory from config
+    IMAGE_DIR = config.get('Matching', 'images_dir', fallback='C:\\RPA\\Image\\Target')
+    logging.info(f"Using image directory from config: {IMAGE_DIR}")
+    # Create the directory if it doesn't exist
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    
+    # Create a temp directory within the image directory
+    TEMP_DIR = os.path.join(IMAGE_DIR, 'temp')
+    os.makedirs(TEMP_DIR, exist_ok=True)
+except Exception as e:
+    logging.error(f"Error loading config or creating image directories: {e}")
+    # Fallback to default locations
+    IMAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
+    TEMP_DIR = os.path.join(tempfile.gettempdir(), 'image_utils_temp')
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Disable GPU usage explicitly for TensorFlow if needed
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+try:
+    tf.config.set_visible_devices([], 'GPU')
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    logging.info(f"{len(logical_gpus)} Logical GPUs available after setting visible devices.")
+except RuntimeError as e:
+    # Virtual devices must be set before GPUs have been initialized
+    logging.warning(f"Could not explicitly disable GPUs, might already be initialized: {e}")
+except Exception as e:
+     logging.error(f"Error configuring TensorFlow GPU visibility: {e}")
+
+# --- Global Cache for Models ---
+# Avoid reloading models repeatedly
+IMAGE_MODEL_CACHE = {
+    "efficientnetb0": None
+}
+TEXT_MODEL_CACHE = {
+    "ko-sroberta-multitask": None
+}
+
+# Global session cache for rembg
+rembg_session = None
+
+# --- Utility Functions ---
+def initialize_rembg_session(model_name="u2net"):
+    """Initializes the rembg session if it's not already initialized."""
+    global rembg_session
+    if rembg_session is None:
+        try:
+            rembg_session = new_session(model_name)
+            logging.info(f"rembg session initialized successfully with model {model_name}.")
+        except Exception as e:
+            logging.error(f"Failed to initialize rembg session: {e}")
+            rembg_session = None # Ensure session remains None if initialization fails
+    return rembg_session
+
+def get_image_from_url(image_url: str) -> Union[Image.Image, None]:
+    """Downloads an image from a URL and returns it as a PIL Image object."""
+    try:
+        response = requests.get(image_url, timeout=30)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        image = Image.open(BytesIO(response.content))
+        return image
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error downloading image from {image_url}: {e}")
+    except IOError as e:
+        logging.error(f"Error opening image from {image_url}: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred while getting image from {image_url}: {e}")
+    return None
+
+# --- Background Removal ---
+
+def remove_background(input_path: Union[str, Path, Image.Image, bytes], output_path: Union[str, Path], model_name="u2net") -> bool:
+    """
+    Removes the background from an image using the rembg library.
+
+    Args:
+        input_path: Path to the input image file, PIL Image object, or image bytes.
+        output_path: Path to save the output image file (PNG format).
+        model_name: The model to use for background removal (default: "u2net").
+
+    Returns:
+        True if background removal was successful, False otherwise.
+    """
+    global rembg_session
+    if rembg_session is None:
+        logging.warning("rembg session not initialized. Attempting to initialize now.")
+        initialize_rembg_session(model_name)
+        if rembg_session is None:
+            logging.error("Failed to remove background: rembg session could not be initialized.")
+            return False
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
+
+    input_data = None
+    if isinstance(input_path, (str, Path)):
+        input_path = Path(input_path)
+        if not input_path.exists():
+            logging.error(f"Input file not found: {input_path}")
+            return False
+        try:
+            with open(input_path, 'rb') as i:
+                input_data = i.read()
+        except IOError as e:
+            logging.error(f"Error reading input file {input_path}: {e}")
+            return False
+    elif isinstance(input_path, Image.Image):
+        try:
+            buffer = BytesIO()
+            input_path.save(buffer, format="PNG") # Save PIL image to buffer
+            buffer.seek(0)
+            input_data = buffer.read()
+        except Exception as e:
+            logging.error(f"Error processing PIL Image object: {e}")
+            return False
+    elif isinstance(input_path, bytes):
+        input_data = input_path
+    else:
+        logging.error(f"Unsupported input type: {type(input_path)}")
+        return False
+
+    if input_data is None:
+        logging.error("Input data could not be processed.")
+        return False
+
+    try:
+        # Use the global session for removal
+        result_bytes = remove(input_data, session=rembg_session)
+
+        # Ensure the output is saved as PNG
+        output_path = output_path.with_suffix('.png')
+
+        with open(output_path, 'wb') as o:
+            o.write(result_bytes)
+        logging.info(f"Background removed successfully. Output saved to: {output_path}")
+        return True
+
+    except Exception as e:
+        logging.error(f"Error during background removal process: {e}")
+        # Attempt to remove potentially corrupted output file
+        if output_path.exists():
+            try:
+                os.remove(output_path)
+                logging.info(f"Removed potentially corrupted output file: {output_path}")
+            except OSError as rm_err:
+                logging.error(f"Error removing output file {output_path}: {rm_err}")
+        return False
+
+# New async wrapper for background removal
+async def remove_background_async(input_path: Union[str, Path, Image.Image, bytes], output_path: Union[str, Path], model_name="u2net") -> bool:
+    """
+    Asynchronously removes the background from an image by running the synchronous
+    remove_background function in a separate thread.
+
+    Args:
+        input_path: Path to the input image file, PIL Image object, or image bytes.
+        output_path: Path to save the output image file (PNG format).
+        model_name: The model to use for background removal (default: "u2net").
+
+    Returns:
+        True if background removal was successful, False otherwise.
+    """
+    loop = asyncio.get_running_loop()
+    # Run the synchronous remove_background function in the default executor (thread pool)
+    try:
+        # Ensure the session is initialized before calling the sync function within the executor
+        # This might initialize it multiple times if called concurrently before the first initialization finishes,
+        # but initialize_rembg_session handles the check `if rembg_session is None`.
+        initialize_rembg_session(model_name)
+        if rembg_session is None:
+             logging.error("Cannot run remove_background_async: rembg session failed to initialize.")
+             return False
+
+        success = await loop.run_in_executor(
+            None,  # Use the default executor
+            remove_background,
+            input_path,
+            output_path,
+            model_name # Pass model_name explicitly
+        )
+        return success
+    except Exception as e:
+        logging.error(f"Error executing remove_background in executor: {e}")
+        return False
+
+# --- Image Similarity ---
+
+def load_image_model(model_name: str = 'efficientnetb0') -> Union[tf.keras.Model, None]:
+    """Loads the specified image model (currently only EfficientNetB0).
+       Uses a cache to avoid reloading.
+    """
+    if model_name != 'efficientnetb0':
+        logging.error(f"Unsupported image model requested: {model_name}")
+        return None
+
+    if IMAGE_MODEL_CACHE[model_name] is None:
+        logging.info(f"Loading image similarity model ({model_name})...")
+        try:
+            # Load EfficientNetB0 without the top classification layer
+            base_model = tf.keras.applications.EfficientNetB0(
+                weights='imagenet', include_top=False, input_shape=(224, 224, 3)
+            )
+            # Add a global pooling layer to get a feature vector
+            global_avg_layer = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+            # Create the final model
+            model = tf.keras.Model(inputs=base_model.input, outputs=global_avg_layer)
+            IMAGE_MODEL_CACHE[model_name] = model
+            logging.info(f"Image similarity model ({model_name}) loaded successfully.")
+        except Exception as e:
+            logging.error(f"Failed to load image model '{model_name}': {e}", exc_info=True)
+            IMAGE_MODEL_CACHE[model_name] = None # Ensure cache reflects failure
+
+    return IMAGE_MODEL_CACHE[model_name]
+
+def preprocess_image(img_path: str) -> Union[tf.Tensor, None]:
+    """Loads and preprocesses an image for the EfficientNetB0 model."""
+    if not os.path.exists(img_path):
+        logging.warning(f"Image file not found for preprocessing: {img_path}")
+        return None
+    try:
+        # Load image, ensuring it's RGB
+        img = tf.keras.preprocessing.image.load_img(img_path, target_size=(224, 224), color_mode='rgb')
+        img_array = tf.keras.preprocessing.image.img_to_array(img)
+        # Expand dimensions to create a batch of 1
+        img_batch = tf.expand_dims(img_array, 0)
+        # Preprocess using the specific function for EfficientNet
+        img_preprocessed = tf.keras.applications.efficientnet.preprocess_input(img_batch)
+        return img_preprocessed
+    except FileNotFoundError:
+         logging.error(f"Preprocessing failed: File not found at {img_path}")
+         return None
+    except Exception as e:
+        logging.error(f"Error preprocessing image {img_path}: {e}", exc_info=True)
+        return None
+
+def calculate_image_similarity(img_path1: str, img_path2: str, model_name: str = 'efficientnetb0') -> float:
+    """Calculates the cosine similarity between two images.
+
+    Args:
+        img_path1: Path to the first image file.
+        img_path2: Path to the second image file.
+        model_name: The name of the model to use (default: 'efficientnetb0').
+
+    Returns:
+        Cosine similarity score between 0.0 and 1.0, or 0.0 if an error occurs.
+    """
+    model = load_image_model(model_name)
+    if model is None:
+        logging.error("Image model not loaded. Cannot calculate similarity.")
+        return 0.0
+
+    # Check if files exist first
+    if not os.path.exists(img_path1):
+        logging.error(f"Image file not found: {img_path1}")
+        return 0.0
+        
+    if not os.path.exists(img_path2):
+        logging.error(f"Image file not found: {img_path2}")
+        return 0.0
+        
+    # Log image paths for debugging
+    logging.debug(f"Calculating similarity between {img_path1} and {img_path2}")
+
+    # Preprocess images and handle potential errors
+    img1_preprocessed = preprocess_image(img_path1)
+    if img1_preprocessed is None:
+        logging.error(f"Failed to preprocess image 1: {img_path1}")
+        return 0.0
+
+    img2_preprocessed = preprocess_image(img_path2)
+    if img2_preprocessed is None:
+        logging.error(f"Failed to preprocess image 2: {img_path2}")
+        return 0.0
+
+    try:
+        # Extract features using the model (set training=False)
+        features1 = model(img1_preprocessed, training=False).numpy().flatten()
+        features2 = model(img2_preprocessed, training=False).numpy().flatten()
+
+        # Normalize features to prevent issues with zero vectors
+        norm1 = np.linalg.norm(features1)
+        norm2 = np.linalg.norm(features2)
+
+        if norm1 == 0 or norm2 == 0:
+            logging.warning(f"Could not calculate similarity: zero vector generated for one or both images ({img_path1}, {img_path2})")
+            return 0.0
+
+        # Calculate cosine similarity
+        similarity = np.dot(features1, features2) / (norm1 * norm2)
+
+        # Clip similarity to [0, 1] range as dot product can sometimes be slightly outside due to floating point inaccuracies
+        similarity = max(0.0, min(1.0, float(similarity)))
+
+        logging.debug(f"Calculated image similarity between {os.path.basename(img_path1)} and {os.path.basename(img_path2)}: {similarity:.4f}")
+        return similarity
+
+    except Exception as e:
+        logging.error(f"Error calculating image similarity between {img_path1} and {img_path2}: {e}", exc_info=True)
+        return 0.0
+
+# Example Usage (Optional - for testing)
+if __name__ == "__main__":
+    # Ensure the rembg session is initialized before any async operations that might use it
+    initialize_rembg_session()
+    
+    # Log the directories used
+    logging.info(f"Main image directory: {IMAGE_DIR}")
+    logging.info(f"Temporary directory: {TEMP_DIR}")
+
+    # --- Test get_image_from_url ---
+    test_image_url = "https://via.placeholder.com/150" # Example URL
+    print(f"Testing get_image_from_url with URL: {test_image_url}")
+    pil_image = get_image_from_url(test_image_url)
+    if pil_image:
+        print("Successfully downloaded and opened image.")
+        # pil_image.show() # Uncomment to display the image
+    else:
+        print("Failed to get image from URL.")
+
+    # --- Test remove_background (using downloaded image) ---
+    if pil_image:
+        input_img_for_sync = pil_image
+        output_sync_path = Path(os.path.join(TEMP_DIR, "test_output_sync.png"))
+        print(f"Testing synchronous remove_background with PIL Image. Output: {output_sync_path}")
+        success_sync = remove_background(input_img_for_sync, output_sync_path)
+        if success_sync:
+            print(f"Synchronous background removal successful: {output_sync_path}")
+        else:
+            print("Synchronous background removal failed.")
+
+    # --- Test remove_background_async (using downloaded image) ---
+    async def run_async_test():
+        if pil_image:
+            input_img_for_async = pil_image
+            output_async_path = Path(os.path.join(TEMP_DIR, "test_output_async.png"))
+            print(f"Testing asynchronous remove_background_async with PIL Image. Output: {output_async_path}")
+            success_async = await remove_background_async(input_img_for_async, output_async_path)
+            if success_async:
+                print(f"Asynchronous background removal successful: {output_async_path}")
+            else:
+                print("Asynchronous background removal failed.")
+        else:
+             print("Skipping async test as image download failed.")
+
+    # Run the async test function
+    print("Running async test...")
+    # Ensure the rembg session is initialized before starting the event loop
+    # (It should be initialized already by the call above, but good practice)
+    if rembg_session is None:
+         initialize_rembg_session()
+
+    if rembg_session: # Only run async test if session is valid
+        asyncio.run(run_async_test())
+    else:
+        print("Skipping async test because rembg session failed to initialize.")
+
+    # --- Test with a local file (create a dummy file if needed) ---
+    # Create a dummy input file for testing local file path input
+    dummy_input_path = Path(os.path.join(TEMP_DIR, "dummy_input.png"))
+    if pil_image and not dummy_input_path.exists():
+        try:
+            pil_image.save(dummy_input_path)
+            print(f"Created dummy input file: {dummy_input_path}")
+        except Exception as e:
+            print(f"Failed to save dummy input file: {e}")
+
+    if dummy_input_path.exists():
+        output_local_path = Path(os.path.join(TEMP_DIR, "test_output_local.png"))
+        print(f"Testing synchronous remove_background with local file: {dummy_input_path}. Output: {output_local_path}")
+        success_local = remove_background(str(dummy_input_path), output_local_path) # Pass path as string or Path object
+        if success_local:
+            print(f"Synchronous background removal successful for local file: {output_local_path}")
+        else:
+            print("Synchronous background removal failed for local file.")
+
+        # Clean up dummy file
+        # try:
+        #     os.remove(dummy_input_path)
+        #     print(f"Cleaned up dummy input file: {dummy_input_path}")
+        # except OSError as e:
+        #     print(f"Error cleaning up dummy file: {e}")
+    else:
+        print("Skipping local file test as dummy input file could not be created.")
+
+    print("image_utils tests completed.") 
