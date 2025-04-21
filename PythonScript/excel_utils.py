@@ -612,7 +612,7 @@ def apply_excel_styles(file_path, headers: List[str]):
 
 def process_image_cells(worksheet, image_columns=None):
     """
-    Process image cells in an Excel worksheet to display images.
+    Process image cells in an Excel worksheet to display images using Excel's IMAGE function.
     
     Args:
         worksheet (openpyxl.worksheet.worksheet.Worksheet): The Excel worksheet to process
@@ -667,11 +667,9 @@ def process_image_cells(worksheet, image_columns=None):
                     # Handle URL images
                     if image_path.startswith(('http://', 'https://')):
                         logging.debug(f"Processing URL image: {image_path}")
-                        
-                        # For URLs, we'll make them clickable
-                        cell.hyperlink = image_path
-                        cell.value = "View Image"
-                        cell.font = openpyxl.styles.Font(color="0563C1", underline="single")
+                        # For URLs, create an IMAGE formula that references the URL directly
+                        image_formula = f'=IMAGE("{image_path}",2)'
+                        cell.value = image_formula
                         processed_cells += 1
                         
                     # Handle local file paths
@@ -703,8 +701,8 @@ def process_image_cells(worksheet, image_columns=None):
                         # First, escape the path properly
                         safe_path = image_path.replace("\\", "\\\\")
                         
-                        # Create the formula - most reliable is to use the 4 option (fit with size)
-                        image_formula = f'=IMAGE("{safe_path}",4)'
+                        # Create the formula - use mode 2 for fit/resize
+                        image_formula = f'=IMAGE("{safe_path}",2)'
                         
                         # Apply the formula to the cell
                         cell.value = image_formula
@@ -712,8 +710,9 @@ def process_image_cells(worksheet, image_columns=None):
                         
                 except Exception as e:
                     logging.error(f"Error processing image cell at row {row_idx}, column {col_idx}: {e}")
+                    cell.value = "Error: Image Processing Failed"
         
-        logging.info(f"Successfully processed {processed_cells} image cells")
+        logging.info(f"Successfully processed {processed_cells} image cells with IMAGE formula")
         return True
         
     except Exception as e:
@@ -922,24 +921,29 @@ def create_final_output_excel(df, output_path):
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        # Create a Pandas Excel writer using XlsxWriter as the engine
-        writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
+        # First save with basic formatting
+        df.to_excel(output_path, index=False)
         
-        # Convert the dataframe to an XlsxWriter Excel object
-        df.to_excel(writer, sheet_name='Sheet1', index=False)
+        # Now open with openpyxl for additional formatting
+        workbook = load_workbook(output_path)
+        worksheet = workbook.active
         
-        # Get the xlsxwriter workbook and worksheet objects
-        workbook = writer.book
-        worksheet = writer.sheets['Sheet1']
+        # Process image columns
+        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+        process_image_cells(worksheet, image_columns)
         
-        # Define formats
-        header_format = workbook.add_format({
-            'bold': True,
-            'text_wrap': True,
-            'valign': 'top',
-            'fg_color': '#D7E4BC',
-            'border': 1
-        })
+        # Apply other formatting
+        # Define formats for headers
+        header_fill = PatternFill(start_color="D7E4BC", end_color="D7E4BC", fill_type="solid")
+        header_font = Font(bold=True)
+        header_alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+        
+        # Format headers
+        for col_num, column_title in enumerate(df.columns, 1):
+            cell = worksheet.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
         
         # Format numeric columns
         numeric_columns = [
@@ -947,44 +951,39 @@ def create_final_output_excel(df, output_path):
             '가격차이(2)', '가격차이(2)(%)', '가격차이(3)', '가격차이(3)(%)'
         ]
         
+        number_format = '#,##0'
         for col in numeric_columns:
             if col in df.columns:
-                col_idx = df.columns.get_loc(col)
-                worksheet.set_column(col_idx, col_idx, 15, workbook.add_format({'num_format': '#,##0'}))
+                col_idx = df.columns.get_loc(col) + 1
+                for row in range(2, worksheet.max_row + 1):
+                    cell = worksheet.cell(row=row, column=col_idx)
+                    try:
+                        if cell.value and cell.value != '-':
+                            cell.number_format = number_format
+                    except:
+                        continue
         
-        # Format text columns
-        text_columns = [
-            '상품명', '업체명', '공급사명', '고려기프트 상품링크',
-            '네이버 쇼핑 링크', '공급사 상품링크'
-        ]
+        # Auto-adjust column widths
+        for col in worksheet.columns:
+            max_length = 0
+            column = col[0].column_letter
+            
+            # Skip image columns for auto-width
+            if worksheet.cell(row=1, column=col[0].column).value in image_columns:
+                worksheet.column_dimensions[column].width = 50  # Fixed width for image columns
+                continue
+                
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            worksheet.column_dimensions[column].width = min(adjusted_width, 50)
         
-        for col in text_columns:
-            if col in df.columns:
-                col_idx = df.columns.get_loc(col)
-                worksheet.set_column(col_idx, col_idx, 30)
-        
-        # Format image columns
-        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
-        for col in image_columns:
-            if col in df.columns:
-                col_idx = df.columns.get_loc(col)
-                worksheet.set_column(col_idx, col_idx, 50)
-        
-        # Write the column headers with the defined format
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # Auto-adjust columns' width
-        for idx, col in enumerate(df):
-            series = df[col]
-            max_len = max((
-                series.astype(str).map(len).max(),
-                len(str(series.name))
-            )) + 1
-            worksheet.set_column(idx, idx, max_len)
-        
-        # Save the Excel file
-        writer.close()
+        # Save the final formatted file
+        workbook.save(output_path)
         
         logging.info(f"Successfully created Excel file at: {output_path}")
         return output_path

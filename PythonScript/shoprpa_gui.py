@@ -32,7 +32,7 @@ class WorkerThread(QThread):
         self.batch_size = batch_size
         self.config = configparser.ConfigParser()
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-        self.config.read(config_path)
+        self.config.read(config_path, encoding='utf-8')
         
     def run(self):
         try:
@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.create_help_tab(), "도움말")
         
         # Set window icon if available
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'app_icon.png')
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'app_icon.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
@@ -122,7 +122,7 @@ class MainWindow(QMainWindow):
     def load_icons(self):
         """Load SVG icons with proper error handling."""
         try:
-            # Get assets directory path
+            # Get assets directory path - use absolute path from workspace root
             assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets')
             
             # Define icon paths
@@ -160,9 +160,10 @@ class MainWindow(QMainWindow):
         
         # Header with logo
         header = QHBoxLayout()
-        logo = self.icons['logo']
-        logo.setFixedSize(200, 50)
-        header.addWidget(logo)
+        if 'logo' in self.icons:
+            logo = self.icons['logo']
+            logo.setFixedSize(200, 50)
+            header.addWidget(logo)
         header.addStretch()
         layout.addLayout(header)
         
@@ -174,7 +175,8 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.file_label, 0, 0, 1, 2)
         
         browse_btn = QPushButton("파일 선택")
-        browse_btn.setIcon(QIcon('assets/file.svg'))
+        if 'file' in self.icons:
+            browse_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'file.svg')))
         browse_btn.clicked.connect(self.browse_file)
         file_layout.addWidget(browse_btn, 1, 0)
         
@@ -207,11 +209,12 @@ class MainWindow(QMainWindow):
         
         # Start button
         self.start_btn = QPushButton("처리 시작")
-        self.start_btn.setIcon(QIcon('assets/batch.svg'))
+        if 'batch' in self.icons:
+            self.start_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'batch.svg')))
         self.start_btn.clicked.connect(self.start_processing)
         layout.addWidget(self.start_btn)
         
-        # Status display
+        # Status text area
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
         layout.addWidget(self.status_text)
