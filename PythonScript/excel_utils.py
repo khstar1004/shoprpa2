@@ -907,39 +907,62 @@ def create_final_output_excel(df, output_path):
         Path to the created Excel file
     """
     try:
-        # Clean column names by removing non-breaking spaces and regular spaces from start/end
-        df = df.copy()  # Create a copy to avoid modifying the original
-        df.columns = [col.strip().replace('\xa0', '') if isinstance(col, str) else col for col in df.columns]
-        
-        # Define the fixed column order
-        fixed_columns = [
-            '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
-            '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)',
-            '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명',
-            '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지',
-            '네이버_상품명', '네이버_가격', '네이버_판매처', '네이버_링크', '네이버_이미지'
+        # Create a mapping between clean and original column names
+        column_mapping = {
+            '기본수량(1)': '\xa0기본수량(1)\xa0',
+            '판매단가(V포함)': '\xa0판매단가(V포함)\xa0',
+            '기본수량(2)': '\xa0기본수량(2)\xa0',
+            '판매가(V포함)(2)': '\xa0판매가(V포함)(2)\xa0',
+            '판매단가(V포함)(2)': '\xa0판매단가(V포함)(2)\xa0',
+            '가격차이(2)': '\xa0가격차이(2)\xa0',
+            '가격차이(2)(%)': '\xa0가격차이(2)(%)\xa0',
+            '기본수량(3)': '\xa0기본수량(3)\xa0',
+            '판매단가(V포함)(3)': '\xa0판매단가(V포함)(3)\xa0',
+            '가격차이(3)': '\xa0가격차이(3)\xa0',
+            '가격차이(3)(%)': '\xa0가격차이(3)(%)\xa0',
+            '공급사명': '\xa0공급사명\xa0',
+            '네이버 쇼핑 링크': '\xa0네이버 쇼핑 링크\xa0'
+        }
+
+        # Keep original column names
+        columns_to_keep = [
+            '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명'
         ]
-        
-        # Create a new DataFrame with all required columns while preserving existing data
-        new_columns = [col for col in fixed_columns if col not in df.columns]
-        for col in new_columns:
-            df[col] = '-'
-            
-        # Reorder columns according to fixed_columns, keeping any additional columns at the end
-        extra_columns = [col for col in df.columns if col not in fixed_columns]
-        final_columns = fixed_columns + extra_columns
-        df = df.reindex(columns=final_columns)
+
+        # Add mapped column names
+        for clean_name, xa0_name in column_mapping.items():
+            if clean_name in df.columns:
+                df = df.rename(columns={clean_name: xa0_name})
+                columns_to_keep.append(xa0_name)
+            elif xa0_name in df.columns:
+                columns_to_keep.append(xa0_name)
+
+        # Add remaining columns that don't need mapping
+        remaining_cols = ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크',
+                         '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+        columns_to_keep.extend(remaining_cols)
+
+        # Select only the required columns that exist in the DataFrame
+        existing_columns = [col for col in columns_to_keep if col in df.columns]
+        df = df[existing_columns]
         
         # Format numeric columns before writing
         numeric_columns = [
-            '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
-            '가격차이(2)', '가격차이(2)(%)', '가격차이(3)', '가격차이(3)(%)'
+            '\xa0판매단가(V포함)\xa0', '\xa0판매단가(V포함)(2)\xa0', '\xa0판매단가(V포함)(3)\xa0',
+            '\xa0가격차이(2)\xa0', '\xa0가격차이(2)(%)\xa0', '\xa0가격차이(3)\xa0', '\xa0가격차이(3)(%)\xa0'
         ]
+
+        def format_numeric(x):
+            try:
+                if pd.isna(x) or str(x).strip() == '-':
+                    return x
+                return f"{float(x):,.0f}"
+            except (ValueError, TypeError):
+                return x
         
         for col in numeric_columns:
             if col in df.columns:
-                df[col] = df[col].apply(lambda x: f"{float(x):,.0f}" if pd.notna(x) and str(x).strip() != '-' else x)
+                df[col] = df[col].apply(format_numeric)
                 
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -952,7 +975,7 @@ def create_final_output_excel(df, output_path):
         worksheet = workbook.active
         
         # Process image columns
-        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', '네이버_이미지']
+        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
         process_image_cells(worksheet, image_columns)
         
         # Format headers
