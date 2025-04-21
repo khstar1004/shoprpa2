@@ -1,0 +1,153 @@
+2025-04-22 03:39:45,844 - INFO - [test_excel_creation_local.py:85] - --- Starting Excel Creation Test with REAL Local Images ---
+2025-04-22 03:39:45,847 - DEBUG - [utils.py:93] - Default configuration loaded into parser.
+2025-04-22 03:39:45,847 - INFO - [utils.py:105] - Successfully read and merged configuration from: c:\Users\james\Desktop\Shoprpa2\config.ini
+2025-04-22 03:39:45,849 - INFO - [test_excel_creation_local.py:63] - Scanning for JPG images in: ['C:\\\\RPA\\\\Image\\\\Main', 'C:\\\\RPA\\\\Image\\\\Target']
+2025-04-22 03:39:45,849 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Main
+2025-04-22 03:39:45,928 - INFO - [test_excel_creation_local.py:68] - Found 624 JPG images in C:\\RPA\\Image\\Target
+2025-04-22 03:39:45,928 - INFO - [test_excel_creation_local.py:95] - Total local JPG images found: 624
+2025-04-22 03:39:45,928 - INFO - [test_excel_creation_local.py:100] - Ensured output directory exists: c:\Users\james\Desktop\Shoprpa2\OUTPUT
+2025-04-22 03:39:45,935 - INFO - [test_excel_creation_local.py:165] - Sample DataFrame created with 4 rows using real data structure.
+2025-04-22 03:39:45,948 - DEBUG - [test_excel_creation_local.py:166] - Sample DataFrame Head:
+  구분   담당자        업체명  업체코드        Code    중분류카테고리                        상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크 기본수량(2) 판매가(V포함)(2) 판매단가(V포함)(2) 가격차이(2) 가격차이(2)(%)                                                           고려기프트 상품링크 기본수량(3) 판매단가(V포함)(3) 가격차이(3) 가격차이(3)(%) 공급사명                                              네이버 쇼핑 링크 공급사 상품링크                                                    본사 이미지                                                 고려기프트 이미지                                                   네이버 이미지
+0  A   김균아  엠제이(MJ)기획  3941      437611  가방(에코백/면)           사랑이 엔젤하트 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437611       -           -            -       -          -                                       가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음       -            -       -          -    -                                가격이 범위내에 없거나 검색된 상품이 없음        -                   C:\RPA\Image\Target\201406031810500.jpg                                                         -                                                         -
+1  A   김균아  엠제이(MJ)기획  3941      437593  가방(에코백/면)          사랑이 큐피트화살 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437593     200     570,900       2854.5  -115.5       -3.9  http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303       -            -       -          -    -                          일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음        -  C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg  C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg                                                         -
+2  A   김균아  엠제이(MJ)기획  3941      437551      어린이우산  캐치티니핑 53 스무디 입체리본 투명 아동우산       50      17820  http://www.jclgift.com/product/product_view.asp?p_idx=437551      50     842,600        16852    -968       -5.4  http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277       1        14490   -3330      -18.6  네이버  https://search.shopping.naver.com/catalog/53165134501        -                   C:\RPA\Image\Target\201406031810500.jpg  C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg  C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg
+3  D  테스터4      경로테스트  P001  PathTest01          -             잘못된 경로 이미지 테스트        1       1000                                                             -       -           -            -       -          -                                                                    -       -            -       -          -    -                                                      -        -                   C:\Invalid\Path\To\NonExistentImage.jpg               C:\\RPA\\Image\\Target\naver_0eb986e632.jpg                         https://invalid-url.zzz/image.png
+2025-04-22 03:39:45,948 - INFO - [test_excel_creation_local.py:169] - Calling create_final_output_excel to generate: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_033945.xlsx
+2025-04-22 03:39:45,948 - INFO - [excel_utils.py:674] - Starting creation of final Excel output: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_033945.xlsx
+2025-04-22 03:39:45,948 - INFO - [excel_utils.py:562] - Preparing data for Excel export. Initial rows: 4, Initial columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:39:45,948 - DEBUG - [excel_utils.py:574] - Columns reordered and selected. Final columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:39:45,948 - DEBUG - [excel_utils.py:587] - Applying numeric formatting...
+2025-04-22 03:39:45,948 - DEBUG - [excel_utils.py:630] - Finished numeric formatting.
+2025-04-22 03:39:45,955 - DEBUG - [excel_utils.py:633] - Cleaning text columns...
+2025-04-22 03:39:45,957 - DEBUG - [excel_utils.py:644] - Filled remaining NaN values with '-'.
+2025-04-22 03:39:45,957 - INFO - [excel_utils.py:646] - Data preparation finished. Final rows: 4
+2025-04-22 03:39:45,972 - DEBUG - [excel_utils.py:698] - DataFrame written to sheet 'Results'. Max Row: 5, Max Col: 26
+2025-04-22 03:39:45,972 - DEBUG - [excel_utils.py:217] - Applying column widths. DataFrame columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:39:45,972 - DEBUG - [excel_utils.py:247] - Finished applying column widths.
+2025-04-22 03:39:45,972 - DEBUG - [excel_utils.py:251] - Applying cell styles and alignments.
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:285] - Finished applying cell styles.
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:417] - Applying conditional formatting.
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:432] - Applying negative value conditional formatting to range: N2:N5
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:432] - Applying negative value conditional formatting to range: S2:S5
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:289] - Processing image columns.
+2025-04-22 03:39:45,989 - DEBUG - [excel_utils.py:306] - Processing images in column: 본사 이미지 (Index: 24)
+2025-04-22 03:39:46,004 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,011 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:39:46,015 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,015 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:39:46,020 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,020 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:39:46,020 - WARNING - [excel_utils.py:360] - Invalid image source (not URL or existing file): C:\Invalid\Path\To\NonExistentImage.jpg
+2025-04-22 03:39:46,023 - DEBUG - [excel_utils.py:306] - Processing images in column: 고려기프트 이미지 (Index: 25)
+2025-04-22 03:39:46,029 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,029 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:39:46,031 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,031 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:39:46,037 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,037 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 12224
+2025-04-22 03:39:46,037 - DEBUG - [excel_utils.py:306] - Processing images in column: 네이버 이미지 (Index: 26)
+2025-04-22 03:39:46,037 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,037 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:39:46,046 - DEBUG - [connectionpool.py:1049] - Starting new HTTPS connection (1): invalid-url.zzz:443
+2025-04-22 03:39:46,168 - WARNING - [excel_utils.py:339] - Error downloading image URL https://invalid-url.zzz/image.png: HTTPSConnectionPool(host='invalid-url.zzz', port=443): Max retries exceeded with url: /image.png (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x0000027A636FF010>: Failed to resolve 'invalid-url.zzz' ([Errno 11001] getaddrinfo failed)"))
+2025-04-22 03:39:46,168 - INFO - [excel_utils.py:413] - Finished image processing. Embedded: 7, Errors/Placeholders: 0
+2025-04-22 03:39:46,169 - DEBUG - [excel_utils.py:468] - Adding hyperlinks. Link columns defined: ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크', '네이버 쇼핑 링크']
+2025-04-22 03:39:46,169 - INFO - [excel_utils.py:509] - Finished adding hyperlinks. Added 6 links. Found 0 non-URL values in link columns.
+2025-04-22 03:39:46,169 - DEBUG - [excel_utils.py:450] - Setting up page layout.
+2025-04-22 03:39:46,169 - DEBUG - [excel_utils.py:462] - Page layout settings applied.
+2025-04-22 03:39:46,169 - WARNING - [excel_utils.py:521] - Could not set header/footer: 'Worksheet' object has no attribute 'header_footer'
+2025-04-22 03:39:46,169 - DEBUG - [excel_utils.py:549] - Applied Excel table format 'TableStyleMedium2' to range A1:Z5
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:39:46,191 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,197 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 12224
+2025-04-22 03:39:46,197 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:39:46,198 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:39:46,199 - INFO - [excel_utils.py:723] - Successfully created and formatted Excel file: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_033945.xlsx
+2025-04-22 03:39:46,199 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_033945.xlsx
+2025-04-22 03:39:46,203 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---
+2025-04-22 03:44:47,145 - INFO - [test_excel_creation_local.py:85] - --- Starting Excel Creation Test with REAL Local Images ---
+2025-04-22 03:44:47,145 - DEBUG - [utils.py:93] - Default configuration loaded into parser.
+2025-04-22 03:44:47,145 - INFO - [utils.py:105] - Successfully read and merged configuration from: c:\Users\james\Desktop\Shoprpa2\config.ini
+2025-04-22 03:44:47,145 - INFO - [test_excel_creation_local.py:63] - Scanning for JPG images in: ['C:\\\\RPA\\\\Image\\\\Main', 'C:\\\\RPA\\\\Image\\\\Target']
+2025-04-22 03:44:47,145 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Main
+2025-04-22 03:44:47,197 - INFO - [test_excel_creation_local.py:68] - Found 624 JPG images in C:\\RPA\\Image\\Target
+2025-04-22 03:44:47,197 - INFO - [test_excel_creation_local.py:95] - Total local JPG images found: 624
+2025-04-22 03:44:47,197 - INFO - [test_excel_creation_local.py:100] - Ensured output directory exists: c:\Users\james\Desktop\Shoprpa2\OUTPUT
+2025-04-22 03:44:47,204 - INFO - [test_excel_creation_local.py:165] - Sample DataFrame created with 4 rows using real data structure.
+2025-04-22 03:44:47,208 - DEBUG - [test_excel_creation_local.py:166] - Sample DataFrame Head:
+  구분   담당자        업체명  업체코드        Code    중분류카테고리                        상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크 기본수량(2) 판매가(V포함)(2) 판매단가(V포함)(2) 가격차이(2) 가격차이(2)(%)                                                           고려기프트 상품링크 기본수량(3) 판매단가(V포함)(3) 가격차이(3) 가격차이(3)(%) 공급사명                                              네이버 쇼핑 링크 공급사 상품링크                                                    본사 이미지                                                 고려기프트 이미지                                                   네이버 이미지
+0  A   김균아  엠제이(MJ)기획  3941      437611  가방(에코백/면)           사랑이 엔젤하트 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437611       -           -            -       -          -                                       가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음       -            -       -          -    -                                가격이 범위내에 없거나 검색된 상품이 없음        -                   C:\RPA\Image\Target\201406031810500.jpg                                                         -                                                         -
+1  A   김균아  엠제이(MJ)기획  3941      437593  가방(에코백/면)          사랑이 큐피트화살 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437593     200     570,900       2854.5  -115.5       -3.9  http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303       -            -       -          -    -                          일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음        -  C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg  C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg                                                         -
+2  A   김균아  엠제이(MJ)기획  3941      437551      어린이우산  캐치티니핑 53 스무디 입체리본 투명 아동우산       50      17820  http://www.jclgift.com/product/product_view.asp?p_idx=437551      50     842,600        16852    -968       -5.4  http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277       1        14490   -3330      -18.6  네이버  https://search.shopping.naver.com/catalog/53165134501        -                   C:\RPA\Image\Target\201406031810500.jpg  C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg  C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg
+3  D  테스터4      경로테스트  P001  PathTest01          -             잘못된 경로 이미지 테스트        1       1000                                                             -       -           -            -       -          -                                                                    -       -            -       -          -    -                                                      -        -                   C:\Invalid\Path\To\NonExistentImage.jpg        C:\\RPA\\Image\\Target\shop_1615442139119673_0.jpg                         https://invalid-url.zzz/image.png
+2025-04-22 03:44:47,211 - INFO - [test_excel_creation_local.py:169] - Calling create_final_output_excel to generate: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
+2025-04-22 03:44:47,211 - INFO - [excel_utils.py:685] - Starting creation of final Excel output: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
+2025-04-22 03:44:47,211 - INFO - [excel_utils.py:573] - Preparing data for Excel export. Initial rows: 4, Initial columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:44:47,214 - DEBUG - [excel_utils.py:585] - Columns reordered and selected. Final columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:44:47,214 - DEBUG - [excel_utils.py:598] - Applying numeric formatting...
+2025-04-22 03:44:47,214 - DEBUG - [excel_utils.py:641] - Finished numeric formatting.
+2025-04-22 03:44:47,214 - DEBUG - [excel_utils.py:644] - Cleaning text columns...
+2025-04-22 03:44:47,223 - DEBUG - [excel_utils.py:655] - Filled remaining NaN values with '-'.
+2025-04-22 03:44:47,223 - INFO - [excel_utils.py:657] - Data preparation finished. Final rows: 4
+2025-04-22 03:44:47,263 - DEBUG - [excel_utils.py:709] - DataFrame written to sheet 'Results'. Max Row: 5, Max Col: 26
+2025-04-22 03:44:47,265 - DEBUG - [excel_utils.py:217] - Applying column widths. DataFrame columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-22 03:44:47,265 - DEBUG - [excel_utils.py:247] - Finished applying column widths.
+2025-04-22 03:44:47,265 - DEBUG - [excel_utils.py:251] - Applying cell styles and alignments.
+2025-04-22 03:44:47,276 - DEBUG - [excel_utils.py:285] - Finished applying cell styles.
+2025-04-22 03:44:47,278 - DEBUG - [excel_utils.py:417] - Applying conditional formatting.
+2025-04-22 03:44:47,278 - DEBUG - [excel_utils.py:457] - Finished applying conditional formatting for negative price differences.
+2025-04-22 03:44:47,279 - DEBUG - [excel_utils.py:289] - Processing image columns.
+2025-04-22 03:44:47,279 - DEBUG - [excel_utils.py:306] - Processing images in column: 본사 이미지 (Index: 24)
+2025-04-22 03:44:47,293 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,293 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:44:47,300 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,300 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:44:47,308 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,308 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:44:47,308 - WARNING - [excel_utils.py:360] - Invalid image source (not URL or existing file): C:\Invalid\Path\To\NonExistentImage.jpg
+2025-04-22 03:44:47,309 - DEBUG - [excel_utils.py:306] - Processing images in column: 고려기프트 이미지 (Index: 25)
+2025-04-22 03:44:47,312 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,312 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:44:47,316 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,316 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:44:47,329 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,329 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 23177
+2025-04-22 03:44:47,331 - DEBUG - [excel_utils.py:306] - Processing images in column: 네이버 이미지 (Index: 26)
+2025-04-22 03:44:47,332 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,332 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:44:47,351 - DEBUG - [connectionpool.py:1049] - Starting new HTTPS connection (1): invalid-url.zzz:443
+2025-04-22 03:44:47,442 - WARNING - [excel_utils.py:339] - Error downloading image URL https://invalid-url.zzz/image.png: HTTPSConnectionPool(host='invalid-url.zzz', port=443): Max retries exceeded with url: /image.png (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x00000246C6291E70>: Failed to resolve 'invalid-url.zzz' ([Errno 11001] getaddrinfo failed)"))
+2025-04-22 03:44:47,442 - INFO - [excel_utils.py:413] - Finished image processing. Embedded: 7, Errors/Placeholders: 0
+2025-04-22 03:44:47,442 - DEBUG - [excel_utils.py:479] - Adding hyperlinks. Link columns defined: ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크', '네이버 쇼핑 링크']
+2025-04-22 03:44:47,442 - INFO - [excel_utils.py:520] - Finished adding hyperlinks. Added 6 links. Found 0 non-URL values in link columns.
+2025-04-22 03:44:47,442 - DEBUG - [excel_utils.py:461] - Setting up page layout.
+2025-04-22 03:44:47,442 - DEBUG - [excel_utils.py:473] - Page layout settings applied.
+2025-04-22 03:44:47,442 - WARNING - [excel_utils.py:532] - Could not set header/footer: 'Worksheet' object has no attribute 'header_footer'
+2025-04-22 03:44:47,442 - DEBUG - [excel_utils.py:560] - Applied Excel table format 'TableStyleMedium2' to range A1:Z5
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 15737
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 20044
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 23177
+2025-04-22 03:44:47,491 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IHDR' 16 13
+2025-04-22 03:44:47,505 - DEBUG - [PngImagePlugin.py:198] - STREAM b'IDAT' 41 10196
+2025-04-22 03:44:47,508 - INFO - [excel_utils.py:734] - Successfully created and formatted Excel file: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
+2025-04-22 03:44:47,508 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
+2025-04-22 03:44:47,510 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---

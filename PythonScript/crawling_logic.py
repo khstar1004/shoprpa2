@@ -37,7 +37,7 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
     # Check if Playwright is needed (Kogift or Haereum)
     # For simplicity, always launch if product_rows is not empty, 
     # as checking specific scraper needs adds complexity.
-    needs_playwright = not product_rows.empty
+    needs_playwright = len(product_rows) > 0  # Changed from not product_rows.empty
     
     try:
         headless_mode = True # Default
@@ -216,7 +216,7 @@ async def crawl_kogift_products(product_rows: pd.DataFrame, browser: Browser, co
     """Crawl Kogift data for given product rows asynchronously using a shared browser instance.
        Accepts a ConfigParser object.
     """
-    if product_rows.empty:
+    if len(product_rows) == 0:  # Changed from product_rows.empty
         logging.info("🔴 Kogift crawl: Input product_rows is empty. Skipping.")
         return {}
 
@@ -312,7 +312,7 @@ async def crawl_haereum_image_urls(product_rows: pd.DataFrame, browser: Browser,
     """Crawl Haereum Gift image URLs for given product rows asynchronously using a shared browser instance.
        Accepts a ConfigParser object.
     """
-    if product_rows.empty:
+    if len(product_rows) == 0:  # Changed from product_rows.empty
         logging.info("🟡 Haereum Image URL crawl: Input product_rows is empty. Skipping.")
         return {}
 

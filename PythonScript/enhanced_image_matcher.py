@@ -19,30 +19,181 @@ import time
 from PIL import Image
 from urllib.parse import urlparse
 import configparser
+import json
+import pickle
+from pathlib import Path
+import hashlib
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constants
+# Default Constants
 DEFAULT_IMG_SIZE = (224, 224)
-FEATURE_MATCH_THRESHOLD = 10  # Minimum good matches for SIFT/AKAZE
-SIFT_RATIO_THRESHOLD = 0.75   # Lowe's ratio test threshold
-AKAZE_DISTANCE_THRESHOLD = 50 # Maximum distance for AKAZE matches
-COMBINED_THRESHOLD = 0.65     # Threshold for combined similarity score
+DEFAULT_FEATURE_MATCH_THRESHOLD = 10
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.75
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 50
+DEFAULT_COMBINED_THRESHOLD = 0.65
+DEFAULT_WEIGHTS = {'sift': 0.3, 'akaze': 0.2, 'deep': 0.5}
+DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 
-# Try to load config if available
-config = configparser.ConfigParser()
-try:
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-    config.read(config_path, encoding='utf-8')
-    # Load thresholds from config if available
-    FEATURE_MATCH_THRESHOLD = config.getint('ImageMatching', 'feature_match_threshold', fallback=FEATURE_MATCH_THRESHOLD)
-    SIFT_RATIO_THRESHOLD = config.getfloat('ImageMatching', 'sift_ratio_threshold', fallback=SIFT_RATIO_THRESHOLD)
-    AKAZE_DISTANCE_THRESHOLD = config.getint('ImageMatching', 'akaze_distance_threshold', fallback=AKAZE_DISTANCE_THRESHOLD)
-    COMBINED_THRESHOLD = config.getfloat('ImageMatching', 'combined_threshold', fallback=COMBINED_THRESHOLD)
-except Exception as e:
-    logger.warning(f"Could not load config file. Using default values. Error: {e}")
+def _load_config() -> configparser.ConfigParser:
+    """Load configuration from config.ini"""
+    config = configparser.ConfigParser()
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+        config.read(config_path, encoding='utf-8')
+        logger.info(f"Successfully loaded config from {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Error loading config: {e}")
+        return None
+
+def _get_config_values(config: configparser.ConfigParser) -> Dict:
+    """Get configuration values with fallbacks"""
+    if not config:
+        return None
+
+    try:
+        return {
+            'FEATURE_MATCH_THRESHOLD': config.getint('ImageMatching', 'feature_match_threshold', 
+                                                   fallback=DEFAULT_FEATURE_MATCH_THRESHOLD),
+            'SIFT_RATIO_THRESHOLD': config.getfloat('ImageMatching', 'sift_ratio_threshold', 
+                                                   fallback=DEFAULT_SIFT_RATIO_THRESHOLD),
+            'AKAZE_DISTANCE_THRESHOLD': config.getint('ImageMatching', 'akaze_distance_threshold', 
+                                                     fallback=DEFAULT_AKAZE_DISTANCE_THRESHOLD),
+            'COMBINED_THRESHOLD': config.getfloat('ImageMatching', 'combined_threshold', 
+                                                fallback=DEFAULT_COMBINED_THRESHOLD),
+            'WEIGHTS': {
+                'sift': config.getfloat('ImageMatching', 'sift_weight', 
+                                      fallback=DEFAULT_WEIGHTS['sift']),
+                'akaze': config.getfloat('ImageMatching', 'akaze_weight', 
+                                       fallback=DEFAULT_WEIGHTS['akaze']),
+                'deep': config.getfloat('ImageMatching', 'deep_weight', 
+                                      fallback=DEFAULT_WEIGHTS['deep'])
+            },
+            'USE_BACKGROUND_REMOVAL': config.getboolean('ImageMatching', 'use_background_removal_before_matching', 
+                                                       fallback=False),
+            'CACHE_FEATURES': config.getboolean('ImageMatching', 'cache_extracted_features', 
+                                              fallback=True),
+            'MAX_CACHE_ITEMS': config.getint('ImageMatching', 'max_feature_cache_items', 
+                                           fallback=1000),
+            'FEATURE_CACHE_DIR': config.get('ImageMatching', 'feature_cache_dir', 
+                                          fallback=DEFAULT_CACHE_DIR)
+        }
+    except Exception as e:
+        logger.error(f"Error getting config values: {e}")
+        return None
+
+# Load initial configuration
+CONFIG = _load_config()
+SETTINGS = _get_config_values(CONFIG) or {
+    'FEATURE_MATCH_THRESHOLD': DEFAULT_FEATURE_MATCH_THRESHOLD,
+    'SIFT_RATIO_THRESHOLD': DEFAULT_SIFT_RATIO_THRESHOLD,
+    'AKAZE_DISTANCE_THRESHOLD': DEFAULT_AKAZE_DISTANCE_THRESHOLD,
+    'COMBINED_THRESHOLD': DEFAULT_COMBINED_THRESHOLD,
+    'WEIGHTS': DEFAULT_WEIGHTS,
+    'USE_BACKGROUND_REMOVAL': False,
+    'CACHE_FEATURES': True,
+    'MAX_CACHE_ITEMS': 1000,
+    'FEATURE_CACHE_DIR': DEFAULT_CACHE_DIR
+}
+
+# Log settings
+logger.info("EnhancedImageMatcher Settings:")
+for key, value in SETTINGS.items():
+    logger.info(f"  - {key}: {value}")
+
+
+class FeatureCache:
+    """
+    Cache for features extracted from images to avoid recomputation
+    """
+    def __init__(self, cache_dir=SETTINGS['FEATURE_CACHE_DIR'], max_items=SETTINGS['MAX_CACHE_ITEMS'], enabled=SETTINGS['CACHE_FEATURES']):
+        self.cache_dir = cache_dir
+        self.max_items = max_items
+        self.enabled = enabled
+        self.memory_cache = {}
+        self.cache_info = {}
+        
+        if self.enabled:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            
+    def _get_cache_key(self, img_path: str, feature_type: str) -> str:
+        """Generate a cache key based on image path and feature type"""
+        # Use hash of absolute path to ensure uniqueness and avoid path issues
+        img_hash = hashlib.md5(os.path.abspath(img_path).encode()).hexdigest()
+        return f"{img_hash}_{feature_type}"
+    
+    def _get_cache_path(self, cache_key: str) -> str:
+        """Get the path to the cache file for a given key"""
+        return os.path.join(self.cache_dir, f"{cache_key}.pkl")
+    
+    def get(self, img_path: str, feature_type: str) -> Optional[np.ndarray]:
+        """Get features from cache if they exist"""
+        if not self.enabled:
+            return None
+            
+        cache_key = self._get_cache_key(img_path, feature_type)
+        
+        # Check memory cache first
+        if cache_key in self.memory_cache:
+            # Update last access time
+            self.cache_info[cache_key] = time.time()
+            return self.memory_cache[cache_key]
+            
+        # Check disk cache
+        cache_path = self._get_cache_path(cache_key)
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    features = pickle.load(f)
+                    
+                # Add to memory cache (with LRU eviction if needed)
+                if len(self.memory_cache) >= self.max_items:
+                    # Find least recently used item
+                    oldest_key = min(self.cache_info, key=self.cache_info.get)
+                    # Remove it from memory cache and cache info
+                    del self.memory_cache[oldest_key]
+                    del self.cache_info[oldest_key]
+                    
+                # Add to memory cache
+                self.memory_cache[cache_key] = features
+                self.cache_info[cache_key] = time.time()
+                
+                return features
+            except Exception as e:
+                logger.warning(f"Error loading cache for {img_path}: {e}")
+                return None
+        
+        return None
+        
+    def put(self, img_path: str, feature_type: str, features: np.ndarray) -> None:
+        """Save features to cache"""
+        if not self.enabled:
+            return
+            
+        cache_key = self._get_cache_key(img_path, feature_type)
+        
+        # Add to memory cache (with LRU eviction if needed)
+        if len(self.memory_cache) >= self.max_items:
+            # Find least recently used item
+            oldest_key = min(self.cache_info, key=self.cache_info.get)
+            # Remove it from memory cache and cache info
+            del self.memory_cache[oldest_key]
+            del self.cache_info[oldest_key]
+            
+        # Add to memory cache
+        self.memory_cache[cache_key] = features
+        self.cache_info[cache_key] = time.time()
+        
+        # Save to disk
+        try:
+            cache_path = self._get_cache_path(cache_key)
+            with open(cache_path, 'wb') as f:
+                pickle.dump(features, f)
+        except Exception as e:
+            logger.warning(f"Error saving cache for {img_path}: {e}")
 
 
 class EnhancedImageMatcher:
@@ -50,13 +201,20 @@ class EnhancedImageMatcher:
     Class that combines multiple image matching techniques for better accuracy
     """
     
-    def __init__(self, use_gpu: bool = False):
+    def __init__(self, config: Optional[configparser.ConfigParser] = None, use_gpu: bool = False):
         """
         Initialize the matcher with necessary models and parameters.
         
         Args:
+            config: ConfigParser instance with settings (optional)
             use_gpu: Whether to use GPU for TensorFlow operations
         """
+        # Load config if not provided
+        if config is None:
+            self.settings = SETTINGS
+        else:
+            self.settings = _get_config_values(config) or SETTINGS
+        
         # Configure TensorFlow for GPU if needed
         if not use_gpu:
             try:
@@ -91,9 +249,18 @@ class EnhancedImageMatcher:
         except Exception as e:
             logger.error(f"Failed to load EfficientNetB0 model: {e}")
 
-        # Feature cache to avoid recomputation
-        self.feature_cache = {}
+        # Initialize feature cache
+        self.feature_cache = FeatureCache(
+            cache_dir=self.settings['FEATURE_CACHE_DIR'],
+            max_items=self.settings['MAX_CACHE_ITEMS'],
+            enabled=self.settings['CACHE_FEATURES']
+        )
         
+        # Create cache directory if needed
+        if self.settings['CACHE_FEATURES']:
+            os.makedirs(self.settings['FEATURE_CACHE_DIR'], exist_ok=True)
+            logger.info(f"Created/verified feature cache directory: {self.settings['FEATURE_CACHE_DIR']}")
+
     def _load_and_prepare_image(self, image_path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Load image from path and prepare for both CV and deep learning
@@ -129,34 +296,49 @@ class EnhancedImageMatcher:
             logger.error(f"Error loading image {image_path}: {e}")
             return None, None
 
-    def _get_cached_deep_features(self, image_path: str) -> Optional[np.ndarray]:
+    def _remove_background(self, img_path: str) -> Optional[str]:
         """
-        Get deep features from cache or compute and cache them
+        Remove background from image if requested
         
         Args:
-            image_path: Path to the image
+            img_path: Path to the image
             
         Returns:
-            Feature vector or None if computation failed
+            Path to the processed image, or original path if not processed
         """
-        # Check cache first
-        cache_key = f"deep_{image_path}"
-        if cache_key in self.feature_cache:
-            return self.feature_cache[cache_key]
-            
-        # Load image and compute features
-        _, tf_image = self._load_and_prepare_image(image_path)
-        if tf_image is None or self.efficientnet_model is None:
-            return None
+        if not self.settings['USE_BACKGROUND_REMOVAL']:
+            return img_path
             
         try:
-            features = self.efficientnet_model(tf_image).numpy().flatten()
-            self.feature_cache[cache_key] = features
-            return features
-        except Exception as e:
-            logger.error(f"Error computing deep features for {image_path}: {e}")
-            return None
+            # Import rembg here to not require it if not used
+            from rembg import remove, new_session
             
+            # Create output path
+            output_path = os.path.join(os.path.dirname(img_path), 
+                                     f"nobg_{os.path.basename(img_path)}")
+            output_path = output_path.replace('.jpg', '.png').replace('.jpeg', '.png')
+            
+            # Process image if output doesn't already exist
+            if not os.path.exists(output_path):
+                # Read image
+                with open(img_path, 'rb') as f:
+                    img_data = f.read()
+                
+                # Remove background
+                session = new_session("u2net")
+                output_data = remove(img_data, session=session)
+                
+                # Save result
+                with open(output_path, 'wb') as f:
+                    f.write(output_data)
+                    
+                logger.info(f"Background removed from {img_path}, saved to {output_path}")
+            
+            return output_path
+        except Exception as e:
+            logger.warning(f"Error removing background from {img_path}: {e}")
+            return img_path
+
     def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
         """
         Calculate SIFT feature similarity between two images
@@ -168,6 +350,16 @@ class EnhancedImageMatcher:
         Returns:
             Similarity score between 0.0 and 1.0
         """
+        # Check if result is in cache
+        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
+        if cached_result is not None:
+            return float(cached_result)
+        
+        # Remove background if requested
+        if self.settings['USE_BACKGROUND_REMOVAL']:
+            img_path1 = self._remove_background(img_path1)
+            img_path2 = self._remove_background(img_path2)
+        
         # Load images
         img1, _ = self._load_and_prepare_image(img_path1)
         img2, _ = self._load_and_prepare_image(img_path2)
@@ -188,12 +380,14 @@ class EnhancedImageMatcher:
             
             # Apply Lowe's ratio test to get good matches
             good_matches = []
-            for m, n in matches:
-                if m.distance < SIFT_RATIO_THRESHOLD * n.distance:
-                    good_matches.append(m)
+            for match_pair in matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < self.settings['SIFT_RATIO_THRESHOLD'] * n.distance:
+                        good_matches.append(m)
             
             # Extract match points for homography
-            if len(good_matches) > 4:
+            if len(good_matches) > self.settings['FEATURE_MATCH_THRESHOLD']:
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
@@ -204,6 +398,10 @@ class EnhancedImageMatcher:
                 # Calculate similarity based on ratio of inliers to all good matches
                 if len(good_matches) > 0:
                     similarity = inliers / len(good_matches)
+                    
+                    # Cache result
+                    self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", np.array([similarity]))
+                    
                     return float(similarity)
             
             return 0.0
@@ -222,6 +420,16 @@ class EnhancedImageMatcher:
         Returns:
             Similarity score between 0.0 and 1.0
         """
+        # Check if result is in cache
+        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
+        if cached_result is not None:
+            return float(cached_result)
+        
+        # Remove background if requested
+        if self.settings['USE_BACKGROUND_REMOVAL']:
+            img_path1 = self._remove_background(img_path1)
+            img_path2 = self._remove_background(img_path2)
+        
         # Load images
         img1, _ = self._load_and_prepare_image(img_path1)
         img2, _ = self._load_and_prepare_image(img_path2)
@@ -244,7 +452,7 @@ class EnhancedImageMatcher:
             matches = sorted(matches, key=lambda x: x.distance)
             
             # Count good matches (low distance)
-            good_matches = [m for m in matches if m.distance < AKAZE_DISTANCE_THRESHOLD]
+            good_matches = [m for m in matches if m.distance < self.settings['AKAZE_DISTANCE_THRESHOLD']]
             
             if len(matches) > 0:
                 # Calculate similarity based on number and quality of matches
@@ -255,12 +463,15 @@ class EnhancedImageMatcher:
                 norm_dist = max(0, 1 - (avg_distance / 100))
                 
                 # Combine metrics
-                if num_good_matches > FEATURE_MATCH_THRESHOLD:
+                if num_good_matches > self.settings['FEATURE_MATCH_THRESHOLD']:
                     similarity = 0.5 + (0.5 * norm_dist)
                 elif num_good_matches > 0:
-                    similarity = 0.3 * (num_good_matches / FEATURE_MATCH_THRESHOLD) + (0.2 * norm_dist)
+                    similarity = 0.3 * (num_good_matches / self.settings['FEATURE_MATCH_THRESHOLD']) + (0.2 * norm_dist)
                 else:
                     similarity = 0.0
+                    
+                # Cache result
+                self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", np.array([similarity]))
                     
                 return float(similarity)
             
@@ -280,18 +491,43 @@ class EnhancedImageMatcher:
         Returns:
             Cosine similarity between feature vectors (0.0 to 1.0)
         """
+        # Check if result is in cache
+        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
+        if cached_result is not None:
+            return float(cached_result)
+        
+        # Remove background if requested
+        if self.settings['USE_BACKGROUND_REMOVAL']:
+            img_path1 = self._remove_background(img_path1)
+            img_path2 = self._remove_background(img_path2)
+        
         if self.efficientnet_model is None:
             logger.warning("Deep learning model not loaded, cannot calculate deep similarity")
             return 0.0
-            
-        # Get features (from cache or compute)
-        features1 = self._get_cached_deep_features(img_path1)
-        features2 = self._get_cached_deep_features(img_path2)
         
-        if features1 is None or features2 is None:
+        # Load and prepare images
+        _, tf_image1 = self._load_and_prepare_image(img_path1)
+        _, tf_image2 = self._load_and_prepare_image(img_path2)
+        
+        if tf_image1 is None or tf_image2 is None:
             return 0.0
             
         try:
+            # Check if features are cached individually
+            features1 = self.feature_cache.get(img_path1, "deep_features")
+            if features1 is None:
+                # Extract features
+                features1 = self.efficientnet_model(tf_image1).numpy().flatten()
+                # Cache features
+                self.feature_cache.put(img_path1, "deep_features", features1)
+                
+            features2 = self.feature_cache.get(img_path2, "deep_features")
+            if features2 is None:
+                # Extract features
+                features2 = self.efficientnet_model(tf_image2).numpy().flatten()
+                # Cache features
+                self.feature_cache.put(img_path2, "deep_features", features2)
+            
             # Calculate cosine similarity
             norm1 = np.linalg.norm(features1)
             norm2 = np.linalg.norm(features2)
@@ -301,8 +537,14 @@ class EnhancedImageMatcher:
                 return 0.0
                 
             similarity = np.dot(features1, features2) / (norm1 * norm2)
+            
             # Clip to valid range
-            return float(max(0.0, min(1.0, similarity)))
+            similarity = float(max(0.0, min(1.0, similarity)))
+            
+            # Cache result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "deep_similarity", np.array([similarity]))
+            
+            return similarity
         except Exception as e:
             logger.error(f"Error calculating deep similarity between {img_path1} and {img_path2}: {e}")
             return 0.0
@@ -316,14 +558,14 @@ class EnhancedImageMatcher:
             img_path1: Path to first image
             img_path2: Path to second image
             weights: Optional dictionary with weights for each method
-                     (default: {'sift': 0.3, 'akaze': 0.2, 'deep': 0.5})
+                     (default: values from config)
             
         Returns:
             Tuple of (combined similarity score, individual scores dictionary)
         """
-        # Default weights
+        # Use weights from config if not provided
         if weights is None:
-            weights = {'sift': 0.3, 'akaze': 0.2, 'deep': 0.5}
+            weights = self.settings['WEIGHTS']
             
         # Check if files exist
         if not os.path.exists(img_path1) or not os.path.exists(img_path2):
@@ -366,13 +608,13 @@ class EnhancedImageMatcher:
         Args:
             img_path1: Path to first image
             img_path2: Path to second image
-            threshold: Optional custom threshold (default: COMBINED_THRESHOLD)
+            threshold: Optional custom threshold (default: from config)
             
         Returns:
             Tuple of (is_match, similarity_score, individual_scores_dict)
         """
         if threshold is None:
-            threshold = COMBINED_THRESHOLD
+            threshold = self.settings['COMBINED_THRESHOLD']
             
         combined, scores = self.calculate_combined_similarity(img_path1, img_path2)
         is_match = combined >= threshold
@@ -381,7 +623,7 @@ class EnhancedImageMatcher:
 
     def clear_cache(self):
         """Clear the feature cache to free memory"""
-        self.feature_cache.clear()
+        self.feature_cache = FeatureCache()
         logger.info("Feature cache cleared")
 
 
@@ -396,7 +638,7 @@ def get_file_extension(path: str) -> str:
 # Function to match product images with batch processing capability
 def match_product_images(haoreum_paths: List[str], 
                         kogift_paths: List[str],
-                        threshold: float = COMBINED_THRESHOLD,
+                        threshold: float = None,
                         custom_weights: Optional[Dict[str, float]] = None) -> List[Dict]:
     """
     Match Haoreum product images with Kogift product images
@@ -404,12 +646,20 @@ def match_product_images(haoreum_paths: List[str],
     Args:
         haoreum_paths: List of paths to Haoreum product images
         kogift_paths: List of paths to Kogift product images
-        threshold: Similarity threshold for matches
+        threshold: Similarity threshold for matches (default: from config)
         custom_weights: Optional custom weights for similarity calculations
         
     Returns:
         List of dictionaries with match results
     """
+    # Use threshold from config if not provided
+    if threshold is None:
+        threshold = SETTINGS['COMBINED_THRESHOLD']
+    
+    # Use custom_weights from config if not provided
+    if custom_weights is None:
+        custom_weights = SETTINGS['WEIGHTS']
+    
     matcher = EnhancedImageMatcher()
     results = []
     
@@ -466,11 +716,18 @@ def main():
     import json
     
     parser = argparse.ArgumentParser(description="Enhanced Image Matcher Test")
-    parser.add_argument("--haoreum", type=str, required=True, help="Path to Haoreum images directory")
-    parser.add_argument("--kogift", type=str, required=True, help="Path to Kogift images directory")
+    parser.add_argument("--haoreum", type=str, help="Path to Haoreum images directory")
+    parser.add_argument("--kogift", type=str, help="Path to Kogift images directory")
     parser.add_argument("--output", type=str, default="match_results.json", help="Output JSON file path")
-    parser.add_argument("--threshold", type=float, default=COMBINED_THRESHOLD, help="Match threshold")
+    parser.add_argument("--threshold", type=float, help="Match threshold (default: from config)")
     args = parser.parse_args()
+    
+    # Use directories from config if not provided
+    if args.haoreum is None:
+        args.haoreum = CONFIG.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
+    
+    if args.kogift is None:
+        args.kogift = CONFIG.get('Matching', 'images_dir', fallback='C:\\RPA\\Image\\Target')
     
     # Get image lists
     haoreum_images = [os.path.join(args.haoreum, f) for f in os.listdir(args.haoreum) 

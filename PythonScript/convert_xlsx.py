@@ -1,45 +1,76 @@
-import pandas as pd
-import re
 import os
+import logging
+import pandas as pd
+from excel_utils import (
+    find_excel_file, validate_excel_file, create_final_output_excel,
+    preprocess_product_name
+)
 
-INPUT_DIRECTORY = 'C:\\RPA\\Input'
-PATTERN = r'(\d{4}_[A-Z]\.)|(\d+\+\d+)|[^a-zA-Z0-9가-힣\s]|\s+'
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('excel_convert.log'),
+        logging.StreamHandler()
+    ]
+)
 
-def get_first_xls_file(directory):
-    xls_files = [f for f in os.listdir(directory) if f.lower().endswith('.xls')]
-    if not xls_files:
-        print("xls 파일이 없습니다.")
-        return None
-    return xls_files[0]  # 파일의 전체 경로 대신 파일명만 반환
+# Constants
+INPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'INPUT')
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'OUTPUT')
 
-def preprocess_product_name(product_name):
-    product_name = re.sub(PATTERN, ' ', product_name)
-    product_name = product_name.replace('정품', '').replace('NEW', '').replace('특가', '').replace('주문제작타올', '').replace('주문제작수건', '').replace('결혼답례품 수건', '').replace('답례품수건', '').replace('주문제작 수건', '').replace('돌답례품수건', '').replace('명절선물세트', '').replace('각종행사수건','').strip()
-    product_name = re.sub(' +', ' ', product_name)
-    return product_name
+def convert_xlsx():
+    """Convert .xls files to .xlsx format with preprocessing."""
+    try:
+        # 입력 디렉토리에서 Excel 파일 찾기
+        excel_file = find_excel_file(INPUT_DIR, extension='.xls')
+        
+        if not excel_file:
+            logging.error("No .xls file found in INPUT directory")
+            return False
+            
+        file_path = os.path.join(INPUT_DIR, excel_file)
+        logging.info(f"Found .xls file: {file_path}")
+        
+        # Excel 파일 유효성 검사
+        if not validate_excel_file(file_path):
+            return False
+            
+        # Excel 파일 읽기
+        df = pd.read_excel(file_path)
+        logging.info(f"Excel file read successfully. Shape: {df.shape}")
+        
+        # 네이버 관련 컬럼 확인
+        naver_cols = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', 
+                     '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '네이버 이미지']
+        for col in naver_cols:
+            if col in df.columns:
+                logging.info(f"Naver column {col} has {df[col].notna().sum()} non-empty values")
+        
+        # 상품명 전처리
+        if '상품명' in df.columns:
+            df['상품명'] = df['상품명'].apply(preprocess_product_name)
+            logging.info("Product names preprocessed successfully")
+        
+        # 결과 파일 생성
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        output_path = os.path.join(OUTPUT_DIR, f"{os.path.splitext(excel_file)[0]}.xlsx")
+        
+        if create_final_output_excel(df, output_path):
+            logging.info(f"Successfully converted to .xlsx: {output_path}")
+            return True
+        else:
+            logging.error("Failed to create output Excel file")
+            return False
+        
+    except Exception as e:
+        logging.error(f"Error in convert_xlsx: {str(e)}")
+        return False
 
-def process_excel_file():
-    file_name = get_first_xls_file(INPUT_DIRECTORY)
-    if not file_name:
-        return
-
-    file_path = os.path.join(INPUT_DIRECTORY, file_name)
-    tables = pd.read_html(file_path, encoding='cp949')
-    df = tables[0]
-
-    df.columns = df.iloc[0].str.strip()
-    df = df.drop(0)
-
-    df['상품명'] = df['상품명'].apply(lambda x: x.split("//")[0])
-    df['상품명'] = df['상품명'].apply(preprocess_product_name)
-
-    df['본사 이미지'] = ''
-    df['고려기프트 이미지'] = ''  
-    df['네이버 이미지'] = ''
-
-    # 원본 .xls 파일명을 .xlsx 확장자로 변경하여 출력 파일 경로 설정
-    output_file_name = file_name.replace('.xls', '.xlsx')
-    output_file_path = os.path.join(INPUT_DIRECTORY, output_file_name)
-    
-    df.to_excel(output_file_path, index=False)
-    print(f"데이터가 {output_file_path}에 저장되었습니다.")
+if __name__ == "__main__":
+    result = convert_xlsx()
+    if result:
+        print("Excel conversion completed successfully.")
+    else:
+        print("Excel conversion failed.")

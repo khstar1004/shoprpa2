@@ -410,8 +410,24 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
 
 # --- Text Processing Utilities ---
 
+def jaccard_similarity(set1: Set[str], set2: Set[str]) -> float:
+    """Calculate the Jaccard similarity between two sets of strings."""
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return float(intersection) / union if union > 0 else 0.0
+
+def tokenize_korean(text: str) -> Set[str]:
+    """Simple Korean tokenizer based on whitespace and removing punctuation."""
+    if not isinstance(text, str):
+        return set()
+    # Remove punctuation and split by whitespace
+    cleaned_text = re.sub(r"[^\w\s]", "", text)
+    tokens = set(cleaned_text.lower().split())
+    # Optional: Add more sophisticated tokenization if needed
+    return tokens
+
 def get_base_keyword(product_name: str) -> str:
-    """Extracts a more general keyword, potentially removing specifics."""
+    """Extracts a base keyword from the product name, removing common prefixes/suffixes."""
     # Example: Remove trailing specifics like color or size indicators if needed
     # This is a placeholder, customize based on actual product name patterns
     base_name = product_name.split('(')[0].strip()

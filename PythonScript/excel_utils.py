@@ -18,11 +18,18 @@ from urllib.parse import urlparse, unquote
 from PIL import Image
 import sys
 import openpyxl
+import io
+import requests
+from functools import wraps
+import functools
+
+# --- Setup Logger ---
+logger = logging.getLogger(__name__)
 
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
-# Column Rename Mapping to match the exact sample format
+# Column Rename Mapping (Keep for potential input variations)
 COLUMN_RENAME_MAP = {
     '날짜': '구분',
     '담당자': '담당자',
@@ -72,34 +79,41 @@ COLUMN_RENAME_MAP = {
     '네이버쇼핑(이미지링크)': '네이버 이미지'
 }
 
-# 숫자 데이터로 변환해야 할 컬럼 목록
-NUMERIC_COLUMNS = [
-    '기본수량(1)', '기본수량(2)', '기본수량(3)',
-    '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
-    '판매가(V포함)(2)',
-    '가격차이(2)', '가격차이(3)',
-    '가격차이(2)(%)', '가격차이(3)(%)', '가격차이 비율(3)',
-    '판매단가1(VAT포함)', '표준소비자가(VAT포함)', '해오름단가', 
-    '코기프트단가', '네이버단가', '코기프트최소주문수량', '네이버최소주문수량',
-    '텍스트유사도(코기프트)', '이미지유사도(코기프트)', '텍스트유사도(네이버)', '이미지유사도(네이버)'
+# Final Target Column Order (Based on "엑셀 골든")
+FINAL_COLUMN_ORDER = [
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
 
-# Columns related to Goryeo and Naver for clearing/dropping logic
-GORYEO_COLS = ['기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']
-NAVER_COLS = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '네이버 이미지']
+# Columns that must be present in the input file for processing
+# This can be a subset of FINAL_COLUMN_ORDER
+REQUIRED_INPUT_COLUMNS = [
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리',
+    '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
+]
 
-# Columns to check for hyperlinking after renaming
-LINK_COLUMN_MAP = {
+# --- Column Type Definitions for Formatting ---
+# Define columns for specific formatting rules
+PRICE_COLUMNS = [
+    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
+    '가격차이(2)', '가격차이(3)'
+]
+QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
+PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
+TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
+LINK_COLUMNS_FOR_HYPERLINK = {
     '본사상품링크': '본사상품링크',
     '고려기프트 상품링크': '고려기프트 상품링크',
     '공급사 상품링크': '공급사 상품링크',
-    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
-    '본사 이미지': '본사 이미지',
-    '고려기프트 이미지': '고려기프트 이미지',
-    '네이버 이미지': '네이버 이미지'
+    '네이버 쇼핑 링크': '네이버 쇼핑 링크'
+    # Image columns are handled separately
 }
+IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
-# Error Messages Constants
+# Error Messages Constants (Can be used for conditional formatting or checks)
 ERROR_MESSAGES = {
     'no_match': '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음',
     'no_price_match': '가격이 범위내에 없거나 검색된 상품이 없음',
@@ -113,928 +127,600 @@ ERROR_MESSAGES = {
     'format_error': '지원하지 않는 이미지 형식',
     'download_failed': '이미지 다운로드 실패'
 }
+ERROR_MESSAGE_VALUES = list(ERROR_MESSAGES.values()) # Cache list for faster checking
 
-# --- 텍스트를 숫자로 변환하는 함수 ---
-def convert_text_to_numbers(df):
-    """
-    텍스트로 저장된 숫자 데이터를 실제 숫자 타입으로 변환합니다.
-    
-    Args:
-        df (pandas.DataFrame): 변환할 DataFrame
-        
-    Returns:
-        pandas.DataFrame: 숫자 타입으로 변환된 DataFrame
-    """
-    logging.info("텍스트를 숫자 데이터로 변환 시작")
-    
-    # DataFrame 복사하여 원본 보존
-    df_converted = df.copy()
-    
-    # 변환할 숫자 컬럼 찾기
-    numeric_cols = [col for col in NUMERIC_COLUMNS if col in df_converted.columns]
-    logging.info(f"변환 대상 컬럼: {numeric_cols}")
-    
-    # 각 컬럼에 대해 숫자 변환 적용
-    for col in numeric_cols:
-        try:
-            # 원본 데이터 타입 및 값 형태 기록
-            sample_values = df_converted[col].head(3).tolist()
-            original_dtype = df_converted[col].dtype
-            logging.debug(f"컬럼 '{col}' 변환 전: 타입={original_dtype}, 샘플값={sample_values}")
-            
-            # 텍스트 데이터 전처리 및 숫자로 변환
-            df_converted[col] = df_converted[col].apply(
-                lambda x: str(x).replace(',', '').replace(' ', '').strip() if pd.notna(x) else x
-            )
-            
-            # '%' 기호 제거 (퍼센트 컬럼인 경우)
-            if '%' in col or '유사도' in col:
-                df_converted[col] = df_converted[col].apply(
-                    lambda x: str(x).replace('%', '').strip() if pd.notna(x) and isinstance(x, str) else x
-                )
-            
-            # 실제 숫자 타입으로 변환
-            df_converted[col] = pd.to_numeric(df_converted[col], errors='coerce')
-            
-            # 변환 결과 기록
-            new_dtype = df_converted[col].dtype
-            converted_sample = df_converted[col].head(3).tolist()
-            logging.debug(f"컬럼 '{col}' 변환 후: 타입={new_dtype}, 샘플값={converted_sample}")
-            
-        except Exception as e:
-            logging.warning(f"컬럼 '{col}' 숫자 변환 중 오류 발생: {e}")
-    
-    # 결과 요약
-    successful_cols = sum(1 for col in numeric_cols if pd.api.types.is_numeric_dtype(df_converted[col].dtype))
-    logging.info(f"전체 {len(numeric_cols)}개 컬럼 중 {successful_cols}개 컬럼 숫자 변환 완료")
-    
-    return df_converted
+# --- Styling Constants ---
+HEADER_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # Light green fill
+HEADER_FONT = Font(bold=True, size=11, name='맑은 고딕')
+HEADER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-# Add the function to count empty rows after convert_text_to_numbers function and before _contains_keywords
-def count_empty_rows(df):
-    """
-    Count rows in a DataFrame that contain only default/empty values like '-', '', 'nan'.
-    
-    Args:
-        df (pandas.DataFrame): The DataFrame to check
-        
-    Returns:
-        int: Number of empty rows found
-    """
-    try:
-        # First convert all values to strings for consistency
-        str_df = df.astype(str)
-        
-        # Check each row to see if all values are empty indicators
-        empty_indicators = ['-', '', 'nan', 'None', 'NaN']
-        
-        # Count rows where all values match empty indicators
-        empty_count = 0
-        for _, row in str_df.iterrows():
-            if all(val in empty_indicators for val in row):
-                empty_count += 1
-                
-        return empty_count
-    except Exception as e:
-        logging.warning(f"Error counting empty rows: {e}")
-        return 0
+# Define alignments based on column type
+LEFT_ALIGNMENT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
+RIGHT_ALIGNMENT = Alignment(horizontal="right", vertical="center", wrap_text=False) # Numbers right-aligned
 
-# --- Filtering Logic ---
+DEFAULT_FONT = Font(name='맑은 고딕', size=10)
 
-def _contains_keywords(text, keywords):
-    """Helper function to check if text contains any keywords (case-insensitive)."""
-    if pd.isna(text):
-        return False
-    text_lower = str(text).lower()
-    # Ensure keywords are strings for comparison
-    return any(str(keyword).lower() in text_lower for keyword in keywords)
+THIN_BORDER_SIDE = Side(style='thin')
+DEFAULT_BORDER = Border(left=THIN_BORDER_SIDE, right=THIN_BORDER_SIDE, top=THIN_BORDER_SIDE, bottom=THIN_BORDER_SIDE)
 
-def filter_dataframe(df, config):
-    """
-    Filters the combined results DataFrame based on rules from requirement documents.
-    Handles data cleaning, numeric conversion, conditional clearing, and final row drops.
-    Returns the filtered DataFrame *before* final column renaming.
-    """
-    if df.empty:
-        logging.warning("DataFrame is empty before filtering.")
-        return df
+LINK_FONT = Font(color="0000FF", underline="single", name='맑은 고딕', size=10)
+INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red for invalid links
 
-    initial_rows = len(df)
-    logging.info(f"Starting filtering of {initial_rows} matched results...")
-
-    # IMPORTANT: Save the original input index to ensure we don't lose any products
-    original_indices = df.index.tolist()
-    logging.info(f"Preserved {len(original_indices)} original product indices")
-
-    df_filtered = df.copy() # Work on a copy
-
-    # --- 1. Data Cleaning and Numeric Conversion ---
-    # Define columns expected to be numeric (use original names before potential rename)
-    numeric_cols = ['가격차이(2)', '가격차이(3)', '가격차이(2)(%)', '가격차이(3)(%)', '가격차이 비율(3)',
-                    '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)']
-    # Add similarity scores if they exist and should be numeric
-    numeric_cols.extend([col for col in df_filtered.columns if '_Sim' in col or '_Combined' in col])
+NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff
 
 
-    # Clean percentage strings first (handle both '%', ' %', and potential extra spaces)
-    percent_cols = ['가격차이(2)(%)', '가격차이(3)(%)', '가격차이 비율(3)']
-    for col in percent_cols:
-        if col in df_filtered.columns:
-            df_filtered[col] = df_filtered[col].astype(str).str.replace(r'\s*%\s*$', '', regex=True).str.strip()
+# --- Utility Functions ---
 
-    # Clean price difference strings (remove commas)
-    price_diff_cols = ['가격차이(2)', '가격차이(3)']
-    for col in price_diff_cols:
-        if col in df_filtered.columns:
-            df_filtered[col] = df_filtered[col].astype(str).str.replace(r',', '', regex=True).str.strip()
-
-    # Convert to numeric, coercing errors
-    for col in numeric_cols:
-        if col in df_filtered.columns:
-            # Replace potential placeholders like '-' before conversion
-            df_filtered[col] = df_filtered[col].replace(['-', ''], np.nan, regex=False)
-            df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce')
-            logging.debug(f"Converted column '{col}' to numeric.")
-
-    # --- 2. Initial Price Difference Filter ---
-    # MODIFICAÇÃO: Remover o filtro inicial de diferença de preço negativo
-    # Em vez disso, sinalizar preços negativos para destaque visual mantendo todas as linhas
-    if '가격차이(2)' in df_filtered.columns:
-        negative_price2 = (df_filtered['가격차이(2)'] < 0)
-        logging.info(f"Identificados {negative_price2.sum()} registros com preço Kogift menor")
-        
-    if '가격차이(3)' in df_filtered.columns:
-        negative_price3 = (df_filtered['가격차이(3)'] < 0)
-        logging.info(f"Identificados {negative_price3.sum()} registros com preço Naver menor")
-
-    # --- 3. Conditional Clearing / Removal of Data ---
-    # Define columns for Goryeo and Naver processing
-    original_goryeo_cols = ['기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', 
-                          '고려기프트 상품링크', '고려기프트 이미지']
-    original_naver_cols = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '가격차이 비율(3)',
-                         '공급사명', '공급사 상품링크', '네이버 쇼핑 링크', '네이버 이미지']
-
-    # Get existing columns to avoid errors
-    existing_goryeo_clear = [col for col in original_goryeo_cols if col in df_filtered.columns]
-    existing_naver_clear = [col for col in original_naver_cols if col in df_filtered.columns]
-
-    # 3a. Clear Goryeo Data if Price Diff >= 0 OR Price Diff % > -1%
-    # BUT DON'T REMOVE ROWS - just clear the data cells for filtering display
-    goryeo_cleared_count = 0
-    goryeo_clear_cond = pd.Series(False, index=df_filtered.index) # Initialize with False
-    if '가격차이(2)' in df_filtered.columns:
-        goryeo_clear_cond |= (df_filtered['가격차이(2)'] >= 0)
-    if '가격차이(2)(%)' in df_filtered.columns:
-        goryeo_clear_cond |= (df_filtered['가격차이(2)(%)'] > -1.0) # Rule: > -1%
-
-    rows_to_clear_goryeo = goryeo_clear_cond.fillna(False) # Ensure NaNs in condition are False
-    if rows_to_clear_goryeo.any() and existing_goryeo_clear:
-        # Mark rows that will be cleared but preserve the data
-        df_filtered.loc[rows_to_clear_goryeo, existing_goryeo_clear] = np.nan 
-        goryeo_cleared_count = rows_to_clear_goryeo.sum()
-        logging.debug(f"Cleared Goryeo data for {goryeo_cleared_count} rows based on price diff >= 0 or % > -1.")
-
-    # 3b. Clear Naver Data if Price Diff >= 0 OR Price Diff % > -1%
-    # BUT DON'T REMOVE ROWS - just clear the data cells for filtering display
-    naver_cleared_count1 = 0
-    naver_clear_cond1 = pd.Series(False, index=df_filtered.index)
-    if '가격차이(3)' in df_filtered.columns:
-        naver_clear_cond1 |= (df_filtered['가격차이(3)'] >= 0)
-    # Check both potential percentage columns
-    if '가격차이 비율(3)' in df_filtered.columns:
-         naver_clear_cond1 |= (df_filtered['가격차이 비율(3)'] > -1.0) # Rule: > -1%
-    elif '가격차이(3)(%)' in df_filtered.columns:
-         naver_clear_cond1 |= (df_filtered['가격차이(3)(%)'] > -1.0) # Rule: > -1%
-
-    rows_to_clear_naver1 = naver_clear_cond1.fillna(False)
-    if rows_to_clear_naver1.any() and existing_naver_clear:
-        # Mark rows that will be cleared but preserve the data 
-        df_filtered.loc[rows_to_clear_naver1, existing_naver_clear] = np.nan
-        naver_cleared_count1 = rows_to_clear_naver1.sum()
-        logging.debug(f"Cleared Naver data for {naver_cleared_count1} rows based on price diff >= 0 or % > -1.")
-
-    # 3c. Clear Naver Data based on Qty, Price Diff %, and NON-Promo Keywords (Rule 2 from 2차 작업)
-    # BUT DON'T REMOVE ROWS - just clear the data cells for filtering display
-    naver_cleared_count2 = 0
-    naver_clear_cond2 = pd.Series(False, index=df_filtered.index)
-    
-    # Check if required columns exist
-    if '기본수량(3)' in df_filtered.columns and '공급사명' in df_filtered.columns and existing_naver_clear:
-        # Identify rows missing quantity
-        qty_missing = df_filtered['기본수량(3)'].isna() | (df_filtered['기본수량(3)'].astype(str).str.strip().isin(['', '-']))
-
-        # Identify rows where price diff is not significant (> -10%)
-        price_not_sig = pd.Series(False, index=df_filtered.index)
-        if '가격차이 비율(3)' in df_filtered.columns:
-             price_not_sig |= (df_filtered['가격차이 비율(3)'] > -10.0)
-        elif '가격차이(3)(%)' in df_filtered.columns:
-             price_not_sig |= (df_filtered['가격차이(3)(%)'] > -10.0)
-        else:
-             # If no % column, maybe apply based on absolute diff? Or skip? Skipping for now.
-             logging.warning("Naver condition 3c requires a price diff % column ('가격차이 비율(3)' or '가격차이(3)(%)'). Skipping this part of the condition.")
-             price_not_sig = pd.Series(False, index=df_filtered.index) # Cannot apply
-
-        # Identify rows where supplier is NOT a promo site
-        not_promo = ~df_filtered['공급사명'].apply(lambda x: _contains_keywords(x, PROMO_KEYWORDS))
-
-        # Combine conditions
-        naver_clear_cond2 = qty_missing & price_not_sig.fillna(False) & not_promo.fillna(True) # Treat missing supplier name as non-promo
-
-        rows_to_clear_naver2 = naver_clear_cond2.fillna(False)
-        if rows_to_clear_naver2.any():
-            # Mark rows that will be cleared but preserve the data
-            df_filtered.loc[rows_to_clear_naver2, existing_naver_clear] = np.nan
-            naver_cleared_count2 = rows_to_clear_naver2.sum()
-            logging.debug(f"Cleared Naver data for {naver_cleared_count2} additional rows based on missing qty / price % > -10 / non-promo supplier condition.")
-
-    # --- 4. IMPORTANT: DO NOT drop any rows, even if they have no comparison data ---
-    # Instead, just log how many would have been removed in the original logic
-    all_comparison_cols_original = list(set(existing_goryeo_clear + existing_naver_clear))
-    if all_comparison_cols_original:
-        # Count how many rows have all comparison data empty, but don't remove them
-        empty_comparison_mask = df_filtered[all_comparison_cols_original].isna().all(axis=1)
-        empty_rows_count = empty_comparison_mask.sum()
-        logging.info(f"Encontrados {empty_rows_count} produtos sem dados de comparação (seriam removidos no filtro original)")
-    else:
-        logging.warning("Skipping final empty row filtering - no comparison columns found.")
-
-    # --- 5. Final Formatting before Renaming ---
-    # Reapply string formatting for percentages and price differences
-    # Use original column names here as renaming hasn't happened yet
-    percent_cols_to_format = ['가격차이(2)(%)', '가격차이 비율(3)', '가격차이(3)(%)']
-    for key in percent_cols_to_format:
-        if key in df_filtered.columns:
-            # Convert back to numeric temporarily for formatting check
-            numeric_series = pd.to_numeric(df_filtered[key], errors='coerce')
-            mask = numeric_series.notna()
-            # Format valid numbers, leave others as is (might be NaN already)
-            df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{x:.1f} %")
-
-    price_diff_cols_to_format = ['가격차이(2)', '가격차이(3)']
-    for key in price_diff_cols_to_format:
-        if key in df_filtered.columns:
-            numeric_series = pd.to_numeric(df_filtered[key], errors='coerce')
-            mask = numeric_series.notna()
-            df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{x:,.0f}")
-
-    # IMPORTANT: Check if we have all original rows preserved
-    final_rows = len(df_filtered)
-    if final_rows != initial_rows:
-        logging.error(f"Row count mismatch! Started with {initial_rows} rows but now have {final_rows} rows. Attempting to restore missing rows.")
-        
-        # This should not happen with our changes, but if it does, try to recover
-        current_indices = df_filtered.index.tolist()
-        missing_indices = [idx for idx in original_indices if idx not in current_indices]
-        
-        if missing_indices:
-            logging.warning(f"Found {len(missing_indices)} missing rows. Restoring original rows.")
-            missing_rows = df.loc[missing_indices].copy()
-            df_filtered = pd.concat([df_filtered, missing_rows])
-            logging.info(f"Restored missing rows. New row count: {len(df_filtered)}")
-
-    logging.info(f"Finished filtering. {len(df_filtered)}/{initial_rows} rows maintained (no rows dropped).")
-    return df_filtered
-
-
-# --- Additional Function for Error Recovery ---
-def safe_excel_operation(func):
-    """Decorator for safely handling Excel operations with error recovery."""
-    def wrapper(*args, **kwargs):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except PermissionError as e:
-                if attempt < max_retries - 1:
-                    logging.warning(f"Permission error in {func.__name__}, retrying ({attempt+1}/{max_retries}): {e}")
-                    time.sleep(1)  # Wait before retry
-                else:
-                    logging.error(f"Failed to {func.__name__} after {max_retries} attempts: {e}")
-                    raise
-            except Exception as e:
-                logging.error(f"Error in {func.__name__}: {e}\n{traceback.format_exc()}")
-                raise
-    return wrapper
-
-def apply_excel_styles(file_path, headers: List[str]):
-    """
-    Apply Excel styling including cell formatting, borders, column widths, 
-    and conditional formatting for price differentials.
-    
-    Args:
-        file_path: Path to the Excel file to style
-        headers: List of column headers used for identification
-    
-    Returns:
-        True if successful, False if there was an error
-    """
-    try:
-        if not os.path.exists(file_path):
-            logging.error(f"Excel file not found for styling: {file_path}")
-            return False
-            
-        workbook = load_workbook(file_path)
-        sheet = workbook.active
-        
-        # Find header row (could be row 1 or row 4 if there are explanation headers)
-        header_row = 1
-        if sheet.cell(row=1, column=1).value == "[알림]":
-            header_row = 4
-            
-        # Get actual header values and their positions
-        header_positions = {}
-        data_start_row = header_row + 1
-        for col in range(1, sheet.max_column + 1):
-            header = sheet.cell(row=header_row, column=col).value
-            if header:
-                header_positions[header] = col  # Ensure column index is an integer
-        
-        logging.info(f"Headers found for styling: {list(header_positions.keys())}")
-        
-        # --- 1. Apply basic formatting for all data ---
-        # Add basic borders to all cells with data
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        # Get the range that contains data
-        max_row = sheet.max_row
-        max_col = sheet.max_column
-        
-        logging.info(f"Applying styles to {max_row} rows and {max_col} columns")
-        
-        # Apply borders and alignment to all data cells
-        for row in range(data_start_row, max_row + 1):
-            for col in range(1, max_col + 1):
-                cell = sheet.cell(row=row, column=col)
-                cell.border = thin_border
-                cell.alignment = Alignment(vertical='center')
-                
-                # Center specific columns
-                header = sheet.cell(row=header_row, column=col).value
-                if header in ['구분', '담당자', '기본수량(1)', '기본수량(2)', '기본수량(3)']:
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-        
-        # --- 2. Format headers ---
-        # Make headers bold with background color
-        header_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
-        header_font = Font(bold=True, size=11)
-        
-        for col in range(1, max_col + 1):
-            header_cell = sheet.cell(row=header_row, column=col)
-            header_cell.fill = header_fill
-            header_cell.font = header_font
-            header_cell.border = thin_border
-            header_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            
-        # --- 3. Apply conditional formatting for price differences ---
-        # Find price difference columns
-        price_diff_cols = []
-        price_diff_pct_cols = []
-        
-        for header, col_idx in header_positions.items():
-            # Ensure col_idx is an integer
-            if isinstance(col_idx, str):
+def retry_on_failure(max_retries=3, delay=1):
+    """Decorator for retrying functions on failure."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
                 try:
-                    col_idx = int(col_idx)
-                    header_positions[header] = col_idx  # Update the dictionary
-                except (ValueError, TypeError):
-                    logging.warning(f"Invalid column index for header {header}: {col_idx}. Skipping.")
-                    continue
-                    
-            if '가격차이' in header and '%' not in header:
-                price_diff_cols.append(col_idx)
-            elif '가격차이' in header and '%' in header:
-                price_diff_pct_cols.append(col_idx)
-                
-        # Apply conditional formatting - negative price differences are good (highlighted in yellow)
-        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-        green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        
-        for col_idx in price_diff_cols:
-            try:
-                # Ensure col_idx is an integer
-                col_idx = int(col_idx) if not isinstance(col_idx, int) else col_idx
-                col_letter = get_column_letter(col_idx)
-                
-                # Check each cell in the column
-                for row in range(data_start_row, max_row + 1):
-                    cell = sheet.cell(row=row, column=col_idx)
-                    # Try to convert to number for comparison
-                    try:
-                        if cell.value and cell.value != '-':
-                            value = float(str(cell.value).replace(',', ''))
-                            if value < 0:
-                                # Negative price difference - highlight in yellow (good)
-                                cell.fill = yellow_fill
-                            elif value > 0:
-                                # Positive price difference - no highlight
-                                pass
-                    except (ValueError, TypeError):
-                        pass  # Ignore cells that can't be converted to numbers
-            except Exception as e:
-                logging.warning(f"Error processing price difference column {col_idx}: {e}")
-                    
-        # Format percentage difference columns
-        for col_idx in price_diff_pct_cols:
-            try:
-                # Ensure col_idx is an integer
-                col_idx = int(col_idx) if not isinstance(col_idx, int) else col_idx
-                col_letter = get_column_letter(col_idx)
-                
-                # Check each cell in the column
-                for row in range(data_start_row, max_row + 1):
-                    cell = sheet.cell(row=row, column=col_idx)
-                    # Try to convert to number for comparison
-                    try:
-                        if cell.value and cell.value != '-':
-                            value = float(str(cell.value).replace(',', '').replace('%', ''))
-                            if value < 0:
-                                # Negative price difference - highlight in yellow (good)
-                                cell.fill = yellow_fill
-                            elif value > 0:
-                                # Positive price difference - no highlight
-                                pass
-                    except (ValueError, TypeError):
-                        pass  # Ignore cells that can't be converted to numbers
-            except Exception as e:
-                logging.warning(f"Error processing percentage column {col_idx}: {e}")
-        
-        # --- 4. Set column widths for better readability ---
-        # Apply appropriate column widths based on content
-        for header, col_idx in header_positions.items():
-            try:
-                # Ensure col_idx is an integer
-                col_idx = int(col_idx) if not isinstance(col_idx, int) else col_idx
-                col_letter = get_column_letter(col_idx)
-                
-                # Set a minimum width for all columns
-                min_width = 12
-                
-                # Wider columns for specific types
-                if '상품명' in header:
-                    sheet.column_dimensions[col_letter].width = 40  # Product names can be long
-                elif '상품링크' in header or '링크' in header:
-                    sheet.column_dimensions[col_letter].width = 30  # Links can be long
-                elif '이미지' in header:
-                    sheet.column_dimensions[col_letter].width = 25  # Image columns
-                    # Also set row height for image rows
-                    for row in range(data_start_row, max_row + 1):
-                        sheet.row_dimensions[row].height = 120  # Taller rows for images
-                else:
-                    # Set width based on content
-                    max_length = 0
-                    for row in range(header_row, min(header_row + 20, max_row + 1)):
-                        cell = sheet.cell(row=row, column=col_idx)
-                        if cell.value:
-                            try:
-                                max_length = max(max_length, len(str(cell.value)))
-                            except:
-                                continue
-                
-                    adjusted_width = max(min_width, max_length + 2)
-                    sheet.column_dimensions[col_letter].width = min(adjusted_width, 50)  # Cap at 50
-            except Exception as e:
-                logging.warning(f"Error setting column width for header {header} (col_idx={col_idx}): {e}")
-        
-        # --- 5. Save the styled file ---
-        workbook.save(file_path)
-        logging.info(f"Excel styling successfully applied to {file_path}")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error applying Excel styles to {file_path}: {e}", exc_info=True)
-        return False
-
-
-def process_image_cells(worksheet, image_columns=None):
-    """
-    Process image cells in an Excel worksheet to display images using Excel's IMAGE function.
-    
-    Args:
-        worksheet (openpyxl.worksheet.worksheet.Worksheet): The Excel worksheet to process
-        image_columns (list, optional): List of column names that contain images. 
-                                       If None, will detect columns with 'image' or '이미지' in the name.
-    
-    Returns:
-        bool: True if processing was successful, False otherwise
-    """
-    logging.info("Processing image cells in Excel worksheet")
-    
-    try:
-        # Find header row (usually row 1)
-        header_row = 1
-        header_cells = {}
-        
-        # Map column indices to column names
-        for col_idx, cell in enumerate(worksheet[header_row], 1):
-            if cell.value:
-                header_cells[col_idx] = cell.value
-        
-        # If no image columns specified, detect them based on column name
-        if image_columns is None:
-            image_columns = []
-            for idx, name in header_cells.items():
-                if name and any(keyword in str(name) for keyword in ['이미지', 'image', 'Image']):
-                    image_columns.append(name)
-        
-        logging.info(f"Processing image columns: {image_columns}")
-        
-        # Get column indices for image columns
-        image_col_indices = [idx for idx, name in header_cells.items() if name in image_columns]
-        
-        if not image_col_indices:
-            logging.warning("No image columns found in worksheet")
-            return False
-        
-        processed_cells = 0
-        
-        # Process each data row
-        for row_idx in range(2, worksheet.max_row + 1):  # Skip header row
-            for col_idx in image_col_indices:
-                cell = worksheet.cell(row=row_idx, column=col_idx)
-                
-                # Skip empty cells
-                if not cell.value or cell.value == '-' or cell.value == 'nan':
-                    continue
-                
-                try:
-                    image_path = str(cell.value).strip()
-                    
-                    # Handle URL images
-                    if image_path.startswith(('http://', 'https://')):
-                        logging.debug(f"Processing URL image: {image_path}")
-                        # For URLs, create an IMAGE formula that references the URL directly
-                        image_formula = f'=IMAGE("{image_path}",2)'
-                        cell.value = image_formula
-                        processed_cells += 1
-                        
-                    # Handle local file paths
-                    else:
-                        logging.debug(f"Processing local image: {image_path}")
-                        
-                        # Check if file exists
-                        if not os.path.exists(image_path):
-                            logging.warning(f"Image file does not exist: {image_path}")
-                            # Try to search for the file in common image locations if not found
-                            image_found = False
-                            possible_locations = [
-                                os.path.join('C:\\RPA\\Image\\Main', os.path.basename(image_path)),
-                                os.path.join('C:\\RPA\\Image\\Target', os.path.basename(image_path))
-                            ]
-                            
-                            for possible_path in possible_locations:
-                                if os.path.exists(possible_path):
-                                    image_path = possible_path
-                                    image_found = True
-                                    logging.info(f"Found image in alternate location: {image_path}")
-                                    break
-                                    
-                            if not image_found:
-                                cell.value = "Missing Image"
-                                continue
-                        
-                        # Create IMAGE formula for Excel
-                        # First, escape the path properly
-                        safe_path = image_path.replace("\\", "\\\\")
-                        
-                        # Create the formula - use mode 2 for fit/resize
-                        image_formula = f'=IMAGE("{safe_path}",2)'
-                        
-                        # Apply the formula to the cell
-                        cell.value = image_formula
-                        processed_cells += 1
-                        
+                    return func(*args, **kwargs)
                 except Exception as e:
-                    logging.error(f"Error processing image cell at row {row_idx}, column {col_idx}: {e}")
-                    cell.value = "Error: Image Processing Failed"
-        
-        logging.info(f"Successfully processed {processed_cells} image cells with IMAGE formula")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error in process_image_cells: {e}")
-        return False
+                    if attempt == max_retries - 1:
+                        logger.error(f"Function {func.__name__} failed after {max_retries} attempts: {str(e)}")
+                        raise
+                    logger.warning(f"Attempt {attempt + 1} failed for {func.__name__}: {str(e)}")
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
 
-
-def add_header_footer(sheet):
-    """Add header and footer to the worksheet."""
+@retry_on_failure()
+def find_excel_file(directory: str, extension: str = '.xlsx') -> Optional[str]:
+    """Find the first Excel file with the specified extension in the directory."""
     try:
-        current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        # Add header with company name
-        sheet.oddHeader.left.text = "해오름 RPA 시스템"
-        sheet.oddHeader.center.text = "가격비교 결과"
-        sheet.oddHeader.right.text = f"생성일: {current_date}"
-        
-        # Add footer with page numbers
-        sheet.oddFooter.left.text = "해오름 RPA 가격 비교"
-        sheet.oddFooter.right.text = "페이지 &P / &N"
-        
-        logging.debug("Added header and footer to worksheet")
+        # Ignore temporary Excel files starting with ~$
+        files = [f for f in os.listdir(directory) if f.lower().endswith(extension) and not f.startswith('~$')]
+        return files[0] if files else None
     except Exception as e:
-        logging.warning(f"Could not set header/footer: {e}")
+        logger.error(f"Error finding Excel file in '{directory}': {str(e)}")
+        raise
+
+# validate_excel_file is now handled by check_excel_file.py
+# def validate_excel_file(...) -> removed
+
+def convert_text_to_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    """(Deprecated/Simplified) Initial conversion, formatting is now primarily handled in _prepare_data_for_excel."""
+    logger.debug("Skipping deprecated convert_text_to_numbers function. Formatting handled in _prepare_data.")
+    return df
+
+def preprocess_product_name(name: str) -> str:
+    """Preprocess product name (basic cleaning)."""
+    if not isinstance(name, str):
+        return str(name)
+    # Keep basic cleaning, more advanced logic might be in matching modules
+    return re.sub(r'[\(\)\[\]{}]+', '', name).strip() # Example: Remove only brackets
 
 
-def apply_table_format(sheet, max_row, max_col):
-    """Apply Excel table formatting to data range."""
-    if max_row <= 1:
-        return  # No data to format
-        
-    # Define table range
-    table_range = f"A1:{get_column_letter(max_col)}{max_row}"
-    
-    # Create a new Table
-    table = Table(displayName="PriceComparisonTable", ref=table_range)
-    
-    # Add a default style
-    style = TableStyleInfo(
-        name="TableStyleMedium2", 
-        showFirstColumn=False,
-        showLastColumn=False, 
-        showRowStripes=True, 
-        showColumnStripes=False
-    )
-    table.tableStyleInfo = style
-    
-    # Add the table to the sheet
-    sheet.add_table(table)
-    logging.debug(f"Applied table formatting to range {table_range}")
+# --- Core Excel Creation Logic ---
 
+def _apply_column_widths(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Sets appropriate column widths based on column names/types."""
+    # Define width hints (can be adjusted)
+    width_hints = {
+        'image': 15, # Width for image columns (images are scaled)
+        'name': 45,  # 상품명
+        'link': 35,
+        'price': 14,
+        'percent': 10,
+        'quantity': 10,
+        'code': 12,
+        'category': 20,
+        'text_short': 12, # 구분, 담당자 등
+        'default': 15
+    }
+    logger.debug(f"Applying column widths. DataFrame columns: {df.columns.tolist()}")
+    for idx, col_name in enumerate(df.columns, 1):
+        column_letter = get_column_letter(idx)
+        width = width_hints['default'] # Default width
 
-# --- Hyperlink Logic ---
+        col_name_str = str(col_name) # Ensure col_name is string for checks
 
-def add_hyperlinks(file_path, link_column_map):
-    """
-    Add hyperlinks to cells based on link_column_map.
-    
-    Args:
-        file_path: Path to the Excel file
-        link_column_map: Dict mapping display column names to link column names
-    
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        if not os.path.exists(file_path):
-            logging.error(f"Excel file not found for hyperlinking: {file_path}")
-            return False
-            
-        logging.info(f"Adding hyperlinks to Excel file: {file_path}")
-        
-        workbook = load_workbook(file_path)
-        sheet = workbook.active
-        
-        # Find header row (could be row 1 or row 4/5 if there are explanation headers)
-        header_row = 1
-        if sheet.cell(row=1, column=1).value == "[알림]":
-            # Check if we have 3 or 4 header rows (depends on if we added the error message explanation)
-            if sheet.cell(row=4, column=1).value:  # Something in the 4th row
-                header_row = 5  # New format with error explanation
+        # Determine width based on column name patterns
+        if col_name_str in IMAGE_COLUMNS:
+            width = width_hints['image']
+        elif '상품명' in col_name_str:
+            width = width_hints['name']
+        elif col_name_str in LINK_COLUMNS_FOR_HYPERLINK or '링크' in col_name_str:
+            width = width_hints['link']
+        elif col_name_str in PRICE_COLUMNS:
+            width = width_hints['price']
+        elif col_name_str in PERCENTAGE_COLUMNS:
+            width = width_hints['percent']
+        elif col_name_str in QUANTITY_COLUMNS:
+             width = width_hints['quantity']
+        elif 'Code' in col_name_str or '코드' in col_name_str:
+            width = width_hints['code']
+        elif '카테고리' in col_name_str:
+            width = width_hints['category']
+        elif col_name_str in ['구분', '담당자']:
+            width = width_hints['text_short']
+        # Add more specific rules if needed
+
+        worksheet.column_dimensions[column_letter].width = width
+        # logger.debug(f"Set width for column '{col_name_str}' ({column_letter}) to {width}") # Reduce log verbosity
+    logger.debug("Finished applying column widths.")
+
+def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Applies formatting (font, border, alignment) to header and data cells."""
+    logger.debug("Applying cell styles and alignments.")
+    # Header Styling
+    for cell in worksheet[1]: # First row is header
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = HEADER_ALIGNMENT
+        cell.border = DEFAULT_BORDER
+
+    # Data Cell Styling
+    for row_idx in range(2, worksheet.max_row + 1):
+        for col_idx, col_name in enumerate(df.columns, 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            cell.font = DEFAULT_FONT
+            cell.border = DEFAULT_BORDER
+
+            # Apply alignment based on column type
+            col_name_str = str(col_name)
+            # Check if the cell value is likely numeric (ignoring error messages)
+            is_numeric_value = False
+            cell_value_str = str(cell.value)
+            if cell_value_str not in ERROR_MESSAGE_VALUES and cell_value_str != '-':
+                 # Basic check if it looks like a number (might need refinement)
+                 try:
+                      float(cell_value_str.replace(',', '').replace('%',''))
+                      is_numeric_value = True
+                 except ValueError:
+                      is_numeric_value = False
+
+            if (col_name_str in PRICE_COLUMNS or col_name_str in QUANTITY_COLUMNS or col_name_str in PERCENTAGE_COLUMNS) and is_numeric_value:
+                cell.alignment = RIGHT_ALIGNMENT
+            elif col_name_str in IMAGE_COLUMNS or 'Code' in col_name_str or '코드' in col_name_str or col_name_str == '구분':
+                 cell.alignment = CENTER_ALIGNMENT
             else:
-                header_row = 4  # Original format
-        
-        # Get column indices
-        column_indices = {}
-        max_col = sheet.max_column
-        
-        for col_idx in range(1, max_col + 1):
-            header_cell = sheet.cell(row=header_row, column=col_idx)
-            if header_cell.value in link_column_map:
-                column_indices[header_cell.value] = col_idx
-                
-        if not column_indices:
-            logging.warning(f"No link columns found in {file_path}")
-            return False
-            
-        logging.info(f"Found link columns: {list(column_indices.keys())}")
-        
-        # Get all error messages that should not be processed as links
-        error_messages = list(ERROR_MESSAGES.values())
-        
-        # Define font styles for different types of links
-        link_font = Font(color="0000FF", underline="single")  # Blue underlined
-        invalid_link_font = Font(color="FF0000")  # Red
-        
-        # Process each row
-        link_added_count = 0
-        invalid_link_count = 0
-        
-        for row_idx in range(header_row + 1, sheet.max_row + 1):
-            for display_col_name, display_col_idx in column_indices.items():
-                # Skip processing image columns (they're handled by process_image_cells)
-                if display_col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
-                    continue
-                    
-                display_cell = sheet.cell(row=row_idx, column=display_col_idx)
-                display_text = display_cell.value
-                
-                # Skip empty cells, placeholders, cells with formulas, or cells with error messages
-                if (not display_text or 
-                    str(display_text).strip() in ['-', '', 'N/A'] or 
-                    str(display_text).startswith('=') or
-                    any(msg in str(display_text) for msg in error_messages)):
-                    continue
-                
-                try:
-                    # Get link target
-                    link_target = display_text  # Default to using the text as the link
-                    
-                    # Check if it's a URL and add hyperlink
-                    if isinstance(link_target, str):
-                        if link_target.startswith(('http://', 'https://')):
-                            # Validate URL format with regex
-                            url_pattern = re.compile(
-                                r'^(?:http|https)://'  # http:// or https://
-                                r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain
-                                r'localhost|'  # localhost
-                                r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or ipv4
-                                r'(?::\d+)?'  # optional port
-                                r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-                            
-                            if url_pattern.match(link_target):
-                                # Add hyperlink
-                                display_cell.hyperlink = link_target
-                                
-                                # Style the cell as a hyperlink
-                                display_cell.font = link_font
-                                
-                                link_added_count += 1
-                            else:
-                                # Invalid URL format
-                                logging.warning(f"Invalid URL format: {link_target}")
-                                # Style as invalid but don't change the text
-                                display_cell.font = invalid_link_font
-                                invalid_link_count += 1
-                        elif '://' in link_target:
-                            # Non-HTTP URL scheme (like ftp://)
-                            # Add hyperlink but mark differently
-                            display_cell.hyperlink = link_target
-                            display_cell.font = Font(color="800080", underline="single")  # Purple
-                            link_added_count += 1
-                        
-                except Exception as cell_err:
-                    logging.warning(f"Error processing cell R{row_idx}C{display_col_idx} for hyperlink: {cell_err}")
-                    # Style as error but don't change the text
-                    display_cell.font = invalid_link_font
-                    invalid_link_count += 1
-        
-        workbook.save(file_path)
-        logging.info(f"Added {link_added_count} hyperlinks to {file_path} ({invalid_link_count} invalid links detected)")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error adding hyperlinks to Excel file {file_path}: {e}", exc_info=True)
-        return False
+                cell.alignment = LEFT_ALIGNMENT # Default left align for text/links/errors
+    logger.debug("Finished applying cell styles.")
 
-
-# --- Main Output Function ---
-
-@safe_excel_operation
-def create_final_output_excel(df, output_path):
-    """
-    Create the final Excel file with proper formatting and styling.
-    All data processing is done before writing to Excel.
+def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Processes image columns, handling local images for company images and URLs for KoGift images."""
+    logger.debug("Processing image columns...")
     
-    Args:
-        df: DataFrame containing the formatted data
-        output_path: Path where the Excel file should be saved
-        
-    Returns:
-        Path to the created Excel file
-    """
-    try:
-        # Create a mapping between clean and original column names
-        column_mapping = {
-            '기본수량(1)': '\xa0기본수량(1)\xa0',
-            '판매단가(V포함)': '\xa0판매단가(V포함)\xa0',
-            '기본수량(2)': '\xa0기본수량(2)\xa0',
-            '판매가(V포함)(2)': '\xa0판매가(V포함)(2)\xa0',
-            '판매단가(V포함)(2)': '\xa0판매단가(V포함)(2)\xa0',
-            '가격차이(2)': '\xa0가격차이(2)\xa0',
-            '가격차이(2)(%)': '\xa0가격차이(2)(%)\xa0',
-            '기본수량(3)': '\xa0기본수량(3)\xa0',
-            '판매단가(V포함)(3)': '\xa0판매단가(V포함)(3)\xa0',
-            '가격차이(3)': '\xa0가격차이(3)\xa0',
-            '가격차이(3)(%)': '\xa0가격차이(3)(%)\xa0',
-            '공급사명': '\xa0공급사명\xa0',
-            '네이버 쇼핑 링크': '\xa0네이버 쇼핑 링크\xa0'
-        }
-
-        # Keep original column names
-        columns_to_keep = [
-            '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명'
-        ]
-
-        # Add mapped column names
-        for clean_name, xa0_name in column_mapping.items():
-            if clean_name in df.columns:
-                df = df.rename(columns={clean_name: xa0_name})
-                columns_to_keep.append(xa0_name)
-            elif xa0_name in df.columns:
-                columns_to_keep.append(xa0_name)
-
-        # Add remaining columns that don't need mapping
-        remaining_cols = ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크',
-                         '본사 이미지', '고려기프트 이미지', '네이버 이미지']
-        columns_to_keep.extend(remaining_cols)
-
-        # Select only the required columns that exist in the DataFrame
-        existing_columns = [col for col in columns_to_keep if col in df.columns]
-        df = df[existing_columns]
-        
-        # Format numeric columns before writing
-        numeric_columns = [
-            '\xa0판매단가(V포함)\xa0', '\xa0판매단가(V포함)(2)\xa0', '\xa0판매단가(V포함)(3)\xa0',
-            '\xa0가격차이(2)\xa0', '\xa0가격차이(2)(%)\xa0', '\xa0가격차이(3)\xa0', '\xa0가격차이(3)(%)\xa0'
-        ]
-
-        def format_numeric(x):
-            try:
-                if pd.isna(x) or str(x).strip() == '-':
-                    return x
-                return f"{float(x):,.0f}"
-            except (ValueError, TypeError):
-                return x
-        
-        for col in numeric_columns:
-            if col in df.columns:
-                # Convert to numeric first, handling errors
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                # Format only non-null values
-                mask = df[col].notna()
-                df.loc[mask, col] = df.loc[mask, col].apply(lambda x: f"{float(x):,.0f}")
-                # Replace NaN with '-'
-                df[col] = df[col].fillna('-')
-                
-        # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # Write DataFrame to Excel
-        df.to_excel(output_path, index=False)
-        
-        # Apply formatting with openpyxl
-        workbook = load_workbook(output_path)
-        worksheet = workbook.active
-        
-        # Process image columns
-        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
-        process_image_cells(worksheet, image_columns)
-        
-        # Format headers
-        header_fill = PatternFill(start_color="D7E4BC", end_color="D7E4BC", fill_type="solid")
-        header_font = Font(bold=True)
-        header_alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
-        
-        for col_num, column_title in enumerate(df.columns, 1):
-            cell = worksheet.cell(row=1, column=col_num)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = header_alignment
-            
-        # Auto-adjust column widths
-        for col in worksheet.columns:
-            max_length = 0
-            column = col[0].column_letter
-            
-            # Skip image columns for auto-width
-            if worksheet.cell(row=1, column=col[0].column).value in image_columns:
-                worksheet.column_dimensions[column].width = 50  # Fixed width for image columns
+    # Get image column indices
+    image_cols = {
+        '본사 이미지': None,
+        '고려기프트 이미지': None,
+        '네이버 이미지': None
+    }
+    
+    for col_idx, col_name in enumerate(df.columns, 1):
+        if col_name in image_cols:
+            image_cols[col_name] = col_idx
+    
+    if not any(image_cols.values()):
+        logger.debug("No image columns found in DataFrame")
+        return
+    
+    # Process each row
+    for row_idx in range(2, worksheet.max_row + 1):
+        for col_name, col_idx in image_cols.items():
+            if col_idx is None:
                 continue
                 
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            if not cell.value or cell.value == '-':
+                continue
+                
+            try:
+                if col_name == '본사 이미지':
+                    # Handle local image path
+                    img_path = str(cell.value)
+                    if os.path.exists(img_path):
+                        img = Image(img_path)
+                        img.width = 100
+                        img.height = 100
+                        worksheet.add_image(img, cell.coordinate)
+                    else:
+                        logger.warning(f"Local image not found: {img_path}")
+                        cell.value = '이미지 파일을 로컬 경로에서 찾을 수 없음'
+                else:
+                    # For KoGift and Naver images, just keep the URL
+                    # No need to embed the image
                     pass
-            adjusted_width = (max_length + 2)
-            worksheet.column_dimensions[column].width = min(adjusted_width, 50)
+            except Exception as e:
+                logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
+                cell.value = '이미지 처리 중 오류가 발생했습니다'
+    
+    logger.debug("Finished image processing.")
+
+def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
+    logger.debug("Applying conditional formatting.")
+    
+    # Find price difference columns (non-percentage)
+    price_diff_cols = [
+        col for col in df.columns
+        if '가격차이' in str(col) and '%' not in str(col)
+    ]
+
+    if not price_diff_cols:
+        logger.debug("No price difference columns found for conditional formatting.")
+        return
+
+    # Define yellow fill for negative values
+    yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+    # Process each row
+    for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
+        for price_diff_col in price_diff_cols:
+            col_idx = df.columns.get_loc(price_diff_col) + 1  # 1-based index for openpyxl
+            cell = worksheet.cell(row=row_idx, column=col_idx)
             
-        # Add borders to all cells
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, 
-                                     min_col=1, max_col=worksheet.max_column):
-            for cell in row:
-                cell.border = thin_border
-                if cell.row > 1:  # Skip header row
-                    cell.alignment = Alignment(vertical='center')
+            # Get cell value and check if it's negative
+            try:
+                if cell.value not in ['-', '', None]:  # Skip empty or placeholder values
+                    # Remove commas and convert to float
+                    value_str = str(cell.value).replace(',', '')
+                    value = float(value_str)
                     
-        # Save the final formatted file
-        workbook.save(output_path)
-        
-        logging.info(f"Successfully created Excel file at: {output_path}")
-        return output_path
-        
+                    # If value is negative, highlight entire row
+                    if value < 0:
+                        for col in range(1, worksheet.max_column + 1):
+                            worksheet.cell(row=row_idx, column=col).fill = yellow_fill
+                        break  # Break inner loop once row is highlighted
+            except ValueError:
+                # Skip if value cannot be converted to float (e.g., error messages)
+                continue
+            except Exception as e:
+                logger.error(f"Error processing cell {cell.coordinate}: {e}")
+                continue
+
+    logger.debug("Finished applying conditional formatting for negative price differences.")
+
+def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
+    """Sets up page orientation, print area, freeze panes, etc."""
+    logger.debug("Setting up page layout.")
+    try:
+        worksheet.page_setup.orientation = worksheet.ORIENTATION_LANDSCAPE
+        worksheet.page_setup.paperSize = worksheet.PAPERSIZE_A4
+        worksheet.page_setup.fitToWidth = 1
+        worksheet.page_setup.fitToHeight = 0 # Fit to width primarily
+        worksheet.print_options.horizontalCentered = True
+        # worksheet.print_options.verticalCentered = True # Optional
+        worksheet.print_options.gridLines = False # Typically false for final reports
+        worksheet.freeze_panes = 'A2'  # Freeze header row
+        # Set print area to used range (optional, helps if there's stray data)
+        # worksheet.print_area = worksheet.dimensions
+        logger.debug("Page layout settings applied.")
     except Exception as e:
-        logging.error(f"Error creating Excel file: {str(e)}")
-        raise
+        logger.error(f"Failed to set page layout options: {e}")
+
+def _add_hyperlinks_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Adds hyperlinks to specified link columns."""
+    logger.debug(f"Adding hyperlinks. Link columns defined: {list(LINK_COLUMNS_FOR_HYPERLINK.keys())}")
+    # Find column indices for defined link columns
+    link_col_indices = {col: idx for idx, col in enumerate(df.columns, 1) if col in LINK_COLUMNS_FOR_HYPERLINK}
+
+    if not link_col_indices:
+        logger.debug("No columns found for adding hyperlinks.")
+        return
+
+    # Basic URL pattern check (simplified)
+    url_pattern = re.compile(r'^https?://\S+$', re.IGNORECASE)
+
+    link_added_count = 0
+    invalid_link_count = 0
+    for col_name, col_idx in link_col_indices.items():
+        # logger.debug(f"Processing hyperlinks for column: {col_name} (Index: {col_idx})") # Reduce verbosity
+        for row_idx in range(2, worksheet.max_row + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            link_text = str(cell.value) if cell.value else ''
+
+            # Skip empty cells, placeholders, or error messages
+            if not link_text or link_text.lower() in ['-', 'nan', 'none', ''] or link_text in ERROR_MESSAGE_VALUES:
+                continue
+
+            try:
+                # Attempt to match URL pattern
+                if url_pattern.match(link_text):
+                    # Check if it already has a hyperlink (rare, but possible)
+                    if not cell.hyperlink:
+                         cell.hyperlink = link_text
+                         cell.font = LINK_FONT # Apply link style
+                         link_added_count += 1
+                    # else: # Already has hyperlink, ensure style is correct
+                    #      cell.font = LINK_FONT
+                else:
+                    # If it's not a valid-looking URL, treat as text
+                    invalid_link_count += 1
+                    # logger.debug(f"Non-URL or invalid format in link column {cell.coordinate}: '{link_text[:50]}...'")
+                    pass # Keep default font/style for non-links
+            except Exception as e:
+                logger.warning(f"Error processing link cell {cell.coordinate} ('{link_text[:50]}...'): {e}")
+
+    logger.info(f"Finished adding hyperlinks. Added {link_added_count} links. Found {invalid_link_count} non-URL values in link columns.")
+
+def _add_header_footer(worksheet: openpyxl.worksheet.worksheet.Worksheet):
+    """Adds standard header and footer."""
+    try:
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        worksheet.header_footer.center_header.text = "가격 비교 결과"
+        worksheet.header_footer.right_header.text = f"생성일: {current_date}"
+        worksheet.header_footer.left_footer.text = "해오름 RPA 가격 비교"
+        worksheet.header_footer.right_footer.text = "페이지 &P / &N"
+        logger.debug("Added header and footer to worksheet")
+    except Exception as e:
+        logger.warning(f"Could not set header/footer: {e}")
+
+def _apply_table_format(worksheet: openpyxl.worksheet.worksheet.Worksheet):
+    """Applies Excel table formatting to the data range."""
+    if worksheet.max_row <= 1:
+        logger.debug("Skipping table format: No data rows.")
+        return
+
+    table_range = f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
+    table_name = "PriceComparisonData"
+    # Check if table already exists
+    if table_name in worksheet.tables:
+         logger.warning(f"Table '{table_name}' already exists. Skipping table creation.")
+         # Optionally update table range if needed
+         # worksheet.tables[table_name].ref = table_range
+         return
+    try:
+        table = Table(displayName=table_name, ref=table_range)
+        # Choose a professional looking style
+        style = TableStyleInfo(
+            name="TableStyleMedium2", # A common, clean style
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        table.tableStyleInfo = style
+        worksheet.add_table(table)
+        logger.debug(f"Applied Excel table format 'TableStyleMedium2' to range {table_range}")
+    except Exception as e:
+        logger.error(f"Failed to apply table formatting to range {table_range}: {e}")
+
+def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepares the DataFrame for Excel export: ensures columns, formats data.
+    Handles numeric conversion carefully to preserve error strings.
+    """
+    if df is None:
+        logger.error("_prepare_data_for_excel received None DataFrame.")
+        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
+
+    df_prepared = df.copy()
+    logger.info(f"Preparing data for Excel export. Initial rows: {len(df_prepared)}, Initial columns: {df_prepared.columns.tolist()}")
+
+    # 1. Ensure all FINAL columns exist, add if missing with '-'
+    for col in FINAL_COLUMN_ORDER:
+        if col not in df_prepared.columns:
+            logger.warning(f"Column '{col}' missing in input data for preparation, adding with default '-'.")
+            df_prepared[col] = '-'
+
+    # 2. Select and Reorder columns STRICTLY according to FINAL_COLUMN_ORDER
+    # Only keep columns defined in FINAL_COLUMN_ORDER, discard others
+    try:
+        df_prepared = df_prepared[FINAL_COLUMN_ORDER]
+        logger.debug(f"Columns reordered and selected. Final columns: {df_prepared.columns.tolist()}")
+    except KeyError as ke:
+        logger.error(f"KeyError during column selection/reordering. Missing columns likely: {ke}. DataFrame columns: {df.columns.tolist()}")
+        # Return DataFrame with available columns from FINAL_COLUMN_ORDER if error
+        available_final_cols = [col for col in FINAL_COLUMN_ORDER if col in df.columns]
+        df_prepared = df[available_final_cols]
+        # Add truly missing ones back with '-'
+        for col in FINAL_COLUMN_ORDER:
+             if col not in df_prepared.columns:
+                  df_prepared[col] = '-'
+        df_prepared = df_prepared[FINAL_COLUMN_ORDER] # Try reordering again
+
+    # 3. Format Numeric Data (Carefully preserving non-numeric error messages)
+    logger.debug("Applying numeric formatting...")
+    for col_name in df_prepared.columns:
+        # Skip if column is not designated for numeric formatting
+        is_price_col = col_name in PRICE_COLUMNS
+        is_qty_col = col_name in QUANTITY_COLUMNS
+        is_pct_col = col_name in PERCENTAGE_COLUMNS
+
+        if not (is_price_col or is_qty_col or is_pct_col):
+            continue
+
+        # Use apply with a lambda function for potentially faster vectorized operation
+        def format_value(value):
+            original_value = value # Keep original for fallback
+            formatted_value = '-' # Default formatted value
+
+            if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
+                formatted_value = '-'
+            elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
+                 formatted_value = value # Preserve error messages
+            else:
+                try:
+                    # Attempt numeric conversion after cleaning
+                    cleaned_value_str = str(value).replace(',', '').replace('%','').strip()
+                    numeric_value = float(cleaned_value_str)
+
+                    # Apply specific format based on column type
+                    if is_price_col:
+                        formatted_value = f"{numeric_value:,.0f}" # Comma separated integer
+                    elif is_qty_col:
+                        # Ensure quantity is integer before formatting
+                        formatted_value = f"{int(numeric_value):,}" # Comma separated integer
+                    elif is_pct_col:
+                        formatted_value = f"{numeric_value:.1f}%" # One decimal place percentage
+
+                except (ValueError, TypeError):
+                    # If conversion fails, keep the original string representation
+                    formatted_value = str(original_value).strip()
+                    # logger.debug(f"Kept original non-numeric value '{formatted_value}' in column '{col_name}'") # Too verbose
+            return formatted_value
+
+        # Apply the formatting function to the column
+        df_prepared[col_name] = df_prepared[col_name].apply(format_value)
+        # logger.debug(f"Formatted column: {col_name}") # Too verbose
+    logger.debug("Finished numeric formatting.")
+
+    # 4. Clean Text Data (Strip whitespace, handle NaN)
+    logger.debug("Cleaning text columns...")
+    for col_name in TEXT_COLUMNS:
+        if col_name in df_prepared.columns:
+            # Ensure column is treated as string, fill NA with '-', then strip
+            df_prepared[col_name] = df_prepared[col_name].astype(str).fillna('-').str.strip()
+            # Replace empty strings resulting from fillna/strip back to '-'
+            df_prepared[col_name] = df_prepared[col_name].replace({'': '-'})
+
+    # 5. Fill any remaining NaN/NaT values in other columns with '-' for consistent output
+    # This handles columns not explicitly formatted above (like links, image paths before processing)
+    df_prepared.fillna('-', inplace=True)
+    logger.debug("Filled remaining NaN values with '-'.")
+
+    logger.info(f"Data preparation finished. Final rows: {len(df_prepared)}")
+    return df_prepared
+
+def safe_excel_operation(func):
+    """
+    데코레이터: Excel 작업 중 발생할 수 있는 예외를 안전하게 처리합니다.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logging.error(f"Excel operation failed in {func.__name__}: {str(e)}", exc_info=True)
+            return False
+    return wrapper
+
+# --- Main Public Function --- #
+
+@safe_excel_operation
+def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
+    """
+    Creates the final formatted Excel file.
+    Orchestrates data preparation, styling, image handling, and saving.
+    """
+    if df is None:
+        logger.error("Cannot create Excel file: Input DataFrame is None.")
+        return False
+
+    logger.info(f"Starting creation of final Excel output: {output_path}")
+    try:
+        # Ensure output directory exists
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+             os.makedirs(output_dir, exist_ok=True)
+
+        # 1. Prepare the data (column order, formatting)
+        # Pass a copy to avoid modifying the original DataFrame if called externally
+        df_prepared = _prepare_data_for_excel(df.copy())
+
+        if df_prepared.empty and not df.empty:
+             logger.error("Data preparation resulted in an empty DataFrame. Cannot save Excel.")
+             return False
+        elif df_prepared.empty and df.empty:
+             logger.warning("Input DataFrame was empty, saving an Excel file with only headers.")
+             # Create empty DF with correct columns for header generation
+             df_prepared = pd.DataFrame(columns=FINAL_COLUMN_ORDER)
+
+        # 2. Save prepared data to Excel using openpyxl engine
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # Use na_rep='-' during initial write for consistency
+            df_prepared.to_excel(writer, index=False, sheet_name='Results', na_rep='-')
+            worksheet = writer.sheets['Results']
+            logger.debug(f"DataFrame written to sheet 'Results'. Max Row: {worksheet.max_row}, Max Col: {worksheet.max_column}")
+
+            # --- Apply Formatting AFTER data is written ---
+            # 3. Apply Column Widths and Cell Styles (Font, Border, Alignment)
+            _apply_column_widths(worksheet, df_prepared)
+            _apply_cell_styles_and_alignment(worksheet, df_prepared)
+
+            # 4. Apply Conditional Formatting
+            _apply_conditional_formatting(worksheet, df_prepared)
+
+            # 5. Handle Images (Embedding)
+            # Pass df_prepared containing the paths/URLs used for embedding
+            _process_image_columns(worksheet, df_prepared)
+
+            # 6. Add Hyperlinks
+            # Pass df_prepared containing the link text
+            _add_hyperlinks_to_worksheet(worksheet, df_prepared)
+
+            # 7. Page Setup and Header/Footer
+            _setup_page_layout(worksheet)
+            _add_header_footer(worksheet)
+
+            # 8. Apply Table Format (Apply last after other formatting)
+            _apply_table_format(worksheet)
+
+        logger.info(f"Successfully created and formatted Excel file: {output_path}")
+        return True
+
+    except PermissionError as pe:
+         logger.error(f"Permission denied when trying to save Excel file: {output_path}. Check if the file is open. Error: {pe}")
+         # Consider adding a retry mechanism here or in the decorator
+         return False
+    except Exception as e:
+        logger.error(f"Failed to create final Excel output '{output_path}': {e}", exc_info=True)
+        # Attempt to delete potentially corrupted file
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+                logger.info(f"Removed potentially corrupted output file: {output_path}")
+            except OSError as del_err:
+                logger.error(f"Could not remove potentially corrupted file {output_path}: {del_err}")
+        return False
+
+def filter_dataframe(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
+    """
+    Filter the DataFrame based on configuration settings.
+    
+    Args:
+        df: Input DataFrame to filter
+        config: Optional ConfigParser instance with filter settings
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if df.empty:
+        return df
+        
+    # Default filter settings
+    price_diff_threshold = 0.1
+    quality_threshold = 0.50
+    
+    # Get settings from config if provided
+    if config:
+        try:
+            price_diff_threshold = config.getfloat('PriceDifference', 'threshold', fallback=price_diff_threshold)
+            quality_threshold = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=quality_threshold)
+        except Exception as e:
+            logger.warning(f"Error reading filter settings from config: {e}")
+    
+    # Filter by price difference
+    if '가격차이(2)' in df.columns:
+        df = df[df['가격차이(2)'].abs() <= price_diff_threshold]
+        
+    if '가격차이(3)' in df.columns:
+        df = df[df['가격차이(3)'].abs() <= price_diff_threshold]
+    
+    # Filter by match quality
+    if '매칭품질' in df.columns:
+        df = df[df['매칭품질'].isin(['high', 'medium', 'low'])]
+    
+    return df
+
+# Deprecated functions below (kept for reference or potential reuse if logic changes)
+
+# def filter_dataframe(...) -> Removed, functionality likely elsewhere or combined
+# def add_hyperlinks(...) -> Integrated into _add_hyperlinks_to_worksheet
+# def apply_excel_styles(...) -> Integrated into _apply_cell_styles_and_alignment
+
+def apply_excel_styles(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """
+    Apply Excel styles to the worksheet.
+    This is a wrapper around _apply_cell_styles_and_alignment for backward compatibility.
+    """
+    _apply_cell_styles_and_alignment(worksheet, df)
+

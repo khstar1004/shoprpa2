@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__) # Get logger instance
 # USER_AGENT = "..."
 # MIN_RESULTS_THRESHOLD = 5
 
+# Add semaphore for concurrent task limiting
+MAX_CONCURRENT_TASKS = 5
+scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
 # --- Helper function to download images ---
 def download_image(img_url, save_dir='downloaded_images', filename=None):
     """
@@ -621,484 +625,484 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     Returns:
         A pandas DataFrame containing the best found results, or an empty DataFrame.
     """
-    if config is None:
-        logger.error("🔴 Configuration object (ConfigParser) is missing for Kogift scrape.")
-        return pd.DataFrame() # Return empty dataframe on critical config error
+    async with scraping_semaphore:  # Acquire semaphore before starting
+        if config is None:
+            logger.error("🔴 Configuration object (ConfigParser) is missing for Kogift scrape.")
+            return pd.DataFrame() # Return empty dataframe on critical config error
         
-    # Get settings from config with defaults using ConfigParser methods
-    try:
-        kogift_urls_str = config.get('ScraperSettings', 'kogift_urls', 
-                                   fallback='https://koreagift.com/ez/index.php,https://adpanchok.co.kr/ez/index.php')
-        kogift_urls = [url.strip() for url in kogift_urls_str.split(',') if url.strip()]
-        if not kogift_urls:
-             logger.error("🔴 Kogift URLs are missing or invalid in [ScraperSettings] config.")
-             return pd.DataFrame()
-        
-        user_agent = config.get('ScraperSettings', 'user_agent', 
-                              fallback='Mozilla/5.0 ...') # Use actual default from utils/DEFAULT_CONFIG if desired
-        min_results_threshold = config.getint('ScraperSettings', 'kogift_min_results_threshold', fallback=5)
-        max_items_to_scrape = config.getint('ScraperSettings', 'kogift_max_items', fallback=200)
-        max_pages_to_scrape = config.getint('ScraperSettings', 'kogift_max_pages', fallback=10)
-        
-        default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000)  # 2분
-        navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=120000)  # 2분
-        action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=30000)  # 30초
-        # Add a shorter timeout specifically for waiting for search results/no results
-        search_results_wait_timeout = config.getint('Playwright', 'playwright_search_results_timeout_ms', fallback=60000)  # 1분
-        block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
-        
-        # Image download settings
-        download_images = config.getboolean('Matching', 'download_images', fallback=True)
-        images_dir = config.get('Matching', 'images_dir', fallback='downloaded_images')
-    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-        logger.error(f"🔴 Error reading Kogift/Playwright config: {e}. Using hardcoded defaults where possible.")
-        # Set critical defaults again or decide to return empty
-        kogift_urls = ["https://koreagift.com/ez/index.php", "https://adpanchok.co.kr/ez/index.php"]
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-        min_results_threshold = 5
-        max_items_to_scrape = 200
-        max_pages_to_scrape = 10
-        default_timeout = 120000
-        navigation_timeout = 120000
-        action_timeout = 30000
-        search_results_wait_timeout = 60000
-        block_resources = True
-        download_images = True
-        images_dir = 'downloaded_images'
-
-    keywords_to_try = generate_keyword_variations(original_keyword1)
-    best_result_df = pd.DataFrame() 
-
-    logger.info(f"Generated keywords for '{original_keyword1}': {keywords_to_try}")
-
-    # Shared browser context for this scrape attempt
-    context = None
-    page = None
-    try:
-        context = await browser.new_context(user_agent=user_agent)
-        page = await context.new_page()
-        page.set_default_timeout(default_timeout)
-        page.set_default_navigation_timeout(navigation_timeout)
-        
-        if block_resources:
-            await setup_page_optimizations(page)
-
-        for keyword in keywords_to_try:
-            logger.info(f"--- Trying keyword variation: '{keyword}' --- ({keywords_to_try.index(keyword) + 1}/{len(keywords_to_try)}) ---")
-            current_keyword_best_df = pd.DataFrame()
-            keyword_found_sufficient = False
-
-            for base_url in kogift_urls:
-                logger.info(f"Attempting scrape: URL='{base_url}', Keyword='{keyword}'")
-                data = []
-                page_instance = page
-                
-                try:
-                    # Navigate to the base URL
-                    await page_instance.goto(base_url, wait_until='domcontentloaded')
-                    logger.debug(f"Navigated to {base_url}")
-
-                    # --- Perform Search --- 
-                    search_input_locator = page_instance.locator('input#main_keyword[name="keyword"]') # More specific selector
-                    search_button_locator = page_instance.locator('img#search_submit')
-                    
-                    await search_input_locator.wait_for(state="visible", timeout=action_timeout)
-                    await search_input_locator.fill(keyword)
-                    await search_button_locator.wait_for(state="visible", timeout=action_timeout)
-                    
-                    results_container_selector = 'div.product_lists' # Selector for the container holding results
-                    # Refined selector for "no results" message based on provided HTML
-                    no_results_selector = 'div.not_result span.icon_dot2:has-text("검색 결과가 없습니다")' 
-                    combined_selector = f"{results_container_selector}, {no_results_selector}"
-                    
-                    logger.debug("Clicking search...")
-                    await search_button_locator.click()
-                    logger.info(f"Search submitted for: '{keyword}' on {base_url}")
-
-                    # --- Wait for results OR "no results" message --- 
-                    logger.debug(f"Waiting for search results or 'no results' message (timeout: {search_results_wait_timeout}ms)...")
-                    try:
-                        found_element = await page_instance.wait_for_selector(
-                            combined_selector, 
-                            state='visible', 
-                            timeout=search_results_wait_timeout
-                        )
-                        
-                        # Check if the 'no results' text is visible
-                        no_results_element = page_instance.locator(no_results_selector)
-                        if await no_results_element.is_visible():
-                            no_results_text = await no_results_element.first.text_content(timeout=1000) or "[No text found]"
-                            logger.info(f"'No results' message found for keyword '{keyword}' on {base_url}. Text: {no_results_text.strip()}")
-                            continue # Skip to the next URL/keyword
-                        else:
-                            logger.debug("Results container found. Proceeding to scrape.")
-                            # Results container is visible, fall through to scraping logic
-                            pass 
-                            
-                    except PlaywrightError as wait_error:
-                        logger.warning(f"Timeout or error waiting for results/no_results for keyword '{keyword}' on {base_url}: {wait_error}")
-                        continue # Skip to the next URL/keyword
-
-                    # --- Check product count (Optional Re-search) --- 
-                    # This section remains largely the same, but runs ONLY if results were found
-                    productCont = 0
-                    try:
-                        product_count_element = page_instance.locator('div.list_info span').first # Simpler selector
-                        productContText = await product_count_element.text_content(timeout=5000) 
-                        productContDigits = re.findall(r'\d+', productContText.replace(',', ''))
-                        if productContDigits:
-                            productCont = int("".join(productContDigits))
-                        logger.info(f"Reported product count: {productCont}")
-                    except (PlaywrightError, Exception) as e:
-                        logger.warning(f"Could not find/parse product count: {e}")
-
-                    # Re-search logic (only if initial search had results)
-                    if original_keyword2 and original_keyword2.strip() != "" and productCont >= 100:
-                        logger.info(f"Initial count >= 100. Performing re-search with: '{original_keyword2}'")
-                        try:
-                            re_search_input = page_instance.locator('input#re_keyword')
-                            re_search_button = page_instance.locator('button[onclick^="re_search"]')
-                            await re_search_input.fill(original_keyword2)
-                            
-                            logger.debug("Clicking re-search...")
-                            await re_search_button.click()
-                            
-                            # Wait again after re-search, checking for no results again
-                            logger.debug(f"Waiting after re-search (timeout: {search_results_wait_timeout}ms)...")
-                            try:
-                                await page_instance.wait_for_selector(
-                                    combined_selector, 
-                                    state='visible', 
-                                    timeout=search_results_wait_timeout
-                                )
-                                if await page_instance.locator(no_results_selector).is_visible():
-                                     logger.info(f"'No results' found after re-searching with '{original_keyword2}'.")
-                                     # Decide whether to break or continue based on re-search logic
-                                     # For now, let's assume re-search failure means stop for this URL
-                                     continue # Skip to next URL
-                                else:
-                                     logger.info(f"Re-search completed for: '{original_keyword2}'. Proceeding with scraping new results.")
-                                     # Reset page number and counts for scraping re-search results
-                                     page_number = 1
-                                     processed_items = 0
-                                     data = [] # Clear previous data if re-search successful
-                            except PlaywrightError as re_wait_error:
-                                logger.warning(f"Timeout/error waiting for results after re-search with '{original_keyword2}': {re_wait_error}")
-                                continue # Skip to next URL
-                                
-                        except (PlaywrightError, Exception) as e:
-                            logger.warning(f"Failed during re-search attempt: {e}")
-                            # Continue with initial results if re-search fails?
-                            # Current logic falls through to scrape initial results if re-search fails here.
-
-                    # --- Scrape Results Pages --- 
-                    page_number = 1
-                    processed_items = 0
-                    product_item_selector = 'div.product' # Selector for individual product blocks
-
-                    while processed_items < max_items_to_scrape and page_number <= max_pages_to_scrape:
-                        logger.info(f"Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
-                        try:
-                             # Wait for at least one product item to be potentially visible
-                             await page_instance.locator(product_item_selector).first.wait_for(state="attached", timeout=action_timeout)
-                        except PlaywrightError:
-                             logger.warning(f"Product items selector ('{product_item_selector}') not found/attached on page {page_number}. Stopping scrape for this URL/Keyword.")
-                             break
-                             
-                        rows = page_instance.locator(product_item_selector)
-                        count = await rows.count()
-                        logger.debug(f"Found {count} product elements on page {page_number}.")
-
-                        if count == 0 and page_number > 1: # Allow page 1 to have 0 if count check failed earlier
-                             logger.info(f"No product elements found on page {page_number}. Stopping pagination.")
-                             break
-                        elif count == 0 and page_number == 1:
-                             logger.info(f"No product elements found on first page (page {page_number}). Stopping scrape for this URL/Keyword.")
-                             break
-
-                        items_on_page = []
-                        for i in range(count):
-                            if processed_items >= max_items_to_scrape:
-                                break
-                            row = rows.nth(i)
-                            item_data = {}
-                            try:
-                                # Extract data using locators with short timeouts
-                                img_locator = row.locator('div.pic > a > img')
-                                img_src = await img_locator.get_attribute('src', timeout=action_timeout)
-                                
-                                link_locator = row.locator('div.pic > a')
-                                a_href = await link_locator.get_attribute('href', timeout=action_timeout)
-                                
-                                name_locator = row.locator('div.name > a')
-                                name = await name_locator.text_content(timeout=action_timeout)
-                                
-                                price_locator = row.locator('div.price')
-                                price_text = await price_locator.text_content(timeout=action_timeout)
-
-                                # Process extracted data
-                                base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
-                                
-                                # 디버깅: 원본 URL 및 변환 과정 로깅
-                                logger.debug(f"Raw image src: {img_src}")
-                                logger.debug(f"Raw product href: {a_href}")
-                                logger.debug(f"Base domain URL: {base_domain_url}")
-                                
-                                # 이미지 URL 처리
-                                if img_src:
-                                    # 이미지 소스 처리
-                                    if img_src.startswith('http'):
-                                        # 이미 완전한 URL인 경우
-                                        processed_img_src = img_src
-                                    elif img_src.startswith('./'):
-                                        # './로 시작하는 상대 경로를 /ez/로 변환 (koreagift.com)
-                                        if 'koreagift.com' in base_domain_url:
-                                            processed_img_src = '/ez/' + img_src[2:]  # './' 제거하고 /ez/ 추가
-                                        else:
-                                            processed_img_src = '/' + img_src[2:]  # './' 제거
-                                    elif img_src.startswith('/upload/'):
-                                        # /upload/로 시작하는 경로에 /ez/ 추가 (koreagift.com)
-                                        if 'koreagift.com' in base_domain_url:
-                                            processed_img_src = '/ez' + img_src
-                                        else:
-                                            processed_img_src = img_src
-                                    elif img_src.startswith('/'):
-                                        # 다른 절대 경로는 그대로 사용
-                                        processed_img_src = img_src
-                                    else:
-                                        # 상대 경로는 적절히 처리
-                                        if 'koreagift.com' in base_domain_url and img_src.startswith('upload/'):
-                                            processed_img_src = f"/ez/{img_src}"
-                                        else:
-                                            processed_img_src = f"/{img_src}"
-                                    
-                                    # /ez/ez/ 중복 수정
-                                    if '/ez/ez/' in processed_img_src:
-                                        processed_img_src = processed_img_src.replace('/ez/ez/', '/ez/')
-                                        
-                                    # 최종 URL 생성
-                                    final_img_url = urljoin(base_domain_url, processed_img_src)
-                                    
-                                    # 이미지 URL 검증 - 기본 구조만 확인
-                                    valid_img_url = False
-                                    if final_img_url and final_img_url.startswith('http'):
-                                        url_parts = urlparse(final_img_url)
-                                        if url_parts.netloc and url_parts.path:
-                                            valid_img_url = True
-                                else:
-                                    final_img_url = ""
-                                    valid_img_url = False
-                                
-                                # 상품 URL 처리
-                                if a_href:
-                                    if a_href.startswith('http'):
-                                        # 이미 완전한 URL
-                                        final_href_url = a_href
-                                    elif a_href.startswith('./'):
-                                        # 상대 경로
-                                        processed_href = '/' + a_href[2:]  # './' 제거
-                                        final_href_url = urljoin(base_domain_url, processed_href)
-                                    elif a_href.startswith('/'):
-                                        # 절대 경로
-                                        final_href_url = urljoin(base_domain_url, a_href)
-                                    else:
-                                        # 기타 상대 경로
-                                        final_href_url = urljoin(base_domain_url, '/' + a_href)
-                                else:
-                                    final_href_url = ""
-
-                                # 도메인에서 공급사 정보 추출
-                                supplier = urlparse(base_url).netloc.split('.')[0]
-                                if supplier == 'koreagift':
-                                    supplier = '고려기프트'
-                                elif supplier == 'adpanchok':
-                                    supplier = '애드판촉'
-                                
-                                # 유효한 이미지 URL만 저장
-                                if valid_img_url:
-                                    item_data['image_path'] = final_img_url
-                                else:
-                                    item_data['image_path'] = None
-                                    logger.warning(f"유효하지 않은 이미지 URL 무시: {final_img_url}")
-                                
-                                item_data['src'] = final_img_url  # 이전 호환성 유지
-                                item_data['href'] = final_href_url
-                                item_data['link'] = final_href_url  # 매칭 로직 호환성
-                                item_data['name'] = name.strip() if name else ""
-                                price_cleaned = re.sub(r'[^\d.]', '', price_text) if price_text else ""
-                                item_data['price'] = float(price_cleaned) if price_cleaned else 0.0
-                                item_data['supplier'] = supplier  # 공급사 정보 추가
-                                
-                                logger.debug(f"Extracted item: {item_data}")
-
-                                items_on_page.append(item_data)
-                                processed_items += 1
-                            except (PlaywrightError, Exception) as e:
-                                logger.warning(f"Could not extract data for item index {i} on page {page_number}: {e}")
-                                continue # Skip this item
-                        
-                        data.extend(items_on_page)
-                        logger.debug(f"Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
-
-                        if processed_items >= max_items_to_scrape:
-                            logger.info(f"Reached scrape limit ({max_items_to_scrape}) for keyword '{keyword}'.")
-                            break
-
-                        # --- Pagination --- 
-                        next_page_locator_str = f'div.custom_paging > div[onclick*="getPageGo1({page_number + 1})"]' # CSS selector
-                        next_page_locator = page_instance.locator(next_page_locator_str)
-                        
-                        try:
-                             if await next_page_locator.is_visible(timeout=5000):
-                                 logger.debug(f"Clicking next page ({page_number + 1})")
-                                 # Click and wait for navigation/load state
-                                 await next_page_locator.click(timeout=action_timeout)
-                                 # Wait for content to likely reload after click
-                                 await page_instance.wait_for_load_state('domcontentloaded', timeout=navigation_timeout) 
-                                 page_number += 1
-                             else:
-                                 logger.info("Next page element not found or not visible. Ending pagination.")
-                                 break 
-                        except (PlaywrightError, Exception) as e:
-                             logger.warning(f"Failed to click or load next page ({page_number + 1}): {e}")
-                             break 
-
-                except PlaywrightError as pe:
-                    logger.error(f"Playwright error during setup/search for URL '{base_url}', Keyword '{keyword}': {pe}")
-                except Exception as e:
-                    logger.error(f"Unexpected error during scrape setup/search for URL '{base_url}', Keyword '{keyword}': {e}", exc_info=True)
-                # Loop continues to next URL or keyword if error occurred before scraping loop
-
-                # --- End of single URL/Keyword attempt --- 
-                logger.info(f"Scraping attempt finished for URL='{base_url}', Keyword='{keyword}'. Found {len(data)} items.")
-                current_attempt_df = pd.DataFrame(data)
-
-                # Keep track of the best result for the current keyword across URLs
-                if len(current_attempt_df) > len(current_keyword_best_df):
-                    current_keyword_best_df = current_attempt_df
-                    logger.debug(f"Updating best result for keyword '{keyword}' with {len(current_keyword_best_df)} items from {base_url}.")
-                
-                # If this URL attempt yielded enough results, use it and maybe stop checking other URLs for this keyword
-                if len(current_attempt_df) >= min_results_threshold:
-                     logger.info(f"Found sufficient results ({len(current_attempt_df)}) with keyword '{keyword}' from {base_url}. Using this result.")
-                     # current_keyword_best_df = current_attempt_df # Already assigned if it's the best
-                     # keyword_found_sufficient = True # Optional: break inner URL loop if one URL is enough
-                     # break # Uncomment to stop checking other URLs for this keyword once one works well
-
-            # --- End of URL loop for the current keyword --- 
-            # Update overall best result if current keyword's best is better
-            if len(current_keyword_best_df) > len(best_result_df):
-                best_result_df = current_keyword_best_df
-                logger.debug(f"Updating overall best result with {len(best_result_df)} items from keyword '{keyword}'.")
-
-            # Check if the best result found *for this keyword* is sufficient to stop trying other keywords
-            if len(current_keyword_best_df) >= min_results_threshold:
-                logger.info(f"Found sufficient results ({len(current_keyword_best_df)}) with keyword '{keyword}'. Stopping keyword variations.")
-                # Instead of returning early, break the keyword loop to ensure cleanup runs
-                break # Stop trying further keywords
-
-    except Exception as e:
-        logger.error(f"Major error during Kogift scrape execution for '{original_keyword1}': {e}", exc_info=True)
-        best_result_df = pd.DataFrame() # Ensure empty DataFrame on major error
-    finally:
-        # Ensure page and context are closed if they were created
-        if page:
-            try: 
-                await page.close()
-                logger.debug("Closed Playwright page.")
-            except Exception as page_close_err:
-                logger.warning(f"Error closing page: {page_close_err}")
-        if context:
-            try:
-                await context.close()
-                logger.debug("Closed Playwright context.")
-            except Exception as context_close_err:
-                logger.warning(f"Error closing context: {context_close_err}")
-
-    # Final log based on results
-    if len(best_result_df) < min_results_threshold:
-        logger.warning(f"Could not find sufficient results ({min_results_threshold} needed) for '{original_keyword1}' after trying variations. Max found: {len(best_result_df)} items.")
-    else:
-        logger.info(f"KoGift scraping finished for '{original_keyword1}'. Final result count: {len(best_result_df)} items.")
-
-    # Map DataFrame columns before returning
-    if not best_result_df.empty:
+        # Get settings from config with defaults using ConfigParser methods
         try:
-            # Define final column mapping
-            column_mapping = {
-                'name': 'name', 
-                'price': 'price',
-                'href': 'link', 
-                'src': 'image_url',
-                'supplier': 'supplier'  # 공급사 컬럼 추가
-            }
-            # Select and rename columns that exist in the DataFrame
-            rename_map = {k: v for k, v in column_mapping.items() if k in best_result_df.columns}
-            best_result_df = best_result_df[list(rename_map.keys())].rename(columns=rename_map)
+            kogift_urls_str = config.get('ScraperSettings', 'kogift_urls', 
+                                       fallback='https://koreagift.com/ez/index.php,https://adpanchok.co.kr/ez/index.php')
+            kogift_urls = [url.strip() for url in kogift_urls_str.split(',') if url.strip()]
+            if not kogift_urls:
+                 logger.error("🔴 Kogift URLs are missing or invalid in [ScraperSettings] config.")
+                 return pd.DataFrame()
             
-            # Ensure correct dtypes (e.g., price as float)
-            if 'price' in best_result_df.columns:
-                best_result_df['price'] = pd.to_numeric(best_result_df['price'], errors='coerce').fillna(0.0)
-                
-            # 수량-단가 정보 추출 (옵션)
-            if fetch_price_tables and not best_result_df.empty:
-                logger.info(f"상세 페이지에서 수량-단가 정보 추출 시작 (총 {len(best_result_df)}개 상품)")
-                
-                # 상세 페이지 별도 컨텍스트 생성
-                detail_context = await browser.new_context()
-                detail_page = await detail_context.new_page()
-                
-                # 수량-단가 정보를 저장할 사전
-                price_tables = {}
-                
-                # 처음 5개 상품에 대해서만 상세 정보 추출 (시간 절약을 위해)
-                max_details = min(5, len(best_result_df))
-                for i, (idx, row) in enumerate(best_result_df.head(max_details).iterrows()):
-                    product_link = row['link']
-                    product_name = row['name']
-                    
-                    logger.info(f"상품 {i+1}/{max_details} 상세 정보 추출 중: {product_name[:30]}...")
-                    price_table = await extract_price_table(detail_page, product_link)
-                    
-                    if price_table is not None and not price_table.empty:
-                        price_tables[idx] = price_table
-                        logger.info(f"상품 {i+1}/{max_details} 단가표 추출 성공: {len(price_table)}개 행")
-                    else:
-                        logger.warning(f"상품 {i+1}/{max_details} 단가표 추출 실패")
-                
-                # 페이지 및 컨텍스트 닫기
-                await detail_page.close()
-                await detail_context.close()
-                
-                # 추출된 단가표 정보 로깅
-                logger.info(f"총 {len(price_tables)}/{max_details} 상품에서 단가표 추출 성공")
-                
-                # 결과 DataFrame에 단가표 정보 컬럼 추가
-                best_result_df['price_table'] = pd.Series(price_tables)
+            user_agent = config.get('ScraperSettings', 'user_agent', 
+                                  fallback='Mozilla/5.0 ...') # Use actual default from utils/DEFAULT_CONFIG if desired
+            min_results_threshold = config.getint('ScraperSettings', 'kogift_min_results_threshold', fallback=5)
+            max_items_to_scrape = config.getint('ScraperSettings', 'kogift_max_items', fallback=200)
+            max_pages_to_scrape = config.getint('ScraperSettings', 'kogift_max_pages', fallback=10)
             
-            # 이미지 URL 정규화 및 다운로드
-            logger.info("고려기프트 이미지 처리 시작")
-            best_result_df_list = best_result_df.to_dict('records')
+            default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000)  # 2분
+            navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=120000)  # 2분
+            action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=30000)  # 30초
+            # Add a shorter timeout specifically for waiting for search results/no results
+            search_results_wait_timeout = config.getint('Playwright', 'playwright_search_results_timeout_ms', fallback=60000)  # 1분
+            block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
             
-            # 이미지 URL 정규화 및 다운로드 수행
-            best_result_df_list = await verify_kogift_images(best_result_df_list)
-            
-            # 리스트를 DataFrame으로 변환
-            best_result_df = pd.DataFrame(best_result_df_list)
-            
-            # 이미지 다운로드 경로 확인 (디버깅)
-            if 'local_image_path' in best_result_df.columns:
-                downloaded_count = best_result_df['local_image_path'].notnull().sum()
-                logger.info(f"이미지 다운로드 결과: {downloaded_count}/{len(best_result_df)} 파일 저장됨")
-            else:
-                logger.warning("이미지 다운로드가 실행되었지만 로컬 경로 컬럼이 없습니다.")
-            
-        except KeyError as ke:
-            logger.error(f"Error mapping columns for Kogift results: Missing key {ke}. Returning raw data.")
-        except Exception as map_err:
-            logger.error(f"Error during final column mapping for Kogift: {map_err}")
+            # Image download settings
+            download_images = config.getboolean('Matching', 'download_images', fallback=True)
+            images_dir = config.get('Matching', 'images_dir', fallback='downloaded_images')
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
+            logger.error(f"🔴 Error reading Kogift/Playwright config: {e}. Using hardcoded defaults where possible.")
+            # Set critical defaults again or decide to return empty
+            kogift_urls = ["https://koreagift.com/ez/index.php", "https://adpanchok.co.kr/ez/index.php"]
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
+            min_results_threshold = 5
+            max_items_to_scrape = 200
+            max_pages_to_scrape = 10
+            default_timeout = 120000
+            navigation_timeout = 120000
+            action_timeout = 30000
+            search_results_wait_timeout = 60000
+            block_resources = True
+            download_images = True
+            images_dir = 'downloaded_images'
 
-    return best_result_df
+        keywords_to_try = generate_keyword_variations(original_keyword1)
+        best_result_df = pd.DataFrame() 
+
+        logger.info(f"🔍 Generated keywords for '{original_keyword1}': {keywords_to_try}")
+
+        # Shared browser context for this scrape attempt
+        context = None
+        page = None
+        try:
+            context = await browser.new_context(user_agent=user_agent)
+            page = await context.new_page()
+            page.set_default_timeout(default_timeout)
+            page.set_default_navigation_timeout(navigation_timeout)
+            
+            if block_resources:
+                await setup_page_optimizations(page)
+
+            for keyword in keywords_to_try:
+                logger.info(f"🔍 Trying keyword variation: '{keyword}' --- ({keywords_to_try.index(keyword) + 1}/{len(keywords_to_try)}) ---")
+                current_keyword_best_df = pd.DataFrame()
+                keyword_found_sufficient = False
+
+                for base_url in kogift_urls:
+                    logger.info(f"🌐 Attempting scrape: URL='{base_url}', Keyword='{keyword}'")
+                    data = []
+                    page_instance = page
+                    
+                    try:
+                        # Navigate to the base URL
+                        await page_instance.goto(base_url, wait_until='domcontentloaded')
+                        logger.debug(f"🌐 Navigated to {base_url}")
+
+                        # --- Perform Search --- 
+                        search_input_locator = page_instance.locator('input#main_keyword[name="keyword"]') # More specific selector
+                        search_button_locator = page_instance.locator('img#search_submit')
+                        
+                        await search_input_locator.wait_for(state="visible", timeout=action_timeout)
+                        await search_input_locator.fill(keyword)
+                        await search_button_locator.wait_for(state="visible", timeout=action_timeout)
+                        
+                        results_container_selector = 'div.product_lists' # Selector for the container holding results
+                        # Refined selector for "no results" message based on provided HTML
+                        no_results_selector = 'div.not_result span.icon_dot2:has-text("검색 결과가 없습니다")' 
+                        combined_selector = f"{results_container_selector}, {no_results_selector}"
+                        
+                        logger.debug("🔍 Clicking search...")
+                        await search_button_locator.click()
+                        logger.info(f"🔍 Search submitted for: '{keyword}' on {base_url}")
+
+                        # --- Wait for results OR "no results" message --- 
+                        logger.debug(f"⏳ Waiting for search results or 'no results' message (timeout: {search_results_wait_timeout}ms)...")
+                        try:
+                            found_element = await page_instance.wait_for_selector(
+                                combined_selector, 
+                                state='visible', 
+                                timeout=search_results_wait_timeout
+                            )
+                            
+                            # Check if the 'no results' text is visible
+                            no_results_element = page_instance.locator(no_results_selector)
+                            if await no_results_element.is_visible():
+                                no_results_text = await no_results_element.first.text_content(timeout=1000) or "[No text found]"
+                                logger.info(f"⚠️ 'No results' message found for keyword '{keyword}' on {base_url}. Text: {no_results_text.strip()}")
+                                continue # Skip to the next URL/keyword
+                            else:
+                                logger.debug("✅ Results container found. Proceeding to scrape.")
+                                # Results container is visible, fall through to scraping logic
+                                pass 
+                                
+                        except PlaywrightError as wait_error:
+                            logger.warning(f"⚠️ Timeout or error waiting for results/no_results for keyword '{keyword}' on {base_url}: {wait_error}")
+                            continue # Skip to the next URL/keyword
+
+                        # --- Check product count (Optional Re-search) --- 
+                        # This section remains largely the same, but runs ONLY if results were found
+                        productCont = 0
+                        try:
+                            product_count_element = page_instance.locator('div.list_info span').first # Simpler selector
+                            productContText = await product_count_element.text_content(timeout=5000) 
+                            productContDigits = re.findall(r'\d+', productContText.replace(',', ''))
+                            if productContDigits:
+                                productCont = int("".join(productContDigits))
+                            logger.info(f"📊 Reported product count: {productCont}")
+                        except (PlaywrightError, Exception) as e:
+                            logger.warning(f"⚠️ Could not find/parse product count: {e}")
+
+                        # Re-search logic (only if initial search had results)
+                        if original_keyword2 and original_keyword2.strip() != "" and productCont >= 100:
+                            logger.info(f"🔍 Initial count >= 100. Performing re-search with: '{original_keyword2}'")
+                            try:
+                                re_search_input = page_instance.locator('input#re_keyword')
+                                re_search_button = page_instance.locator('button[onclick^="re_search"]')
+                                await re_search_input.fill(original_keyword2)
+                                
+                                logger.debug("🔍 Clicking re-search...")
+                                await re_search_button.click()
+                                
+                                # Wait again after re-search, checking for no results again
+                                logger.debug(f"⏳ Waiting after re-search (timeout: {search_results_wait_timeout}ms)...")
+                                try:
+                                    await page_instance.wait_for_selector(
+                                        combined_selector, 
+                                        state='visible', 
+                                        timeout=search_results_wait_timeout
+                                    )
+                                    if await page_instance.locator(no_results_selector).is_visible():
+                                         logger.info(f"⚠️ 'No results' found after re-searching with '{original_keyword2}'.")
+                                         # Decide whether to break or continue based on re-search logic
+                                         # For now, let's assume re-search failure means stop for this URL
+                                         continue # Skip to next URL
+                                    else:
+                                         logger.info(f"✅ Re-search completed for: '{original_keyword2}'. Proceeding with scraping new results.")
+                                         # Reset page number and counts for scraping re-search results
+                                         page_number = 1
+                                         processed_items = 0
+                                         data = [] # Clear previous data if re-search successful
+                                except PlaywrightError as re_wait_error:
+                                    logger.warning(f"⚠️ Timeout/error waiting for results after re-search with '{original_keyword2}': {re_wait_error}")
+                                    continue # Skip to next URL
+                                    
+                            except (PlaywrightError, Exception) as e:
+                                logger.warning(f"⚠️ Failed during re-search attempt: {e}")
+                                # Continue with initial results if re-search fails here.
+
+                        # --- Scrape Results Pages --- 
+                        page_number = 1
+                        processed_items = 0
+                        product_item_selector = 'div.product' # Selector for individual product blocks
+
+                        while processed_items < max_items_to_scrape and page_number <= max_pages_to_scrape:
+                            logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
+                            try:
+                                 # Wait for at least one product item to be potentially visible
+                                 await page_instance.locator(product_item_selector).first.wait_for(state="attached", timeout=action_timeout)
+                            except PlaywrightError:
+                                 logger.warning(f"⚠️ Product items selector ('{product_item_selector}') not found/attached on page {page_number}. Stopping scrape for this URL/Keyword.")
+                                 break
+                                 
+                            rows = page_instance.locator(product_item_selector)
+                            count = await rows.count()
+                            logger.debug(f"📊 Found {count} product elements on page {page_number}.")
+
+                            if count == 0 and page_number > 1: # Allow page 1 to have 0 if count check failed earlier
+                                 logger.info(f"⚠️ No product elements found on page {page_number}. Stopping pagination.")
+                                 break
+                            elif count == 0 and page_number == 1:
+                                 logger.info(f"⚠️ No product elements found on first page (page {page_number}). Stopping scrape for this URL/Keyword.")
+                                 break
+
+                            items_on_page = []
+                            for i in range(count):
+                                if processed_items >= max_items_to_scrape:
+                                    break
+                                row = rows.nth(i)
+                                item_data = {}
+                                try:
+                                    # Extract data using locators with short timeouts
+                                    img_locator = row.locator('div.pic > a > img')
+                                    img_src = await img_locator.get_attribute('src', timeout=action_timeout)
+                                    
+                                    link_locator = row.locator('div.pic > a')
+                                    a_href = await link_locator.get_attribute('href', timeout=action_timeout)
+                                    
+                                    name_locator = row.locator('div.name > a')
+                                    name = await name_locator.text_content(timeout=action_timeout)
+                                    
+                                    price_locator = row.locator('div.price')
+                                    price_text = await price_locator.text_content(timeout=action_timeout)
+
+                                    # Process extracted data
+                                    base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
+                                    
+                                    # 디버깅: 원본 URL 및 변환 과정 로깅
+                                    logger.debug(f"🔗 Raw image src: {img_src}")
+                                    logger.debug(f"🔗 Raw product href: {a_href}")
+                                    logger.debug(f"🌐 Base domain URL: {base_domain_url}")
+                                    
+                                    # 이미지 URL 처리
+                                    if img_src:
+                                        # 이미지 소스 처리
+                                        if img_src.startswith('http'):
+                                            # 이미 완전한 URL인 경우
+                                            processed_img_src = img_src
+                                        elif img_src.startswith('./'):
+                                            # './로 시작하는 상대 경로를 /ez/로 변환 (koreagift.com)
+                                            if 'koreagift.com' in base_domain_url:
+                                                processed_img_src = '/ez/' + img_src[2:]  # './' 제거하고 /ez/ 추가
+                                            else:
+                                                processed_img_src = '/' + img_src[2:]  # './' 제거
+                                        elif img_src.startswith('/upload/'):
+                                            # /upload/로 시작하는 경로에 /ez/ 추가 (koreagift.com)
+                                            if 'koreagift.com' in base_domain_url:
+                                                processed_img_src = '/ez' + img_src
+                                            else:
+                                                processed_img_src = img_src
+                                        elif img_src.startswith('/'):
+                                            # 다른 절대 경로는 그대로 사용
+                                            processed_img_src = img_src
+                                        else:
+                                            # 상대 경로는 적절히 처리
+                                            if 'koreagift.com' in base_domain_url and img_src.startswith('upload/'):
+                                                processed_img_src = f"/ez/{img_src}"
+                                            else:
+                                                processed_img_src = f"/{img_src}"
+                                        
+                                        # /ez/ez/ 중복 수정
+                                        if '/ez/ez/' in processed_img_src:
+                                            processed_img_src = processed_img_src.replace('/ez/ez/', '/ez/')
+                                            
+                                        # 최종 URL 생성
+                                        final_img_url = urljoin(base_domain_url, processed_img_src)
+                                        
+                                        # 이미지 URL 검증 - 기본 구조만 확인
+                                        valid_img_url = False
+                                        if final_img_url and final_img_url.startswith('http'):
+                                            url_parts = urlparse(final_img_url)
+                                            if url_parts.netloc and url_parts.path:
+                                                valid_img_url = True
+                                    else:
+                                        final_img_url = ""
+                                        valid_img_url = False
+                                    
+                                    # 상품 URL 처리
+                                    if a_href:
+                                        if a_href.startswith('http'):
+                                            # 이미 완전한 URL
+                                            final_href_url = a_href
+                                        elif a_href.startswith('./'):
+                                            # 상대 경로
+                                            processed_href = '/' + a_href[2:]  # './' 제거
+                                            final_href_url = urljoin(base_domain_url, processed_href)
+                                        elif a_href.startswith('/'):
+                                            # 절대 경로
+                                            final_href_url = urljoin(base_domain_url, a_href)
+                                        else:
+                                            # 기타 상대 경로
+                                            final_href_url = urljoin(base_domain_url, '/' + a_href)
+                                    else:
+                                        final_href_url = ""
+
+                                    # 도메인에서 공급사 정보 추출
+                                    supplier = urlparse(base_url).netloc.split('.')[0]
+                                    if supplier == 'koreagift':
+                                        supplier = '고려기프트'
+                                    elif supplier == 'adpanchok':
+                                        supplier = '애드판촉'
+                                    
+                                    # 유효한 이미지 URL만 저장
+                                    if valid_img_url:
+                                        item_data['image_path'] = final_img_url
+                                    else:
+                                        item_data['image_path'] = None
+                                        logger.warning(f"⚠️ 유효하지 않은 이미지 URL 무시: {final_img_url}")
+                                    
+                                    item_data['src'] = final_img_url  # 이전 호환성 유지
+                                    item_data['href'] = final_href_url
+                                    item_data['link'] = final_href_url  # 매칭 로직 호환성
+                                    item_data['name'] = name.strip() if name else ""
+                                    price_cleaned = re.sub(r'[^\d.]', '', price_text) if price_text else ""
+                                    item_data['price'] = float(price_cleaned) if price_cleaned else 0.0
+                                    item_data['supplier'] = supplier  # 공급사 정보 추가
+                                    
+                                    logger.debug(f"📦 Extracted item: {item_data}")
+
+                                    items_on_page.append(item_data)
+                                    processed_items += 1
+                                except (PlaywrightError, Exception) as e:
+                                    logger.warning(f"⚠️ Could not extract data for item index {i} on page {page_number}: {e}")
+                                    continue # Skip this item
+                            
+                            data.extend(items_on_page)
+                            logger.debug(f"📊 Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
+
+                            if processed_items >= max_items_to_scrape:
+                                logger.info(f"✅ Reached scrape limit ({max_items_to_scrape}) for keyword '{keyword}'.")
+                                break
+
+                            # --- Pagination --- 
+                            next_page_locator_str = f'div.custom_paging > div[onclick*="getPageGo1({page_number + 1})"]' # CSS selector
+                            next_page_locator = page_instance.locator(next_page_locator_str)
+                            
+                            try:
+                                 if await next_page_locator.is_visible(timeout=5000):
+                                     logger.debug(f"📄 Clicking next page ({page_number + 1})")
+                                     # Click and wait for navigation/load state
+                                     await next_page_locator.click(timeout=action_timeout)
+                                     # Wait for content to likely reload after click
+                                     await page_instance.wait_for_load_state('domcontentloaded', timeout=navigation_timeout) 
+                                     page_number += 1
+                                 else:
+                                     logger.info("⚠️ Next page element not found or not visible. Ending pagination.")
+                                     break 
+                            except (PlaywrightError, Exception) as e:
+                                 logger.warning(f"⚠️ Failed to click or load next page ({page_number + 1}): {e}")
+                                 break 
+
+                    except PlaywrightError as pe:
+                        logger.error(f"❌ Playwright error during setup/search for URL '{base_url}', Keyword '{keyword}': {pe}")
+                    except Exception as e:
+                        logger.error(f"❌ Unexpected error during scrape setup/search for URL '{base_url}', Keyword '{keyword}': {e}", exc_info=True)
+                    # Loop continues to next URL or keyword if error occurred before scraping loop
+
+                    # --- End of single URL/Keyword attempt --- 
+                    logger.info(f"✅ Scraping attempt finished for URL='{base_url}', Keyword='{keyword}'. Found {len(data)} items.")
+                    current_attempt_df = pd.DataFrame(data)
+
+                    # Keep track of the best result for the current keyword across URLs
+                    if len(current_attempt_df) > len(current_keyword_best_df):
+                        current_keyword_best_df = current_attempt_df
+                        logger.debug(f"📊 Updating best result for keyword '{keyword}' with {len(current_keyword_best_df)} items from {base_url}.")
+                    
+                    # If this URL attempt yielded enough results, use it and maybe stop checking other URLs for this keyword
+                    if len(current_attempt_df) >= min_results_threshold:
+                         logger.info(f"✅ Found sufficient results ({len(current_attempt_df)}) with keyword '{keyword}' from {base_url}. Using this result.")
+                         # current_keyword_best_df = current_attempt_df # Already assigned if it's the best
+                         # keyword_found_sufficient = True # Optional: break inner URL loop if one URL is enough
+                         # break # Uncomment to stop checking other URLs for this keyword once one works well
+
+                # --- End of URL loop for the current keyword --- 
+                # Update overall best result if current keyword's best is better
+                if len(current_keyword_best_df) > len(best_result_df):
+                    best_result_df = current_keyword_best_df
+                    logger.debug(f"📊 Updating overall best result with {len(best_result_df)} items from keyword '{keyword}'.")
+
+                # Check if the best result found *for this keyword* is sufficient to stop trying other keywords
+                if len(current_keyword_best_df) >= min_results_threshold:
+                    logger.info(f"✅ Found sufficient results ({len(current_keyword_best_df)}) with keyword '{keyword}'. Stopping keyword variations.")
+                    # Instead of returning early, break the keyword loop to ensure cleanup runs
+                    break # Stop trying further keywords
+
+        except Exception as e:
+            logger.error(f"❌ Major error during Kogift scrape execution for '{original_keyword1}': {e}", exc_info=True)
+            best_result_df = pd.DataFrame() # Ensure empty DataFrame on major error
+        finally:
+            # Ensure page and context are closed if they were created
+            if page:
+                try: 
+                    await page.close()
+                    logger.debug("✅ Closed Playwright page.")
+                except Exception as page_close_err:
+                    logger.warning(f"⚠️ Error closing page: {page_close_err}")
+            if context:
+                try:
+                    await context.close()
+                    logger.debug("✅ Closed Playwright context.")
+                except Exception as context_close_err:
+                    logger.warning(f"⚠️ Error closing context: {context_close_err}")
+
+        # Final log based on results
+        if len(best_result_df) < min_results_threshold:
+            logger.warning(f"⚠️ Could not find sufficient results ({min_results_threshold} needed) for '{original_keyword1}' after trying variations. Max found: {len(best_result_df)} items.")
+        else:
+            logger.info(f"✅ KoGift scraping finished for '{original_keyword1}'. Final result count: {len(best_result_df)} items.")
+
+        # Map DataFrame columns before returning
+        if not best_result_df.empty:
+            try:
+                # Define final column mapping
+                column_mapping = {
+                    'name': 'name', 
+                    'price': 'price',
+                    'href': 'link', 
+                    'src': 'image_url',
+                    'supplier': 'supplier'  # 공급사 컬럼 추가
+                }
+                # Select and rename columns that exist in the DataFrame
+                rename_map = {k: v for k, v in column_mapping.items() if k in best_result_df.columns}
+                best_result_df = best_result_df[list(rename_map.keys())].rename(columns=rename_map)
+                
+                # Ensure correct dtypes (e.g., price as float)
+                if 'price' in best_result_df.columns:
+                    best_result_df['price'] = pd.to_numeric(best_result_df['price'], errors='coerce').fillna(0.0)
+                    
+                # 수량-단가 정보 추출 (옵션)
+                if fetch_price_tables and not best_result_df.empty:
+                    logger.info(f"상세 페이지에서 수량-단가 정보 추출 시작 (총 {len(best_result_df)}개 상품)")
+                    
+                    # 상세 페이지 별도 컨텍스트 생성
+                    detail_context = await browser.new_context()
+                    detail_page = await detail_context.new_page()
+                    
+                    # 수량-단가 정보를 저장할 사전
+                    price_tables = {}
+                    
+                    # 처음 5개 상품에 대해서만 상세 정보 추출 (시간 절약을 위해)
+                    max_details = min(5, len(best_result_df))
+                    for i, (idx, row) in enumerate(best_result_df.head(max_details).iterrows()):
+                        product_link = row['link']
+                        product_name = row['name']
+                        
+                        logger.info(f"상품 {i+1}/{max_details} 상세 정보 추출 중: {product_name[:30]}...")
+                        price_table = await extract_price_table(detail_page, product_link)
+                        
+                        if price_table is not None and not price_table.empty:
+                            price_tables[idx] = price_table
+                            logger.info(f"상품 {i+1}/{max_details} 단가표 추출 성공: {len(price_table)}개 행")
+                        else:
+                            logger.warning(f"상품 {i+1}/{max_details} 단가표 추출 실패")
+                    
+                    # 페이지 및 컨텍스트 닫기
+                    await detail_page.close()
+                    await detail_context.close()
+                    
+                    # 추출된 단가표 정보 로깅
+                    logger.info(f"총 {len(price_tables)}/{max_details} 상품에서 단가표 추출 성공")
+                    
+                    # 결과 DataFrame에 단가표 정보 컬럼 추가
+                    best_result_df['price_table'] = pd.Series(price_tables)
+                
+                # 이미지 URL 정규화 및 다운로드
+                logger.info("고려기프트 이미지 처리 시작")
+                best_result_df_list = best_result_df.to_dict('records')
+                
+                # 이미지 URL 정규화 및 다운로드 수행
+                best_result_df_list = await verify_kogift_images(best_result_df_list)
+                
+                # 리스트를 DataFrame으로 변환
+                best_result_df = pd.DataFrame(best_result_df_list)
+                
+                # 이미지 다운로드 경로 확인 (디버깅)
+                if 'local_image_path' in best_result_df.columns:
+                    downloaded_count = best_result_df['local_image_path'].notnull().sum()
+                    logger.info(f"이미지 다운로드 결과: {downloaded_count}/{len(best_result_df)} 파일 저장됨")
+                else:
+                    logger.warning("이미지 다운로드가 실행되었지만 로컬 경로 컬럼이 없습니다.")
+                
+            except KeyError as ke:
+                logger.error(f"Error mapping columns for Kogift results: Missing key {ke}. Returning raw data.")
+            except Exception as map_err:
+                logger.error(f"Error during final column mapping for Kogift: {map_err}")
+
+        return best_result_df
 
 # Simple function to test direct image download
 def test_kogift_scraper():

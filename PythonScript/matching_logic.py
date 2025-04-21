@@ -16,6 +16,7 @@ import datetime # 캐시 만료일 관리
 import pickle # 특성 저장
 import shutil # 디렉토리 관리
 import hashlib # 파일 해시
+import torch
 
 # Import the enhanced image matcher if available
 try:
@@ -188,6 +189,8 @@ class MatchQualityEvaluator:
     
     def evaluate_match(self, combined_score: float) -> str:
         """매칭 품질 레벨 반환"""
+        if pd.isna(combined_score):
+            return "none"
         if combined_score >= self.high_threshold:
             return "high"
         elif combined_score >= self.medium_threshold:
@@ -206,15 +209,11 @@ class MatchQualityEvaluator:
             
         # 고려 매칭 품질
         if '_고려_Combined' in df.columns:
-            df['고려_매칭품질'] = df['_고려_Combined'].apply(
-                lambda x: self.evaluate_match(x) if pd.notna(x) else "none"
-            )
+            df['고려_매칭품질'] = df['_고려_Combined'].apply(self.evaluate_match)
             
         # 네이버 매칭 품질
         if '_네이버_Combined' in df.columns:
-            df['네이버_매칭품질'] = df['_네이버_Combined'].apply(
-                lambda x: self.evaluate_match(x) if pd.notna(x) else "none"
-            )
+            df['네이버_매칭품질'] = df['_네이버_Combined'].apply(self.evaluate_match)
             
         return df
 
@@ -246,8 +245,15 @@ class ProductMatcher:
         self.minimum_combined_score = config.getfloat('Matching', 'minimum_combined_score', fallback=0.4)
         
         # Category-specific thresholds
-        self.use_category_thresholds = True
-        self.category_thresholds = self._load_category_thresholds(config)
+        self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=False)
+        self.category_thresholds = {}
+        if self.use_category_thresholds:
+            try:
+                thresholds = config.get('Matching', 'category_thresholds', fallback='{}')
+                self.category_thresholds = json.loads(thresholds)
+            except Exception as e:
+                logging.warning(f"Failed to load category thresholds: {e}")
+                self.use_category_thresholds = False
         
         # Image feature caching
         self.feature_cache = FeatureCache(config)
@@ -294,151 +300,148 @@ class ProductMatcher:
             return self.text_similarity_threshold, self.image_similarity_threshold
             
         cat_thresholds = self.category_thresholds[category]
-        return cat_thresholds['text_threshold'], cat_thresholds['image_threshold']
+        return cat_thresholds['text'], cat_thresholds['image']
 
     def calculate_text_similarity(self, text1: Optional[str], text2: Optional[str]) -> float:
-        """Calculate text similarity between two product names."""
-        if not self.text_model:
-            logging.warning("Text model not loaded, cannot calculate text similarity.")
+        """
+        두 텍스트 간의 유사도를 계산합니다.
+        개선된 텍스트 유사도 계산 로직을 사용합니다.
+        """
+        if not text1 or not text2:
             return 0.0
-        if not text1 or not text2 or pd.isna(text1) or pd.isna(text2):
-            return 0.0
-
+        
         try:
-            text1_str = str(text1)
-            text2_str = str(text2)
-            embedding1 = self.text_model.encode(text1_str, convert_to_tensor=True)
-            embedding2 = self.text_model.encode(text2_str, convert_to_tensor=True)
-            similarity = util.cos_sim(embedding1, embedding2).item()
-            final_similarity = max(0.0, min(1.0, similarity)) # Ensure score is within [0, 1]
-            logging.debug(f"Text Similarity('{text1_str}', '{text2_str}') = {final_similarity:.4f}")
-            return final_similarity
+            # koSBERT_text_similarity의 향상된 기능 활용
+            from koSBERT_text_similarity import (
+                preprocess_text, encode_text, count_common_tokens, 
+                MODEL_NAME, BOOST_EXACT_MATCH, NAME_SPLIT_MATCHING, EXACT_MATCH_BONUS
+            )
+            
+            # 텍스트 전처리
+            text1 = preprocess_text(text1)
+            text2 = preprocess_text(text2)
+            
+            if not text1 or not text2:
+                return 0.0
+            
+            # 임베딩 계산
+            embedding1 = encode_text(text1, model_name=self.text_model_path)
+            embedding2 = encode_text(text2, model_name=self.text_model_path)
+            
+            if embedding1 is None or embedding2 is None:
+                return 0.0
+            
+            # 코사인 유사도 계산
+            similarity = torch.cosine_similarity(embedding1.unsqueeze(0), embedding2.unsqueeze(0), dim=1).item()
+            
+            # 토큰 기반 보너스 적용 (설정에 따라)
+            if BOOST_EXACT_MATCH and NAME_SPLIT_MATCHING:
+                common_count = count_common_tokens(text1, text2)
+                if common_count > 0:
+                    # 공통 토큰이 많을수록 더 큰 보너스
+                    token_boost = min(common_count * 0.05, EXACT_MATCH_BONUS)
+                    similarity = min(1.0, similarity + token_boost)
+                    
+                # 정확히 일치하는 경우 추가 보너스
+                if text1 == text2:
+                    similarity = min(1.0, similarity + EXACT_MATCH_BONUS)
+            
+            return similarity
+            
         except Exception as e:
-            logging.error(f"Error calculating text similarity between '{text1}' and '{text2}': {e}", exc_info=True)
+            logging.error(f"텍스트 유사도 계산 중 오류 발생: {e}", exc_info=True)
+            
+            # 모듈 임포트 실패 또는 다른 오류 발생 시 기존 방식으로 처리
+            return self._fallback_text_similarity(text1, text2)
+        
+    def _fallback_text_similarity(self, text1: str, text2: str) -> float:
+        """기존 텍스트 유사도 계산 방식 (fallback)"""
+        try:
+            if self.text_model is None:
+                self._initialize_text_model()
+                if self.text_model is None:
+                    logging.error("텍스트 모델 로드 실패")
+                    return 0.0
+                
+            # 기존 모델 사용 로직
+            embedding1 = self.text_model.encode(text1, convert_to_tensor=True)
+            embedding2 = self.text_model.encode(text2, convert_to_tensor=True)
+            
+            similarity = util.pytorch_cos_sim(embedding1, embedding2).item()
+            return similarity
+            
+        except Exception as e:
+            logging.error(f"기본 텍스트 유사도 계산 중 오류 발생: {e}")
             return 0.0
 
     def calculate_image_similarity(self, img_path1: Optional[str], img_path2: Optional[str]) -> float:
-        """Calculate image similarity between two product images."""
-        if not self.image_model:
-             logging.warning("Image model not loaded, cannot calculate image similarity.")
-             return 0.0
-             
-        # Early return if any path is invalid
+        """
+        두 이미지 간의 유사도를 계산합니다.
+        enhanced_image_matcher.py의 향상된 로직을 사용합니다.
+        """
         if not img_path1 or not img_path2:
-            logging.debug(f"Image path missing, cannot calculate similarity: {img_path1}, {img_path2}")
             return 0.0
-            
-        # Check if files exist
-        if not os.path.exists(img_path1) or not os.path.isfile(img_path1):
-            logging.debug(f"First image path does not exist or is not a file: {img_path1}")
-            return 0.0
-            
-        if not os.path.exists(img_path2) or not os.path.isfile(img_path2):
-            logging.debug(f"Second image path does not exist or is not a file: {img_path2}")
-            return 0.0
-            
-        # Check file size if configured to skip large images
-        if self.skip_image_if_size_exceeds_mb > 0:
-            try:
-                if os.path.getsize(img_path1) > (self.skip_image_if_size_exceeds_mb * 1024 * 1024):
-                    logging.warning(f"Skipping oversized image: {img_path1}")
-                    return 0.0
-                if os.path.getsize(img_path2) > (self.skip_image_if_size_exceeds_mb * 1024 * 1024):
-                    logging.warning(f"Skipping oversized image: {img_path2}")
-                    return 0.0
-            except Exception as e:
-                logging.error(f"Error checking image size: {e}")
-
-        # Use enhanced matcher if available
-        if ENHANCED_MATCHER_AVAILABLE:
-            try:
-                # Create enhanced matcher instance on demand if needed
-                if not hasattr(self, 'enhanced_matcher'):
-                    self.enhanced_matcher = EnhancedImageMatcher(use_gpu=self.use_gpu)
-                    logging.info("Initialized enhanced image matcher")
-                
-                # Get combined similarity (which is a weighted average of SIFT, AKAZE, and EfficientNet)
-                start_time = time.time()
-                custom_weights = {
-                    'sift': 0.3, 
-                    'akaze': 0.2, 
-                    'deep': 0.5
-                }
-                
-                # Get combined score and individual scores
-                combined_score, scores = self.enhanced_matcher.calculate_combined_similarity(
-                    img_path1, 
-                    img_path2, 
-                    weights=custom_weights
-                )
-                
-                duration = time.time() - start_time
-                logging.debug(f"Enhanced matching - SIFT: {scores['sift']:.4f}, AKAZE: {scores['akaze']:.4f}, " 
-                             f"Deep: {scores['deep']:.4f}, Combined: {combined_score:.4f} (took {duration:.2f}s)")
-                
-                return combined_score
-            except Exception as e:
-                logging.warning(f"Enhanced matcher failed: {e}. Falling back to basic similarity")
-                # Continue to basic similarity method if enhanced matcher fails
         
-        # Basic similarity calculation with EfficientNetB0
+        if not os.path.exists(img_path1) or not os.path.exists(img_path2):
+            logging.warning(f"이미지 파일이 존재하지 않습니다: {img_path1} 또는 {img_path2}")
+            return 0.0
+        
         try:
-            # 이미지 처리 타임아웃 적용
-            start_time = time.time()
+            # EnhancedImageMatcher 활용
+            from enhanced_image_matcher import EnhancedImageMatcher, WEIGHTS
             
-            # Get features from cache or calculate them
-            features1 = self.feature_cache.get(img_path1)
-            if features1 is None:
-                img1 = tf.keras.preprocessing.image.load_img(img_path1, target_size=(self.image_resize_dimension, self.image_resize_dimension))
-                img1_array = tf.keras.preprocessing.image.img_to_array(img1)
-                img1_batch = tf.expand_dims(img1_array, 0)
-                img1_preprocessed = tf.keras.applications.efficientnet.preprocess_input(img1_batch)
-                features1 = self.image_model(img1_preprocessed).numpy().flatten()
-                self.feature_cache.put(img_path1, features1)
-                
-            # 타임아웃 체크
-            if self.image_similarity_timeout_sec > 0 and (time.time() - start_time) > self.image_similarity_timeout_sec:
-                logging.warning(f"Image similarity timeout after first feature extraction: {img_path1}")
-                return 0.0
-                
-            features2 = self.feature_cache.get(img_path2)
-            if features2 is None:
-                img2 = tf.keras.preprocessing.image.load_img(img_path2, target_size=(self.image_resize_dimension, self.image_resize_dimension))
-                img2_array = tf.keras.preprocessing.image.img_to_array(img2)
-                img2_batch = tf.expand_dims(img2_array, 0)
-                img2_preprocessed = tf.keras.applications.efficientnet.preprocess_input(img2_batch)
-                features2 = self.image_model(img2_preprocessed).numpy().flatten()
-                self.feature_cache.put(img_path2, features2)
-
-            # 타임아웃 체크
-            if self.image_similarity_timeout_sec > 0 and (time.time() - start_time) > self.image_similarity_timeout_sec:
-                logging.warning(f"Image similarity timeout after second feature extraction: {img_path2}")
-                return 0.0
-
-            # Calculate cosine similarity
-            norm1 = np.linalg.norm(features1)
-            norm2 = np.linalg.norm(features2)
+            # EnhancedImageMatcher 인스턴스 캐싱 (성능 향상)
+            if not hasattr(self, 'image_matcher') or self.image_matcher is None:
+                self.image_matcher = EnhancedImageMatcher(use_gpu=self.use_gpu)
+                logging.info("EnhancedImageMatcher 초기화 완료")
             
-            # Check for zero norms to avoid division by zero
-            if norm1 == 0 or norm2 == 0:
-                logging.warning(f"Zero norm detected for image features, returning 0 similarity: {img_path1}, {img_path2}")
-                return 0.0
-                
-            similarity = np.dot(features1, features2) / (norm1 * norm2)
-            # Clip similarity to [0, 1] as minor numerical instability can occur
-            final_similarity = max(0.0, min(1.0, similarity))
-            logging.debug(f"Basic Image Similarity('{os.path.basename(img_path1)}', '{os.path.basename(img_path2)}') = {final_similarity:.4f}")
-            return final_similarity
-        except (IOError, OSError) as e:
-            # Handle I/O errors separately for better diagnostics
-            logging.error(f"I/O error during image processing: {e}. Paths: {img_path1}, {img_path2}")
-            return 0.0
-        except tf.errors.InvalidArgumentError as e:
-            # Handle TensorFlow specific errors
-            logging.error(f"TensorFlow error during image processing: {e}. Paths: {img_path1}, {img_path2}")
-            return 0.0
+            # 향상된 이미지 매칭 로직으로 유사도 계산
+            combined_similarity, scores = self.image_matcher.calculate_combined_similarity(
+                img_path1, img_path2, weights=WEIGHTS
+            )
+            
+            # 로깅
+            logging.debug(f"향상된 이미지 유사도: {combined_similarity:.4f} (SIFT={scores['sift']:.2f}, "
+                        f"AKAZE={scores['akaze']:.2f}, Deep={scores['deep']:.2f})")
+            
+            return combined_similarity
+        
         except Exception as e:
-            logging.error(f"Unexpected error during image similarity calculation for {img_path1} and {img_path2}: {e}", exc_info=True)
+            logging.error(f"향상된 이미지 유사도 계산 중 오류 발생: {e}", exc_info=True)
+            logging.info("기본 이미지 유사도 계산 방식으로 전환합니다")
+            
+            # 실패 시 기존 로직으로 폴백
+            return self._fallback_image_similarity(img_path1, img_path2)
+        
+    def _fallback_image_similarity(self, img_path1: str, img_path2: str) -> float:
+        """기존 이미지 유사도 계산 방식 (fallback)"""
+        try:
+            # 캐시에서 특징값 확인
+            features1 = self.feature_cache.get(img_path1)
+            features2 = self.feature_cache.get(img_path2)
+            
+            # 캐시에 없는 경우 계산
+            if features1 is None:
+                features1 = self._extract_image_features(img_path1)
+                if features1 is not None:
+                    self.feature_cache.put(img_path1, features1)
+            
+            if features2 is None:
+                features2 = self._extract_image_features(img_path2)
+                if features2 is not None:
+                    self.feature_cache.put(img_path2, features2)
+            
+            # 특징값 추출 실패 시
+            if features1 is None or features2 is None:
+                return 0.0
+            
+            # 코사인 유사도 계산
+            similarity = np.dot(features1, features2) / (np.linalg.norm(features1) * np.linalg.norm(features2))
+            
+            return float(np.clip(similarity, 0.0, 1.0))
+        
+        except Exception as e:
+            logging.error(f"기본 이미지 유사도 계산 중 오류: {e}")
             return 0.0
 
     def is_match(self, product1: Dict[str, Any], product2: Dict[str, Any]) -> Tuple[bool, float, float, float]:
@@ -577,176 +580,199 @@ class ProductMatcher:
             self.image_model = None
             return False
 
-def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: Optional[List[Dict]], naver_data: Optional[List[Dict]], product_type: str, matcher: ProductMatcher, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
-    """Matches a single Haoreum product against Kogift and Naver data using the provided matcher."""
+def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict], naver_data: List[Dict], product_type: str, matcher: ProductMatcher, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
+    """Matches a single Haoreum product against Kogift and Naver data."""
     if not matcher:
-         logging.error(f"Matcher object missing for index {i}.")
-         return i, None
-
-    logging.debug(f"Matching product index {i}: {haoreum_row_dict.get('상품명')}")
-    product_category = haoreum_row_dict.get('카테고리(중분류)')
-    
-    haoreum_product = {
-        'name': haoreum_row_dict.get('상품명'),
-        'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
-        'link': haoreum_row_dict.get('본사상품링크'),
-        'image_path': haoreum_img_path,
-        'code': haoreum_row_dict.get('Code'),
-        '담당자': haoreum_row_dict.get('담당자'),
-        '업체명': haoreum_row_dict.get('업체명'),
-        '업체코드': haoreum_row_dict.get('업체코드'),
-        '공급사명': haoreum_row_dict.get('공급사명'),
-        '공급처코드': haoreum_row_dict.get('공급처코드'),
-        '상품코드': haoreum_row_dict.get('상품코드'),
-        '카테고리(중분류)': product_category,
-        '본사 기본수량': haoreum_row_dict.get('본사 기본수량')
-    }
-
-    best_kogift_match = None
-    best_naver_match = None
-    max_kogift_score = -1
-    max_naver_score = -1
-    kogift_text_sim = 0.0
-    kogift_img_sim = 0.0
-    naver_text_sim = 0.0
-    naver_img_sim = 0.0
-    kogift_price_sim = 0.0
-    naver_price_sim = 0.0
-
-    # 가격 유사도 계산 여부
-    use_price_sim = getattr(matcher, 'use_price_similarity', False)
-    price_weight = getattr(matcher, 'price_weight', 0.1)
-    
-    # 최소 결합 점수
-    min_combined_score = getattr(matcher, 'minimum_combined_score', 0.4)
-
-    # Find best Kogift match
-    if kogift_data:
-        for item in kogift_data:
-            kogift_product = {
-                'name': item.get('name'), 
-                'price': pd.to_numeric(item.get('price'), errors='coerce'),
-                'link': item.get('link'), 
-                'image_path': item.get('image_path'),
-                '카테고리(중분류)': product_category  # 카테고리별 임계값 사용을 위해 전달
-            }
-            
-            # 기본 텍스트/이미지 유사도 계산
-            match, score, text_s, img_s = matcher.is_match(haoreum_product, kogift_product)
-            
-            # 가격 유사도 계산 (옵션)
-            price_s = 0.0
-            if use_price_sim and haoreum_product['price'] > 0 and kogift_product['price'] > 0:
-                # 가격 차이 비율 계산 (0~1 사이 값 반환)
-                price_diff_ratio = abs(haoreum_product['price'] - kogift_product['price']) / haoreum_product['price']
-                price_s = max(0.0, 1.0 - min(1.0, price_diff_ratio))  # 가격이 비슷할수록 1에 가까움
-                
-                # 결합 점수 재계산 (가격 유사도 포함)
-                if price_s > 0:
-                    total_weight = matcher.text_weight + matcher.image_weight + price_weight
-                    score = ((text_s * matcher.text_weight) + (img_s * matcher.image_weight) + (price_s * price_weight)) / total_weight
-            
-            # 최소 점수 이상이면 매치로 간주
-            final_match = match or (score >= min_combined_score)
-            
-            if final_match and score > max_kogift_score:
-                max_kogift_score = score
-                best_kogift_match = item
-                kogift_text_sim = text_s
-                kogift_img_sim = img_s
-                kogift_price_sim = price_s
-
-    # Find best Naver match
-    if naver_data:
-        for item in naver_data:
-            naver_product = {
-                'name': item.get('name'), 
-                'price': pd.to_numeric(item.get('price'), errors='coerce'),
-                'link': item.get('link'), 
-                'image_path': item.get('image_path'),
-                'seller': item.get('seller'),
-                '카테고리(중분류)': product_category  # 카테고리별 임계값 사용을 위해 전달
-            }
-            
-            # 기본 텍스트/이미지 유사도 계산
-            match, score, text_s, img_s = matcher.is_match(haoreum_product, naver_product)
-            
-            # 가격 유사도 계산 (옵션)
-            price_s = 0.0
-            if use_price_sim and haoreum_product['price'] > 0 and naver_product['price'] > 0:
-                # 가격 차이 비율 계산 (0~1 사이 값 반환)
-                price_diff_ratio = abs(haoreum_product['price'] - naver_product['price']) / haoreum_product['price']
-                price_s = max(0.0, 1.0 - min(1.0, price_diff_ratio))  # 가격이 비슷할수록 1에 가까움
-                
-                # 결합 점수 재계산 (가격 유사도 포함)
-                if price_s > 0:
-                    total_weight = matcher.text_weight + matcher.image_weight + price_weight
-                    score = ((text_s * matcher.text_weight) + (img_s * matcher.image_weight) + (price_s * price_weight)) / total_weight
-            
-            # 최소 점수 이상이면 매치로 간주
-            final_match = match or (score >= min_combined_score)
-            
-            if final_match and score > max_naver_score:
-                max_naver_score = score
-                best_naver_match = item
-                naver_text_sim = text_s
-                naver_img_sim = img_s
-                naver_price_sim = price_s
-
-    # Combine results if matches found
-    if best_kogift_match or best_naver_match:
-        # Start with all original fields from haoreum_row_dict
-        result = {**haoreum_row_dict}  # Copy all original fields
-        
-        # Then add or overwrite specific fields
-        result.update({
-            '구분(승인관리:A/가격관리:P)': product_type,
-            # Kogift data
-            '고려 링크': best_kogift_match.get('link') if best_kogift_match else None,
-            '고려기프트(이미지링크)': best_kogift_match.get('image_path') if best_kogift_match else None,
-            '판매단가2(VAT포함)': best_kogift_match.get('price') if best_kogift_match else None,
-            '_고려_TextSim': kogift_text_sim,
-            '_해오름_고려_ImageSim': kogift_img_sim,
-            '_고려_PriceSim': kogift_price_sim if use_price_sim else None,
-            '_고려_Combined': max_kogift_score if max_kogift_score > -1 else None,
-            # Set default kogift quantity
-            '고려 기본수량': best_kogift_match.get('quantity', '-'), # Get from match if available
-
-            # Naver data
-            '네이버 공급사명': best_naver_match.get('seller') if best_naver_match else None,
-            '네이버 링크': best_naver_match.get('link') if best_naver_match else None,
-            '네이버쇼핑(이미지링크)': best_naver_match.get('image_path') if best_naver_match else None,
-            '판매단가3 (VAT포함)': best_naver_match.get('price') if best_naver_match else None,
-            '_네이버_TextSim': naver_text_sim,
-            '_해오름_네이버_ImageSim': naver_img_sim,
-            '_네이버_PriceSim': naver_price_sim if use_price_sim else None,
-            '_네이버_Combined': max_naver_score if max_naver_score > -1 else None,
-            # Set default naver quantity
-            '네이버 기본수량': best_naver_match.get('quantity', '-') if best_naver_match else '-'
-        })
-        
-        # Standard field mappings for clarity
-        if 'link' in result:
-            result['본사링크'] = result.pop('link')
-        if 'price' in result:
-            result['판매단가(V포함)'] = result.pop('price')  # Changed from 판매단가1(VAT포함)
-        if 'image_path' in result:
-            result['해오름이미지경로'] = result.pop('image_path')
-        
-        return i, result
-    else:
-        # No match found for either Kogift or Naver
-        logging.debug(f"No sufficient match found for product index {i}: {haoreum_product.get('name')}")
+        logging.error(f"Matcher object missing for index {i}.")
         return i, None
+
+    try:
+        logging.debug(f"Matching product index {i}: {haoreum_row_dict.get('상품명')}")
+        
+        haoreum_product = {
+            'name': haoreum_row_dict.get('상품명'),
+            'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
+            'link': haoreum_row_dict.get('본사상품링크'),
+            'image_path': haoreum_img_path,
+            'code': haoreum_row_dict.get('Code'),
+            '담당자': haoreum_row_dict.get('담당자'),
+            '업체명': haoreum_row_dict.get('업체명'),
+            '업체코드': haoreum_row_dict.get('업체코드'),
+            '공급사명': haoreum_row_dict.get('공급사명'),
+            '공급처코드': haoreum_row_dict.get('공급처코드'),
+            '상품코드': haoreum_row_dict.get('상품코드'),
+            '카테고리(중분류)': haoreum_row_dict.get('카테고리(중분류)'),
+            '본사 기본수량': haoreum_row_dict.get('본사 기본수량')
+        }
+
+        # Validate required fields
+        if not haoreum_product['name'] or pd.isna(haoreum_product['name']):
+            logging.warning(f"Missing product name for index {i}")
+            return i, None
+
+        # Find best matches with improved error handling
+        best_kogift_match = None
+        best_naver_match = None
+        
+        try:
+            best_kogift_match = _find_best_match(haoreum_product, kogift_data, matcher, 'kogift')
+        except Exception as e:
+            logging.error(f"Error finding Kogift match for product {haoreum_product['name']}: {e}")
+            
+        try:
+            best_naver_match = _find_best_match(haoreum_product, naver_data, matcher, 'naver')
+        except Exception as e:
+            logging.error(f"Error finding Naver match for product {haoreum_product['name']}: {e}")
+
+        # Combine results if matches found
+        if best_kogift_match or best_naver_match:
+            result = {**haoreum_row_dict}  # Copy all original fields
+            
+            # Add or update fields
+            result.update({
+                '구분(승인관리:A/가격관리:P)': product_type,
+                'name': haoreum_product['name'],
+                '본사링크': haoreum_product['link'],
+                '판매단가(V포함)': haoreum_product['price'],
+                '해오름이미지경로': haoreum_product['image_path'],
+            })
+
+            # Add Kogift data if available
+            if best_kogift_match:
+                result.update({
+                    '고려 링크': best_kogift_match['match_data'].get('link'),
+                    '고려기프트(이미지링크)': best_kogift_match['match_data'].get('image_path'),
+                    '판매단가2(VAT포함)': best_kogift_match['match_data'].get('price'),
+                    '_고려_TextSim': best_kogift_match['text_similarity'],
+                    '_해오름_고려_ImageSim': best_kogift_match['image_similarity'],
+                    '_고려_Combined': best_kogift_match['combined_score'],
+                    '고려 기본수량': best_kogift_match['match_data'].get('quantity', '-')
+                })
+            else:
+                result.update({
+                    '고려 링크': None,
+                    '고려기프트(이미지링크)': None,
+                    '판매단가2(VAT포함)': None,
+                    '_고려_TextSim': 0.0,
+                    '_해오름_고려_ImageSim': 0.0,
+                    '_고려_Combined': None,
+                    '고려 기본수량': '-'
+                })
+
+            # Add Naver data if available
+            if best_naver_match:
+                result.update({
+                    '네이버 공급사명': best_naver_match['match_data'].get('seller'),
+                    '네이버 링크': best_naver_match['match_data'].get('link'),
+                    '네이버쇼핑(이미지링크)': best_naver_match['match_data'].get('image_path'),
+                    '판매단가3 (VAT포함)': best_naver_match['match_data'].get('price'),
+                    '_네이버_TextSim': best_naver_match['text_similarity'],
+                    '_해오름_네이버_ImageSim': best_naver_match['image_similarity'],
+                    '_네이버_Combined': best_naver_match['combined_score'],
+                    '네이버 기본수량': best_naver_match['match_data'].get('quantity', '-')
+                })
+            else:
+                result.update({
+                    '네이버 공급사명': None,
+                    '네이버 링크': None,
+                    '네이버쇼핑(이미지링크)': None,
+                    '판매단가3 (VAT포함)': None,
+                    '_네이버_TextSim': 0.0,
+                    '_해오름_네이버_ImageSim': 0.0,
+                    '_네이버_Combined': None,
+                    '네이버 기본수량': '-'
+                })
+
+            logging.debug(f"Successfully matched product {haoreum_product['name']}")
+            return i, result
+        else:
+            logging.debug(f"No sufficient match found for product {haoreum_product['name']}")
+            return i, None
+
+    except Exception as e:
+        logging.error(f"Error in _match_single_product for index {i}: {e}", exc_info=True)
+        return i, None
+
+def _find_best_match(haoreum_product: Dict, target_data: List[Dict], matcher: ProductMatcher, data_type: str) -> Optional[Dict]:
+    """Finds the best match for a Haoreum product in the target data."""
+    if not haoreum_product or not target_data or not matcher:
+        logging.error("Missing required parameters for _find_best_match")
+        return None
+
+    try:
+        best_match = None
+        best_score = 0.0
+        threshold = 0.6  # Minimum similarity threshold
+
+        for target_product in target_data:
+            try:
+                # Calculate text similarity
+                text_sim = matcher.calculate_text_similarity(
+                    haoreum_product['name'],
+                    target_product.get('name', '')
+                )
+                
+                # Skip if text similarity is too low
+                if text_sim < threshold:
+                    continue
+
+                # Calculate image similarity if images are available
+                image_sim = 0.0
+                if haoreum_product.get('image_path') and target_product.get('image_path'):
+                    try:
+                        image_sim = matcher.calculate_image_similarity(
+                            haoreum_product['image_path'],
+                            target_product['image_path']
+                        )
+                    except Exception as e:
+                        logging.warning(f"Error calculating image similarity: {e}")
+                        image_sim = 0.0
+
+                # Calculate combined score (weighted average)
+                combined_score = (text_sim * 0.7) + (image_sim * 0.3)
+
+                # Update best match if current score is higher
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_match = {
+                        'match_data': target_product,
+                        'text_similarity': text_sim,
+                        'image_similarity': image_sim,
+                        'combined_score': combined_score
+                    }
+
+            except Exception as e:
+                logging.error(f"Error processing target product: {e}")
+                continue
+
+        # Return best match if it meets the threshold
+        if best_match and best_match['combined_score'] >= threshold:
+            logging.debug(f"Found match with score {best_match['combined_score']:.2f} for {haoreum_product['name']}")
+            return best_match
+        else:
+            logging.debug(f"No match found above threshold for {haoreum_product['name']}")
+            return None
+
+    except Exception as e:
+        logging.error(f"Error in _find_best_match: {e}", exc_info=True)
+        return None
 
 # Wrapper for ProcessPoolExecutor compatibility
 def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: Optional[List[Dict]], naver_data: Optional[List[Dict]], product_type: str, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
     """Wrapper to call _match_single_product using the global worker instance."""
     global worker_matcher_instance
     if worker_matcher_instance is None:
-        # This might happen if initializer failed
-        logging.error(f"Matcher instance is None in worker {os.getpid()} for index {i}. Cannot match.")
-        return i, None
+        # Initialize matcher if not available
+        try:
+            from configparser import ConfigParser
+            config = ConfigParser()
+            config.read('config.ini')
+            worker_matcher_instance = ProductMatcher(config)
+            logging.info(f"Initialized matcher in worker {os.getpid()}")
+        except Exception as e:
+            logging.error(f"Failed to initialize matcher in worker {os.getpid()}: {e}")
+            return i, None
+
     try:
         # Call the actual matching logic
         return _match_single_product(
@@ -755,13 +781,13 @@ def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: O
         )
     except Exception as e:
         logging.error(f"Error in _match_single_product_wrapper for index {i}: {e}", exc_info=True)
-        return i, None # Return None for the data part on error
+        return i, None
 
 def process_matching(
     haoreum_df: pd.DataFrame,
     kogift_map: Dict[str, List[Dict]],
     naver_map: Dict[str, List[Dict]],
-    input_file_image_map: Dict[Any, str], # Map Code -> image path
+    input_file_image_map: Dict[Any, str],
     config: configparser.ConfigParser,
     gpu_available: bool,
     progress_queue=None,
@@ -769,431 +795,244 @@ def process_matching(
 ) -> pd.DataFrame:
     """
     Process matching between Haoreum products and Kogift/Naver products.
-    
-    Args:
-        haoreum_df: DataFrame containing Haoreum products
-        kogift_map: Dictionary mapping categories to Kogift products
-        naver_map: Dictionary mapping categories to Naver products
-        input_file_image_map: Dictionary mapping product codes to image paths
-        config: Configuration object
-        gpu_available: Whether GPU is available for processing
-        progress_queue: Queue for progress updates
-        max_workers: Maximum number of worker processes
-        
-    Returns:
-        DataFrame containing matched products
     """
-    # 메모리 사용량 모니터링 시작
-    process = psutil.Process(os.getpid())
-    initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-    logging.info(f"Initial memory usage: {initial_memory:.2f} MB")
-    
-    # 매칭 시작 시간 기록
-    start_time = time.time()
-    
-    if haoreum_df.empty:
-        logging.warning("Haoreum DataFrame is empty. No products to match.")
-        return pd.DataFrame()
-
-    results = []
-    total_products = len(haoreum_df)
-    logging.info(f"Starting product matching for {total_products} Haoreum products...")
-    
-    # 메모리 제한 적용
-    memory_limit_mb = config.getint('Matching', 'memory_limit_mb', fallback=0)
-    if memory_limit_mb > 0:
-        try:
-            import resource
-            # 메모리 제한 (soft, hard) 설정
-            resource.setrlimit(resource.RLIMIT_AS, (memory_limit_mb * 1024 * 1024, memory_limit_mb * 1024 * 1024))
-            logging.info(f"Set memory limit to {memory_limit_mb} MB")
-        except (ImportError, AttributeError, ValueError) as e:
-            logging.warning(f"Failed to set memory limit: {e}")
-
-    # 배치 크기
-    batch_size = config.getint('Matching', 'batch_size', fallback=0)
-    
-    # Decide on executor type based on GPU availability and config
-    executor_type = config.get('Concurrency', 'matcher_executor_type', fallback='thread').lower()
-    
-    # If GPU not available, override to thread executor
-    if not gpu_available and executor_type == 'process':
-        logging.warning("GPU not available. Overriding to ThreadPoolExecutor for safety.")
-        executor_type = 'thread'
-    
-    # Adjust max_workers based on executor type and config
-    default_workers = max(1, min(os.cpu_count() // 2, 4))  # More conservative default
-    min_workers = config.getint('Concurrency', 'min_match_workers', fallback=1)
-    
-    if max_workers is None:
-        try:
-            max_workers = config.getint('Concurrency', 'max_match_workers', fallback=default_workers)
-        except (configparser.Error, ValueError):
-            max_workers = default_workers
-    
-    # 동적 워커 조정 활성화 여부
-    dynamic_scaling = config.getboolean('Matching', 'dynamic_worker_scaling', fallback=False)
-    
-    # 작업 청크 크기
-    task_chunk_size = config.getint('Concurrency', 'task_chunk_size', fallback=20)
-    
-    # 시스템 리소스 확인하여 워커 수 조정
-    if dynamic_scaling:
-        try:
-            # 현재 시스템 부하 확인
-            cpu_usage = psutil.cpu_percent(interval=0.5)
-            memory_usage = psutil.virtual_memory().percent
+    try:
+        # Enhanced input validation
+        if haoreum_df is None:
+            logging.error("Haoreum DataFrame is None")
+            return pd.DataFrame()
             
-            # 부하가 높으면 워커 수 줄임
-            if cpu_usage > 80 or memory_usage > 80:
-                adjusted_workers = max(min_workers, max_workers // 2)
-                logging.info(f"High system load detected (CPU: {cpu_usage}%, Memory: {memory_usage}%), reducing workers from {max_workers} to {adjusted_workers}")
-                max_workers = adjusted_workers
-        except Exception as e:
-            logging.warning(f"Error during dynamic worker scaling: {e}")
-             
-    logging.info(f"Using {executor_type} executor with max_workers={max_workers}")
-
-    # Initialize matcher here if using ThreadPoolExecutor
-    matcher_instance = None
-    if executor_type == 'thread':
-        try:
-            matcher_instance = ProductMatcher(config)
-            if matcher_instance.text_model is None or matcher_instance.image_model is None:
-                logging.error("Failed to load models for ThreadPoolExecutor. Falling back to single-threaded execution.")
-                max_workers = 1  # Fall back to single worker
-        except Exception as e:
-            logging.error(f"Error initializing ProductMatcher for ThreadPoolExecutor: {e}", exc_info=True)
-            logging.info("Falling back to single-threaded execution.")
-            max_workers = 1  # Fall back to single worker
-            # Try again with reduced expectations
-            try:
-                matcher_instance = ProductMatcher(config)
-            except Exception as e:
-                logging.critical(f"Critical error initializing ProductMatcher: {e}. Cannot perform matching.")
-                return pd.DataFrame()  # Return empty DataFrame
-
-    executor_class = ProcessPoolExecutor if executor_type == 'process' else ThreadPoolExecutor
-    initializer = _init_worker_matcher if executor_type == 'process' else None
-    initargs = (config,) if executor_type == 'process' else ()
-
-    processed_count = 0
-    futures = []
-    timeout_per_task = config.getint('Concurrency', 'thread_pool_timeout_sec', fallback=300)
-    
-    # 배치 처리 준비
-    if batch_size > 0 and batch_size < total_products:
-        # 배치로 나누어 처리
-        batch_count = (total_products + batch_size - 1) // batch_size  # 올림 나눗셈
-        logging.info(f"Processing products in {batch_count} batches of size {batch_size}")
-        
-        all_results = []
-        for batch_index in range(batch_count):
-            start_idx = batch_index * batch_size
-            end_idx = min(start_idx + batch_size, total_products)
+        if not isinstance(haoreum_df, pd.DataFrame):
+            logging.error(f"Haoreum data is not a DataFrame: {type(haoreum_df)}")
+            return pd.DataFrame()
             
-            logging.info(f"Processing batch {batch_index+1}/{batch_count}, items {start_idx+1}-{end_idx}")
-            
-            # 배치에 해당하는 데이터프레임 슬라이스
-            batch_df = haoreum_df.iloc[start_idx:end_idx]
-            
-            # 배치 처리 후 결과 병합
-            batch_results = _process_batch(
-                batch_df, kogift_map, naver_map, input_file_image_map, 
-                config, gpu_available, progress_queue, max_workers, 
-                executor_type, matcher_instance, processed_count)
+        if haoreum_df.empty:
+            logging.warning("Haoreum DataFrame is empty. No products to match.")
+            return pd.DataFrame()
+
+        # Validate required columns
+        required_columns = ['상품명', 'Code']
+        missing_columns = [col for col in required_columns if col not in haoreum_df.columns]
+        if missing_columns:
+            logging.error(f"Missing required columns: {missing_columns}")
+            return pd.DataFrame()
+
+        # Ensure index is unique and reset if needed
+        if not haoreum_df.index.is_unique:
+            logging.warning("Haoreum DataFrame index is not unique. Resetting index.")
+            haoreum_df = haoreum_df.reset_index(drop=True)
+
+        # Monitor memory usage
+        process = psutil.Process(os.getpid())
+        initial_memory = process.memory_info().rss / 1024 / 1024
+        logging.info(f"Initial memory usage: {initial_memory:.2f} MB")
+
+        # Start timing
+        start_time = time.time()
+
+        # Initialize results list
+        results = []
+        total_products = len(haoreum_df)
+        processed_count = 0
+
+        # Configure batch processing
+        batch_size = config.getint('Matching', 'batch_size', fallback=50)
+        if batch_size <= 0:
+            batch_size = min(50, total_products)  # Default to 50 or total size if smaller
+
+        # Configure executor
+        executor_type = 'thread' if not gpu_available else config.get('Concurrency', 'matcher_executor_type', fallback='thread')
+        max_workers = min(max_workers or os.cpu_count(), 4)  # Limit max workers
+        timeout_per_task = config.getint('Concurrency', 'thread_pool_timeout_sec', fallback=300)
+
+        # Process in batches
+        for batch_start in range(0, total_products, batch_size):
+            batch_end = min(batch_start + batch_size, total_products)
+            batch_df = haoreum_df.iloc[batch_start:batch_end]
+
+            with ThreadPoolExecutor(max_workers=max_workers) if executor_type == 'thread' else ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
                 
-            all_results.extend(batch_results)
-            processed_count += len(batch_df)
-            
-            # 메모리 현황 로깅
-            current_memory = process.memory_info().rss / 1024 / 1024
-            logging.info(f"After batch {batch_index+1}/{batch_count}: Memory usage {current_memory:.2f} MB, Processed {processed_count}/{total_products}")
-            
-            # 중간 결과 백업 (선택사항)
-            if config.getboolean('Matching', 'save_intermediate_results', fallback=False):
-                temp_df = pd.DataFrame(all_results)
-                temp_output = os.path.join(config.get('Paths', 'temp_dir'), f"match_results_batch_{batch_index+1}.csv")
-                temp_df.to_csv(temp_output, index=False)
-                logging.info(f"Saved intermediate results to {temp_output}")
-                
-            # 메모리 정리 힌트
+                # Submit batch tasks
+                for i, row in batch_df.iterrows():
+                    try:
+                        haoreum_row_dict = row.to_dict()
+                        product_name = haoreum_row_dict.get('상품명')
+                        product_code = haoreum_row_dict.get('Code')
+                        
+                        if not product_name or pd.isna(product_name):
+                            logging.warning(f"Skipping index {i}: Missing product name")
+                            continue
+                            
+                        kogift_data = kogift_map.get(product_name, [])
+                        naver_data = naver_map.get(product_name, [])
+                        haoreum_img_path = input_file_image_map.get(product_code)
+                        
+                        # Log product details for debugging
+                        logging.debug(f"Processing product {i}: {product_name}")
+                        logging.debug(f"Kogift matches: {len(kogift_data)}, Naver matches: {len(naver_data)}")
+                        
+                        # Create task with all required arguments
+                        task_args = (
+                            i, haoreum_row_dict, kogift_data, naver_data,
+                            haoreum_row_dict.get('구분', 'A'), haoreum_img_path
+                        )
+                        
+                        if executor_type == 'process':
+                            future = executor.submit(_match_single_product_wrapper, *task_args)
+                        else:
+                            future = executor.submit(_match_single_product, *task_args)
+                            
+                        futures.append(future)
+                    except Exception as e:
+                        logging.error(f"Error submitting task for product {product_name}: {e}")
+                        continue
+
+                # Process completed tasks
+                for future in as_completed(futures):
+                    try:
+                        idx, result = future.result(timeout=timeout_per_task)
+                        if result and isinstance(result, dict):
+                            results.append(result)
+                            logging.debug(f"Successfully matched product {idx}")
+                        else:
+                            logging.debug(f"No match found for product {idx}")
+                    except TimeoutError:
+                        logging.error(f"Task timeout after {timeout_per_task} seconds")
+                    except Exception as e:
+                        logging.error(f"Error processing task result: {e}")
+                    finally:
+                        processed_count += 1
+                        # Update progress using emit instead of put
+                        if progress_queue:
+                            try:
+                                progress_queue.emit("match", processed_count, total_products)
+                            except Exception as e:
+                                logging.warning(f"Error updating progress: {e}")
+
+            # Clean up after batch
             if config.getboolean('Matching', 'gc_after_batch', fallback=True):
                 import gc
                 gc.collect()
+
+            # Log memory usage
+            current_memory = process.memory_info().rss / 1024 / 1024
+            logging.info(f"After batch {batch_start//batch_size + 1}: Memory usage {current_memory:.2f} MB")
+
+        # Create result DataFrame with validation
+        if not results:
+            logging.warning("No matches found. Creating empty result DataFrame with original data.")
+            return _create_empty_result_df(haoreum_df, input_file_image_map)
+
+        try:
+            result_df = pd.DataFrame(results)
+            if result_df.empty:
+                logging.warning("Created empty result DataFrame. Returning original data.")
+                return _create_empty_result_df(haoreum_df, input_file_image_map)
+                
+            # Validate result DataFrame
+            if len(result_df) != total_products:
+                logging.warning(f"Result DataFrame has {len(result_df)} rows, expected {total_products} rows")
+        except Exception as e:
+            logging.error(f"Error creating result DataFrame: {e}")
+            return _create_empty_result_df(haoreum_df, input_file_image_map)
         
-        results = all_results
-    else:
-        # 기존 방식으로 한 번에 처리
+        # Add quality metrics
         try:
-            with executor_class(max_workers=max_workers, initializer=initializer, initargs=initargs) as executor:
-                for i, row in haoreum_df.iterrows():
-                    haoreum_row_dict = row.to_dict()
-                    product_name = haoreum_row_dict.get('상품명')
-                    product_code = haoreum_row_dict.get('Code')
-                    product_type = haoreum_row_dict.get('구분', 'A')
-                    
-                    # 필수 정보 누락 체크
-                    if not product_name or pd.isna(product_name):
-                        logging.warning(f"Skipping matching for index {i}: Missing or invalid '상품명'.")
-                        processed_count += 1
-                        continue
-                    
-                    # 매칭에 필요한 데이터 가져오기
-                    kogift_data = kogift_map.get(product_name, [])
-                    naver_data = naver_map.get(product_name, [])
-                    haoreum_img_path = input_file_image_map.get(product_code)
-                    
-                    # 이미지 경로 검증
-                    if haoreum_img_path and not os.path.exists(haoreum_img_path):
-                        logging.warning(f"Image path for product {product_code} does not exist: {haoreum_img_path}")
-                    
-                    try:
-                        if executor_type == 'process':
-                            future = executor.submit(_match_single_product_wrapper, i, haoreum_row_dict, kogift_data, naver_data, product_type, haoreum_img_path)
-                        else:
-                            future = executor.submit(_match_single_product, i, haoreum_row_dict, kogift_data, naver_data, product_type, matcher_instance, haoreum_img_path)
-                        futures.append(future)
-                    except Exception as e:
-                        logging.error(f"Error submitting batch task for product {product_name}: {e}")
-                        processed_count += 1
-            
-            # 완료된 작업 처리
-            for future in as_completed(futures):
-                try:
-                    original_index, result_data = future.result(timeout=timeout_per_task)
-                    if result_data:
-                        results.append(result_data)
-                except TimeoutError:
-                    logging.error(f"A batch matching task timed out after {timeout_per_task} seconds.")
-                except Exception as e:
-                    logging.error(f"Error processing batch matching result: {e}", exc_info=True)
-                finally:
-                    processed_count += 1
-                    total_processed = processed_count
-                    
-                    # 진행 상황 업데이트
-                    if processed_count % 20 == 0 or processed_count == total_products:
-                        logging.info(f"Batch matching progress: {processed_count}/{total_products}")
-                        if progress_queue:
-                            try:
-                                progress_queue.put(("match", total_processed, processed_count))
-                            except Exception as e:
-                                logging.error(f"Error updating progress queue in batch: {e}")
-    
+            result_df = _add_quality_metrics(result_df, config)
         except Exception as e:
-            logging.error(f"Error during batch executor execution: {e}", exc_info=True)
-    
-    # Clean up
-    if executor_type == 'thread' and matcher_instance:
-        try:
-            # Clean up GPU memory
-            del matcher_instance
-            tf.keras.backend.clear_session()
-            logging.debug("Cleaned up matcher instance and TensorFlow session")
-        except Exception as e:
-            logging.warning(f"Error during cleanup: {e}")
+            logging.error(f"Error adding quality metrics: {e}")
 
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    logging.info(f"Finished product matching. Found {len(results)} potential matches. Duration: {elapsed_time:.2f} sec")
+        # Log completion
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        final_memory = process.memory_info().rss / 1024 / 1024
+        memory_diff = final_memory - initial_memory
 
-    if not results:
-        logging.warning("No matches found. Returning DataFrame with original data to ensure output in report.")
-        # Create base results with main Haoreum columns that match the column names in matched results
-        no_match_results = []
-        for _, row in haoreum_df.iterrows():
-            haoreum_row_dict = row.to_dict()
-            product_code = haoreum_row_dict.get('Code')
-            haoreum_img_path = input_file_image_map.get(product_code)  # Get image path using Code
-            
-            # Start with all original fields from the row
-            base_data = {**haoreum_row_dict}  # Copy all original fields
-            
-            # Add standard transformed fields and default values for missing data
-            base_data.update({
-                '구분(승인관리:A/가격관리:P)': haoreum_row_dict.get('구분', 'A'),
-                'name': haoreum_row_dict.get('상품명'),
-                '본사링크': haoreum_row_dict.get('본사상품링크'),
-                '판매단가(V포함)': haoreum_row_dict.get('판매단가(V포함)'),
-                '해오름이미지경로': haoreum_img_path,
-                # Set empty values for Kogift and Naver fields to maintain consistent structure
-                '고려 링크': None,
-                '고려기프트(이미지링크)': None,
-                '판매단가2(VAT포함)': None,
-                '_고려_TextSim': 0.0,
-                '_해오름_고려_ImageSim': 0.0,
-                '_고려_Combined': None,
-                '고려 기본수량': '-',
-                '네이버 공급사명': None,
-                '네이버 링크': None,
-                '네이버쇼핑(이미지링크)': None,
-                '판매단가3 (VAT포함)': None,
-                '_네이버_TextSim': 0.0,
-                '_해오름_네이버_ImageSim': 0.0,
-                '_네이버_Combined': None,
-                '네이버 기본수량': '-'
-            })
-            no_match_results.append(base_data)
-            
-        return pd.DataFrame(no_match_results)
+        logging.info(f"Matching completed in {elapsed_time:.2f} seconds")
+        logging.info(f"Final memory usage: {final_memory:.2f} MB (Change: {memory_diff:+.2f} MB)")
+        logging.info(f"Total products processed: {total_products}")
+        logging.info(f"Products matched: {len(result_df)}")
+        
+        return result_df
 
-    # Convert results list of dicts to DataFrame
-    matched_df = pd.DataFrame(results)
-    
-    # 가격 비교 및 분석 데이터 추가
-    if not matched_df.empty:
-        try:
-            # 가격 열 숫자 타입으로 변환 (이미 숫자일 수 있음)
-            for col in ['판매단가(V포함)', '판매단가2(VAT포함)', '판매단가3 (VAT포함)']:
-                if col in matched_df.columns:
-                    matched_df[col] = pd.to_numeric(matched_df[col], errors='coerce')
-            
-            # 가격차이 계산
-            matched_df['고려가격차이'] = matched_df['판매단가2(VAT포함)'] - matched_df['판매단가(V포함)']
-            matched_df['네이버가격차이'] = matched_df['판매단가3 (VAT포함)'] - matched_df['판매단가(V포함)']
-            
-            # 가격차이 비율 계산 (%)
-            matched_df['고려가격비율(%)'] = (matched_df['고려가격차이'] / matched_df['판매단가(V포함)'] * 100).round(1)
-            matched_df['네이버가격비율(%)'] = (matched_df['네이버가격차이'] / matched_df['판매단가(V포함)'] * 100).round(1)
-            
-            # 매칭 품질 레이블 적용
-            quality_evaluator = MatchQualityEvaluator(config)
-            matched_df = quality_evaluator.apply_quality_labels(matched_df)
-            
-            # 매칭 품질 분석
-            kogift_matched = matched_df['고려 링크'].notna().sum()
-            naver_matched = matched_df['네이버 링크'].notna().sum()
-            both_matched = matched_df['고려 링크'].notna() & matched_df['네이버 링크'].notna()
-            logging.info(f"Matching quality: {kogift_matched}/{len(matched_df)} Kogift matches, "
-                         f"{naver_matched}/{len(matched_df)} Naver matches, "
-                         f"{both_matched.sum()}/{len(matched_df)} products matched to both sources.")
-                         
-            # 품질 기준별 분류 (고려 기준)
-            if '고려_매칭품질' in matched_df.columns:
-                quality_counts = matched_df['고려_매칭품질'].value_counts()
-                logging.info(f"Kogift matching quality distribution: {quality_counts.to_dict()}")
-        except Exception as e:
-            logging.error(f"Error calculating price differences and quality metrics: {e}", exc_info=True)
-    
-    # 매칭 보고서 생성 (선택사항)
-    if config.getboolean('Matching', 'generate_matching_report', fallback=False) and not matched_df.empty:
-        try:
-            report_file = os.path.join(config.get('Paths', 'output_dir'), "matching_quality_report.csv")
-            # 보고서용 요약 데이터 생성
-            report_data = {
-                '총 제품 수': len(matched_df),
-                '고려 매칭 수': matched_df['고려 링크'].notna().sum(),
-                '네이버 매칭 수': matched_df['네이버 링크'].notna().sum(),
-                '양쪽 매칭 수': (matched_df['고려 링크'].notna() & matched_df['네이버 링크'].notna()).sum(),
-                '고려 고품질 매칭': matched_df[matched_df['고려_매칭품질'] == 'high'].shape[0] if '고려_매칭품질' in matched_df.columns else 0,
-                '고려 중품질 매칭': matched_df[matched_df['고려_매칭품질'] == 'medium'].shape[0] if '고려_매칭품질' in matched_df.columns else 0,
-                '고려 저품질 매칭': matched_df[matched_df['고려_매칭품질'] == 'low'].shape[0] if '고려_매칭품질' in matched_df.columns else 0,
-                '평균 텍스트 유사도': matched_df['_고려_TextSim'].mean() if '_고려_TextSim' in matched_df.columns else 0,
-                '평균 이미지 유사도': matched_df['_해오름_고려_ImageSim'].mean() if '_해오름_고려_ImageSim' in matched_df.columns else 0,
-                '실행 시간(초)': elapsed_time,
-                '메모리 사용(MB)': process.memory_info().rss / 1024 / 1024
-            }
-            
-            # 보고서 저장
-            pd.DataFrame([report_data]).to_csv(report_file, index=False)
-            logging.info(f"Generated matching quality report at {report_file}")
-        except Exception as e:
-            logging.error(f"Error generating matching report: {e}")
-    
-    # 메모리 사용량 모니터링 종료
-    final_memory = process.memory_info().rss / 1024 / 1024  # MB
-    memory_diff = final_memory - initial_memory
-    logging.info(f"Final memory usage: {final_memory:.2f} MB (Change: {memory_diff:+.2f} MB)")
-    
-    return matched_df 
-
-def _process_batch(
-    batch_df: pd.DataFrame,
-    kogift_map: Dict[str, List[Dict]],
-    naver_map: Dict[str, List[Dict]],
-    input_file_image_map: Dict[Any, str],
-    config: configparser.ConfigParser,
-    gpu_available: bool,
-    progress_queue=None,
-    max_workers: Optional[int] = None,
-    executor_type: str = 'thread',
-    matcher_instance = None,
-    start_count: int = 0
-) -> List[Dict]:
-    """한 배치의 제품을 매칭하는 헬퍼 함수"""
-    results = []
-    total_in_batch = len(batch_df)
-    processed_in_batch = 0
-    futures = []
-    
-    # 기존 logic과 유사하게 실행기 설정
-    executor_class = ProcessPoolExecutor if executor_type == 'process' else ThreadPoolExecutor
-    initializer = _init_worker_matcher if executor_type == 'process' else None
-    initargs = (config,) if executor_type == 'process' else ()
-    
-    timeout_per_task = config.getint('Concurrency', 'thread_pool_timeout_sec', fallback=300)
-    
-    try:
-        with executor_class(max_workers=max_workers, initializer=initializer, initargs=initargs) as executor:
-            for i, row in batch_df.iterrows():
-                haoreum_row_dict = row.to_dict()
-                product_name = haoreum_row_dict.get('상품명')
-                product_code = haoreum_row_dict.get('Code')
-                product_type = haoreum_row_dict.get('구분', 'A')
-                
-                # 필수 정보 누락 체크
-                if not product_name or pd.isna(product_name):
-                    logging.warning(f"Skipping matching for index {i}: Missing or invalid '상품명'.")
-                    processed_in_batch += 1
-                    continue
-                
-                # 매칭에 필요한 데이터 가져오기
-                kogift_data = kogift_map.get(product_name, [])
-                naver_data = naver_map.get(product_name, [])
-                haoreum_img_path = input_file_image_map.get(product_code)
-                
-                # 이미지 경로 검증
-                if haoreum_img_path and not os.path.exists(haoreum_img_path):
-                    logging.warning(f"Image path for product {product_code} does not exist: {haoreum_img_path}")
-                
-                try:
-                    if executor_type == 'process':
-                        future = executor.submit(_match_single_product_wrapper, i, haoreum_row_dict, kogift_data, naver_data, product_type, haoreum_img_path)
-                    else:
-                        future = executor.submit(_match_single_product, i, haoreum_row_dict, kogift_data, naver_data, product_type, matcher_instance, haoreum_img_path)
-                    futures.append(future)
-                except Exception as e:
-                    logging.error(f"Error submitting batch task for product {product_name}: {e}")
-                    processed_in_batch += 1
-            
-            # 완료된 작업 처리
-            for future in as_completed(futures):
-                try:
-                    original_index, result_data = future.result(timeout=timeout_per_task)
-                    if result_data:
-                        results.append(result_data)
-                except TimeoutError:
-                    logging.error(f"A batch matching task timed out after {timeout_per_task} seconds.")
-                except Exception as e:
-                    logging.error(f"Error processing batch matching result: {e}", exc_info=True)
-                finally:
-                    processed_in_batch += 1
-                    total_processed = start_count + processed_in_batch
-                    
-                    # 진행 상황 업데이트
-                    if processed_in_batch % 20 == 0 or processed_in_batch == total_in_batch:
-                        logging.info(f"Batch matching progress: {processed_in_batch}/{total_in_batch}")
-                        if progress_queue:
-                            try:
-                                progress_queue.put(("match", total_processed, start_count + total_in_batch))
-                            except Exception as e:
-                                logging.error(f"Error updating progress queue in batch: {e}")
-    
     except Exception as e:
-        logging.error(f"Error during batch executor execution: {e}", exc_info=True)
+        logging.error(f"Error in process_matching: {e}", exc_info=True)
+        return pd.DataFrame()  # Return empty DataFrame on error
+
+def _create_empty_result_df(haoreum_df: pd.DataFrame, input_file_image_map: Dict[Any, str]) -> pd.DataFrame:
+    """Create empty result DataFrame with original data structure."""
+    results = []
+    for _, row in haoreum_df.iterrows():
+        row_dict = row.to_dict()
+        product_code = row_dict.get('Code')
+        
+        base_data = {
+            **row_dict,
+            '구분(승인관리:A/가격관리:P)': row_dict.get('구분', 'A'),
+            'name': row_dict.get('상품명'),
+            '본사링크': row_dict.get('본사상품링크'),
+            '판매단가(V포함)': row_dict.get('판매단가(V포함)'),
+            '해오름이미지경로': input_file_image_map.get(product_code),
+            '고려 링크': None,
+            '고려기프트(이미지링크)': None,
+            '판매단가2(VAT포함)': None,
+            '_고려_TextSim': 0.0,
+            '_해오름_고려_ImageSim': 0.0,
+            '_고려_Combined': None,
+            '고려 기본수량': '-',
+            '네이버 공급사명': None,
+            '네이버 링크': None,
+            '네이버쇼핑(이미지링크)': None,
+            '판매단가3 (VAT포함)': None,
+            '_네이버_TextSim': 0.0,
+            '_해오름_네이버_ImageSim': 0.0,
+            '_네이버_Combined': None,
+            '네이버 기본수량': '-'
+        }
+        results.append(base_data)
     
-    return results 
+    return pd.DataFrame(results)
+
+def _add_quality_metrics(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+    """Add quality metrics to the result DataFrame."""
+    try:
+        # Convert price columns to numeric
+        price_cols = ['판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)']
+        for col in price_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Calculate price differences
+        if '판매단가(V포함)(2)' in df.columns and '판매단가(V포함)' in df.columns:
+            df['고려가격차이'] = df['판매단가(V포함)(2)'] - df['판매단가(V포함)']
+            mask = df['판매단가(V포함)'].notna() & (df['판매단가(V포함)'] != 0)
+            df.loc[mask, '고려가격비율(%)'] = (df.loc[mask, '고려가격차이'] / df.loc[mask, '판매단가(V포함)'] * 100).round(1)
+
+        if '판매단가(V포함)(3)' in df.columns and '판매단가(V포함)' in df.columns:
+            df['네이버가격차이'] = df['판매단가(V포함)(3)'] - df['판매단가(V포함)']
+            mask = df['판매단가(V포함)'].notna() & (df['판매단가(V포함)'] != 0)
+            df.loc[mask, '네이버가격비율(%)'] = (df.loc[mask, '네이버가격차이'] / df.loc[mask, '판매단가(V포함)'] * 100).round(1)
+
+        # Add quality labels
+        quality_evaluator = MatchQualityEvaluator(config)
+        df = quality_evaluator.apply_quality_labels(df)
+
+        # Log quality metrics
+        kogift_matched = df['고려 링크'].notna().sum()
+        naver_matched = df['네이버 링크'].notna().sum()
+        both_matched = (df['고려 링크'].notna() & df['네이버 링크'].notna()).sum()
+        
+        logging.info(
+            f"Match quality: {kogift_matched}/{len(df)} Kogift, "
+            f"{naver_matched}/{len(df)} Naver, "
+            f"{both_matched}/{len(df)} both"
+        )
+
+        return df
+    except Exception as e:
+        logging.error(f"Error adding quality metrics: {e}")
+        return df
 
 def combine_match_results(df_input, kogift_matches, naver_matches, config):
     """
@@ -1254,3 +1093,147 @@ def combine_match_results(df_input, kogift_matches, naver_matches, config):
 
 # Alias for backward compatibility
 match_products = process_matching
+
+def filter_dataframe(df, config):
+    """Filter and process the DataFrame with improved error handling."""
+    if df is None:
+        logging.error("Input DataFrame is None")
+        return pd.DataFrame()
+        
+    if not isinstance(df, pd.DataFrame):
+        logging.error(f"Input is not a DataFrame: {type(df)}")
+        return pd.DataFrame()
+        
+    if df.empty:
+        logging.warning("DataFrame is empty before filtering.")
+        return df
+
+    initial_rows = len(df)
+    logging.info(f"Starting filtering of {initial_rows} matched results...")
+
+    # IMPORTANT: Save the original input index to ensure we don't lose any products
+    original_indices = df.index.tolist()
+    logging.info(f"Preserved {len(original_indices)} original product indices")
+
+    try:
+        df_filtered = df.copy() # Work on a copy
+
+        # --- 1. Data Cleaning and Numeric Conversion ---
+        # Define columns expected to be numeric (use original names before potential rename)
+        numeric_cols = ['가격차이(2)', '가격차이(3)', '가격차이(2)(%)', '가격차이(3)(%)', '가격차이 비율(3)',
+                        '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)']
+        # Add similarity scores if they exist and should be numeric
+        numeric_cols.extend([col for col in df_filtered.columns if '_Sim' in col or '_Combined' in col])
+
+        # Clean percentage strings first (handle both '%', ' %', and potential extra spaces)
+        percent_cols = ['가격차이(2)(%)', '가격차이(3)(%)', '가격차이 비율(3)']
+        for col in percent_cols:
+            if col in df_filtered.columns:
+                df_filtered[col] = df_filtered[col].astype(str).str.replace(r'\s*%\s*$', '', regex=True).str.strip()
+
+        # Clean price difference strings (remove commas)
+        price_diff_cols = ['가격차이(2)', '가격차이(3)']
+        for col in price_diff_cols:
+            if col in df_filtered.columns:
+                df_filtered[col] = df_filtered[col].astype(str).str.replace(r',', '', regex=True).str.strip()
+
+        # Convert to numeric, coercing errors
+        for col in numeric_cols:
+            if col in df_filtered.columns:
+                # Replace potential placeholders like '-' before conversion
+                df_filtered[col] = df_filtered[col].replace(['-', ''], np.nan, regex=False)
+                df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce')
+                logging.debug(f"Converted column '{col}' to numeric.")
+
+        # --- 2. Initial Price Difference Filter ---
+        if '가격차이(2)' in df_filtered.columns:
+            negative_price2 = df_filtered['가격차이(2)'].lt(0)
+            logging.info(f"Identificados {negative_price2.sum()} registros com preço Kogift menor")
+            
+        if '가격차이(3)' in df_filtered.columns:
+            negative_price3 = df_filtered['가격차이(3)'].lt(0)
+            logging.info(f"Identificados {negative_price3.sum()} registros com preço Naver menor")
+
+        # --- 3. Conditional Clearing / Removal of Data ---
+        # Define columns for Goryeo and Naver processing
+        original_goryeo_cols = ['기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', 
+                              '고려기프트 상품링크', '고려기프트 이미지']
+        original_naver_cols = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '가격차이 비율(3)',
+                             '공급사명', '공급사 상품링크', '네이버 쇼핑 링크', '네이버 이미지']
+
+        # Get existing columns to avoid errors
+        existing_goryeo_clear = [col for col in original_goryeo_cols if col in df_filtered.columns]
+        existing_naver_clear = [col for col in original_naver_cols if col in df_filtered.columns]
+
+        # 3a. Clear Goryeo Data if Price Diff >= 0 OR Price Diff % > -1%
+        goryeo_cleared_count = 0
+        goryeo_clear_cond = pd.Series(False, index=df_filtered.index)
+        if '가격차이(2)' in df_filtered.columns:
+            goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)'].notna() & df_filtered['가격차이(2)'].ge(0))
+        if '가격차이(2)(%)' in df_filtered.columns:
+            goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)(%)'].notna() & df_filtered['가격차이(2)(%)'].gt(-1.0))
+
+        rows_to_clear_goryeo = goryeo_clear_cond.fillna(False)
+        if rows_to_clear_goryeo.any() and existing_goryeo_clear:
+            df_filtered.loc[rows_to_clear_goryeo, existing_goryeo_clear] = np.nan 
+            goryeo_cleared_count = rows_to_clear_goryeo.sum()
+            logging.debug(f"Cleared Goryeo data for {goryeo_cleared_count} rows based on price diff >= 0 or % > -1.")
+
+        # 3b. Clear Naver Data if Price Diff >= 0 OR Price Diff % > -1%
+        naver_cleared_count1 = 0
+        naver_clear_cond1 = pd.Series(False, index=df_filtered.index)
+        if '가격차이(3)' in df_filtered.columns:
+            naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)'].notna() & df_filtered['가격차이(3)'].ge(0))
+        if '가격차이 비율(3)' in df_filtered.columns:
+            naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이 비율(3)'].notna() & df_filtered['가격차이 비율(3)'].gt(-1.0))
+        elif '가격차이(3)(%)' in df_filtered.columns:
+            naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)(%)'].notna() & df_filtered['가격차이(3)(%)'].gt(-1.0))
+
+        rows_to_clear_naver1 = naver_clear_cond1.fillna(False)
+        if rows_to_clear_naver1.any() and existing_naver_clear:
+            df_filtered.loc[rows_to_clear_naver1, existing_naver_clear] = np.nan
+            naver_cleared_count1 = rows_to_clear_naver1.sum()
+            logging.debug(f"Cleared Naver data for {naver_cleared_count1} rows based on price diff >= 0 or % > -1.")
+
+        # --- 4. IMPORTANT: DO NOT drop any rows, even if they have no comparison data ---
+        all_comparison_cols_original = list(set(existing_goryeo_clear + existing_naver_clear))
+        if all_comparison_cols_original:
+            empty_comparison_mask = df_filtered[all_comparison_cols_original].isna().all(axis=1)
+            empty_rows_count = empty_comparison_mask.sum()
+            logging.info(f"Encontrados {empty_rows_count} produtos sem dados de comparação (seriam removidos no filtro original)")
+
+        # --- 5. Final Formatting before Renaming ---
+        percent_cols_to_format = ['가격차이(2)(%)', '가격차이 비율(3)', '가격차이(3)(%)']
+        for key in percent_cols_to_format:
+            if key in df_filtered.columns:
+                numeric_series = pd.to_numeric(df_filtered[key], errors='coerce')
+                mask = numeric_series.notna()
+                df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{x:.1f} %")
+
+        price_diff_cols_to_format = ['가격차이(2)', '가격차이(3)']
+        for key in price_diff_cols_to_format:
+            if key in df_filtered.columns:
+                numeric_series = pd.to_numeric(df_filtered[key], errors='coerce')
+                mask = numeric_series.notna()
+                df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{x:,.0f}")
+
+        # Verify we haven't lost any rows
+        final_rows = len(df_filtered)
+        if final_rows != initial_rows:
+            logging.error(f"Row count mismatch! Started with {initial_rows} rows but now have {final_rows} rows. Attempting to restore missing rows.")
+            current_indices = df_filtered.index.tolist()
+            missing_indices = [idx for idx in original_indices if idx not in current_indices]
+            
+            if missing_indices:
+                logging.warning(f"Found {len(missing_indices)} missing rows. Restoring original rows.")
+                missing_rows = df.loc[missing_indices].copy()
+                df_filtered = pd.concat([df_filtered, missing_rows])
+                logging.info(f"Restored missing rows. New row count: {len(df_filtered)}")
+
+        logging.info(f"Finished filtering. {len(df_filtered)}/{initial_rows} rows maintained (no rows dropped).")
+        return df_filtered
+
+    except Exception as e:
+        logging.error(f"Error in filter_dataframe: {e}", exc_info=True)
+        # Return original DataFrame on error to ensure no data loss
+        return df

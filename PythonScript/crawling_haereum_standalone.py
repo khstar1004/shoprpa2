@@ -1,3 +1,10 @@
+"""
+WARNING: DO NOT MODIFY THIS FILE DIRECTLY
+This file contains critical scraping logic for Haereum gift website.
+Any modifications should be made through the main configuration files.
+Direct modifications may break the scraping functionality.
+"""
+
 import asyncio
 import pandas as pd
 from playwright.async_api import Browser, Page, Error as PlaywrightError # Import specific types
@@ -46,6 +53,10 @@ logger = logging.getLogger(__name__)
 # SELECTORS = ...
 # PATTERNS = ...
 
+# Add semaphore for concurrent task limiting
+MAX_CONCURRENT_TASKS = 5
+scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
 def _normalize_text(text: str) -> str:
     """Normalizes text (remove extra whitespace)."""
     if not text:
@@ -58,282 +69,197 @@ def _normalize_text(text: str) -> str:
 
 # Updated main scraping function to accept browser and ConfigParser
 async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
-    """Find the first product with an exact name match and return its image URL and local path, using Playwright.
-       Uses a shared Browser instance. Accepts ConfigParser object.
-    
-    Args:
-        browser: An active Playwright Browser instance.
-        keyword: The product name (keyword) to search for.
-        config: ConfigParser object containing configuration settings.
-        
-    Returns:
-        Dictionary with image URL and local path if found, otherwise None.
-    """
-    if config is None:
-        logger.error("🟡 Configuration object (ConfigParser) is missing for Haereum scrape.")
-        return None # Return None on critical config error
-
-    # Get settings from config using ConfigParser methods
-    try:
-        haereum_main_url = config.get('ScraperSettings', 'haereum_main_url', fallback="https://www.jclgift.com/")
-        haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
-        user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
-        
-        default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=60000)
-        navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000)
-        action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=15000)
-        block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
-        
-        # Get download retry settings
-        max_download_retries = config.getint('Matching', 'max_retries_downloads', fallback=3)
-
-        # Load selectors from JSON string in config
-        selectors_json = config.get('ScraperSettings', 'haereum_selectors_json', fallback='{}')
-        try:
-            selectors = json.loads(selectors_json)
-            if not isinstance(selectors, dict):
-                 raise ValueError("Selectors JSON did not parse into a dictionary.")
-        except (json.JSONDecodeError, ValueError) as json_err:
-            logger.error(f"🟡 Error parsing Haereum selectors JSON from config: {json_err}. Using default selectors. JSON string: {selectors_json}")
-            # Define default selectors here if parsing fails
-            selectors = {
-                "search_input": 'input[name="keyword"]',
-                "search_button": 'input[type="image"][src*="b_search.gif"]',
-                "product_list_item": 'td[width="160"][bgcolor="ffffff"]',
-                "product_name_list": 'td[align="center"][style*="line-height:130%"] > a',
-                "product_image_list": 'td[align="center"] > a > img',
-                "product_list_wrapper": 'form[name="ListForm"]'
-            }
-            
-    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-        logger.error(f"🟡 Error reading Haereum/Playwright config: {e}. Cannot proceed.")
-        return None # Cannot proceed without basic config
-
-    logger.info(f"Starting Haereum scrape for keyword: '{keyword}'")
-    found_image_url = None 
-    normalized_keyword = _normalize_text(keyword)
-
-    context = None
-    page = None
-    try:
-        context = await browser.new_context(user_agent=user_agent)
-        page = await context.new_page()
-        page.set_default_timeout(default_timeout)
-        page.set_default_navigation_timeout(navigation_timeout)
-
-        if block_resources:
-            await setup_page_optimizations(page)
-
-        logger.debug(f"Navigating to {haereum_main_url}")
-        await page.goto(haereum_main_url, wait_until="domcontentloaded")
-        # Increase explicit wait after navigation
-        await page.wait_for_timeout(5000) 
-        logger.debug("Initial page load wait finished.")
-
-        # --- Locate and interact with search elements --- 
-        search_input_selector = selectors.get("search_input", 'input[name="keyword"]')
-        search_button_selector = selectors.get("search_button", 'input[type="image"][src*="b_search.gif"]')
-
-        logger.debug(f"Looking for search input with selector: {search_input_selector}")
-        # Wait for the selector to be attached
-        await page.locator(search_input_selector).wait_for(state="attached", timeout=action_timeout)
-        search_input = page.locator(search_input_selector).first
-        # Wait for the element to be visible before interacting
-        await search_input.wait_for(state="visible", timeout=action_timeout) 
-        await search_input.fill(keyword, timeout=action_timeout) # Rely on fill's internal checks and timeout
-        logger.debug(f"Filled search input with keyword: {keyword}")
-
-        logger.debug(f"Looking for search button with selector: {search_button_selector}")
-        # Wait for the button to be attached and visible
-        await page.locator(search_button_selector).wait_for(state="attached", timeout=action_timeout)
-        search_button = page.locator(search_button_selector).first
-        await search_button.wait_for(state="visible", timeout=action_timeout)
-
-        # --- Click search and wait for results --- 
-        logger.info("Clicking search button...")
-        # Click without waiting for navigation
-        await search_button.click(timeout=action_timeout) 
-        # Use a simple timeout instead
-        await page.wait_for_timeout(5000)
-        logger.info("Search button clicked, continuing after timeout")
-        
-        # Simplified approach to extract image URL from HTML
-        try:
-            # Get the page HTML directly
-            page_html = await page.content()
-            logger.info(f"Retrieved page HTML, length: {len(page_html)} characters")
-            
-            # Simple pattern to find image URLs
-            img_pattern = r'src="(/upload/product/simg3/[^"]+)"'
-            all_img_matches = re.findall(img_pattern, page_html)
-            
-            if all_img_matches:
-                logger.info(f"Found {len(all_img_matches)} image URLs with pattern '/upload/product/simg3/'")
-                
-                # Extract parts of the product name to search for
-                product_parts = normalized_keyword.split()
-                logger.info(f"Looking for product parts: {product_parts}")
-                
-                # For each image, check if it's associated with our product
-                for img_path in all_img_matches:
-                    # Get context around this image URL (text before and after)
-                    img_pos = page_html.find(img_path)
-                    start_pos = max(0, img_pos - 200)
-                    end_pos = min(len(page_html), img_pos + 500)
-                    context_text = page_html[start_pos:end_pos].lower()
-                    
-                    # Check if all parts of the product name are in this context
-                    all_parts_found = all(part.lower() in context_text for part in product_parts)
-                    if all_parts_found:
-                        found_image_url = urljoin(haereum_main_url, img_path)
-                        logger.info(f"⭐ Found matching image URL: {found_image_url}")
-                        
-                        # Download the image to the main folder with target information
-                        local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=max_download_retries)
-                        if local_path:
-                            if context: await context.close()
-                            return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
-                        else:
-                            if context: await context.close()
-                            return {"url": found_image_url, "local_path": None, "source": "haereum"}
-                
-                # If we reached here, we found images but none matched our product
-                logger.warning(f"Found {len(all_img_matches)} images but none matched the product '{normalized_keyword}'")
-            else:
-                logger.warning("No image URLs with pattern '/upload/product/simg3/' found in page HTML")
-        except Exception as e:
-            logger.error(f"Error during HTML extraction: {e}")
-        
-        # Continue with fallback approach if direct extraction failed
-        product_list_selector = selectors.get("product_list_item", 'td[width="160"][bgcolor="ffffff"]')
-        
-        # Add diagnostic code to capture the full page HTML for troubleshooting
-        try:
-            page_html = await page.content()
-            logger.debug(f"Page HTML length: {len(page_html)} characters")
-            # Save a snippet around a key marker to debug structure
-            if "/upload/product/simg3/" in page_html:
-                logger.info("Found '/upload/product/simg3/' in page HTML - image URLs are present on page")
-                img_index = page_html.find("/upload/product/simg3/")
-                snippet = page_html[max(0, img_index-100):min(len(page_html), img_index+200)]
-                logger.debug(f"HTML snippet around image URL: {snippet}")
-            else:
-                logger.warning("No '/upload/product/simg3/' pattern found in the entire page HTML")
-        except Exception as e:
-            logger.warning(f"Could not retrieve page HTML for diagnostics: {e}")
-        
-        product_items = page.locator(product_list_selector)
-        item_count = await product_items.count()
-        logger.info(f"Found {item_count} potential product elements on the results page.")
-
-        if item_count == 0:
-            logger.warning(f"No product items located for keyword '{keyword}' (count is 0).")
-            # Ensure context is closed before returning
-            if context: await context.close()
+    """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
+    async with scraping_semaphore:  # Acquire semaphore before starting
+        if config is None:
+            logger.error("🔴 Configuration object (ConfigParser) is missing for Haereum scrape.")
             return None
 
-        # --- Iterate through items to find exact match --- 
-        name_selector = selectors.get("product_name_list", 'td[align="center"][style*="line-height:130%"] > a') # Corrected selector based on HTML
-        image_selector = selectors.get("product_image_list", 'td[align="center"] > a > img')
+        try:
+            haereum_main_url = config.get('ScraperSettings', 'haereum_main_url', fallback="https://www.jclgift.com/")
+            haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
+            user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
+            
+            default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=60000)
+            navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000)
+            action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=15000)
+            block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
+            max_download_retries = config.getint('Matching', 'max_retries_downloads', fallback=3)
 
-        for i in range(item_count):
-            item = product_items.nth(i)
+            # Load selectors from JSON string in config
+            selectors_json = config.get('ScraperSettings', 'haereum_selectors_json', fallback='{}')
             try:
-                # Extract Name
-                name_element = item.locator(name_selector).first
-                raw_extracted_name = ""
-                extracted_name = ""
+                selectors = json.loads(selectors_json)
+                if not isinstance(selectors, dict):
+                    raise ValueError("Selectors JSON did not parse into a dictionary.")
+            except (json.JSONDecodeError, ValueError) as json_err:
+                logger.error(f"🔴 Error parsing Haereum selectors JSON from config: {json_err}. Using default selectors.")
+                selectors = {
+                    "search_input": 'input[name="keyword"]',
+                    "search_button": 'input[type="image"][src*="b_search.gif"]',
+                    "product_list_item": 'td[width="160"][bgcolor="ffffff"]',
+                    "product_name_list": 'td[align="center"][style*="line-height:130%"] > a',
+                    "product_image_list": 'td[align="center"] > a > img',
+                    "product_list_wrapper": 'form[name="ListForm"]'
+                }
+            
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
+            logger.error(f"🔴 Error reading Haereum/Playwright config: {e}")
+            return None
+
+        logger.info(f"🚀 Starting Haereum scrape for keyword: '{keyword}'")
+        normalized_keyword = _normalize_text(keyword)
+
+        context = None
+        page = None
+        try:
+            # Check if browser is still valid
+            if not browser.is_connected():
+                logger.error("🔴 Browser is not connected")
+                return None
+
+            context = await browser.new_context(user_agent=user_agent)
+            page = await context.new_page()
+            page.set_default_timeout(default_timeout)
+            page.set_default_navigation_timeout(navigation_timeout)
+
+            if block_resources:
+                await setup_page_optimizations(page)
+
+            logger.debug(f"🌐 Navigating to {haereum_main_url}")
+            await page.goto(haereum_main_url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+            logger.debug("⏳ Initial page load wait finished.")
+
+            # --- Search interaction ---
+            # Wait for the search input to be present and visible with retry logic
+            max_retries = 3
+            retry_count = 0
+            search_input = None
+            
+            while retry_count < max_retries:
                 try:
-                     raw_extracted_name = await name_element.text_content(timeout=5000) or ""
-                     extracted_name = _normalize_text(raw_extracted_name)
-                except PlaywrightError as name_err:
-                     logger.debug(f"Could not extract name from item {i} using selector '{name_selector}': {name_err}")
-                     continue 
+                    search_input = page.locator('input[name="keyword"]')
+                    await search_input.wait_for(state="visible", timeout=action_timeout)
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    logger.warning(f"⚠️ Retry {retry_count}/{max_retries} for search input: {str(e)}")
+                    if retry_count < max_retries:
+                        await page.reload()
+                        await page.wait_for_timeout(5000)
+                    else:
+                        raise
+            
+            # Wait for the input to be enabled
+            start_time = time.time()
+            while time.time() - start_time < action_timeout / 1000:  # Convert ms to seconds
+                if await search_input.is_enabled():
+                    break
+                await page.wait_for_timeout(100)  # Check every 100ms
+            
+            # Fill the search input
+            await search_input.fill(keyword, timeout=action_timeout)
+            logger.debug(f"⌨️ Filled search input with keyword: {keyword}")
 
-                # Detailed Logging for comparison
-                logger.debug(f"Item {i}: Raw Name='{raw_extracted_name}', Normalized Name='{extracted_name}', Keyword='{normalized_keyword}'")
+            # Wait for the search button to be present and visible
+            search_button = page.locator('input[type="image"][src*="b_search.gif"]')
+            await search_button.wait_for(state="visible", timeout=action_timeout)
+            
+            # Wait for the button to be enabled
+            start_time = time.time()
+            while time.time() - start_time < action_timeout / 1000:  # Convert ms to seconds
+                if await search_button.is_enabled():
+                    break
+                await page.wait_for_timeout(100)  # Check every 100ms
+            
+            # Click the search button and wait for navigation
+            await search_button.click(timeout=action_timeout)
+            await page.wait_for_timeout(5000)
+            logger.info("🔍 Search button clicked, waiting for results")
 
-                # Compare normalized name with normalized keyword
-                if extracted_name == normalized_keyword:
-                    logger.info(f"Exact match found for '{keyword}' at index {i}: '{extracted_name}'")
-                    
-                    # --- New Image Extraction using Regex on Item HTML ---
+            # --- Enhanced image URL extraction ---
+            try:
+                # Wait for the product list to load with multiple possible selectors
+                selectors_to_try = [
+                    'img[src*="/upload/product/"]',  # More general pattern
+                    'img[src*="/upload/product/simg3/"]',  # Original pattern
+                    'td[align="center"] img',  # General product image
+                    'form[name="ListForm"] img'  # Any image in product list
+                ]
+                
+                # Try each selector until we find images
+                product_images = []
+                for selector in selectors_to_try:
                     try:
-                        # Get either the specific item HTML or the entire page HTML if needed
-                        item_html = await item.inner_html(timeout=3000)
-                        
-                        # More robust regex that handles variations in the HTML structure
-                        # This pattern looks for the exact format seen in the example
-                        img_pattern = r'src="(/upload/product/simg3/[^"]+)"'
-                        match = re.search(img_pattern, item_html)
-                        
-                        if match:
-                            image_path = match.group(1)
-                            # Construct the full URL by joining with base URL
-                            found_image_url = urljoin(haereum_main_url, image_path)
-                            logger.info(f"Found image URL: {found_image_url}")
-                            
-                            # Download the image to the main folder with target information
-                            local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=max_download_retries)
-                            if local_path:
-                                if context: await context.close()
-                                return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
-                            else:
-                                if context: await context.close()
-                                return {"url": found_image_url, "local_path": None, "source": "haereum"}
-                                
-                        else:
-                            # If no match in the item HTML, try getting the entire page HTML as fallback
-                            logger.debug("Could not find image URL in item HTML, attempting fallback with page HTML")
-                            page_html = await page.content()
-                            # Look for the product name in proximity to image URL
-                            pattern = rf'<a href="[^"]+"><img src="(/upload/product/simg3/[^"]+)"[^>]+></a>.*?{re.escape(normalized_keyword)}'
-                            match = re.search(pattern, page_html, re.DOTALL | re.IGNORECASE)
-                            
-                            if match:
-                                image_path = match.group(1)
-                                found_image_url = urljoin(haereum_main_url, image_path)
-                                logger.info(f"Found image URL (from page fallback): {found_image_url}")
-                                
-                                # Download the image to the main folder with target information
-                                local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=max_download_retries)
-                                if local_path:
-                                    if context: await context.close()
-                                    return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
-                                else:
-                                    if context: await context.close()
-                                    return {"url": found_image_url, "local_path": None, "source": "haereum"}
-                                    
-                            else:
-                                logger.warning(f"Could not find image URL pattern in HTML for matched item.")
+                        await page.wait_for_selector(selector, timeout=action_timeout)
+                        images = await page.query_selector_all(selector)
+                        if images:
+                            product_images = images
+                            logger.info(f"📸 Found {len(product_images)} product images using selector: {selector}")
+                            break
                     except Exception as e:
-                        logger.warning(f"Error extracting image URL: {e}")
-                    # --- End New Image Extraction ---
-
-                    break # Break after finding exact match and attempting regex extraction
+                        logger.debug(f"Selector {selector} not found: {str(e)}")
+                        continue
+                
+                if not product_images:
+                    logger.warning("⚠️ No product images found on the page with any selector")
+                    # Try to get page content for debugging
+                    try:
+                        content = await page.content()
+                        logger.debug(f"Page content: {content[:500]}...")  # Log first 500 chars
+                    except Exception as e:
+                        logger.error(f"Failed to get page content: {str(e)}")
+                    return None
+                
+                # Get the first product image URL with better error handling
+                first_image = product_images[0]
+                img_src = await first_image.get_attribute('src')
+                
+                if not img_src:
+                    logger.warning("⚠️ Could not get image source attribute")
+                    # Try alternative attributes
+                    for attr in ['data-src', 'data-original', 'srcset']:
+                        img_src = await first_image.get_attribute(attr)
+                        if img_src:
+                            logger.info(f"Found image URL in alternative attribute: {attr}")
+                            break
+                
+                if img_src:
+                    # Construct full URL if needed
+                    if not img_src.startswith(('http://', 'https://')):
+                        found_image_url = urljoin(haereum_main_url, img_src)
+                    else:
+                        found_image_url = img_src
+                        
+                    logger.info(f"✅ Found image URL: {found_image_url}")
+                    
+                    # Download the image
+                    local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=max_download_retries)
+                    if local_path:
+                        return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
+                    else:
+                        return {"url": found_image_url, "local_path": None, "source": "haereum"}
                 else:
-                    pass # Reduce noise, only log debug on match or error
-
+                    logger.warning("⚠️ Could not get image source from any attribute")
+                    return None
+                
             except Exception as e:
-                logger.warning(f"Could not process item index {i} to check name/image: {e}", exc_info=False)
-                continue
+                logger.error(f"❌ Error during image URL extraction: {e}", exc_info=True)
+                return None
+                
+        except PlaywrightError as pe:
+            logger.error(f"❌ Playwright error during Haereum scrape: {pe}")
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during Haereum scrape: {e}", exc_info=True)
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception as e:
+                    logger.warning(f"⚠️ Error closing context: {e}")
 
-        # --- End of loop --- 
-        if not found_image_url:
-            logger.warning(f"No exact match found for keyword '{keyword}' among {item_count} items.")
-
-    except PlaywrightError as pe:
-         logger.error(f"Playwright error during Haereum scrape for '{keyword}': {pe}")
-         found_image_url = None
-    except Exception as e:
-        logger.error(f"Unexpected error during Haereum scrape for '{keyword}': {e}", exc_info=True)
-        found_image_url = None
-    finally:
-        if context:
-             try: await context.close(); logger.debug(f"Closed Playwright context for Haereum keyword '{keyword}'.")
-             except Exception as context_close_err: logger.warning(f"Error closing Haereum context: {context_close_err}")
-
-    return None if not found_image_url else {"url": found_image_url, "local_path": None, "source": "haereum"}
+        return None
 
 async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, max_retries: int = 3) -> Optional[str]:
     """Download an image to the main folder with target information.
@@ -546,38 +472,58 @@ async def _test_main():
         print(f"Test Error: Could not load config from {config_path}")
         return
         
-    test_keyword = "777쓰리쎄븐 TS-5500VG 손톱깎이세트" 
-    logger.info(f"--- Running Standalone Test for Haereum Gift with keyword: {test_keyword} ---")
+    test_keywords = [
+        "사랑이 엔젤하트 투포켓 에코백",
+        "사랑이 큐피트화살 투포켓 에코백",
+        "행복이 스마일플라워 투포켓 에코백",
+        "행운이 네잎클로버 투포켓 에코백",
+        "캐치티니핑 53 스무디 입체리본 투명 아동우산",
+        "아테스토니 뱀부사 소프트 3P 타올 세트"
+    ]
+    
+    logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_keywords)} keywords ---")
     
     async with async_playwright() as p:
         try:
-            headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=False) # Default to False for visual test
+            headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=False)
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
              headless_mode = False
              
         browser = await p.chromium.launch(headless=headless_mode)
         start_time = time.time()
+        
         try:
-            # Pass ConfigParser object
-            result = await scrape_haereum_data(browser, test_keyword, config)
+            # Create tasks for parallel execution
+            tasks = []
+            for keyword in test_keywords:
+                task = asyncio.create_task(scrape_haereum_data(browser, keyword, config))
+                tasks.append(task)
+            
+            # Wait for all tasks to complete
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process and display results
+            print("\n--- Parallel Scraping Test Results ---")
+            for keyword, result in zip(test_keywords, results):
+                if isinstance(result, Exception):
+                    print(f"❌ Error for '{keyword}': {str(result)}")
+                elif result and result.get("url"):
+                    print(f"✅ Success for '{keyword}':")
+                    print(f"  - Image URL: {result.get('url')}")
+                    print(f"  - Local path: {result.get('local_path')}")
+                    print(f"  - Source: {result.get('source')}")
+                else:
+                    print(f"❌ No results found for '{keyword}'")
+                print("---------------------------")
+                
         finally:
-             await browser.close()
+            await browser.close()
+            
         end_time = time.time()
-        logger.info(f"Scraping took {end_time - start_time:.2f} seconds.")
-
-        if result and result.get("url"):
-            print("\n--- Scraping Test Results ---")
-            print(f"Found Image URL for '{test_keyword}': {result.get('url')}")
-            print(f"Local path: {result.get('local_path')}")
-            print(f"Source: {result.get('source')}")
-            print("---------------------------")
-        else:
-            print("\n--- Scraping Test Results ---")
-            print(f"No exact match image URL found for '{test_keyword}' or an error occurred.")
-            print("---------------------------")
+        logger.info(f"Parallel scraping took {end_time - start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     # To run this test: python PythonScript/crawling_haereum_standalone.py
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
-    logger.info("Running Haereum standalone test...")
+    logger.info("Running Haereum parallel test...")
     asyncio.run(_test_main()) 

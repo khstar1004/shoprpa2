@@ -3,11 +3,11 @@ import glob
 import logging
 import pandas as pd
 from datetime import datetime
-import configparser # Import configparser
-from excel_utils import filter_dataframe, apply_excel_styles, add_hyperlinks # Import necessary utils
+import configparser
+from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER
 import re
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 
 def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Processes the main input Excel file, reading config with ConfigParser."""
@@ -56,26 +56,34 @@ def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.D
         logging.error(f"Error reading Excel '{input_file}': {e}", exc_info=True)
         return None, input_filename
 
-def filter_results(df: Optional[pd.DataFrame], config: configparser.ConfigParser, progress_queue=None) -> Optional[pd.DataFrame]:
-    """Filters the combined results DataFrame using external utility function.
-       Accepts ConfigParser object.
-       
-       Nota: A função filter_dataframe foi modificada para manter todas as linhas de entrada,
-       incluindo produtos sem correspondências, para garantir que a saída sempre contenha 
-       informações mesmo quando não há correspondências perfeitas.
-    """
-    if df is None or df.empty:
-        logging.warning("Input DataFrame for filtering is None or empty. Skipping filter.")
+def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+    """결과 데이터프레임 필터링"""
+    if df.empty:
         return df
-
-    if progress_queue: progress_queue.put(("filter", 0, 1))
-
-    # Pass ConfigParser to filter_dataframe (assuming it's updated)
-    filtered_df = filter_dataframe(df, config)
-
-    if progress_queue: progress_queue.put(("filter", 1, 1))
-
-    return filtered_df
+        
+    # 가격 차이 필터링
+    price_diff_threshold = config.getfloat('PriceDifference', 'threshold', fallback=0.1)
+    
+    # 고려 가격 차이 필터링
+    if '고려_가격차이' in df.columns:
+        df = df[df['고려_가격차이'].abs() <= price_diff_threshold]
+        
+    # 네이버 가격 차이 필터링
+    if '네이버_가격차이' in df.columns:
+        df = df[df['네이버_가격차이'].abs() <= price_diff_threshold]
+        
+    # 매칭 품질 필터링
+    quality_threshold = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.50)
+    
+    # 고려 매칭 품질 필터링
+    if '고려_매칭품질' in df.columns:
+        df = df[df['고려_매칭품질'].isin(['high', 'medium', 'low'])]
+        
+    # 네이버 매칭 품질 필터링
+    if '네이버_매칭품질' in df.columns:
+        df = df[df['네이버_매칭품질'].isin(['high', 'medium', 'low'])]
+        
+    return df
 
 # Note: save_and_format_output and format_output_file were likely replaced by
 # create_final_output_excel in excel_utils.py. We remove them here to avoid duplication.
@@ -101,173 +109,147 @@ def filter_results(df: Optional[pd.DataFrame], config: configparser.ConfigParser
 #     """
 #     pass 
 
-def format_product_data_for_output(input_df, kogift_results, naver_results):
+def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[str, List[Dict]], naver_results: Dict[str, List[Dict]]) -> pd.DataFrame:
     """
-    Format crawled product data into the necessary format for Excel output.
-    Ensures all image URLs and product data are properly included.
-    
-    Args:
-        input_df: Original input DataFrame
-        kogift_results: Dictionary mapping product name to KoGift results
-        naver_results: Dictionary mapping product name to Naver results
-        
-    Returns:
-        DataFrame with properly formatted data for Excel output
+    Formats and combines original input data with KoGift and Naver crawl results.
+    Calculates price differences and prepares the DataFrame for Excel output.
     """
+    if input_df is None or input_df.empty:
+        logging.warning("Input DataFrame is empty. Returning empty DataFrame with required columns.")
+        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
+
     output_df = input_df.copy()
-    
-    # Log original column names for debugging
-    logging.info(f"Original columns in input_df: {output_df.columns.tolist()}")
-    
-    # Add image columns if they don't exist
-    image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
-    for col in image_columns:
-        if col not in output_df:
-            output_df[col] = ''
-    
-    # Add result columns if they don't exist with correct column names including \xa0
-    kogift_cols = [
-        '\xa0기본수량(2)\xa0', '\xa0판매가(V포함)(2)\xa0', '\xa0판매단가(V포함)(2)\xa0', 
-        '\xa0가격차이(2)\xa0', '\xa0가격차이(2)(%)\xa0', '고려기프트 상품링크'
-    ]
-    
-    naver_cols = [
-        '\xa0기본수량(3)\xa0', '\xa0판매단가(V포함)(3)\xa0', '\xa0가격차이(3)\xa0', '\xa0가격차이(3)(%)\xa0', 
-        '\xa0공급사명\xa0', '\xa0네이버 쇼핑 링크\xa0', '공급사 상품링크'
-    ]
-    
-    for col in kogift_cols + naver_cols:
-        if col not in output_df:
+    logging.info(f"Starting data formatting. Input rows: {len(output_df)}")
+
+    # Initialize all required columns with '-'
+    for col in FINAL_COLUMN_ORDER:
+        if col not in output_df.columns:
             output_df[col] = '-'
-    
-    # Preserve these important fields to ensure they're in the output
-    essential_fields = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명']
-    for field in essential_fields:
-        if field in input_df.columns and field not in output_df.columns:
-            output_df[field] = input_df[field]
-    
-    # Process each row
+
+    # --- Process Each Row --- 
     for idx, row in output_df.iterrows():
         product_name = row.get('상품명')
-        if not product_name:
+        if not product_name or pd.isna(product_name):
+            logging.warning(f"Skipping row index {idx}: Missing or invalid product name.")
             continue
+
+        # --- Get Base Price (Haoreum Price) --- 
+        try:
+            haoreum_price = float(str(row['판매단가(V포함)']).replace(',', '').strip())
+            if haoreum_price <= 0:
+                logging.warning(f"Invalid Haoreum price ({haoreum_price}) for product: {product_name}")
+                haoreum_price = None
+        except (ValueError, TypeError):
+            haoreum_price = None
+            logging.warning(f"Could not parse Haoreum price for product: {product_name}")
+
+        # --- Process KoGift Data ---
+        if product_name in kogift_results and kogift_results[product_name]:
+            best_match = kogift_results[product_name][0]
             
-        # Get Haoreum price, handling potential missing column or value
-        haoreum_price = 0
-        price_col = '\xa0판매단가(V포함)\xa0'
-        if price_col in row:
             try:
-                price_val = row[price_col]
-                if pd.notna(price_val):
-                    haoreum_price = float(price_val)
-            except (ValueError, TypeError):
-                pass
-            
-        # Process KoGift data
-        kogift_data = kogift_results.get(product_name, [])
-        if kogift_data:
-            best_match = kogift_data[0]  # Use first match as best match
-            
-            # Image URL - Try all possible image URL field names
-            image_url = None
-            for field in ['image_url', 'image_path', 'src', 'img_url', 'image']:
-                if field in best_match and best_match[field] and isinstance(best_match[field], str):
-                    image_url = best_match[field]
-                    break
+                kogift_price = float(str(best_match.get('price', '')).replace(',', '').strip())
+                if kogift_price <= 0:
+                    raise ValueError(f"Invalid KoGift price: {kogift_price}")
                     
-            if image_url:
-                output_df.loc[idx, '고려기프트 이미지'] = str(image_url)
-                logging.debug(f"Added Kogift image URL for '{product_name}': {image_url[:50]}...")
-            
-            # Link
-            for link_field in ['link', 'href', 'url']:
-                if link_field in best_match and best_match[link_field]:
-                    output_df.loc[idx, '고려기프트 상품링크'] = str(best_match[link_field])
-                    break
-            
-            # Price
-            kogift_price = best_match.get('price', 0)
-            if isinstance(kogift_price, (int, float)) and kogift_price > 0:
-                output_df.loc[idx, '\xa0판매단가(V포함)(2)\xa0'] = float(kogift_price)
+                output_df.loc[idx, '판매단가(V포함)(2)'] = f"{kogift_price:,.0f}"
+                output_df.loc[idx, '기본수량(2)'] = best_match.get('quantity', '-')
+                output_df.loc[idx, '고려기프트 상품링크'] = best_match.get('link', '-')
+                output_df.loc[idx, '고려기프트 이미지'] = best_match.get('image_path', '-')
                 
-                # Calculate price difference only if haoreum_price is valid
-                if haoreum_price > 0:
+                # Calculate price differences
+                if haoreum_price and kogift_price and haoreum_price > 0:
                     price_diff = kogift_price - haoreum_price
-                    output_df.loc[idx, '\xa0가격차이(2)\xa0'] = float(price_diff)
+                    price_diff_percent = (price_diff / haoreum_price) * 100
+                    output_df.loc[idx, '가격차이(2)'] = f"{price_diff:,.0f}"
+                    output_df.loc[idx, '가격차이(2)(%)'] = f"{price_diff_percent:.1f}"
                     
-                    # Calculate percentage
-                    price_diff_pct = (price_diff / haoreum_price) * 100
-                    output_df.loc[idx, '\xa0가격차이(2)(%)\xa0'] = float(round(price_diff_pct, 1))
+                    # Calculate total price for quantity
+                    if best_match.get('quantity'):
+                        try:
+                            quantity = float(str(best_match['quantity']).replace(',', ''))
+                            if quantity > 0:
+                                total_price = kogift_price * quantity
+                                output_df.loc[idx, '판매가(V포함)(2)'] = f"{total_price:,.0f}"
+                            else:
+                                output_df.loc[idx, '판매가(V포함)(2)'] = '-'
+                                logging.warning(f"Invalid quantity ({quantity}) for KoGift product: {product_name}")
+                        except (ValueError, TypeError) as e:
+                            output_df.loc[idx, '판매가(V포함)(2)'] = '-'
+                            logging.warning(f"Error calculating total price for KoGift product {product_name}: {e}")
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Error processing KoGift price for {product_name}: {e}")
+                output_df.loc[idx, ['판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '판매가(V포함)(2)']] = '-'
+        else:
+            # If no KoGift results, set error message
+            output_df.loc[idx, '고려기프트 상품링크'] = '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음'
+
+        # --- Process Naver Data ---
+        if product_name in naver_results and naver_results[product_name]:
+            best_match = naver_results[product_name][0]
             
-            # Quantity
-            quantity = best_match.get('quantity', '-')
-            output_df.loc[idx, '\xa0기본수량(2)\xa0'] = str(quantity)
-            
-        # Process Naver data
-        naver_data = naver_results.get(product_name, [])
-        if naver_data:
-            best_match = naver_data[0]  # Use first match as best match
-            
-            # Image URL - Try all possible image URL field names
-            image_url = None
-            for field in ['image_url', 'image_path', 'src', 'img_url', 'image']:
-                if field in best_match and best_match[field] and isinstance(best_match[field], str):
-                    image_url = best_match[field]
-                    break
+            try:
+                naver_price = float(str(best_match.get('price', '')).replace(',', '').strip())
+                if naver_price <= 0:
+                    raise ValueError(f"Invalid Naver price: {naver_price}")
                     
-            if image_url:
-                output_df.loc[idx, '네이버 이미지'] = str(image_url)
-                logging.debug(f"Added Naver image URL for '{product_name}': {image_url[:50]}...")
-            
-            # Links
-            for link_field in ['link', 'href', 'url']:
-                if link_field in best_match and best_match[link_field]:
-                    output_df.loc[idx, '\xa0네이버 쇼핑 링크\xa0'] = str(best_match[link_field])
-                    break
-            
-            # Price
-            naver_price = best_match.get('price', 0)
-            if isinstance(naver_price, (int, float)) and naver_price > 0:
-                output_df.loc[idx, '\xa0판매단가(V포함)(3)\xa0'] = float(naver_price)
+                output_df.loc[idx, '판매단가(V포함)(3)'] = f"{naver_price:,.0f}"
+                output_df.loc[idx, '기본수량(3)'] = best_match.get('quantity', '1')
+                output_df.loc[idx, '네이버 쇼핑 링크'] = best_match.get('link', '-')
+                output_df.loc[idx, '공급사명'] = best_match.get('mallName', '-')
+                output_df.loc[idx, '공급사 상품링크'] = best_match.get('mallProductUrl', '-')
+                output_df.loc[idx, '네이버 이미지'] = best_match.get('image_url', '-')
                 
-                # Calculate price difference only if haoreum_price is valid
-                if haoreum_price > 0:
+                # Calculate price differences
+                if haoreum_price and naver_price and haoreum_price > 0:
                     price_diff = naver_price - haoreum_price
-                    output_df.loc[idx, '\xa0가격차이(3)\xa0'] = float(price_diff)
-                    
-                    # Calculate percentage
-                    price_diff_pct = (price_diff / haoreum_price) * 100
-                    output_df.loc[idx, '\xa0가격차이(3)(%)\xa0'] = float(round(price_diff_pct, 1))
-                
-            # Seller name
-            seller = best_match.get('seller', '-')
-            output_df.loc[idx, '\xa0공급사명\xa0'] = str(seller)
-            
-            # Quantity
-            quantity = best_match.get('quantity', '-')
-            output_df.loc[idx, '\xa0기본수량(3)\xa0'] = str(quantity)
+                    price_diff_percent = (price_diff / haoreum_price) * 100
+                    output_df.loc[idx, '가격차이(3)'] = f"{price_diff:,.0f}"
+                    output_df.loc[idx, '가격차이(3)(%)'] = f"{price_diff_percent:.1f}"
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Error processing Naver price for {product_name}: {e}")
+                output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']] = '-'
+        else:
+            # If no Naver results, set error message
+            output_df.loc[idx, '네이버 쇼핑 링크'] = '가격이 범위내에 없거나 검색된 상품이 없음'
+
+    # Format numeric columns
+    numeric_columns = [
+        '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
+        '판매가(V포함)(2)', '가격차이(2)', '가격차이(3)'
+    ]
+    for col in numeric_columns:
+        if col in output_df.columns:
+            output_df[col] = output_df[col].apply(lambda x: 
+                f"{float(str(x).replace(',', '')):,.0f}" 
+                if pd.notna(x) and str(x).strip() != '-' and not isinstance(x, str) 
+                else x
+            )
+
+    # Format percentage columns
+    percent_columns = ['가격차이(2)(%)', '가격차이(3)(%)']
+    for col in percent_columns:
+        if col in output_df.columns:
+            output_df[col] = output_df[col].apply(lambda x: 
+                f"{float(str(x).replace('%', '')):,.1f}" 
+                if pd.notna(x) and str(x).strip() != '-' and not isinstance(x, str)
+                else x
+            )
+
+    # Ensure all required columns exist and are in the correct order
+    for col in FINAL_COLUMN_ORDER:
+        if col not in output_df.columns:
+            output_df[col] = '-'
+    output_df = output_df[FINAL_COLUMN_ORDER]
     
-    # Log summary of image URLs
-    image_count = {}
-    for col in image_columns:
-        image_count[col] = (output_df[col].notna() & (output_df[col] != '') & (output_df[col] != '-')).sum()
-    
-    logging.info(f"Formatted data for output: {len(output_df)} rows with image URLs: {image_count}")
-    return output_df 
+    logging.info(f"Data formatting completed. Output rows: {len(output_df)}")
+    return output_df
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
     """
     Process input DataFrame with necessary data processing steps.
-    
-    Args:
-        df: Input DataFrame to process
-        config: Optional ConfigParser object. If None, will try to load from default location.
-        
-    Returns:
-        Processed DataFrame
     """
     if config is None:
-        # Load default config if none provided
         config = configparser.ConfigParser()
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
         config.read(config_path)

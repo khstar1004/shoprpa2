@@ -16,7 +16,7 @@ import traceback
 import asyncio
 
 # Import your existing modules
-from excel_utils import create_final_output_excel, filter_dataframe
+from excel_utils import create_final_output_excel
 from matching_logic import process_matching
 from data_processing import process_input_data, process_input_file
 from utils import setup_logging, load_config
@@ -29,9 +29,11 @@ class WorkerThread(QThread):
     def __init__(self, config_path):
         super().__init__()
         self.config_path = config_path
+        self.running = False
         
     def run(self):
         try:
+            self.running = True
             # Initialize environment
             CONFIG, gpu_available_detected, validation_passed = initialize_environment(self.config_path)
             
@@ -47,10 +49,20 @@ class WorkerThread(QThread):
             asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=self.progress_queue))
             
         except Exception as e:
-            self.progress.emit("error", f"An error occurred: {str(e)}")
+            error_msg = f"An error occurred: {str(e)}\n{traceback.format_exc()}"
+            logging.error(error_msg)
+            self.progress.emit("error", error_msg)
             self.finished.emit(False, "")
         finally:
+            self.running = False
             self.progress.emit("finished", "True")
+            
+    def stop(self):
+        if self.running:
+            self.running = False
+            self.terminate()
+            self.wait()
+            logging.info("Worker thread stopped")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -58,10 +70,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ShopRPA - 가격 비교 자동화 시스템")
         self.setMinimumSize(800, 600)
         
+        # Initialize instance variables
+        self.worker = None
+        self.input_file = None
+        
         # Load config using the utility function
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+        self.config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
         try:
-            self.config = load_config(config_path)
+            self.config = load_config(self.config_path)
             if not self.config.sections():
                 QMessageBox.warning(self, "설정 오류", "설정 파일을 불러올 수 없습니다. 기본 설정을 사용합니다.")
                 self.config = configparser.ConfigParser()
@@ -74,7 +90,6 @@ class MainWindow(QMainWindow):
             setup_logging(self.config)
         except Exception as e:
             QMessageBox.warning(self, "로깅 오류", f"로깅 설정 중 오류 발생: {str(e)}")
-            # Setup basic logging as fallback
             logging.basicConfig(level=logging.INFO)
         
         # Load SVG icons
@@ -137,6 +152,7 @@ class MainWindow(QMainWindow):
             self.icons = {}  # Empty dict as fallback
         
     def create_process_tab(self):
+        """Create the main processing tab"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         
@@ -189,12 +205,23 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         layout.addWidget(self.progress_bar)
         
+        # Control buttons
+        button_layout = QHBoxLayout()
+        
         # Start button
         self.start_btn = QPushButton("처리 시작")
         if 'batch' in self.icons:
             self.start_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'batch.svg')))
         self.start_btn.clicked.connect(self.start_processing)
-        layout.addWidget(self.start_btn)
+        button_layout.addWidget(self.start_btn)
+        
+        # Stop button
+        self.stop_btn = QPushButton("처리 중단")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_processing)
+        button_layout.addWidget(self.stop_btn)
+        
+        layout.addLayout(button_layout)
         
         # Status text area
         self.status_text = QTextEdit()
@@ -270,42 +297,90 @@ class MainWindow(QMainWindow):
     def start_processing(self):
         """Start the RPA process"""
         try:
-            # Disable start button
+            if not hasattr(self, 'input_file') or not self.input_file:
+                QMessageBox.warning(self, "경고", "입력 파일을 선택해주세요.")
+                return
+                
+            # Disable start button and enable stop button
             self.start_btn.setEnabled(False)
+            if hasattr(self, 'stop_btn'):
+                self.stop_btn.setEnabled(True)
             
             # Clear status text
             self.status_text.clear()
             
-            # Get config path
-            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-            
             # Create and start worker thread
-            self.worker = WorkerThread(config_path)
+            if self.worker is not None and self.worker.isRunning():
+                self.worker.stop()
+                
+            self.worker = WorkerThread(self.config_path)
             self.worker.progress.connect(self.update_progress)
             self.worker.finished.connect(self.processing_finished)
             self.worker.start()
             
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"처리 시작 중 오류 발생: {str(e)}")
+            error_msg = f"처리 시작 중 오류 발생: {str(e)}\n{traceback.format_exc()}"
+            QMessageBox.critical(self, "오류", error_msg)
             self.start_btn.setEnabled(True)
+            if hasattr(self, 'stop_btn'):
+                self.stop_btn.setEnabled(False)
+            logging.error(error_msg)
+    
+    def stop_processing(self):
+        """Stop the RPA process"""
+        try:
+            if self.worker and self.worker.isRunning():
+                reply = QMessageBox.question(
+                    self, 
+                    '처리 중단', 
+                    '현재 실행 중인 작업을 중단하시겠습니까?',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.worker.stop()
+                    self.status_text.append("작업이 사용자에 의해 중단되었습니다.")
+                    self.start_btn.setEnabled(True)
+                    if hasattr(self, 'stop_btn'):
+                        self.stop_btn.setEnabled(False)
+        except Exception as e:
+            error_msg = f"작업 중단 중 오류 발생: {str(e)}"
+            QMessageBox.critical(self, "오류", error_msg)
+            logging.error(error_msg)
     
     def update_progress(self, type, message):
         """Update progress and status"""
-        if type == "status":
-            self.status_text.append(f"상태: {message}")
-        elif type == "error":
-            self.status_text.append(f"오류: {message}")
-            QMessageBox.warning(self, "오류", message)
-        elif type == "finished":
-            self.status_text.append("처리 완료")
+        try:
+            if type == "status":
+                self.status_text.append(f"상태: {message}")
+            elif type == "error":
+                self.status_text.append(f"오류: {message}")
+                QMessageBox.warning(self, "오류", message)
+            elif type == "finished":
+                self.status_text.append("처리 완료")
+                self.start_btn.setEnabled(True)
+                if hasattr(self, 'stop_btn'):
+                    self.stop_btn.setEnabled(False)
+        except Exception as e:
+            logging.error(f"Progress update error: {str(e)}")
     
     def processing_finished(self, success, output_path):
         """Handle processing completion"""
-        self.start_btn.setEnabled(True)
-        if success:
-            QMessageBox.information(self, "완료", f"처리가 완료되었습니다.\n출력 파일: {output_path}")
-        else:
-            QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
+        try:
+            self.start_btn.setEnabled(True)
+            if hasattr(self, 'stop_btn'):
+                self.stop_btn.setEnabled(False)
+                
+            if success:
+                msg = f"처리가 완료되었습니다."
+                if output_path:
+                    msg += f"\n출력 파일: {output_path}"
+                QMessageBox.information(self, "완료", msg)
+            else:
+                QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
+        except Exception as e:
+            logging.error(f"Processing finished handler error: {str(e)}")
 
 if __name__ == "__main__":
     try:
