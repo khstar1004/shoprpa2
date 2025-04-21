@@ -33,7 +33,7 @@ def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.D
         input_filename = os.path.basename(input_file)
         logging.info(f"Processing input file: {input_file}")
 
-        required_cols = ['Code', '상품명', '판매단가(V포함)', '본사상품링크', '본사 이미지', '구분']
+        required_cols = ['Code', '상품명', '본사상품링크', '구분']
 
         # Read the entire Excel file at once
         df = pd.read_excel(input_file, sheet_name=0)
