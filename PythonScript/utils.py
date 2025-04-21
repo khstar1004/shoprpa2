@@ -15,6 +15,7 @@ import hashlib # Import hashlib
 from pathlib import Path # Import Path
 import time # Import time
 from concurrent.futures import ThreadPoolExecutor # Keep for potential sync tasks
+from datetime import datetime
 
 # --- Configuration Loading ---
 
@@ -702,3 +703,48 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
              df[col] = df[col].str.strip()
         # Optionally add handling for other types if needed
     return df
+
+def setup_logging(config: configparser.ConfigParser = None):
+    """
+    Setup logging configuration for the application.
+    
+    Args:
+        config: Optional ConfigParser object. If None, will use default settings.
+    """
+    import logging
+    import os
+    from datetime import datetime
+    
+    # Default log directory and file
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Default log file with timestamp
+    default_log_file = os.path.join(log_dir, f'shoprpa_{datetime.now().strftime("%Y%m%d")}.log')
+    
+    if config is not None:
+        try:
+            # Try to get log settings from config
+            log_level = config.get('Logging', 'log_level', fallback='INFO').upper()
+            log_file = config.get('Logging', 'log_file', fallback=default_log_file)
+        except:
+            log_level = 'INFO'
+            log_file = default_log_file
+    else:
+        log_level = 'INFO'
+        log_file = default_log_file
+    
+    # Convert string log level to logging constant
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    logging.info(f"Logging initialized. Level: {log_level}, File: {log_file}")

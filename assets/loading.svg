@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="loadingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4285F4" />
+      <stop offset="100%" stop-color="#5C9DFF" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Outer ring with spinner animation -->
+  <g>
+    <!-- Filled background circle -->
+    <circle cx="12" cy="12" r="10" fill="#F7F9FF" />
+    
+    <!-- Animated spinner arc -->
+    <path d="M12,2 A10,10 0 1,1 2,12" 
+          stroke="url(#loadingGradient)" 
+          stroke-width="2.5" 
+          fill="none" 
+          stroke-linecap="round">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="0 12 12"
+        to="360 12 12"
+        dur="1.2s"
+        repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Shorter secondary spinner arc -->
+    <path d="M12,6 A6,6 0 0,1 18,12" 
+          stroke="#80B4FF" 
+          stroke-width="2" 
+          fill="none" 
+          stroke-linecap="round">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="0 12 12"
+        to="-360 12 12"
+        dur="0.8s"
+        repeatCount="indefinite"/>
+    </path>
+    
+    <!-- Central pulse animation -->
+    <circle cx="12" cy="12" r="3" fill="#4285F4">
+      <animate
+        attributeName="opacity"
+        values="0.6;1;0.6"
+        dur="1.5s"
+        repeatCount="indefinite"/>
+      <animate
+        attributeName="r"
+        values="3;3.5;3"
+        dur="1.5s"
+        repeatCount="indefinite"/>
+    </circle>
+  </g>
+</svg> 

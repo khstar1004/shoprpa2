@@ -907,6 +907,18 @@ def create_final_output_excel(df, output_path):
         Path to the created Excel file
     """
     try:
+        # Define the columns to keep
+        columns_to_keep = [
+            '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+            '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)',
+            '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명',
+            '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+        ]
+        
+        # Filter the DataFrame to only include the specified columns
+        df = df[columns_to_keep]
+        
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         

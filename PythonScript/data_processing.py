@@ -255,3 +255,39 @@ def format_product_data_for_output(input_df, kogift_results, naver_results):
     
     logging.info(f"Formatted data for output: {len(output_df)} rows with image URLs: {image_count}")
     return output_df 
+
+def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
+    """
+    Process input DataFrame with necessary data processing steps.
+    
+    Args:
+        df: Input DataFrame to process
+        config: Optional ConfigParser object. If None, will try to load from default location.
+        
+    Returns:
+        Processed DataFrame
+    """
+    if config is None:
+        # Load default config if none provided
+        config = configparser.ConfigParser()
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+        config.read(config_path)
+    
+    try:
+        # Apply initial filtering
+        filtered_df = filter_results(df, config)
+        if filtered_df is None:
+            logging.error("Failed to filter results")
+            return df
+            
+        # Format data for output
+        kogift_results = {}  # This would normally come from kogift processing
+        naver_results = {}   # This would normally come from naver processing
+        
+        formatted_df = format_product_data_for_output(filtered_df, kogift_results, naver_results)
+        
+        return formatted_df
+        
+    except Exception as e:
+        logging.error(f"Error in process_input_data: {e}", exc_info=True)
+        return df 

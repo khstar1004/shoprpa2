@@ -757,7 +757,7 @@ def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: O
         logging.error(f"Error in _match_single_product_wrapper for index {i}: {e}", exc_info=True)
         return i, None # Return None for the data part on error
 
-def match_products(
+def process_matching(
     haoreum_df: pd.DataFrame,
     kogift_map: Dict[str, List[Dict]],
     naver_map: Dict[str, List[Dict]],
@@ -767,7 +767,22 @@ def match_products(
     progress_queue=None,
     max_workers: Optional[int] = None
 ) -> pd.DataFrame:
-    """Matches Haoreum products against Kogift and Naver data using ThreadPoolExecutor or ProcessPoolExecutor."""
+    """
+    Process matching between Haoreum products and Kogift/Naver products.
+    
+    Args:
+        haoreum_df: DataFrame containing Haoreum products
+        kogift_map: Dictionary mapping categories to Kogift products
+        naver_map: Dictionary mapping categories to Naver products
+        input_file_image_map: Dictionary mapping product codes to image paths
+        config: Configuration object
+        gpu_available: Whether GPU is available for processing
+        progress_queue: Queue for progress updates
+        max_workers: Maximum number of worker processes
+        
+    Returns:
+        DataFrame containing matched products
+    """
     # 메모리 사용량 모니터링 시작
     process = psutil.Process(os.getpid())
     initial_memory = process.memory_info().rss / 1024 / 1024  # MB
