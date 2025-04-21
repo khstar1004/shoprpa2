@@ -13,62 +13,44 @@ import configparser
 import logging
 from datetime import datetime
 import traceback
+import asyncio
 
 # Import your existing modules
 from excel_utils import create_final_output_excel, filter_dataframe
 from matching_logic import process_matching
 from data_processing import process_input_data, process_input_file
 from utils import setup_logging, load_config
+from main_rpa import main, initialize_environment
 
 class WorkerThread(QThread):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    progress = pyqtSignal(str, str)  # (type, message)
+    finished = pyqtSignal(bool, str)  # (success, output_path)
     
-    def __init__(self, input_file, process_type, batch_size):
+    def __init__(self, config_path):
         super().__init__()
-        self.input_file = input_file
-        self.process_type = process_type
-        self.batch_size = batch_size
-        self.config = configparser.ConfigParser()
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-        self.config.read(config_path, encoding='utf-8')
+        self.config_path = config_path
         
     def run(self):
         try:
-            # Read input file using process_input_file first
-            df, input_filename = process_input_file(self.config)
-            if df is None:
-                self.error.emit(f"Failed to process input file: {input_filename}")
+            # Initialize environment
+            CONFIG, gpu_available_detected, validation_passed = initialize_environment(self.config_path)
+            
+            if not validation_passed:
+                self.progress.emit("error", "Environment validation failed")
+                self.finished.emit(False, "")
                 return
-                
-            total_rows = len(df)
-            processed_data = None
-            
-            # Process in batches
-            for i in range(0, total_rows, self.batch_size):
-                batch = df.iloc[i:i+self.batch_size]
-                # Process batch
-                if processed_data is None:
-                    processed_data = process_input_data(batch, self.config)
-                else:
-                    batch_result = process_input_data(batch, self.config)
-                    processed_data = pd.concat([processed_data, batch_result], ignore_index=True)
-                
-                # Emit progress
-                progress = min(100, int((i + len(batch)) / total_rows * 100))
-                self.progress.emit(progress)
-            
-            # Create output file
-            output_path = os.path.join(os.path.dirname(self.input_file), 
-                                     f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-            create_final_output_excel(processed_data, output_path)
-            
-            self.finished.emit(output_path)
+
+            # Set up progress queue
+            self.progress_queue = self.progress
+
+            # Run RPA process
+            asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=self.progress_queue))
             
         except Exception as e:
-            self.error.emit(str(e))
-            logging.error(f"Error in worker thread: {e}\n{traceback.format_exc()}")
+            self.progress.emit("error", f"An error occurred: {str(e)}")
+            self.finished.emit(False, "")
+        finally:
+            self.progress.emit("finished", "True")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -286,45 +268,52 @@ class MainWindow(QMainWindow):
             self.input_file = file_name
             
     def start_processing(self):
-        if not hasattr(self, 'input_file'):
-            QMessageBox.warning(self, "경고", "먼저 파일을 선택해주세요.")
-            return
+        """Start the RPA process"""
+        try:
+            # Disable start button
+            self.start_btn.setEnabled(False)
             
-        # Disable start button
-        self.start_btn.setEnabled(False)
-        
-        # Create worker thread
-        process_type = "A" if self.process_type.currentText() == "승인관리 (A)" else "P"
-        self.worker = WorkerThread(
-            self.input_file,
-            process_type,
-            self.batch_size.value()
-        )
-        
-        # Connect signals
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished.connect(self.processing_finished)
-        self.worker.error.connect(self.processing_error)
-        
-        # Start processing
-        self.worker.start()
-        
-    def update_progress(self, value):
-        self.progress_bar.setValue(value)
-        self.status_text.append(f"진행률: {value}%")
-        
-    def processing_finished(self, output_path):
+            # Clear status text
+            self.status_text.clear()
+            
+            # Get config path
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+            
+            # Create and start worker thread
+            self.worker = WorkerThread(config_path)
+            self.worker.progress.connect(self.update_progress)
+            self.worker.finished.connect(self.processing_finished)
+            self.worker.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"처리 시작 중 오류 발생: {str(e)}")
+            self.start_btn.setEnabled(True)
+    
+    def update_progress(self, type, message):
+        """Update progress and status"""
+        if type == "status":
+            self.status_text.append(f"상태: {message}")
+        elif type == "error":
+            self.status_text.append(f"오류: {message}")
+            QMessageBox.warning(self, "오류", message)
+        elif type == "finished":
+            self.status_text.append("처리 완료")
+    
+    def processing_finished(self, success, output_path):
+        """Handle processing completion"""
         self.start_btn.setEnabled(True)
-        self.status_text.append(f"\n처리가 완료되었습니다!\n결과 파일: {output_path}")
-        QMessageBox.information(self, "완료", "처리가 성공적으로 완료되었습니다.")
-        
-    def processing_error(self, error_msg):
-        self.start_btn.setEnabled(True)
-        self.status_text.append(f"\n오류 발생: {error_msg}")
-        QMessageBox.critical(self, "오류", f"처리 중 오류가 발생했습니다:\n{error_msg}")
+        if success:
+            QMessageBox.information(self, "완료", f"처리가 완료되었습니다.\n출력 파일: {output_path}")
+        else:
+            QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec()) 
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"Error starting GUI: {str(e)}")
+        logging.error(f"Error starting GUI: {str(e)}", exc_info=True) 
