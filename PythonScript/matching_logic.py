@@ -960,31 +960,119 @@ def process_matching(
         result_df['매칭_사이트'] = None
         result_df['가격차이'] = None
         result_df['매칭_품질'] = None
-        
+
+        # --- Add columns for detailed match results --- 
+        # Kogift
+        result_df['기본수량(2)'] = None
+        result_df['판매단가(V포함)(2)'] = None
+        result_df['고려기프트 상품링크'] = None
+        result_df['고려기프트 이미지'] = None
+        result_df['가격차이(2)'] = None # Calculated later if possible
+        result_df['가격차이(2)(%)'] = None # Calculated later
+        # Naver
+        result_df['기본수량(3)'] = None
+        result_df['판매단가(V포함)(3)'] = None
+        result_df['공급사명'] = None
+        result_df['네이버 쇼핑 링크'] = None
+        result_df['공급사 상품링크'] = None
+        result_df['네이버 이미지'] = None
+        result_df['가격차이(3)'] = None # Calculated later
+        result_df['가격차이(3)(%)'] = None # Calculated later
+
+        # Placeholder for specific error messages if needed
+        result_df['매칭_오류메시지'] = None 
+
         # Update matched products
         for idx, result in results:
             if result and isinstance(result, dict):
-                # Set match flag
-                result_df.at[idx, '매칭_여부'] = 'Y'
-                
-                # Copy fields from match result
-                for field in ['매칭_정확도', '텍스트_유사도', '이미지_유사도', 
-                            '제안_가격', '매칭_URL', '매칭_이미지',
-                            '매칭_상품명', '매칭_사이트', '가격차이']:
+                result_df.at[idx, '매칭_여부'] = 'Y' # Mark as potentially matched
+
+                # Copy basic matching metadata
+                for field in ['매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_사이트', '매칭_품질']:
                     if field in result:
-                        result_df.at[idx, field] = result[field]
+                        result_df.at[idx, field] = result.get(field)
+
+                # --- Populate detailed match information based on source --- 
+                match_source = result.get('매칭_사이트')
+                is_error_message = isinstance(result.get('price'), str) # Check if price is an error string
+
+                if match_source == 'Kogift':
+                    if not is_error_message:
+                        result_df.at[idx, '기본수량(2)'] = result.get('수량') # Assuming '수량' is the key
+                        result_df.at[idx, '판매단가(V포함)(2)'] = result.get('price')
+                        result_df.at[idx, '고려기프트 상품링크'] = result.get('link')
+                        result_df.at[idx, '고려기프트 이미지'] = result.get('image_path')
+                    else:
+                        # Store error message
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price') # Or dedicated error field
+                        # Optionally clear other Kogift fields or leave as None
+                        result_df.at[idx, '고려기프트 상품링크'] = result.get('link') # Keep link if available
+                        result_df.at[idx, '고려기프트 이미지'] = result.get('image_path') # Keep image if available
+
+                elif match_source == 'Naver':
+                    if not is_error_message:
+                        result_df.at[idx, '기본수량(3)'] = result.get('수량') # Assuming '수량' is the key
+                        result_df.at[idx, '판매단가(V포함)(3)'] = result.get('price')
+                        result_df.at[idx, '공급사명'] = result.get('mallName') # Assuming 'mallName' is the key
+                        result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Assuming 'link' is the key
+                        result_df.at[idx, '공급사 상품링크'] = result.get('originallink') # Check actual key
+                        result_df.at[idx, '네이버 이미지'] = result.get('image_path')
+                    else:
+                         # Store error message
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price')
+                        # Optionally clear other Naver fields or leave as None
+                        result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Keep link if available
+                        result_df.at[idx, '네이버 이미지'] = result.get('image_path') # Keep image if available
+                else:
+                    # Handle cases where source is missing or different
+                    logging.warning(f"Row {idx}: Match found but source ('{match_source}') is unknown or missing.")
+                    if is_error_message:
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price', '알 수 없는 매칭 오류')
+
+            else:
+                # Handle cases where matching failed entirely for the product
+                result_df.at[idx, '매칭_여부'] = 'N'
+                result_df.at[idx, '매칭_품질'] = '실패'
+                result_df.at[idx, '매칭_오류메시지'] = '매칭 결과 없음' # Or a more specific error if available
+
+        # --- Post-processing: Calculate Price Differences --- 
+        # Ensure base price column exists and is numeric
+        if '판매단가(V포함)' in result_df.columns:
+            base_price_col = pd.to_numeric(result_df['판매단가(V포함)'], errors='coerce')
+
+            # Calculate for Kogift
+            if '판매단가(V포함)(2)' in result_df.columns:
+                kogift_price_col = pd.to_numeric(result_df['판매단가(V포함)(2)'], errors='coerce')
+                diff = kogift_price_col - base_price_col
+                result_df['가격차이(2)'] = diff
+                # Avoid division by zero
+                result_df['가격차이(2)(%)'] = np.where(
+                    (base_price_col.notna() & (base_price_col != 0) & diff.notna()),
+                    (diff / base_price_col) * 100,
+                    None
+                )
+
+            # Calculate for Naver
+            if '판매단가(V포함)(3)' in result_df.columns:
+                naver_price_col = pd.to_numeric(result_df['판매단가(V포함)(3)'], errors='coerce')
+                diff = naver_price_col - base_price_col
+                result_df['가격차이(3)'] = diff
+                 # Avoid division by zero
+                result_df['가격차이(3)(%)'] = np.where(
+                    (base_price_col.notna() & (base_price_col != 0) & diff.notna()),
+                    (diff / base_price_col) * 100,
+                    None
+                )
+        else:
+            logging.warning("Base price column '판매단가(V포함)' not found for difference calculation.")
+
+        # Log completion
+        elapsed_time = time.time() - start_time
+        logging.info(f"Product matching completed in {elapsed_time:.2f} seconds")
+        logging.info(f"Total matches processed: {len(results)}")
         
-        # Add match quality labels based on match scores
-        quality_evaluator = MatchQualityEvaluator(config)
-        result_df = quality_evaluator.apply_quality_labels(result_df)
-        
-        # Calculate execution time
-        execution_time = time.time() - start_time
-        logging.info(f"Product matching completed in {execution_time:.2f} seconds")
-        logging.info(f"Found {len([r for r in results if r[1] is not None])} matches out of {total_products} products")
-        
-        if progress_queue:
-            progress_queue.emit("status", f"상품 매칭 완료 ({len([r for r in results if r[1] is not None])}/{total_products})")
+        # Clean up the final DataFrame (replace NaN with suitable placeholders like '-')
+        # result_df.fillna('-', inplace=True) # Apply this before formatting in excel_utils
 
         return result_df
 

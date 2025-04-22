@@ -124,7 +124,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         Formatted DataFrame ready for Excel output
     """
     logging.info(f"Starting data formatting. Input rows: {len(input_df)}")
-    
+
+    # Store original columns to check later
+    original_columns = set(input_df.columns)
+
     # Deep copy to avoid modifying original
     df = input_df.copy()
     
@@ -152,11 +155,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     logging.info("'판매단가(V포함)' 컬럼이 0값으로 추가되었습니다.")
     
     # 컬럼 확인 (추가 후 다시 확인)
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
+    missing_columns_after_add = [col for col in required_columns if col not in df.columns]
+    if missing_columns_after_add:
         # 여전히 누락된 컬럼이 있으면 에러 발생
-        logging.error(f"Input DataFrame is missing required columns: {missing_columns}")
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+        logging.error(f"Input DataFrame is still missing required columns after attempting to add them: {missing_columns_after_add}")
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns_after_add}")
 
     # --- Standardize column names if needed ---
     # Add mapping for common column name variations
@@ -200,11 +203,20 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         '가격차이(3)(%)': None
     }
     
-    # Add missing columns with defaults
+    # Add missing columns with defaults, ONLY if they were not in the original input
     for col, default_value in expected_output_columns.items():
         if col not in df.columns:
-            df[col] = default_value
-    
+            # Check if the column was present in the original input DataFrame
+            if col not in original_columns:
+                logging.warning(f"Column '{col}' was missing from original input and current df. Adding with default: {default_value}")
+                df[col] = default_value
+            else:
+                # Column existed originally but is now missing. This indicates a potential issue.
+                # Log a warning, but don't add a default to avoid overwriting potentially recoverable data.
+                # Consider adding it back with None/NaN or a specific placeholder if necessary.
+                logging.warning(f"Column '{col}' existed in original input but is now missing. Not applying default.")
+                df[col] = None # Or pd.NA, or '-' depending on desired handling
+
     # --- Column mapping for different data sources ---
     column_mappings = {
         # Map various internal column names to standardized output names
@@ -258,10 +270,6 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     for item in naver_data:
                         if 'image_path' in item and item['image_path']:
                             df.at[idx, '네이버 이미지'] = item['image_path']
-                            naver_img_count += 1
-                            break
-                        elif 'image_url' in item and item['image_url']:
-                            df.at[idx, '네이버 이미지'] = item['image_url']
                             naver_img_count += 1
                             break
         logging.info(f"Added {naver_img_count} missing Naver images from crawl results")
