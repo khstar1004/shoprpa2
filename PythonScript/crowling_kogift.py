@@ -47,8 +47,13 @@ logger = logging.getLogger(__name__) # Get logger instance
 # MIN_RESULTS_THRESHOLD = 5
 
 # Add semaphore for concurrent task limiting
-MAX_CONCURRENT_TASKS = 5
+MAX_CONCURRENT_TASKS = 3  # Reduced from 5 to 3
 scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
+# Add browser context timeout settings
+BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes
+PAGE_TIMEOUT = 120000  # 2 minutes
+NAVIGATION_TIMEOUT = 60000  # 1 minute
 
 # --- Helper function to download images ---
 def download_image(img_url, save_dir='downloaded_images', filename=None):
@@ -613,80 +618,43 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
 
 # --- Main scraping function에 상세 페이지 크롤링 로직 추가 --- 
 async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False):
-    """Scrape product data from Koreagift using a shared Browser instance.
-    
-    Args:
-        browser: An active Playwright Browser instance.
-        original_keyword1: The primary keyword to search for.
-        original_keyword2: An optional secondary keyword for re-search if results >= 100.
-        config: ConfigParser object containing configuration settings.
-        fetch_price_tables: 상품 상세 페이지에서 수량-단가 정보도 함께 가져올지 여부
-
-    Returns:
-        A pandas DataFrame containing the best found results, or an empty DataFrame.
-    """
+    """Scrape product data from Koreagift using a shared Browser instance."""
     async with scraping_semaphore:  # Acquire semaphore before starting
         if config is None:
             logger.error("🔴 Configuration object (ConfigParser) is missing for Kogift scrape.")
-            return pd.DataFrame() # Return empty dataframe on critical config error
+            return pd.DataFrame()
         
-        # Get settings from config with defaults using ConfigParser methods
         try:
+            # Get settings from config with defaults
             kogift_urls_str = config.get('ScraperSettings', 'kogift_urls', 
                                        fallback='https://koreagift.com/ez/index.php,https://adpanchok.co.kr/ez/index.php')
             kogift_urls = [url.strip() for url in kogift_urls_str.split(',') if url.strip()]
             if not kogift_urls:
-                 logger.error("🔴 Kogift URLs are missing or invalid in [ScraperSettings] config.")
-                 return pd.DataFrame()
+                logger.error("🔴 Kogift URLs are missing or invalid in [ScraperSettings] config.")
+                return pd.DataFrame()
             
             user_agent = config.get('ScraperSettings', 'user_agent', 
-                                  fallback='Mozilla/5.0 ...') # Use actual default from utils/DEFAULT_CONFIG if desired
-            min_results_threshold = config.getint('ScraperSettings', 'kogift_min_results_threshold', fallback=5)
-            max_items_to_scrape = config.getint('ScraperSettings', 'kogift_max_items', fallback=200)
-            max_pages_to_scrape = config.getint('ScraperSettings', 'kogift_max_pages', fallback=10)
+                                  fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
             
-            default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000)  # 2분
-            navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=120000)  # 2분
-            action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=30000)  # 30초
-            # Add a shorter timeout specifically for waiting for search results/no results
-            search_results_wait_timeout = config.getint('Playwright', 'playwright_search_results_timeout_ms', fallback=60000)  # 1분
-            block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
+            # Create a new context with increased timeout
+            context = await browser.new_context(
+                user_agent=user_agent,
+                viewport={'width': 1920, 'height': 1080},
+                timeout=BROWSER_CONTEXT_TIMEOUT
+            )
             
-            # Image download settings
-            download_images = config.getboolean('Matching', 'download_images', fallback=True)
-            images_dir = config.get('Matching', 'images_dir', fallback='downloaded_images')
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-            logger.error(f"🔴 Error reading Kogift/Playwright config: {e}. Using hardcoded defaults where possible.")
-            # Set critical defaults again or decide to return empty
-            kogift_urls = ["https://koreagift.com/ez/index.php", "https://adpanchok.co.kr/ez/index.php"]
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
-            min_results_threshold = 5
-            max_items_to_scrape = 200
-            max_pages_to_scrape = 10
-            default_timeout = 120000
-            navigation_timeout = 120000
-            action_timeout = 30000
-            search_results_wait_timeout = 60000
-            block_resources = True
-            download_images = True
-            images_dir = 'downloaded_images'
-
-        keywords_to_try = generate_keyword_variations(original_keyword1)
-        best_result_df = pd.DataFrame() 
-
-        logger.info(f"🔍 Generated keywords for '{original_keyword1}': {keywords_to_try}")
-
-        # Shared browser context for this scrape attempt
-        context = None
-        page = None
-        try:
-            context = await browser.new_context(user_agent=user_agent)
+            # Create a new page with increased timeouts
             page = await context.new_page()
-            page.set_default_timeout(default_timeout)
-            page.set_default_navigation_timeout(navigation_timeout)
+            page.set_default_timeout(PAGE_TIMEOUT)
+            page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
             
-            if block_resources:
+            if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                 await setup_page_optimizations(page)
+            
+            keywords_to_try = generate_keyword_variations(original_keyword1)
+            best_result_df = pd.DataFrame() 
+
+            logger.info(f"🔍 Generated keywords for '{original_keyword1}': {keywords_to_try}")
 
             for keyword in keywords_to_try:
                 logger.info(f"🔍 Trying keyword variation: '{keyword}' --- ({keywords_to_try.index(keyword) + 1}/{len(keywords_to_try)}) ---")
@@ -707,9 +675,9 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         search_input_locator = page_instance.locator('input#main_keyword[name="keyword"]') # More specific selector
                         search_button_locator = page_instance.locator('img#search_submit')
                         
-                        await search_input_locator.wait_for(state="visible", timeout=action_timeout)
+                        await search_input_locator.wait_for(state="visible", timeout=PAGE_TIMEOUT)
                         await search_input_locator.fill(keyword)
-                        await search_button_locator.wait_for(state="visible", timeout=action_timeout)
+                        await search_button_locator.wait_for(state="visible", timeout=PAGE_TIMEOUT)
                         
                         results_container_selector = 'div.product_lists' # Selector for the container holding results
                         # Refined selector for "no results" message based on provided HTML
@@ -721,12 +689,12 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         logger.info(f"🔍 Search submitted for: '{keyword}' on {base_url}")
 
                         # --- Wait for results OR "no results" message --- 
-                        logger.debug(f"⏳ Waiting for search results or 'no results' message (timeout: {search_results_wait_timeout}ms)...")
+                        logger.debug(f"⏳ Waiting for search results or 'no results' message (timeout: {NAVIGATION_TIMEOUT}ms)...")
                         try:
                             found_element = await page_instance.wait_for_selector(
                                 combined_selector, 
                                 state='visible', 
-                                timeout=search_results_wait_timeout
+                                timeout=NAVIGATION_TIMEOUT
                             )
                             
                             # Check if the 'no results' text is visible
@@ -769,12 +737,12 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                 await re_search_button.click()
                                 
                                 # Wait again after re-search, checking for no results again
-                                logger.debug(f"⏳ Waiting after re-search (timeout: {search_results_wait_timeout}ms)...")
+                                logger.debug(f"⏳ Waiting after re-search (timeout: {NAVIGATION_TIMEOUT}ms)...")
                                 try:
                                     await page_instance.wait_for_selector(
                                         combined_selector, 
                                         state='visible', 
-                                        timeout=search_results_wait_timeout
+                                        timeout=NAVIGATION_TIMEOUT
                                     )
                                     if await page_instance.locator(no_results_selector).is_visible():
                                          logger.info(f"⚠️ 'No results' found after re-searching with '{original_keyword2}'.")
@@ -800,11 +768,11 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         processed_items = 0
                         product_item_selector = 'div.product' # Selector for individual product blocks
 
-                        while processed_items < max_items_to_scrape and page_number <= max_pages_to_scrape:
+                        while processed_items < MAX_CONCURRENT_TASKS and page_number <= 10:
                             logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
                             try:
                                  # Wait for at least one product item to be potentially visible
-                                 await page_instance.locator(product_item_selector).first.wait_for(state="attached", timeout=action_timeout)
+                                 await page_instance.locator(product_item_selector).first.wait_for(state="attached", timeout=PAGE_TIMEOUT)
                             except PlaywrightError:
                                  logger.warning(f"⚠️ Product items selector ('{product_item_selector}') not found/attached on page {page_number}. Stopping scrape for this URL/Keyword.")
                                  break
@@ -822,23 +790,23 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
 
                             items_on_page = []
                             for i in range(count):
-                                if processed_items >= max_items_to_scrape:
+                                if processed_items >= MAX_CONCURRENT_TASKS:
                                     break
                                 row = rows.nth(i)
                                 item_data = {}
                                 try:
                                     # Extract data using locators with short timeouts
                                     img_locator = row.locator('div.pic > a > img')
-                                    img_src = await img_locator.get_attribute('src', timeout=action_timeout)
+                                    img_src = await img_locator.get_attribute('src', timeout=PAGE_TIMEOUT)
                                     
                                     link_locator = row.locator('div.pic > a')
-                                    a_href = await link_locator.get_attribute('href', timeout=action_timeout)
+                                    a_href = await link_locator.get_attribute('href', timeout=PAGE_TIMEOUT)
                                     
                                     name_locator = row.locator('div.name > a')
-                                    name = await name_locator.text_content(timeout=action_timeout)
+                                    name = await name_locator.text_content(timeout=PAGE_TIMEOUT)
                                     
                                     price_locator = row.locator('div.price')
-                                    price_text = await price_locator.text_content(timeout=action_timeout)
+                                    price_text = await price_locator.text_content(timeout=PAGE_TIMEOUT)
 
                                     # Process extracted data
                                     base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
@@ -944,8 +912,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                             data.extend(items_on_page)
                             logger.debug(f"📊 Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
 
-                            if processed_items >= max_items_to_scrape:
-                                logger.info(f"✅ Reached scrape limit ({max_items_to_scrape}) for keyword '{keyword}'.")
+                            if processed_items >= MAX_CONCURRENT_TASKS:
+                                logger.info(f"✅ Reached scrape limit ({MAX_CONCURRENT_TASKS}) for keyword '{keyword}'.")
                                 break
 
                             # --- Pagination --- 
@@ -956,9 +924,9 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                  if await next_page_locator.is_visible(timeout=5000):
                                      logger.debug(f"📄 Clicking next page ({page_number + 1})")
                                      # Click and wait for navigation/load state
-                                     await next_page_locator.click(timeout=action_timeout)
+                                     await next_page_locator.click(timeout=PAGE_TIMEOUT)
                                      # Wait for content to likely reload after click
-                                     await page_instance.wait_for_load_state('domcontentloaded', timeout=navigation_timeout) 
+                                     await page_instance.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT) 
                                      page_number += 1
                                  else:
                                      logger.info("⚠️ Next page element not found or not visible. Ending pagination.")
@@ -983,7 +951,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         logger.debug(f"📊 Updating best result for keyword '{keyword}' with {len(current_keyword_best_df)} items from {base_url}.")
                     
                     # If this URL attempt yielded enough results, use it and maybe stop checking other URLs for this keyword
-                    if len(current_attempt_df) >= min_results_threshold:
+                    if len(current_attempt_df) >= 5:
                          logger.info(f"✅ Found sufficient results ({len(current_attempt_df)}) with keyword '{keyword}' from {base_url}. Using this result.")
                          # current_keyword_best_df = current_attempt_df # Already assigned if it's the best
                          # keyword_found_sufficient = True # Optional: break inner URL loop if one URL is enough
@@ -996,7 +964,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                     logger.debug(f"📊 Updating overall best result with {len(best_result_df)} items from keyword '{keyword}'.")
 
                 # Check if the best result found *for this keyword* is sufficient to stop trying other keywords
-                if len(current_keyword_best_df) >= min_results_threshold:
+                if len(current_keyword_best_df) >= 5:
                     logger.info(f"✅ Found sufficient results ({len(current_keyword_best_df)}) with keyword '{keyword}'. Stopping keyword variations.")
                     # Instead of returning early, break the keyword loop to ensure cleanup runs
                     break # Stop trying further keywords
@@ -1005,23 +973,18 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
             logger.error(f"❌ Major error during Kogift scrape execution for '{original_keyword1}': {e}", exc_info=True)
             best_result_df = pd.DataFrame() # Ensure empty DataFrame on major error
         finally:
-            # Ensure page and context are closed if they were created
-            if page:
-                try: 
+            # Ensure proper cleanup
+            try:
+                if 'page' in locals():
                     await page.close()
-                    logger.debug("✅ Closed Playwright page.")
-                except Exception as page_close_err:
-                    logger.warning(f"⚠️ Error closing page: {page_close_err}")
-            if context:
-                try:
+                if 'context' in locals():
                     await context.close()
-                    logger.debug("✅ Closed Playwright context.")
-                except Exception as context_close_err:
-                    logger.warning(f"⚠️ Error closing context: {context_close_err}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error during cleanup: {e}")
 
         # Final log based on results
-        if len(best_result_df) < min_results_threshold:
-            logger.warning(f"⚠️ Could not find sufficient results ({min_results_threshold} needed) for '{original_keyword1}' after trying variations. Max found: {len(best_result_df)} items.")
+        if len(best_result_df) < 5:
+            logger.warning(f"⚠️ Could not find sufficient results ({5} needed) for '{original_keyword1}' after trying variations. Max found: {len(best_result_df)} items.")
         else:
             logger.info(f"✅ KoGift scraping finished for '{original_keyword1}'. Final result count: {len(best_result_df)} items.")
 

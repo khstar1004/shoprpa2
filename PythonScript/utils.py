@@ -17,6 +17,7 @@ import time # Import time
 from concurrent.futures import ThreadPoolExecutor # Keep for potential sync tasks
 from datetime import datetime
 from image_downloader import download_images, predownload_kogift_images
+import aiofiles
 
 # --- Configuration Loading ---
 
@@ -341,45 +342,14 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
 
 async def download_image_async(url: str, save_path: Union[str, Path], client: httpx.AsyncClient, config: configparser.ConfigParser) -> bool:
     """Asynchronously download an image from a URL to a local file path using httpx."""
-    if not url or not url.startswith('http'):
-        logging.warning(f"Invalid URL for download: {url}")
-        return False
-
-    save_path = Path(save_path)
-    # Create parent directories if they don't exist
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Skip download if file already exists and is not empty
-    if save_path.exists() and save_path.stat().st_size > 0:
-        logging.debug(f"Image already exists, skipping download: {save_path}")
-        return True
-
-    # Check if it's a kogift URL for special handling
-    is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
     
-    # Ensure kogift images always have jpg extension
-    if is_kogift and not str(save_path).lower().endswith('.jpg'):
-        new_path = save_path.with_suffix('.jpg')
-        logging.debug(f"Converting kogift image path to jpg: {save_path} -> {new_path}")
-        save_path = new_path
-
-    # URL 디버깅: 도메인 정보 등 확인
-    try:
-        parsed_url = urlparse(url)
-        logging.debug(f"다운로드 URL 분석: 도메인={parsed_url.netloc}, 경로={parsed_url.path}, 프로토콜={parsed_url.scheme}")
-        
-        # URL 유효성 검사 추가
-        if not parsed_url.netloc or not parsed_url.scheme:
-            logging.warning(f"URL 형식이 올바르지 않음: {url}")
-            return False
-            
-        # 특수 도메인 처리 (고려기프트 관련)
-        if is_kogift:
-            logging.debug(f"고려기프트/판촉 도메인 이미지 URL 감지: {url}")
-            # 여기에 도메인별 특수 처리 추가 가능
-    except Exception as e:
-        logging.error(f"URL 파싱 오류: {url}, 오류: {e}")
-
+    # Normalize the save path
+    save_path = Path(save_path)
+    save_path = Path(os.path.normpath(str(save_path)))
+    
+    # Ensure directory exists
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    
     logging.debug(f"Downloading image from {url} to {save_path}")
     
     # Get timeout settings from config
@@ -403,65 +373,25 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
             
             # Check Content-Type header for image
             content_type = response.headers.get('content-type', '')
-            
-            # For Kogift/Koreagift websites, be more lenient with content types
             if not content_type.startswith('image/'):
-                if is_kogift:
-                    # For kogift, log the issue but still try to save as image
-                    logging.warning(f"Kogift URL returned non-image content-type: {url}, Content-Type: {content_type}")
-                    # Continue with saving anyway for kogift
-                else:
-                    # For non-kogift, log and continue to next attempt
-                    logging.warning(f"Downloaded content is not an image: {url}, Content-Type: {content_type}")
-                    
-                    # For non-image content, log details
-                    if attempt == max_retries - 1:  # Only log on last attempt
-                        if content_type.startswith('text/html'):
-                            logging.warning(f"URL returned HTML instead of image: {url} (content length: {len(response.content)} bytes)")
-                        else:
-                            logging.warning(f"URL returned non-image content: {url}, Content-Type: {content_type}, Length: {len(response.content)} bytes")
-                    
-                    # Only skip saving for non-kogift
-                    if not is_kogift:
-                        await asyncio.sleep(retry_delay)
-                        continue
-            
-            # 이미지 데이터 확인
-            if len(response.content) < 100:  # 너무 작은 응답
-                logging.warning(f"Image download seems too small ({len(response.content)} bytes): {url}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    continue
-            
-            # 파일 저장
-            with open(save_path, 'wb') as f:
-                f.write(response.content)
-            
-            # 저장된 파일 확인
-            if save_path.exists() and save_path.stat().st_size > 0:
-                logging.debug(f"Image successfully downloaded: {url} -> {save_path}")
+                logging.warning(f"URL does not return an image (Content-Type: {content_type})")
+                return False
                 
-                # 이미지 파일 유효성 검사
-                try:
-                    from PIL import Image
-                    img = Image.open(save_path)
-                    # 간단한 검증: 이미지를 로드하고 크기 확인
-                    if img.width < 10 or img.height < 10:
-                        logging.warning(f"Downloaded image is too small: {img.width}x{img.height} pixels")
-                        # 작은 이미지여도 일단 사용
-                except Exception as img_err:
-                    # For kogift images, keep the file even if it's not a valid image
-                    if is_kogift:
-                        logging.warning(f"Downloaded kogift file is not a valid image, but keeping it: {save_path}, Error: {img_err}")
-                        return True
-                    else:
-                        logging.warning(f"Downloaded file is not a valid image: {save_path}, Error: {img_err}")
-                        # 이미지 로드 실패해도 파일은 보존
+            # Read the image data
+            image_data = await response.read()
+            
+            # Check image data size
+            if len(image_data) < 100:  # Extremely small file, probably not a valid image
+                logging.warning(f"Image data too small ({len(image_data)} bytes), probably not a valid image")
+                return False
                 
-                return True
-            else:
-                logging.warning(f"Downloaded file missing or empty: {save_path}")
+            # Save the image
+            async with aiofiles.open(save_path, 'wb') as f:
+                await f.write(image_data)
                 
+            logging.info(f"Successfully downloaded image to {save_path}")
+            return True
+
         except httpx.TimeoutException:
             logging.warning(f"Timeout downloading image (attempt {attempt+1}/{max_retries}): {url}")
         except httpx.HTTPStatusError as http_err:

@@ -471,35 +471,6 @@ def _process_single_haoreum_image(product_code, image_info, config):
         use_bg_removal = True
 
     try:
-        # Create hash and filename
-        url_hash = hashlib.md5(image_url.encode('utf-8', errors='ignore')).hexdigest()[:8]  # Shorter hash for filename
-
-        # Handle potential URL encoding issues (for Korean characters)
-        try:
-            # Normalize URL if it contains Korean characters
-            if any('\uAC00' <= c <= '\uD7A3' for c in image_url):
-                # Korean character range check
-                parsed = urlparse(image_url)
-                encoded_path = parsed.path.encode('utf-8').decode('iso-8859-1')
-                image_url = parsed._replace(path=encoded_path).geturl()
-                logging.debug(f"🟡 URL contains Korean characters, normalized to: {image_url}")
-        except Exception as url_err:
-            logging.warning(f"🟡 URL normalization error (non-critical): {url_err}")
-        
-        # Get file extension from URL
-        try:
-            parsed_url = urlparse(image_url)
-            _, file_ext = os.path.splitext(parsed_url.path)
-            file_ext = file_ext.lower() or '.jpg'
-            
-            # Validate extension
-            if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
-                logging.warning(f"🟡 Suspicious file extension: {file_ext}, defaulting to .jpg")
-                file_ext = '.jpg'
-        except Exception as ext_err:
-            logging.warning(f"🟡 Error parsing URL for file extension: {ext_err}. Using .jpg")
-            file_ext = '.jpg'
-        
         # Sanitize product code if needed
         if product_code is None:
             sanitized_code = "unknown_product"
@@ -509,11 +480,17 @@ def _process_single_haoreum_image(product_code, image_info, config):
                 sanitized_code = hashlib.md5(product_code.encode('utf-8', errors='ignore')).hexdigest()[:16]
                 logging.debug(f"🟡 Using hash-based code for Korean product code: {sanitized_code}")
             else:
+                # Ensure consistent product code format
                 sanitized_code = re.sub(r'[^\w\d-]', '_', str(product_code))[:30]
+                # Add padding to ensure consistent length
+                sanitized_code = sanitized_code.ljust(30, '_')
         
-        # Include source information in the filename
+        # Create a consistent hash of URL for uniqueness
+        url_hash = hashlib.md5(image_url.encode('utf-8', errors='ignore')).hexdigest()[:8]
+        
+        # Include source information in the filename with consistent format
         main_img_filename = f"haereum_{sanitized_code}_{url_hash}{file_ext}"
-        main_img_path = os.path.join(main_dir, main_img_filename)
+        main_img_path = os.path.normpath(os.path.join(main_dir, main_img_filename))
         final_image_path = main_img_path
 
         # Check if image already exists

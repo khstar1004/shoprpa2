@@ -102,19 +102,24 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         step_start_time = time.time()
         logging.info("[Step 3/7] Preprocessing images from input file (if any)...")
         if progress_queue: progress_queue.emit("status", "Preprocessing input images...")
-        # This uses ThreadPoolExecutor internally, could be wrapped in to_thread if it blocks significantly
-        # For now, assume it's acceptable as it's primarily I/O bound.
-        input_file_image_map = await preprocess_and_download_images(
-            df=haoreum_df,
-            url_column_name='본사 이미지',
-            id_column_name='Code',
-            prefix='input',
-            config=config,
-            max_workers=download_workers
-        )
-        processed_count = len(input_file_image_map)
-        logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
-        if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
+        
+        try:
+            input_file_image_map = await preprocess_and_download_images(
+                df=haoreum_df,
+                url_column_name='본사 이미지',
+                id_column_name='Code',
+                prefix='input',
+                config=config,
+                max_workers=download_workers
+            )
+            processed_count = len(input_file_image_map)
+            logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
+            if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
+        except Exception as e:
+            logging.error(f"Error preprocessing input images: {e}")
+            if debug_mode:
+                logging.debug(traceback.format_exc())
+            input_file_image_map = {}
 
         # 3. Crawl External Data - Increased crawling and image downloads
         log_step(4, total_steps, "Starting enhanced crawling process (increased depth for accuracy)...")

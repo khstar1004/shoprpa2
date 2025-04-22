@@ -54,8 +54,13 @@ logger = logging.getLogger(__name__)
 # PATTERNS = ...
 
 # Add semaphore for concurrent task limiting
-MAX_CONCURRENT_TASKS = 5
+MAX_CONCURRENT_TASKS = 3  # Reduced from 5 to 3
 scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
+# Add browser context timeout settings
+BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes
+PAGE_TIMEOUT = 120000  # 2 minutes
+NAVIGATION_TIMEOUT = 60000  # 1 minute
 
 def _normalize_text(text: str) -> str:
     """Normalizes text (remove extra whitespace)."""
@@ -80,50 +85,19 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
             haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
             user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
             
-            default_timeout = config.getint('Playwright', 'playwright_default_timeout_ms', fallback=60000)
-            navigation_timeout = config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000)
-            action_timeout = config.getint('Playwright', 'playwright_action_timeout_ms', fallback=15000)
-            block_resources = config.getboolean('Playwright', 'playwright_block_resources', fallback=True)
-            max_download_retries = config.getint('Matching', 'max_retries_downloads', fallback=3)
-
-            # Load selectors from JSON string in config
-            selectors_json = config.get('ScraperSettings', 'haereum_selectors_json', fallback='{}')
-            try:
-                selectors = json.loads(selectors_json)
-                if not isinstance(selectors, dict):
-                    raise ValueError("Selectors JSON did not parse into a dictionary.")
-            except (json.JSONDecodeError, ValueError) as json_err:
-                logger.error(f"🔴 Error parsing Haereum selectors JSON from config: {json_err}. Using default selectors.")
-                selectors = {
-                    "search_input": 'input[name="keyword"]',
-                    "search_button": 'input[type="image"][src*="b_search.gif"]',
-                    "product_list_item": 'td[width="160"][bgcolor="ffffff"]',
-                    "product_name_list": 'td[align="center"][style*="line-height:130%"] > a',
-                    "product_image_list": 'td[align="center"] > a > img',
-                    "product_list_wrapper": 'form[name="ListForm"]'
-                }
+            # Create a new context with increased timeout
+            context = await browser.new_context(
+                user_agent=user_agent,
+                viewport={'width': 1920, 'height': 1080},
+                timeout=BROWSER_CONTEXT_TIMEOUT
+            )
             
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-            logger.error(f"🔴 Error reading Haereum/Playwright config: {e}")
-            return None
-
-        logger.info(f"🚀 Starting Haereum scrape for keyword: '{keyword}'")
-        normalized_keyword = _normalize_text(keyword)
-
-        context = None
-        page = None
-        try:
-            # Check if browser is still valid
-            if not browser.is_connected():
-                logger.error("🔴 Browser is not connected")
-                return None
-
-            context = await browser.new_context(user_agent=user_agent)
+            # Create a new page with increased timeouts
             page = await context.new_page()
-            page.set_default_timeout(default_timeout)
-            page.set_default_navigation_timeout(navigation_timeout)
+            page.set_default_timeout(PAGE_TIMEOUT)
+            page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
 
-            if block_resources:
+            if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                 await setup_page_optimizations(page)
 
             logger.debug(f"🌐 Navigating to {haereum_main_url}")
@@ -140,7 +114,7 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
             while retry_count < max_retries:
                 try:
                     search_input = page.locator('input[name="keyword"]')
-                    await search_input.wait_for(state="visible", timeout=action_timeout)
+                    await search_input.wait_for(state="visible", timeout=PAGE_TIMEOUT)
                     break
                 except Exception as e:
                     retry_count += 1
@@ -153,28 +127,28 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
             
             # Wait for the input to be enabled
             start_time = time.time()
-            while time.time() - start_time < action_timeout / 1000:  # Convert ms to seconds
+            while time.time() - start_time < PAGE_TIMEOUT / 1000:  # Convert ms to seconds
                 if await search_input.is_enabled():
                     break
                 await page.wait_for_timeout(100)  # Check every 100ms
             
             # Fill the search input
-            await search_input.fill(keyword, timeout=action_timeout)
+            await search_input.fill(keyword, timeout=PAGE_TIMEOUT)
             logger.debug(f"⌨️ Filled search input with keyword: {keyword}")
 
             # Wait for the search button to be present and visible
             search_button = page.locator('input[type="image"][src*="b_search.gif"]')
-            await search_button.wait_for(state="visible", timeout=action_timeout)
+            await search_button.wait_for(state="visible", timeout=PAGE_TIMEOUT)
             
             # Wait for the button to be enabled
             start_time = time.time()
-            while time.time() - start_time < action_timeout / 1000:  # Convert ms to seconds
+            while time.time() - start_time < PAGE_TIMEOUT / 1000:  # Convert ms to seconds
                 if await search_button.is_enabled():
                     break
                 await page.wait_for_timeout(100)  # Check every 100ms
             
             # Click the search button and wait for navigation
-            await search_button.click(timeout=action_timeout)
+            await search_button.click(timeout=PAGE_TIMEOUT)
             await page.wait_for_timeout(5000)
             logger.info("🔍 Search button clicked, waiting for results")
 
@@ -192,7 +166,7 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                 product_images = []
                 for selector in selectors_to_try:
                     try:
-                        await page.wait_for_selector(selector, timeout=action_timeout)
+                        await page.wait_for_selector(selector, timeout=PAGE_TIMEOUT)
                         images = await page.query_selector_all(selector)
                         if images:
                             product_images = images
@@ -204,12 +178,6 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                 
                 if not product_images:
                     logger.warning("⚠️ No product images found on the page with any selector")
-                    # Try to get page content for debugging
-                    try:
-                        content = await page.content()
-                        logger.debug(f"Page content: {content[:500]}...")  # Log first 500 chars
-                    except Exception as e:
-                        logger.error(f"Failed to get page content: {str(e)}")
                     return None
                 
                 # Get the first product image URL with better error handling
@@ -235,7 +203,7 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     logger.info(f"✅ Found image URL: {found_image_url}")
                     
                     # Download the image
-                    local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=max_download_retries)
+                    local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=3)
                     if local_path:
                         return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
                     else:
@@ -253,11 +221,14 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
         except Exception as e:
             logger.error(f"❌ Unexpected error during Haereum scrape: {e}", exc_info=True)
         finally:
-            if context:
-                try:
+            # Ensure proper cleanup
+            try:
+                if 'page' in locals():
+                    await page.close()
+                if 'context' in locals():
                     await context.close()
-                except Exception as e:
-                    logger.warning(f"⚠️ Error closing context: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error during cleanup: {e}")
 
         return None
 
@@ -359,7 +330,8 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     # Include target/source information in the filename
     # Format: source_productcode_hash.ext
     filename = f"haereum_{product_code}_{url_hash}{ext}"
-    local_path = os.path.join(main_dir, filename)
+    # Use os.path.normpath to normalize the path
+    local_path = os.path.normpath(os.path.join(main_dir, filename))
     
     # Check if file already exists
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
