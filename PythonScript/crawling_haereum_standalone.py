@@ -96,11 +96,10 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
                     user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
                     
-                    # Create a new context with increased timeout
+                    # Create a new context with proper settings
                     context = await browser.new_context(
                         user_agent=user_agent,
-                        viewport={'width': 1920, 'height': 1080},
-                        timeout=BROWSER_CONTEXT_TIMEOUT
+                        viewport={'width': 1920, 'height': 1080}
                     )
                     
                     # Create a new page with increased timeouts
@@ -112,7 +111,7 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         await setup_page_optimizations(page)
 
                     logger.debug(f"🌐 Navigating to {haereum_main_url}")
-                    await page.goto(haereum_main_url, wait_until="domcontentloaded")
+                    await page.goto(haereum_main_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT)
                     await page.wait_for_timeout(5000)
                     logger.debug("⏳ Initial page load wait finished.")
 
