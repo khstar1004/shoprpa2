@@ -3,3 +3,5 @@
 *.xlsx
 *.json
 *.log
+__pycache__/
+*.pyc
