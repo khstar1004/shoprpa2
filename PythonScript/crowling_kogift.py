@@ -766,7 +766,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         processed_items = 0
                         product_item_selector = 'div.product' # Selector for individual product blocks
 
-                        while processed_items < MAX_CONCURRENT_TASKS and page_number <= 10:
+                        while processed_items < 3 and page_number <= 10:
                             logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
                             try:
                                  # Wait for at least one product item to be potentially visible
@@ -788,7 +788,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
 
                             items_on_page = []
                             for i in range(count):
-                                if processed_items >= MAX_CONCURRENT_TASKS:
+                                if processed_items >= 3:
                                     break
                                 row = rows.nth(i)
                                 item_data = {}
@@ -910,8 +910,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                             data.extend(items_on_page)
                             logger.debug(f"📊 Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
 
-                            if processed_items >= MAX_CONCURRENT_TASKS:
-                                logger.info(f"✅ Reached scrape limit ({MAX_CONCURRENT_TASKS}) for keyword '{keyword}'.")
+                            if processed_items >= 3:
+                                logger.info(f"✅ Reached scrape limit (3) for keyword '{keyword}'.")
                                 break
 
                             # --- Pagination --- 
