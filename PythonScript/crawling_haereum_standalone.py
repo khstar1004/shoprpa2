@@ -58,9 +58,15 @@ MAX_CONCURRENT_TASKS = 3  # Reduced from 5 to 3
 scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
 # Add browser context timeout settings
-BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes
-PAGE_TIMEOUT = 120000  # 2 minutes
-NAVIGATION_TIMEOUT = 60000  # 1 minute
+BROWSER_CONTEXT_TIMEOUT = 600000  # 10 minutes
+PAGE_TIMEOUT = 300000  # 5 minutes
+NAVIGATION_TIMEOUT = 120000  # 2 minutes
+WAIT_TIMEOUT = 30000  # 30 seconds
+
+# Add retry settings
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+RETRY_BACKOFF_FACTOR = 2  # Exponential backoff factor
 
 def _normalize_text(text: str) -> str:
     """Normalizes text (remove extra whitespace)."""
@@ -75,162 +81,194 @@ def _normalize_text(text: str) -> str:
 # Updated main scraping function to accept browser and ConfigParser
 async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
     """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
-    async with scraping_semaphore:  # Acquire semaphore before starting
-        if config is None:
-            logger.error("🔴 Configuration object (ConfigParser) is missing for Haereum scrape.")
+    retry_count = 0
+    last_error = None
+    
+    while retry_count < MAX_RETRIES:
+        try:
+            async with scraping_semaphore:  # Acquire semaphore before starting
+                if config is None:
+                    logger.error("🔴 Configuration object (ConfigParser) is missing for Haereum scrape.")
+                    return None
+
+                try:
+                    haereum_main_url = config.get('ScraperSettings', 'haereum_main_url', fallback="https://www.jclgift.com/")
+                    haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
+                    user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
+                    
+                    # Create a new context with increased timeout
+                    context = await browser.new_context(
+                        user_agent=user_agent,
+                        viewport={'width': 1920, 'height': 1080},
+                        timeout=BROWSER_CONTEXT_TIMEOUT
+                    )
+                    
+                    # Create a new page with increased timeouts
+                    page = await context.new_page()
+                    page.set_default_timeout(PAGE_TIMEOUT)
+                    page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
+
+                    if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
+                        await setup_page_optimizations(page)
+
+                    logger.debug(f"🌐 Navigating to {haereum_main_url}")
+                    await page.goto(haereum_main_url, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(5000)
+                    logger.debug("⏳ Initial page load wait finished.")
+
+                    # --- Search interaction ---
+                    # Wait for the search input to be present and visible with retry logic
+                    max_retries = 3
+                    retry_count = 0
+                    search_input = None
+                    
+                    while retry_count < max_retries:
+                        try:
+                            search_input = page.locator('input[name="keyword"]')
+                            await search_input.wait_for(state="visible", timeout=WAIT_TIMEOUT)
+                            break
+                        except Exception as e:
+                            retry_count += 1
+                            logger.warning(f"⚠️ Retry {retry_count}/{max_retries} for search input: {str(e)}")
+                            if retry_count < max_retries:
+                                await page.reload()
+                                await page.wait_for_timeout(5000)
+                            else:
+                                raise
+                    
+                    # Wait for the input to be enabled with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < WAIT_TIMEOUT / 1000:  # Convert ms to seconds
+                        if await search_input.is_enabled():
+                            break
+                        await page.wait_for_timeout(100)  # Check every 100ms
+                    
+                    # Fill the search input with timeout
+                    await search_input.fill(keyword, timeout=WAIT_TIMEOUT)
+                    logger.debug(f"⌨️ Filled search input with keyword: {keyword}")
+
+                    # Wait for the search button to be present and visible
+                    search_button = page.locator('input[type="image"][src*="b_search.gif"]')
+                    await search_button.wait_for(state="visible", timeout=WAIT_TIMEOUT)
+                    
+                    # Wait for the button to be enabled with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < WAIT_TIMEOUT / 1000:  # Convert ms to seconds
+                        if await search_button.is_enabled():
+                            break
+                        await page.wait_for_timeout(100)  # Check every 100ms
+                    
+                    # Click the search button and wait for navigation
+                    await search_button.click(timeout=WAIT_TIMEOUT)
+                    await page.wait_for_timeout(5000)
+                    logger.info("🔍 Search button clicked, waiting for results")
+
+                    # --- Enhanced image URL extraction ---
+                    try:
+                        # Wait for the product list to load with multiple possible selectors
+                        selectors_to_try = [
+                            'img[src*="/upload/product/"]',  # More general pattern
+                            'img[src*="/upload/product/simg3/"]',  # Original pattern
+                            'td[align="center"] img',  # General product image
+                            'form[name="ListForm"] img'  # Any image in product list
+                        ]
+                        
+                        # Try each selector until we find images
+                        product_images = []
+                        for selector in selectors_to_try:
+                            try:
+                                await page.wait_for_selector(selector, timeout=WAIT_TIMEOUT)
+                                images = await page.query_selector_all(selector)
+                                if images:
+                                    product_images = images
+                                    logger.info(f"📸 Found {len(product_images)} product images using selector: {selector}")
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Selector {selector} not found: {str(e)}")
+                                continue
+                        
+                        if not product_images:
+                            logger.warning("⚠️ No product images found on the page with any selector")
+                            return None
+                        
+                        # Get the first product image URL with better error handling
+                        first_image = product_images[0]
+                        img_src = await first_image.get_attribute('src')
+                        
+                        if not img_src:
+                            logger.warning("⚠️ Could not get image source attribute")
+                            # Try alternative attributes
+                            for attr in ['data-src', 'data-original', 'srcset']:
+                                img_src = await first_image.get_attribute(attr)
+                                if img_src:
+                                    logger.info(f"Found image URL in alternative attribute: {attr}")
+                                    break
+                        
+                        if img_src:
+                            # Construct full URL if needed
+                            if not img_src.startswith(('http://', 'https://')):
+                                found_image_url = urljoin(haereum_main_url, img_src)
+                            else:
+                                found_image_url = img_src
+                                
+                            logger.info(f"✅ Found image URL: {found_image_url}")
+                            
+                            # Download the image
+                            local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=3)
+                            if local_path:
+                                return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
+                            else:
+                                return {"url": found_image_url, "local_path": None, "source": "haereum"}
+                        else:
+                            logger.warning("⚠️ Could not get image source from any attribute")
+                            return None
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Error during image URL extraction: {e}", exc_info=True)
+                        return None
+                        
+                except PlaywrightError as pe:
+                    logger.error(f"❌ Playwright error during Haereum scrape: {pe}")
+                    last_error = pe
+                    retry_count += 1
+                    if retry_count < MAX_RETRIES:
+                        delay = RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** retry_count)
+                        logger.info(f"Retrying in {delay} seconds... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                except Exception as e:
+                    logger.error(f"❌ Unexpected error during Haereum scrape: {e}", exc_info=True)
+                    last_error = e
+                    retry_count += 1
+                    if retry_count < MAX_RETRIES:
+                        delay = RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** retry_count)
+                        logger.info(f"Retrying in {delay} seconds... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                finally:
+                    # Ensure proper cleanup
+                    try:
+                        if 'page' in locals():
+                            await page.close()
+                        if 'context' in locals():
+                            await context.close()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error during cleanup: {e}")
+
+        except Exception as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < MAX_RETRIES:
+                delay = RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** retry_count)
+                logger.info(f"Retrying in {delay} seconds... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+                await asyncio.sleep(delay)
+                continue
+            logger.error(f"Failed after {MAX_RETRIES} attempts. Last error: {str(last_error)}")
             return None
 
-        try:
-            haereum_main_url = config.get('ScraperSettings', 'haereum_main_url', fallback="https://www.jclgift.com/")
-            haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
-            user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
-            
-            # Create a new context with increased timeout
-            context = await browser.new_context(
-                user_agent=user_agent,
-                viewport={'width': 1920, 'height': 1080},
-                timeout=BROWSER_CONTEXT_TIMEOUT
-            )
-            
-            # Create a new page with increased timeouts
-            page = await context.new_page()
-            page.set_default_timeout(PAGE_TIMEOUT)
-            page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
-
-            if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
-                await setup_page_optimizations(page)
-
-            logger.debug(f"🌐 Navigating to {haereum_main_url}")
-            await page.goto(haereum_main_url, wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
-            logger.debug("⏳ Initial page load wait finished.")
-
-            # --- Search interaction ---
-            # Wait for the search input to be present and visible with retry logic
-            max_retries = 3
-            retry_count = 0
-            search_input = None
-            
-            while retry_count < max_retries:
-                try:
-                    search_input = page.locator('input[name="keyword"]')
-                    await search_input.wait_for(state="visible", timeout=PAGE_TIMEOUT)
-                    break
-                except Exception as e:
-                    retry_count += 1
-                    logger.warning(f"⚠️ Retry {retry_count}/{max_retries} for search input: {str(e)}")
-                    if retry_count < max_retries:
-                        await page.reload()
-                        await page.wait_for_timeout(5000)
-                    else:
-                        raise
-            
-            # Wait for the input to be enabled
-            start_time = time.time()
-            while time.time() - start_time < PAGE_TIMEOUT / 1000:  # Convert ms to seconds
-                if await search_input.is_enabled():
-                    break
-                await page.wait_for_timeout(100)  # Check every 100ms
-            
-            # Fill the search input
-            await search_input.fill(keyword, timeout=PAGE_TIMEOUT)
-            logger.debug(f"⌨️ Filled search input with keyword: {keyword}")
-
-            # Wait for the search button to be present and visible
-            search_button = page.locator('input[type="image"][src*="b_search.gif"]')
-            await search_button.wait_for(state="visible", timeout=PAGE_TIMEOUT)
-            
-            # Wait for the button to be enabled
-            start_time = time.time()
-            while time.time() - start_time < PAGE_TIMEOUT / 1000:  # Convert ms to seconds
-                if await search_button.is_enabled():
-                    break
-                await page.wait_for_timeout(100)  # Check every 100ms
-            
-            # Click the search button and wait for navigation
-            await search_button.click(timeout=PAGE_TIMEOUT)
-            await page.wait_for_timeout(5000)
-            logger.info("🔍 Search button clicked, waiting for results")
-
-            # --- Enhanced image URL extraction ---
-            try:
-                # Wait for the product list to load with multiple possible selectors
-                selectors_to_try = [
-                    'img[src*="/upload/product/"]',  # More general pattern
-                    'img[src*="/upload/product/simg3/"]',  # Original pattern
-                    'td[align="center"] img',  # General product image
-                    'form[name="ListForm"] img'  # Any image in product list
-                ]
-                
-                # Try each selector until we find images
-                product_images = []
-                for selector in selectors_to_try:
-                    try:
-                        await page.wait_for_selector(selector, timeout=PAGE_TIMEOUT)
-                        images = await page.query_selector_all(selector)
-                        if images:
-                            product_images = images
-                            logger.info(f"📸 Found {len(product_images)} product images using selector: {selector}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"Selector {selector} not found: {str(e)}")
-                        continue
-                
-                if not product_images:
-                    logger.warning("⚠️ No product images found on the page with any selector")
-                    return None
-                
-                # Get the first product image URL with better error handling
-                first_image = product_images[0]
-                img_src = await first_image.get_attribute('src')
-                
-                if not img_src:
-                    logger.warning("⚠️ Could not get image source attribute")
-                    # Try alternative attributes
-                    for attr in ['data-src', 'data-original', 'srcset']:
-                        img_src = await first_image.get_attribute(attr)
-                        if img_src:
-                            logger.info(f"Found image URL in alternative attribute: {attr}")
-                            break
-                
-                if img_src:
-                    # Construct full URL if needed
-                    if not img_src.startswith(('http://', 'https://')):
-                        found_image_url = urljoin(haereum_main_url, img_src)
-                    else:
-                        found_image_url = img_src
-                        
-                    logger.info(f"✅ Found image URL: {found_image_url}")
-                    
-                    # Download the image
-                    local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=3)
-                    if local_path:
-                        return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
-                    else:
-                        return {"url": found_image_url, "local_path": None, "source": "haereum"}
-                else:
-                    logger.warning("⚠️ Could not get image source from any attribute")
-                    return None
-                
-            except Exception as e:
-                logger.error(f"❌ Error during image URL extraction: {e}", exc_info=True)
-                return None
-                
-        except PlaywrightError as pe:
-            logger.error(f"❌ Playwright error during Haereum scrape: {pe}")
-        except Exception as e:
-            logger.error(f"❌ Unexpected error during Haereum scrape: {e}", exc_info=True)
-        finally:
-            # Ensure proper cleanup
-            try:
-                if 'page' in locals():
-                    await page.close()
-                if 'context' in locals():
-                    await context.close()
-            except Exception as e:
-                logger.warning(f"⚠️ Error during cleanup: {e}")
-
-        return None
+    return None
 
 async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, max_retries: int = 3) -> Optional[str]:
     """Download an image to the main folder with target information.
@@ -341,7 +379,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     # Set up retry logic
     remaining_retries = max_retries
     last_error = None
-    retry_delay = 1.0  # Start with 1 second delay, double on each retry
+    retry_delay = RETRY_DELAY  # Start with base delay
     
     while remaining_retries >= 0:
         try:
@@ -363,7 +401,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                 # Only retry for server errors (5xx)
                                 remaining_retries -= 1
                                 await asyncio.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff
+                                retry_delay *= RETRY_BACKOFF_FACTOR  # Exponential backoff
                                 logger.info(f"Retrying download due to server error (remaining attempts: {remaining_retries})")
                                 continue
                             return None
@@ -398,7 +436,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                     if remaining_retries > 0:
                         remaining_retries -= 1
                         await asyncio.sleep(retry_delay)
-                        retry_delay *= 2
+                        retry_delay *= RETRY_BACKOFF_FACTOR
                         logger.info(f"Retrying download due to client error (remaining attempts: {remaining_retries})")
                         continue
                     return None
@@ -408,7 +446,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                     if remaining_retries > 0:
                         remaining_retries -= 1
                         await asyncio.sleep(retry_delay)
-                        retry_delay *= 2
+                        retry_delay *= RETRY_BACKOFF_FACTOR
                         logger.info(f"Retrying download due to timeout (remaining attempts: {remaining_retries})")
                         continue
                     return None
@@ -419,7 +457,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             if remaining_retries > 0:
                 remaining_retries -= 1
                 await asyncio.sleep(retry_delay)
-                retry_delay *= 2
+                retry_delay *= RETRY_BACKOFF_FACTOR
                 logger.info(f"Retrying download due to unexpected error (remaining attempts: {remaining_retries})")
                 continue
             return None
