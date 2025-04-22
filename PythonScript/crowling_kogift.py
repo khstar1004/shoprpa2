@@ -46,10 +46,6 @@ logger = logging.getLogger(__name__) # Get logger instance
 # USER_AGENT = "..."
 # MIN_RESULTS_THRESHOLD = 5
 
-# Add semaphore for concurrent task limiting
-MAX_CONCURRENT_TASKS = 3  # Reduced from 5 to 3
-scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-
 # Add browser context timeout settings
 BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes
 PAGE_TIMEOUT = 120000  # 2 minutes
@@ -619,6 +615,9 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
 # --- Main scraping function에 상세 페이지 크롤링 로직 추가 --- 
 async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False):
     """Scrape product data from Koreagift using a shared Browser instance."""
+    # Create a new semaphore for this function call
+    scraping_semaphore = asyncio.Semaphore(3)  # Reduced from 5 to 3
+    
     async with scraping_semaphore:  # Acquire semaphore before starting
         if config is None:
             logger.error("🔴 Configuration object (ConfigParser) is missing for Kogift scrape.")

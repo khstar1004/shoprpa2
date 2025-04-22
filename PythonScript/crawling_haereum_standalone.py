@@ -53,10 +53,6 @@ logger = logging.getLogger(__name__)
 # SELECTORS = ...
 # PATTERNS = ...
 
-# Add semaphore for concurrent task limiting
-MAX_CONCURRENT_TASKS = 3  # Reduced from 5 to 3
-scraping_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-
 # Add browser context timeout settings
 BROWSER_CONTEXT_TIMEOUT = 600000  # 10 minutes
 PAGE_TIMEOUT = 300000  # 5 minutes
@@ -81,6 +77,9 @@ def _normalize_text(text: str) -> str:
 # Updated main scraping function to accept browser and ConfigParser
 async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
     """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
+    # Create a new semaphore for this function call
+    scraping_semaphore = asyncio.Semaphore(3)  # Reduced from 5 to 3
+    
     retry_count = 0
     last_error = None
     
