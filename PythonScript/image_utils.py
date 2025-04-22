@@ -11,6 +11,7 @@ import requests
 from io import BytesIO
 import configparser
 import tempfile
+from enhanced_image_matcher import EnhancedImageMatcher
 
 # Load config
 config = configparser.ConfigParser()
@@ -57,6 +58,9 @@ TEXT_MODEL_CACHE = {
 
 # Global session cache for rembg
 rembg_session = None
+
+# --- Global Variables ---
+ENHANCED_MATCHER_INSTANCE = None
 
 # --- Utility Functions ---
 def initialize_rembg_session(model_name="u2net"):
@@ -252,70 +256,18 @@ def preprocess_image(img_path: str) -> Union[tf.Tensor, None]:
         logging.error(f"Error preprocessing image {img_path}: {e}", exc_info=True)
         return None
 
-def calculate_image_similarity(img_path1: str, img_path2: str, model_name: str = 'efficientnetb0') -> float:
-    """Calculates the cosine similarity between two images.
+def get_enhanced_matcher(config: configparser.ConfigParser) -> EnhancedImageMatcher:
+    """Get or create an EnhancedImageMatcher instance."""
+    global ENHANCED_MATCHER_INSTANCE
+    if ENHANCED_MATCHER_INSTANCE is None:
+        ENHANCED_MATCHER_INSTANCE = EnhancedImageMatcher(config)
+    return ENHANCED_MATCHER_INSTANCE
 
-    Args:
-        img_path1: Path to the first image file.
-        img_path2: Path to the second image file.
-        model_name: The name of the model to use (default: 'efficientnetb0').
-
-    Returns:
-        Cosine similarity score between 0.0 and 1.0, or 0.0 if an error occurs.
-    """
-    model = load_image_model(model_name)
-    if model is None:
-        logging.error("Image model not loaded. Cannot calculate similarity.")
-        return 0.0
-
-    # Check if files exist first
-    if not os.path.exists(img_path1):
-        logging.error(f"Image file not found: {img_path1}")
-        return 0.0
-        
-    if not os.path.exists(img_path2):
-        logging.error(f"Image file not found: {img_path2}")
-        return 0.0
-        
-    # Log image paths for debugging
-    logging.debug(f"Calculating similarity between {img_path1} and {img_path2}")
-
-    # Preprocess images and handle potential errors
-    img1_preprocessed = preprocess_image(img_path1)
-    if img1_preprocessed is None:
-        logging.error(f"Failed to preprocess image 1: {img_path1}")
-        return 0.0
-
-    img2_preprocessed = preprocess_image(img_path2)
-    if img2_preprocessed is None:
-        logging.error(f"Failed to preprocess image 2: {img_path2}")
-        return 0.0
-
-    try:
-        # Extract features using the model (set training=False)
-        features1 = model(img1_preprocessed, training=False).numpy().flatten()
-        features2 = model(img2_preprocessed, training=False).numpy().flatten()
-
-        # Normalize features to prevent issues with zero vectors
-        norm1 = np.linalg.norm(features1)
-        norm2 = np.linalg.norm(features2)
-
-        if norm1 == 0 or norm2 == 0:
-            logging.warning(f"Could not calculate similarity: zero vector generated for one or both images ({img_path1}, {img_path2})")
-            return 0.0
-
-        # Calculate cosine similarity
-        similarity = np.dot(features1, features2) / (norm1 * norm2)
-
-        # Clip similarity to [0, 1] range as dot product can sometimes be slightly outside due to floating point inaccuracies
-        similarity = max(0.0, min(1.0, float(similarity)))
-
-        logging.debug(f"Calculated image similarity between {os.path.basename(img_path1)} and {os.path.basename(img_path2)}: {similarity:.4f}")
-        return similarity
-
-    except Exception as e:
-        logging.error(f"Error calculating image similarity between {img_path1} and {img_path2}: {e}", exc_info=True)
-        return 0.0
+def calculate_image_similarity(img_path1: str, img_path2: str, config: configparser.ConfigParser) -> float:
+    """Calculate image similarity using EnhancedImageMatcher."""
+    matcher = get_enhanced_matcher(config)
+    similarity, _ = matcher.calculate_combined_similarity(img_path1, img_path2)
+    return similarity
 
 # Example Usage (Optional - for testing)
 if __name__ == "__main__":

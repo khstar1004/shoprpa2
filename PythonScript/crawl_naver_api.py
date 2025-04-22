@@ -11,7 +11,7 @@ import json
 import configparser
 import pprint
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 # Import based on how the file is run
 try:
@@ -394,16 +394,13 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
             # Placeholder for the final data for this row
             row_output_data = {
                 'original_row': original_row.to_dict(), # Store the original row data
-                '네이버_상품명': '-',
-                '기본수량(3)': '-',
-                '판매단가(V포함)(3)': '-',
-                # Price difference columns are removed from here, calculated later
-                # '가격차이(3)': '-',
-                # '가격차이(3)(%)': '-',
-                '공급사명': '-',
-                '네이버 쇼핑 링크': '-',
-                '공급사 상품링크': '-',
-                '네이버 이미지': '-'
+                '네이버_상품명': None,
+                '기본수량(3)': None,
+                '판매단가(V포함)(3)': None,
+                '공급사명': None,
+                '네이버 쇼핑 링크': None,
+                '공급사 상품링크': None,
+                '네이버 이미지': None
             }
 
             if naver_data: # If API returned results for this product
@@ -411,43 +408,21 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
                 first_item = naver_data[0]
                 logger.debug(f"  -> Found {len(naver_data)} Naver items for index {idx}. Using first: '{first_item.get('name', 'N/A')[:50]}...'")
 
-                # Populate the output data dictionary
-                row_output_data['네이버_상품명'] = first_item.get('name', '-')
-                row_output_data['기본수량(3)'] = first_item.get('quantity', '-') # Still default '1' from API
-                row_output_data['판매단가(V포함)(3)'] = str(first_item.get('price', '-'))
-                row_output_data['공급사명'] = first_item.get('mallName', '-')
-                row_output_data['네이버 쇼핑 링크'] = first_item.get('link', '-')
-                row_output_data['공급사 상품링크'] = first_item.get('mallProductUrl', '-')
+                # Populate the output data dictionary with actual values from API
+                row_output_data['네이버_상품명'] = first_item.get('name')
+                row_output_data['기본수량(3)'] = first_item.get('quantity', '1')  # Default to '1' if not specified
+                row_output_data['판매단가(V포함)(3)'] = first_item.get('price')
+                row_output_data['공급사명'] = first_item.get('mallName')
+                row_output_data['네이버 쇼핑 링크'] = first_item.get('link')
+                row_output_data['공급사 상품링크'] = first_item.get('mallProductUrl')
+                row_output_data['네이버 이미지'] = first_item.get('image_url')
+            else:
+                logger.debug(f"No Naver data found for index {idx}")
 
-                # Prepare image download task for the first item's image
-                image_url = first_item.get('image_url')
-                if image_url and image_target_dir:
-                    try:
-                        # Create a unique filename based on URL hash
-                        url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
-                        # Try to get extension, default to .jpg
-                        file_ext = os.path.splitext(urlparse(image_url).path)[1]
-                        if not file_ext or len(file_ext) > 5: # Basic sanity check for extension
-                            file_ext = '.jpg'
-                        target_filename = f"naver_{url_hash}{file_ext}"
-                        target_path = os.path.join(image_target_dir, target_filename)
-
-                        logger.debug(f"  -> Preparing image download task for index {idx}: URL='{image_url[:50]}...', Target='{target_path}'")
-                        img_task = asyncio.create_task(
-                            download_image_async(image_url, target_path, client, config=config)
-                        )
-                        image_tasks.append(img_task)
-                        image_info_map[img_task] = (idx, target_path) # Store original index and target path
-                    except Exception as e:
-                        logger.error(f"Error preparing image download task for index {idx}, URL '{image_url}': {e}", exc_info=True)
-                elif not image_url:
-                     logger.debug(f"  -> No image URL found for first item of index {idx}.")
-                elif not image_target_dir:
-                     logger.warning(f"  -> Image target directory not set. Skipping image download for index {idx}.")
-
-            else: # No results found by API for this product
-                logger.debug(f"  -> No Naver items found for index {idx}.")
-                # Keep the placeholder '-' values in row_output_data
+            # Replace any remaining None values with error message
+            for key in row_output_data:
+                if key != 'original_row' and row_output_data[key] is None:
+                    row_output_data[key] = '검색된 상품이 없음'
 
             # Store the processed data (with or without API results) for this index
             processed_results[idx] = row_output_data
@@ -557,8 +532,6 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
                     '네이버_상품명': '-',
                     '기본수량(3)': '-',
                     '판매단가(V포함)(3)': '-',
-                    # '가격차이(3)': '-', # Removed
-                    # '가격차이(3)(%)': '-', # Removed
                     '공급사명': '-',
                     '네이버 쇼핑 링크': '-',
                     '공급사 상품링크': '-',
@@ -739,26 +712,26 @@ async def _test_main():
 
     # Test products list (from user example)
     test_products = [
-        "사랑이 엔젤하트 투포켓 에코백",
-        "사랑이 큐피트화살 투포켓 에코백",
-        "행복이 스마일플라워 투포켓 에코백",
-        "행운이 네잎클로버 투포켓 에코백",
-        "캐치티니핑 53 스무디 입체리본 투명 아동우산",
-        "아테스토니 뱀부사 소프트 3P 타올 세트"
+        "마루는강쥐 클리어미니케이스",
+        "휴대용 360도 회전 각도조절 접이식 핸드폰 거치대",
+        "피에르가르뎅 3단 슬림 코지가든 우양산",
+        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학",
+        "티드 텔유 Y타입 치실 15개입 연세대학교 치과대학",
+        "티드 푸치카 불소 1000ppm 버블치약 50ml 거품치약 어린이치약 36개월이상 연세대학교 치과대학"
     ]
 
     # Create test DataFrame with reference prices
     test_data = {
         '구분': ['A'] * len(test_products),
         '담당자': ['테스트'] * len(test_products),
-        '업체명': ['테스트업체'] * len(test_products), # Added 업체명
-        '업체코드': ['T001'] * len(test_products), # Added 업체코드
-        'Code': [f'CODE{i+1:03d}' for i in range(len(test_products))], # Added Code
-        '중분류카테고리': ['테스트카테고리'] * len(test_products), # Added 카테고리
+        '업체명': ['테스트업체'] * len(test_products),
+        '업체코드': ['T001'] * len(test_products),
+        'Code': [f'CODE{i+1:03d}' for i in range(len(test_products))],
+        '중분류카테고리': ['테스트카테고리'] * len(test_products),
         '상품명': test_products,
-        '기본수량(1)': [1] * len(test_products), # Added 기본수량(1)
-        '판매단가(V포함)': [15000, 3000, 500, 300, 15000, 20000], # Example reference prices
-        '본사상품링크': ['http://example.com/product{i+1}' for i in range(len(test_products))] # Added 본사상품링크
+        '기본수량(1)': [1] * len(test_products),
+        '판매단가(V포함)': [10000, 15000, 25000, 12000, 5000, 8000], # Updated reference prices
+        '본사상품링크': ['http://example.com/product{i+1}' for i in range(len(test_products))]
     }
     test_df = pd.DataFrame(test_data)
 

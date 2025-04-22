@@ -121,9 +121,9 @@ def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[
     output_df = input_df.copy()
     logging.info(f"Starting data formatting. Input rows: {len(output_df)}")
 
-    # Initialize all required columns with '-'
+    # Initialize required columns with '-', excluding 기본수량(1) and 판매단가(V포함)
     for col in FINAL_COLUMN_ORDER:
-        if col not in output_df.columns:
+        if col not in output_df.columns and col not in ['기본수량(1)', '판매단가(V포함)']:
             output_df[col] = '-'
 
     # --- Process Each Row --- 
@@ -185,33 +185,58 @@ def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[
             output_df.loc[idx, '고려기프트 상품링크'] = '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음'
 
         # --- Process Naver Data ---
-        if product_name in naver_results and naver_results[product_name]:
+        if isinstance(naver_results, pd.DataFrame):
+            # Handle DataFrame format from crawl_naver_products
+            naver_row = naver_results[naver_results['original_row'].apply(
+                lambda x: isinstance(x, dict) and x.get('상품명') == product_name
+            )]
+            if not naver_row.empty:
+                best_match = {
+                    'price': naver_row.iloc[0].get('판매단가(V포함)(3)'),
+                    'quantity': naver_row.iloc[0].get('기본수량(3)'),
+                    'link': naver_row.iloc[0].get('네이버 쇼핑 링크'),
+                    'mallName': naver_row.iloc[0].get('공급사명'),
+                    'mallProductUrl': naver_row.iloc[0].get('공급사 상품링크'),
+                    'image_url': naver_row.iloc[0].get('네이버 이미지')
+                }
+            else:
+                best_match = None
+        elif isinstance(naver_results, dict) and product_name in naver_results and naver_results[product_name]:
             best_match = naver_results[product_name][0]
-            
+        else:
+            best_match = None
+
+        if best_match:
             try:
-                naver_price = float(str(best_match.get('price', '')).replace(',', '').strip())
-                if naver_price <= 0:
-                    raise ValueError(f"Invalid Naver price: {naver_price}")
-                    
-                output_df.loc[idx, '판매단가(V포함)(3)'] = f"{naver_price:,.0f}"
-                output_df.loc[idx, '기본수량(3)'] = best_match.get('quantity', '1')
-                output_df.loc[idx, '네이버 쇼핑 링크'] = best_match.get('link', '-')
-                output_df.loc[idx, '공급사명'] = best_match.get('mallName', '-')
-                output_df.loc[idx, '공급사 상품링크'] = best_match.get('mallProductUrl', '-')
-                output_df.loc[idx, '네이버 이미지'] = best_match.get('image_url', '-')
-                
-                # Calculate price differences
-                if haoreum_price and naver_price and haoreum_price > 0:
-                    price_diff = naver_price - haoreum_price
-                    price_diff_percent = (price_diff / haoreum_price) * 100
-                    output_df.loc[idx, '가격차이(3)'] = f"{price_diff:,.0f}"
-                    output_df.loc[idx, '가격차이(3)(%)'] = f"{price_diff_percent:.1f}"
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Error processing Naver price for {product_name}: {e}")
+                # Get price from the appropriate field based on data structure
+                price_str = str(best_match.get('price', '')).replace(',', '').strip()
+                if price_str and price_str != '-':
+                    try:
+                        naver_price = float(price_str)
+                        if naver_price > 0:
+                            output_df.loc[idx, '판매단가(V포함)(3)'] = f"{naver_price:,.0f}"
+                            output_df.loc[idx, '기본수량(3)'] = best_match.get('quantity', '1')
+                            output_df.loc[idx, '네이버 쇼핑 링크'] = best_match.get('link', '-')
+                            output_df.loc[idx, '공급사명'] = best_match.get('mallName', '-')
+                            output_df.loc[idx, '공급사 상품링크'] = best_match.get('mallProductUrl', '-')
+                            output_df.loc[idx, '네이버 이미지'] = best_match.get('image_url', '-')
+
+                            # Calculate price differences only if both prices are valid
+                            if haoreum_price and haoreum_price > 0:
+                                price_diff = naver_price - haoreum_price
+                                price_diff_percent = (price_diff / haoreum_price) * 100
+                                output_df.loc[idx, '가격차이(3)'] = f"{price_diff:,.0f}"
+                                output_df.loc[idx, '가격차이(3)(%)'] = f"{price_diff_percent:.1f}"
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"Error converting Naver price '{price_str}' for {product_name}: {e}")
+                        output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']] = '-'
+            except Exception as e:
+                logging.error(f"Error processing Naver data for {product_name}: {e}")
                 output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']] = '-'
         else:
             # If no Naver results, set error message
             output_df.loc[idx, '네이버 쇼핑 링크'] = '가격이 범위내에 없거나 검색된 상품이 없음'
+            output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '공급사 상품링크', '네이버 이미지']] = '-'
 
     # Format numeric columns
     numeric_columns = [

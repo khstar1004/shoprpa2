@@ -285,7 +285,7 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
     logger.debug("Finished applying cell styles.")
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Processes image columns, handling local images for company images and URLs for KoGift images."""
+    """Processes image columns, handling local images and URLs with IMAGE function."""
     logger.debug("Processing image columns...")
     
     # Get image column indices
@@ -314,9 +314,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 continue
                 
             try:
-                if col_name == '본사 이미지':
+                img_path = str(cell.value)
+                
+                # Check if it's a URL
+                if img_path.startswith(('http://', 'https://')):
+                    # Use IMAGE function for URLs
+                    cell.value = f'=IMAGE("{img_path}")'
+                    cell.font = LINK_FONT
+                else:
                     # Handle local image path
-                    img_path = str(cell.value)
                     if os.path.exists(img_path):
                         img = Image(img_path)
                         img.width = 100
@@ -325,10 +331,6 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     else:
                         logger.warning(f"Local image not found: {img_path}")
                         cell.value = '이미지 파일을 로컬 경로에서 찾을 수 없음'
-                else:
-                    # For KoGift and Naver images, just keep the URL
-                    # No need to embed the image
-                    pass
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
                 cell.value = '이미지 처리 중 오류가 발생했습니다'
@@ -518,49 +520,56 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
         df_prepared = df_prepared[FINAL_COLUMN_ORDER] # Try reordering again
 
     # 3. Format Numeric Data (Carefully preserving non-numeric error messages)
-    logger.debug("Applying numeric formatting...")
+    logger.debug("Formatting numeric columns...")
     for col_name in df_prepared.columns:
-        # Skip if column is not designated for numeric formatting
         is_price_col = col_name in PRICE_COLUMNS
         is_qty_col = col_name in QUANTITY_COLUMNS
         is_pct_col = col_name in PERCENTAGE_COLUMNS
 
-        if not (is_price_col or is_qty_col or is_pct_col):
-            continue
+        if is_price_col or is_qty_col or is_pct_col:
+            def format_value(value):
+                original_value = value # Keep original for fallback
+                formatted_value = '-' # Default formatted value
 
-        # Use apply with a lambda function for potentially faster vectorized operation
-        def format_value(value):
-            original_value = value # Keep original for fallback
-            formatted_value = '-' # Default formatted value
+                if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
+                    return '-'
+                elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
+                    return value # Preserve error messages
 
-            if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
-                formatted_value = '-'
-            elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
-                 formatted_value = value # Preserve error messages
-            else:
                 try:
-                    # Attempt numeric conversion after cleaning
+                    # Remove commas and % for numeric conversion
                     cleaned_value_str = str(value).replace(',', '').replace('%','').strip()
+                    
+                    # Skip conversion if it's an error message or placeholder
+                    if cleaned_value_str == '-' or any(err_msg in cleaned_value_str for err_msg in ERROR_MESSAGE_VALUES):
+                        return cleaned_value_str
+
                     numeric_value = float(cleaned_value_str)
 
-                    # Apply specific format based on column type
+                    # Format based on column type
                     if is_price_col:
-                        formatted_value = f"{numeric_value:,.0f}" # Comma separated integer
+                        if numeric_value == 0:
+                            return '-'
+                        return f"{numeric_value:,.0f}" # Comma separated integer
                     elif is_qty_col:
-                        # Ensure quantity is integer before formatting
-                        formatted_value = f"{int(numeric_value):,}" # Comma separated integer
+                        if numeric_value == 0:
+                            return '-'
+                        return f"{int(numeric_value):,}" # Comma separated integer
                     elif is_pct_col:
-                        formatted_value = f"{numeric_value:.1f}%" # One decimal place percentage
+                        return f"{numeric_value:.1f}%" # One decimal place percentage
+                    else:
+                        return str(original_value).strip()
 
                 except (ValueError, TypeError):
-                    # If conversion fails, keep the original string representation
-                    formatted_value = str(original_value).strip()
-                    # logger.debug(f"Kept original non-numeric value '{formatted_value}' in column '{col_name}'") # Too verbose
-            return formatted_value
+                    # If conversion fails, try to clean the string
+                    cleaned_str = str(original_value).strip()
+                    if cleaned_str in ['', '-', 'nan', 'None', 'none']:
+                        return '-'
+                    return cleaned_str
 
-        # Apply the formatting function to the column
-        df_prepared[col_name] = df_prepared[col_name].apply(format_value)
-        # logger.debug(f"Formatted column: {col_name}") # Too verbose
+            # Apply the formatting function to numeric columns
+            df_prepared[col_name] = df_prepared[col_name].apply(format_value)
+            
     logger.debug("Finished numeric formatting.")
 
     # 4. Clean Text Data (Strip whitespace, handle NaN)

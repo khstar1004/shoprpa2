@@ -23,6 +23,7 @@ import json
 import pickle
 from pathlib import Path
 import hashlib
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -340,144 +341,135 @@ class EnhancedImageMatcher:
             return img_path
 
     def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
-        """
-        Calculate SIFT feature similarity between two images
-        
-        Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
-            
-        Returns:
-            Similarity score between 0.0 and 1.0
-        """
-        # Check if result is in cache
+        """Calculate SIFT feature similarity between two images with optimized matching."""
+        # Check cache first
         cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
         if cached_result is not None:
             return float(cached_result)
-        
-        # Remove background if requested
-        if self.settings['USE_BACKGROUND_REMOVAL']:
-            img_path1 = self._remove_background(img_path1)
-            img_path2 = self._remove_background(img_path2)
-        
-        # Load images
+
+        # Load and check images
         img1, _ = self._load_and_prepare_image(img_path1)
         img2, _ = self._load_and_prepare_image(img_path2)
         if img1 is None or img2 is None:
             return 0.0
-            
-        # Extract SIFT keypoints and descriptors
+
         try:
+            # Extract SIFT keypoints and descriptors
             kp1, des1 = self.sift.detectAndCompute(img1, None)
             kp2, des2 = self.sift.detectAndCompute(img2, None)
-            
+
             if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
-                logger.debug(f"Not enough SIFT features for {img_path1} or {img_path2}")
                 return 0.0
-                
-            # Match features
+
+            # Use ratio test for better matching
             matches = self.flann.knnMatch(des1, des2, k=2)
-            
-            # Apply Lowe's ratio test to get good matches
             good_matches = []
+
+            # Apply Lowe's ratio test with dynamic threshold
+            min_matches = 4  # Minimum matches required for homography
+            max_matches = 50  # Maximum matches to consider
+            ratio_threshold = self.settings['SIFT_RATIO_THRESHOLD']
+
             for match_pair in matches:
                 if len(match_pair) == 2:
                     m, n = match_pair
-                    if m.distance < self.settings['SIFT_RATIO_THRESHOLD'] * n.distance:
+                    if m.distance < ratio_threshold * n.distance:
                         good_matches.append(m)
-            
-            # Extract match points for homography
-            if len(good_matches) > self.settings['FEATURE_MATCH_THRESHOLD']:
+
+                    # Dynamically adjust ratio threshold if not finding enough matches
+                    if len(good_matches) < min_matches and ratio_threshold < 0.9:
+                        ratio_threshold *= 1.1
+
+                    # Stop if we have enough good matches
+                    if len(good_matches) >= max_matches:
+                        break
+
+            # Calculate similarity based on matches quality
+            if len(good_matches) >= min_matches:
+                # Extract matched keypoints
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                
+
                 # Find homography with RANSAC
                 H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
                 inliers = np.sum(mask) if mask is not None else 0
-                
-                # Calculate similarity based on ratio of inliers to all good matches
-                if len(good_matches) > 0:
-                    similarity = inliers / len(good_matches)
-                    
-                    # Cache result
-                    self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", np.array([similarity]))
-                    
-                    return float(similarity)
-            
+
+                # Calculate similarity score
+                match_quality = inliers / len(good_matches) if good_matches else 0
+                match_quantity = min(1.0, len(good_matches) / max_matches)
+                similarity = 0.7 * match_quality + 0.3 * match_quantity
+
+                # Cache result
+                self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", np.array([similarity]))
+                return float(similarity)
+
             return 0.0
+
         except Exception as e:
-            logger.error(f"Error in SIFT similarity calculation between {img_path1} and {img_path2}: {e}")
+            logging.error(f"Error in SIFT similarity calculation: {e}")
             return 0.0
-            
+
     def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
-        """
-        Calculate AKAZE feature similarity between two images
-        
-        Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
-            
-        Returns:
-            Similarity score between 0.0 and 1.0
-        """
-        # Check if result is in cache
+        """Calculate AKAZE feature similarity between two images with improved matching."""
+        # Check cache first
         cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
         if cached_result is not None:
             return float(cached_result)
-        
-        # Remove background if requested
-        if self.settings['USE_BACKGROUND_REMOVAL']:
-            img_path1 = self._remove_background(img_path1)
-            img_path2 = self._remove_background(img_path2)
-        
-        # Load images
+
+        # Load and check images
         img1, _ = self._load_and_prepare_image(img_path1)
         img2, _ = self._load_and_prepare_image(img_path2)
         if img1 is None or img2 is None:
             return 0.0
-            
-        # Extract AKAZE keypoints and descriptors
+
         try:
+            # Extract AKAZE keypoints and descriptors
             kp1, des1 = self.akaze.detectAndCompute(img1, None)
             kp2, des2 = self.akaze.detectAndCompute(img2, None)
-            
+
             if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
-                logger.debug(f"Not enough AKAZE features for {img_path1} or {img_path2}")
                 return 0.0
-                
-            # Match features with Brute Force matcher
+
+            # Match features with cross-checking
             matches = self.bf.match(des1, des2)
-            
-            # Sort by distance
             matches = sorted(matches, key=lambda x: x.distance)
-            
-            # Count good matches (low distance)
-            good_matches = [m for m in matches if m.distance < self.settings['AKAZE_DISTANCE_THRESHOLD']]
-            
+
+            # Dynamic threshold based on distance distribution
+            if len(matches) >= 4:  # Need at least 4 matches for meaningful statistics
+                distances = [m.distance for m in matches]
+                mean_dist = np.mean(distances)
+                std_dist = np.std(distances)
+                # Set threshold as mean - 2*std to include ~95% of better matches
+                distance_threshold = mean_dist - 2 * std_dist
+                distance_threshold = max(distance_threshold, self.settings['AKAZE_DISTANCE_THRESHOLD'])
+            else:
+                distance_threshold = self.settings['AKAZE_DISTANCE_THRESHOLD']
+
+            # Filter good matches
+            good_matches = [m for m in matches if m.distance < distance_threshold]
+
             if len(matches) > 0:
-                # Calculate similarity based on number and quality of matches
+                # Calculate similarity score
                 num_good_matches = len(good_matches)
-                avg_distance = np.mean([m.distance for m in matches[:min(len(matches), 30)]]) if len(matches) > 0 else float('inf')
-                
-                # Normalize average distance (lower is better)
+                max_possible_matches = min(len(kp1), len(kp2))
+                match_ratio = num_good_matches / max_possible_matches
+                avg_distance = np.mean([m.distance for m in matches[:min(len(matches), 30)]])
                 norm_dist = max(0, 1 - (avg_distance / 100))
-                
-                # Combine metrics
+
+                # Weighted combination of quantity and quality metrics
                 if num_good_matches > self.settings['FEATURE_MATCH_THRESHOLD']:
-                    similarity = 0.5 + (0.5 * norm_dist)
-                elif num_good_matches > 0:
-                    similarity = 0.3 * (num_good_matches / self.settings['FEATURE_MATCH_THRESHOLD']) + (0.2 * norm_dist)
+                    similarity = 0.6 * match_ratio + 0.4 * norm_dist
                 else:
-                    similarity = 0.0
-                    
+                    similarity = 0.3 * match_ratio + 0.2 * norm_dist
+
                 # Cache result
                 self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", np.array([similarity]))
-                    
                 return float(similarity)
-            
+
             return 0.0
+
         except Exception as e:
-            logger.error(f"Error in AKAZE similarity calculation between {img_path1} and {img_path2}: {e}")
+            logging.error(f"Error in AKAZE similarity calculation: {e}")
             return 0.0
 
     def calculate_deep_similarity(self, img_path1: str, img_path2: str) -> float:
@@ -698,6 +690,98 @@ def match_product_images(haoreum_paths: List[str],
             'is_match': best_match is not None
         }
         results.append(result)
+        
+        # Log progress
+        if (h_idx + 1) % 10 == 0 or h_idx == len(haoreum_valid) - 1:
+            logger.info(f"Processed {h_idx + 1}/{len(haoreum_valid)} Haoreum images")
+    
+    # Clean up
+    matcher.clear_cache()
+    
+    return results
+
+
+def match_naver_product_images(haoreum_paths: List[str], 
+                             naver_results: pd.DataFrame,
+                             threshold: Optional[float] = None,
+                             custom_weights: Optional[Dict[str, float]] = None) -> Dict[str, Dict]:
+    """
+    Match Haoreum product images with Naver product images from crawled results
+    
+    Args:
+        haoreum_paths: List of paths to Haoreum product images
+        naver_results: DataFrame containing Naver crawl results
+        threshold: Optional similarity threshold (default: from config)
+        custom_weights: Optional custom weights for similarity calculations
+        
+    Returns:
+        Dictionary mapping product names to match results
+    """
+    if threshold is None:
+        threshold = SETTINGS['COMBINED_THRESHOLD']
+    
+    if custom_weights is None:
+        custom_weights = SETTINGS['WEIGHTS']
+    
+    matcher = EnhancedImageMatcher()
+    results = {}
+    
+    # Validate Haoreum paths
+    haoreum_valid = [p for p in haoreum_paths if os.path.exists(p)]
+    if not haoreum_valid:
+        logger.warning("No valid Haoreum images found")
+        return results
+    
+    # Extract Naver image URLs from results
+    naver_images = []
+    product_names = []
+    for _, row in naver_results.iterrows():
+        if isinstance(row.get('original_row'), dict):
+            product_name = row['original_row'].get('상품명')
+            image_url = row.get('네이버 이미지')
+            if product_name and image_url and image_url != '-':
+                naver_images.append(image_url)
+                product_names.append(product_name)
+    
+    if not naver_images:
+        logger.warning("No valid Naver images found in results")
+        return results
+    
+    logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(naver_images)} Naver images")
+    
+    # Process each Haoreum image
+    for h_idx, haoreum_path in enumerate(haoreum_valid):
+        best_match = None
+        best_similarity = 0
+        best_scores = {}
+        matched_product = None
+        
+        # Get product name from Haoreum path
+        haoreum_product = os.path.splitext(os.path.basename(haoreum_path))[0]
+        
+        # Find best matching Naver image
+        for naver_url, product_name in zip(naver_images, product_names):
+            try:
+                is_match, similarity, scores = matcher.is_match(haoreum_path, naver_url, threshold)
+                
+                if is_match and similarity > best_similarity:
+                    best_match = naver_url
+                    best_similarity = similarity
+                    best_scores = scores
+                    matched_product = product_name
+            except Exception as e:
+                logger.error(f"Error matching {haoreum_path} with {naver_url}: {e}")
+                continue
+        
+        # Store result
+        results[haoreum_product] = {
+            'haoreum_image': haoreum_path,
+            'naver_image': best_match,
+            'matched_product': matched_product,
+            'similarity': best_similarity,
+            'scores': best_scores,
+            'is_match': best_match is not None
+        }
         
         # Log progress
         if (h_idx + 1) % 10 == 0 or h_idx == len(haoreum_valid) - 1:

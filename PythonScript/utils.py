@@ -16,6 +16,7 @@ from pathlib import Path # Import Path
 import time # Import time
 from concurrent.futures import ThreadPoolExecutor # Keep for potential sync tasks
 from datetime import datetime
+from image_downloader import download_images, predownload_kogift_images
 
 # --- Configuration Loading ---
 
@@ -620,11 +621,11 @@ async def preprocess_and_download_images(
     id_column_name: str, 
     prefix: str, 
     config: configparser.ConfigParser, 
-    max_workers: Optional[int] = None # Informational, asyncio manages concurrency
+    max_workers: Optional[int] = None
 ) -> Dict[Any, Optional[str]]:
-    """Downloads images from a DataFrame column asynchronously, optionally removes background, 
-       and returns a map of ID to final image path.
-    """
+    """Wrapper function that uses image_downloader.py functionality."""
+    logging.info("Using enhanced image downloader for preprocessing images...")
+    
     if df is None or df.empty:
         logging.info(f"Skipping image preprocessing (prefix: '{prefix}'): DataFrame is empty.")
         return {}
@@ -632,81 +633,25 @@ async def preprocess_and_download_images(
     if url_column_name not in df.columns or id_column_name not in df.columns:
         logging.error(f"Missing required columns '{url_column_name}' or '{id_column_name}'. Cannot preprocess (prefix: '{prefix}').")
         return {}
-        
-    try:
-        if prefix == 'input':
-            save_dir = config.get('Paths', 'image_main_dir')
-        elif prefix == 'haereum': # Assuming haereum goes to target
-             save_dir = config.get('Paths', 'image_target_dir')
-        else:
-            # Default or fallback? Maybe log an error or use temp?
-            save_dir = config.get('Paths', 'image_target_dir') # Default to target
-            logging.warning(f"Unknown prefix '{prefix}' for image download, saving to target dir: {save_dir}")
-            
-        if not save_dir:
-            logging.error(f"Image save directory missing in [Paths] for prefix '{prefix}'. Cannot download.")
-            return {}
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
-            
-    except configparser.Error as e:
-        logging.error(f"Config error reading save directory for prefix '{prefix}': {e}")
-        return {}
 
-    image_path_map: Dict[Any, Optional[str]] = {}
-    tasks = []
+    # Extract URLs and IDs
+    image_urls = []
+    row_ids = []
+    for idx, row in df.iterrows():
+        image_url = row.get(url_column_name)
+        row_id = row.get(id_column_name)
+        if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http'):
+            continue
+        image_urls.append(image_url)
+        row_ids.append(row_id)
+
+    # Use image_downloader's functionality
+    results = await download_images(image_urls)
     
-    async with get_async_httpx_client(config=config) as client:
-        total_rows = len(df)
-        logging.info(f"Starting async image processing for {total_rows} rows (Prefix: '{prefix}')...")
-        start_time = time.time()
-        
-        # Prepare tasks
-        for idx, row in df.iterrows():
-            image_url = row.get(url_column_name)
-            row_id = row.get(id_column_name)
-            if row_id is None:
-                logging.warning(f"Skipping row index {idx} (prefix: '{prefix}'): Missing ID.")
-                continue
-            
-            # Don't process if URL is clearly invalid
-            if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http'):
-                image_path_map[row_id] = None # Mark as no valid image
-                continue
-                
-            args = (idx, row_id, image_url, save_dir, prefix, config, client)
-            tasks.append(
-                asyncio.create_task(_process_single_image_wrapper(args), name=f"img_proc_{prefix}_{row_id}")
-            )
-
-        if not tasks:
-            logging.info(f"No valid image processing tasks to run for prefix '{prefix}'.")
-            return image_path_map # Return map which might contain None for invalid URLs
-            
-        logging.info(f"Submitting {len(tasks)} image processing tasks for prefix '{prefix}'.")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        processed_count = 0
-        error_count = 0
-        # Process results
-        for result_or_exc in results:
-            processed_count += 1
-            if isinstance(result_or_exc, Exception):
-                error_count += 1
-                # Error already logged within the wrapper
-                # logging.error(f"Image processing task failed: {result_or_exc}") # Optional additional log
-                continue
-            elif result_or_exc is None:
-                 error_count += 1 
-                 logging.error("Image processing wrapper returned None unexpectedly.")
-                 continue
-                 
-            row_id, final_path = result_or_exc
-            image_path_map[row_id] = final_path # Store None if processing failed for that ID
-                
-        end_time = time.time()
-        duration = end_time - start_time
-        success_count = sum(1 for path in image_path_map.values() if path is not None)
-        logging.info(f"Finished image processing for prefix '{prefix}'. Processed: {processed_count}, Success: {success_count}, Errors: {error_count}. Duration: {duration:.2f} sec")
+    # Convert results to expected format
+    image_path_map = {}
+    for row_id, url in zip(row_ids, image_urls):
+        image_path_map[row_id] = results.get(url)
 
     return image_path_map
 
