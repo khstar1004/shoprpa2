@@ -120,12 +120,13 @@ ERROR_MESSAGES = {
     'low_similarity': '일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음',
     'no_results': '검색 결과 0',
     'no_image': '이미지를 찾을 수 없음',
-    'file_not_found': '이미지 파일을 로컬 경로에서 찾을 수 없음',
+    'file_not_found': '이미지 파일을 찾을 수 없음',
     'invalid_image': '유효하지 않은 이미지 형식',
-    'processing_error': '이미지 처리 중 오류가 발생했습니다',
+    'processing_error': '이미지 처리 중 오류가 발생',
     'too_small': '이미지 크기가 너무 작음 (저해상도)',
     'format_error': '지원하지 않는 이미지 형식',
-    'download_failed': '이미지 다운로드 실패'
+    'download_failed': '이미지 다운로드 실패',
+    'excel_limit': '이미지 크기가 Excel 제한을 초과함'
 }
 ERROR_MESSAGE_VALUES = list(ERROR_MESSAGES.values()) # Cache list for faster checking
 
@@ -149,6 +150,16 @@ INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red fo
 
 NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff
 
+# Image Processing Constants
+IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+IMAGE_MAX_SIZE = (1200, 1200)  # Excel 2021 maximum supported image size
+IMAGE_STANDARD_SIZE = (120, 120)  # Standard display size in Excel
+IMAGE_QUALITY = 85  # JPEG compression quality
+SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']  # Supported by Excel 2021
+
+# Image cell specific styling
+IMAGE_CELL_HEIGHT = 90  # Row height for image cells
+IMAGE_CELL_WIDTH = 15   # Column width for image cells
 
 # --- Utility Functions ---
 
@@ -285,30 +296,19 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
     logger.debug("Finished applying cell styles.")
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Processes image columns, handling local images and URLs with IMAGE function."""
+    """Processes image columns, handling local images and URLs with improved Excel 2021 compatibility."""
     logger.debug("Processing image columns...")
     
     # Get image column indices
-    image_cols = {
-        '본사 이미지': None,
-        '고려기프트 이미지': None,
-        '네이버 이미지': None
-    }
+    image_cols = {col: idx for idx, col in enumerate(df.columns, 1) if col in IMAGE_COLUMNS}
     
-    for col_idx, col_name in enumerate(df.columns, 1):
-        if col_name in image_cols:
-            image_cols[col_name] = col_idx
-    
-    if not any(image_cols.values()):
+    if not image_cols:
         logger.debug("No image columns found in DataFrame")
         return
     
     # Process each row
     for row_idx in range(2, worksheet.max_row + 1):
         for col_name, col_idx in image_cols.items():
-            if col_idx is None:
-                continue
-                
             cell = worksheet.cell(row=row_idx, column=col_idx)
             if not cell.value or cell.value == '-':
                 continue
@@ -318,22 +318,56 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 
                 # Check if it's a URL
                 if img_path.startswith(('http://', 'https://')):
-                    # Use IMAGE function for URLs
-                    cell.value = f'=IMAGE("{img_path}")'
+                    # Use Excel 2021's STOCKHISTORY function for URLs
+                    cell.value = f'=IMAGE("{img_path}", 2)'  # Mode 2 for fit-to-cell
                     cell.font = LINK_FONT
                 else:
-                    # Handle local image path
+                    # Handle local image path with improved error handling
                     if os.path.exists(img_path):
-                        img = Image(img_path)
-                        img.width = 100
-                        img.height = 100
-                        worksheet.add_image(img, cell.coordinate)
+                        try:
+                            # Open and validate image
+                            with Image.open(img_path) as img:
+                                # Convert to RGB if needed
+                                if img.mode in ('RGBA', 'LA'):
+                                    img = img.convert('RGB')
+                                
+                                # Resize if too large (Excel 2021 limit)
+                                max_size = (1200, 1200)
+                                if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
+                                    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+                                
+                                # Save as optimized JPG if not already
+                                if not img_path.lower().endswith('.jpg'):
+                                    temp_path = os.path.join(
+                                        os.path.dirname(img_path),
+                                        f"temp_{os.path.basename(img_path)}.jpg"
+                                    )
+                                    img.save(temp_path, 'JPEG', quality=85, optimize=True)
+                                    img_path = temp_path
+                            
+                            # Add to worksheet with Excel 2021 features
+                            excel_img = openpyxl.drawing.image.Image(img_path)
+                            excel_img.width = 120  # Standard width
+                            excel_img.height = 120  # Standard height
+                            excel_img.anchor = f"{cell.coordinate}"
+                            worksheet.add_image(excel_img)
+                            
+                            # Clean up temp file if created
+                            if 'temp_' in img_path:
+                                try:
+                                    os.remove(img_path)
+                                except:
+                                    pass
+                                    
+                        except Exception as img_e:
+                            logger.error(f"Error processing image {img_path}: {img_e}")
+                            cell.value = ERROR_MESSAGES['processing_error']
                     else:
                         logger.warning(f"Local image not found: {img_path}")
-                        cell.value = '이미지 파일을 로컬 경로에서 찾을 수 없음'
+                        cell.value = ERROR_MESSAGES['file_not_found']
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
-                cell.value = '이미지 처리 중 오류가 발생했습니다'
+                cell.value = ERROR_MESSAGES['processing_error']
     
     logger.debug("Finished image processing.")
 
@@ -622,7 +656,6 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
              os.makedirs(output_dir, exist_ok=True)
 
         # 1. Prepare the data (column order, formatting)
-        # Pass a copy to avoid modifying the original DataFrame if called externally
         df_prepared = _prepare_data_for_excel(df.copy())
 
         if df_prepared.empty and not df.empty:
@@ -630,18 +663,16 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
              return False
         elif df_prepared.empty and df.empty:
              logger.warning("Input DataFrame was empty, saving an Excel file with only headers.")
-             # Create empty DF with correct columns for header generation
              df_prepared = pd.DataFrame(columns=FINAL_COLUMN_ORDER)
 
         # 2. Save prepared data to Excel using openpyxl engine
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # Use na_rep='-' during initial write for consistency
             df_prepared.to_excel(writer, index=False, sheet_name='Results', na_rep='-')
             worksheet = writer.sheets['Results']
             logger.debug(f"DataFrame written to sheet 'Results'. Max Row: {worksheet.max_row}, Max Col: {worksheet.max_column}")
 
             # --- Apply Formatting AFTER data is written ---
-            # 3. Apply Column Widths and Cell Styles (Font, Border, Alignment)
+            # 3. Apply Column Widths and Cell Styles
             _apply_column_widths(worksheet, df_prepared)
             _apply_cell_styles_and_alignment(worksheet, df_prepared)
 
@@ -649,18 +680,19 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
             _apply_conditional_formatting(worksheet, df_prepared)
 
             # 5. Handle Images (Embedding)
-            # Pass df_prepared containing the paths/URLs used for embedding
             _process_image_columns(worksheet, df_prepared)
+            
+            # 6. Adjust dimensions for image cells
+            _adjust_image_cell_dimensions(worksheet, df_prepared)
 
-            # 6. Add Hyperlinks
-            # Pass df_prepared containing the link text
+            # 7. Add Hyperlinks
             _add_hyperlinks_to_worksheet(worksheet, df_prepared)
 
-            # 7. Page Setup and Header/Footer
+            # 8. Page Setup and Header/Footer
             _setup_page_layout(worksheet)
             _add_header_footer(worksheet)
 
-            # 8. Apply Table Format (Apply last after other formatting)
+            # 9. Apply Table Format (Apply last after other formatting)
             _apply_table_format(worksheet)
 
         logger.info(f"Successfully created and formatted Excel file: {output_path}")
@@ -668,18 +700,10 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
 
     except PermissionError as pe:
          logger.error(f"Permission denied when trying to save Excel file: {output_path}. Check if the file is open. Error: {pe}")
-         # Consider adding a retry mechanism here or in the decorator
          return False
     except Exception as e:
-        logger.error(f"Failed to create final Excel output '{output_path}': {e}", exc_info=True)
-        # Attempt to delete potentially corrupted file
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-                logger.info(f"Removed potentially corrupted output file: {output_path}")
-            except OSError as del_err:
-                logger.error(f"Could not remove potentially corrupted file {output_path}: {del_err}")
-        return False
+         logger.error(f"Error creating Excel file: {e}", exc_info=True)
+         return False
 
 def filter_dataframe(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
     """
@@ -732,4 +756,33 @@ def apply_excel_styles(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd
     This is a wrapper around _apply_cell_styles_and_alignment for backward compatibility.
     """
     _apply_cell_styles_and_alignment(worksheet, df)
+
+def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Adjusts row heights and column widths for cells containing images."""
+    logger.debug("Adjusting dimensions for image cells...")
+    
+    # Get image column indices
+    image_cols = {col: idx for idx, col in enumerate(df.columns, 1) if col in IMAGE_COLUMNS}
+    
+    if not image_cols:
+        return
+        
+    # Adjust column widths for image columns
+    for col_name, col_idx in image_cols.items():
+        col_letter = get_column_letter(col_idx)
+        worksheet.column_dimensions[col_letter].width = IMAGE_CELL_WIDTH
+    
+    # Adjust row heights for rows containing images
+    for row_idx in range(2, worksheet.max_row + 1):
+        has_image = False
+        for col_name, col_idx in image_cols.items():
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            if cell.value and cell.value != '-':
+                has_image = True
+                break
+        
+        if has_image:
+            worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
+    
+    logger.debug("Finished adjusting image cell dimensions.")
 
