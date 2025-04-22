@@ -8,6 +8,7 @@ from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER
 import re
 import time
 from typing import Optional, Tuple, Dict, List
+import numpy as np
 
 def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Processes the main input Excel file, reading config with ConfigParser."""
@@ -109,191 +110,205 @@ def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.Da
 #     """
 #     pass 
 
-def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[str, List[Dict]], naver_results: Dict[str, List[Dict]]) -> pd.DataFrame:
-    """
-    Formats and combines original input data with KoGift and Naver crawl results.
-    Calculates price differences and prepares the DataFrame for Excel output.
-    """
-    if input_df is None or input_df.empty:
-        logging.warning("Input DataFrame is empty. Returning empty DataFrame with required columns.")
-        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
-
-    output_df = input_df.copy()
-    logging.info(f"Starting data formatting. Input rows: {len(output_df)}")
-
-    # Ensure all required columns exist
-    required_columns = [
-        '구분', '담당자', '업체명', '업체코드', 'Code', 
-        '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
-    ]
+def format_product_data_for_output(input_df: pd.DataFrame, 
+                             kogift_results: Dict[str, List[Dict]] = None, 
+                             naver_results: Dict[str, List[Dict]] = None) -> pd.DataFrame:
+    """Format matched data for final output, ensuring all required columns and image URLs.
     
-    # Check if all required columns exist
-    missing_columns = [col for col in required_columns if col not in output_df.columns]
+    Args:
+        input_df: Input DataFrame with matched products
+        kogift_results: Dictionary of Kogift results by product name
+        naver_results: Dictionary of Naver results by product name
+        
+    Returns:
+        Formatted DataFrame ready for Excel output
+    """
+    logging.info(f"Starting data formatting. Input rows: {len(input_df)}")
+    
+    # Deep copy to avoid modifying original
+    df = input_df.copy()
+    
+    # 필수 컬럼 목록 - 최종 결과에 반드시 포함되어야 하는 컬럼
+    required_columns = ['기본수량(1)', '판매단가(V포함)']
+    
+    # 필수 컬럼 추가 (누락된 경우)
+    missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
-        logging.error(f"Missing required columns in input DataFrame: {missing_columns}")
+        logging.warning(f"일부 필수 컬럼이 누락되어 있습니다: {missing_columns}")
+        
+        # 필수 컬럼 추가 - 누락된 컬럼을 기본값으로 추가
+        for col in missing_columns:
+            if col == '기본수량(1)':
+                # 본사 기본수량 컬럼이 있으면 그 값을 사용, 없으면 1로 기본값 설정
+                df['기본수량(1)'] = df.get('본사 기본수량', 1)
+                logging.info("'기본수량(1)' 컬럼이 추가되었습니다.")
+            elif col == '판매단가(V포함)':
+                # 다른 가격 컬럼이 있으면 그 값 사용, 없으면 0으로 기본값 설정
+                if '판매단가' in df.columns:
+                    df['판매단가(V포함)'] = df['판매단가']
+                    logging.info("'판매단가(V포함)' 컬럼이 '판매단가'에서 복사되었습니다.")
+                else:
+                    df['판매단가(V포함)'] = 0
+                    logging.info("'판매단가(V포함)' 컬럼이 0값으로 추가되었습니다.")
+    
+    # 컬럼 확인 (추가 후 다시 확인)
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        # 여전히 누락된 컬럼이 있으면 에러 발생
+        logging.error(f"Input DataFrame is missing required columns: {missing_columns}")
         raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
 
-    # Initialize optional columns with '-' if they don't exist
-    optional_columns = [
-        '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', 
-        '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', 
-        '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-    ]
+    # --- Standardize column names if needed ---
+    # Add mapping for common column name variations
+    column_name_map = {
+        '상품코드': '상품코드',
+        'Code': '상품코드',
+        '제품코드': '상품코드',
+        '상품분류': '상품분류',
+        '상품명': '상품명',
+        '품명': '상품명',
+        '제품명': '상품명'
+    }
     
-    for col in optional_columns:
-        if col not in output_df.columns:
-            output_df[col] = '-'
-
-    # --- Process Each Row --- 
-    for idx, row in output_df.iterrows():
-        product_name = row.get('상품명')
-        if not product_name or pd.isna(product_name):
-            logging.warning(f"Skipping row index {idx}: Missing or invalid product name.")
-            continue
-
-        # --- Get Base Price (Haoreum Price) --- 
-        try:
-            # Get price from the required column
-            price_str = str(row['판매단가(V포함)']).replace(',', '').strip()
-            if price_str and price_str != '-':
-                haoreum_price = float(price_str)
-                if haoreum_price <= 0:
-                    logging.warning(f"Invalid Haoreum price ({haoreum_price}) for product: {product_name}")
-                    haoreum_price = None
-            else:
-                haoreum_price = None
-                logging.warning(f"Empty price for product: {product_name}")
-        except Exception as e:
-            haoreum_price = None
-            logging.warning(f"Could not parse Haoreum price for product: {product_name}, Error: {str(e)}")
-
-        # --- Process KoGift Data ---
-        if product_name in kogift_results and kogift_results[product_name]:
-            best_match = kogift_results[product_name][0]
+    # Rename columns based on mapping (only if target name doesn't already exist)
+    for old_name, new_name in column_name_map.items():
+        if old_name in df.columns and new_name not in df.columns:
+            df.rename(columns={old_name: new_name}, inplace=True)
+    
+    # --- Ensure all expected output columns exist ---
+    # Define final columns structure with defaults
+    expected_output_columns = {
+        '상품코드': None,
+        '상품분류': None,
+        '상품명': None,
+        '본사 이미지': None,
+        '기본수량(1)': 1,  # Default to 1 if not present
+        '판매단가(V포함)': 0,  # Default to 0 if not present
+        '공급사명': None,
+        '공급사 상품링크': None,
+        '고려 기본수량': None, 
+        '판매단가(V포함)(2)': None,
+        '고려기프트 상품링크': None,
+        '고려기프트 이미지': None,
+        '가격차이(2)': None,
+        '가격차이(2)(%)': None,
+        '네이버 기본수량': None,
+        '판매단가(V포함)(3)': None,
+        '네이버 쇼핑 링크': None,
+        '네이버 이미지': None,
+        '가격차이(3)': None,
+        '가격차이(3)(%)': None
+    }
+    
+    # Add missing columns with defaults
+    for col, default_value in expected_output_columns.items():
+        if col not in df.columns:
+            df[col] = default_value
+    
+    # --- Column mapping for different data sources ---
+    column_mappings = {
+        # Map various internal column names to standardized output names
+        '고려 링크': '고려기프트 상품링크',
+        '고려기프트(이미지링크)': '고려기프트 이미지',
+        '고려 기본수량': '고려 기본수량',
+        '판매단가2(VAT포함)': '판매단가(V포함)(2)',
+        
+        '네이버 공급사명': '공급사명',
+        '네이버 링크': '공급사 상품링크',
+        '네이버쇼핑(이미지링크)': '네이버 이미지',
+        '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
+    }
+    
+    # Apply mappings
+    for src_col, dst_col in column_mappings.items():
+        if src_col in df.columns and dst_col not in df.columns:
+            df[dst_col] = df[src_col]
             
-            try:
-                kogift_price = float(str(best_match.get('price', '')).replace(',', '').strip())
-                if kogift_price <= 0:
-                    raise ValueError(f"Invalid KoGift price: {kogift_price}")
-                    
-                output_df.loc[idx, '판매단가(V포함)(2)'] = f"{kogift_price:,.0f}"
-                output_df.loc[idx, '기본수량(2)'] = best_match.get('quantity', '-')
-                output_df.loc[idx, '고려기프트 상품링크'] = best_match.get('link', '-')
-                output_df.loc[idx, '고려기프트 이미지'] = best_match.get('image_path', '-')
-                
-                # Calculate price differences
-                if haoreum_price and kogift_price and haoreum_price > 0:
-                    price_diff = kogift_price - haoreum_price
-                    price_diff_percent = (price_diff / haoreum_price) * 100
-                    output_df.loc[idx, '가격차이(2)'] = f"{price_diff:,.0f}"
-                    output_df.loc[idx, '가격차이(2)(%)'] = f"{price_diff_percent:.1f}"
-                    
-                    # Calculate total price for quantity
-                    if best_match.get('quantity'):
-                        try:
-                            quantity = float(str(best_match['quantity']).replace(',', ''))
-                            if quantity > 0:
-                                total_price = kogift_price * quantity
-                                output_df.loc[idx, '판매가(V포함)(2)'] = f"{total_price:,.0f}"
-                            else:
-                                output_df.loc[idx, '판매가(V포함)(2)'] = '-'
-                                logging.warning(f"Invalid quantity ({quantity}) for KoGift product: {product_name}")
-                        except (ValueError, TypeError) as e:
-                            output_df.loc[idx, '판매가(V포함)(2)'] = '-'
-                            logging.warning(f"Error calculating total price for KoGift product {product_name}: {e}")
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Error processing KoGift price for {product_name}: {e}")
-                output_df.loc[idx, ['판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '판매가(V포함)(2)']] = '-'
-        else:
-            # If no KoGift results, set error message
-            output_df.loc[idx, '고려기프트 상품링크'] = '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음'
-
-        # --- Process Naver Data ---
-        if isinstance(naver_results, pd.DataFrame):
-            # Handle DataFrame format from crawl_naver_products
-            naver_row = naver_results[naver_results['original_row'].apply(
-                lambda x: isinstance(x, dict) and x.get('상품명') == product_name
-            )]
-            if not naver_row.empty:
-                best_match = {
-                    'price': naver_row.iloc[0].get('판매단가(V포함)(3)'),
-                    'quantity': naver_row.iloc[0].get('기본수량(3)'),
-                    'link': naver_row.iloc[0].get('네이버 쇼핑 링크'),
-                    'mallName': naver_row.iloc[0].get('공급사명'),
-                    'mallProductUrl': naver_row.iloc[0].get('공급사 상품링크'),
-                    'image_url': naver_row.iloc[0].get('네이버 이미지')
-                }
-            else:
-                best_match = None
-        elif isinstance(naver_results, dict) and product_name in naver_results and naver_results[product_name]:
-            best_match = naver_results[product_name][0]
-        else:
-            best_match = None
-
-        if best_match:
-            try:
-                # Get price from the appropriate field based on data structure
-                price_str = str(best_match.get('price', '')).replace(',', '').strip()
-                if price_str and price_str != '-':
-                    try:
-                        naver_price = float(price_str)
-                        if naver_price > 0:
-                            output_df.loc[idx, '판매단가(V포함)(3)'] = f"{naver_price:,.0f}"
-                            output_df.loc[idx, '기본수량(3)'] = best_match.get('quantity', '1')
-                            output_df.loc[idx, '네이버 쇼핑 링크'] = best_match.get('link', '-')
-                            output_df.loc[idx, '공급사명'] = best_match.get('mallName', '-')
-                            output_df.loc[idx, '공급사 상품링크'] = best_match.get('mallProductUrl', '-')
-                            output_df.loc[idx, '네이버 이미지'] = best_match.get('image_url', '-')
-
-                            # Calculate price differences only if both prices are valid
-                            if haoreum_price and haoreum_price > 0:
-                                price_diff = naver_price - haoreum_price
-                                price_diff_percent = (price_diff / haoreum_price) * 100
-                                output_df.loc[idx, '가격차이(3)'] = f"{price_diff:,.0f}"
-                                output_df.loc[idx, '가격차이(3)(%)'] = f"{price_diff_percent:.1f}"
-                    except (ValueError, TypeError) as e:
-                        logging.warning(f"Error converting Naver price '{price_str}' for {product_name}: {e}")
-                        output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']] = '-'
-            except Exception as e:
-                logging.error(f"Error processing Naver data for {product_name}: {e}")
-                output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']] = '-'
-        else:
-            # If no Naver results, set error message
-            output_df.loc[idx, '네이버 쇼핑 링크'] = '가격이 범위내에 없거나 검색된 상품이 없음'
-            output_df.loc[idx, ['판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '공급사 상품링크', '네이버 이미지']] = '-'
-
-    # Format numeric columns
-    numeric_columns = [
-        '판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
-        '판매가(V포함)(2)', '가격차이(2)', '가격차이(3)'
-    ]
-    for col in numeric_columns:
-        if col in output_df.columns:
-            output_df[col] = output_df[col].apply(lambda x: 
-                f"{float(str(x).replace(',', '')):,.0f}" 
-                if pd.notna(x) and str(x).strip() != '-' and not isinstance(x, str) 
-                else x
-            )
-
-    # Format percentage columns
-    percent_columns = ['가격차이(2)(%)', '가격차이(3)(%)']
-    for col in percent_columns:
-        if col in output_df.columns:
-            output_df[col] = output_df[col].apply(lambda x: 
-                f"{float(str(x).replace('%', '')):,.1f}" 
-                if pd.notna(x) and str(x).strip() != '-' and not isinstance(x, str)
-                else x
-            )
-
-    # Ensure all required columns exist and are in the correct order
-    for col in FINAL_COLUMN_ORDER:
-        if col not in output_df.columns:
-            output_df[col] = '-'
-    output_df = output_df[FINAL_COLUMN_ORDER]
+    # --- Process and add images ---
+    # Ensure image columns exist and add from crawl results if missing
+    if '본사 이미지' not in df.columns:
+        df['본사 이미지'] = df.get('해오름이미지URL', None)
+        logging.info("Added '본사 이미지' column from crawled Haeoeum image URLs")
     
-    logging.info(f"Data formatting completed. Output rows: {len(output_df)}")
-    return output_df
+    # Add Kogift images from crawl results if available
+    if kogift_results and '고려기프트 이미지' in df.columns:
+        kogift_img_count = 0
+        for idx, row in df.iterrows():
+            product_name = row.get('상품명')
+            if pd.isna(row['고려기프트 이미지']) and product_name in kogift_results:
+                # Get first image from Kogift results
+                kogift_data = kogift_results[product_name]
+                if kogift_data and len(kogift_data) > 0:
+                    for item in kogift_data:
+                        if 'image_path' in item and item['image_path']:
+                            df.at[idx, '고려기프트 이미지'] = item['image_path']
+                            kogift_img_count += 1
+                            break
+        logging.info(f"Added {kogift_img_count} missing Kogift images from crawl results")
+                            
+    # Add Naver images from crawl results if available
+    if naver_results and '네이버 이미지' in df.columns:
+        naver_img_count = 0
+        for idx, row in df.iterrows():
+            product_name = row.get('상품명')
+            if pd.isna(row['네이버 이미지']) and product_name in naver_results:
+                # Get first image from Naver results
+                naver_data = naver_results[product_name]
+                if naver_data and len(naver_data) > 0:
+                    for item in naver_data:
+                        if 'image_path' in item and item['image_path']:
+                            df.at[idx, '네이버 이미지'] = item['image_path']
+                            naver_img_count += 1
+                            break
+                        elif 'image_url' in item and item['image_url']:
+                            df.at[idx, '네이버 이미지'] = item['image_url']
+                            naver_img_count += 1
+                            break
+        logging.info(f"Added {naver_img_count} missing Naver images from crawl results")
+    
+    # --- Calculate additional fields ---
+    # Calculate price differences if base price exists
+    if '판매단가(V포함)' in df.columns:
+        # Kogift price difference
+        if '판매단가(V포함)(2)' in df.columns:
+            df['가격차이(2)'] = df.apply(
+                lambda x: pd.to_numeric(x['판매단가(V포함)(2)'], errors='coerce') - 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
+                if pd.notna(x['판매단가(V포함)(2)']) and pd.notna(x['판매단가(V포함)']) else None, 
+                axis=1
+            )
+            # Calculate percentage difference
+            df['가격차이(2)(%)'] = df.apply(
+                lambda x: (pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100 
+                if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
+                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+                axis=1
+            )
+            
+        # Naver price difference
+        if '판매단가(V포함)(3)' in df.columns:
+            df['가격차이(3)'] = df.apply(
+                lambda x: pd.to_numeric(x['판매단가(V포함)(3)'], errors='coerce') - 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
+                if pd.notna(x['판매단가(V포함)(3)']) and pd.notna(x['판매단가(V포함)']) else None, 
+                axis=1
+            )
+            # Calculate percentage difference
+            df['가격차이(3)(%)'] = df.apply(
+                lambda x: (pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100 
+                if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
+                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+                axis=1
+            )
+    
+    # --- Final formatting and cleanup ---
+    # Convert NaN values to None/empty for cleaner Excel output
+    df = df.replace({pd.NA: None, np.nan: None})
+    
+    logging.info(f"Data formatting complete. Output rows: {len(df)}")
+    return df
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
     """

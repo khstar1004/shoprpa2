@@ -16,6 +16,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from collections import Counter
 from difflib import SequenceMatcher
 
+# 기본 인코딩 설정 (한글 처리용)
+DEFAULT_ENCODING = 'utf-8'
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -40,7 +43,7 @@ ADDITIONAL_MODELS = [
 config = configparser.ConfigParser()
 try:
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-    config.read(config_path, encoding='utf-8')
+    config.read(config_path, encoding=DEFAULT_ENCODING)
     logger.info(f"Successfully loaded config from {config_path}")
     
     # Load text matching settings

@@ -19,6 +19,10 @@ import hashlib # 파일 해시
 import torch
 import multiprocessing
 
+# --- 인코딩 관련 전역 설정 ---
+# 항상 UTF-8 인코딩 사용
+DEFAULT_ENCODING = 'utf-8'
+
 # Import the enhanced image matcher if available
 try:
     from enhanced_image_matcher import EnhancedImageMatcher
@@ -50,6 +54,24 @@ def _init_worker_matcher(config: configparser.ConfigParser):
             logging.info(f"Worker {pid}: Set TensorFlow GPU memory growth")
     except Exception as e:
         logging.warning(f"Worker {pid}: Failed to configure TensorFlow GPU memory: {e}")
+    
+    # config.ini 직접 읽기 (UTF-8 인코딩 명시적 지정)
+    if isinstance(config, str):
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(config, encoding=DEFAULT_ENCODING)
+            config = parser
+            logging.info(f"Worker {pid}: Read config from path {config} using {DEFAULT_ENCODING} encoding")
+        except Exception as e:
+            logging.error(f"Worker {pid}: Error reading config from path: {e}")
+            # retry with fallback encoding
+            try:
+                parser = configparser.ConfigParser()
+                parser.read(config)
+                config = parser
+                logging.info(f"Worker {pid}: Read config using default encoding")
+            except Exception as e2:
+                logging.error(f"Worker {pid}: Error reading config with default encoding: {e2}")
     
     # Initialize ProductMatcher with retry
     max_retries = 3
@@ -112,7 +134,7 @@ class FeatureCache:
         except:
             hash_input = img_path
             
-        hash_val = hashlib.md5(hash_input.encode()).hexdigest()
+        hash_val = hashlib.md5(hash_input.encode(DEFAULT_ENCODING)).hexdigest()
         return os.path.join(self.cache_dir, f"{hash_val}.pkl")
     
     def _clean_expired_cache(self) -> None:
@@ -781,7 +803,20 @@ def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: O
         try:
             from configparser import ConfigParser
             config = ConfigParser()
-            config.read('config.ini')
+            
+            # 중요: UTF-8 인코딩을 명시적으로 지정
+            try:
+                config.read('config.ini', encoding=DEFAULT_ENCODING)
+                logging.info(f"Config file loaded with {DEFAULT_ENCODING} encoding in worker {os.getpid()}")
+            except Exception as config_err:
+                logging.error(f"Error reading config file with {DEFAULT_ENCODING} encoding: {config_err}")
+                # 폴백: 인코딩 미지정
+                try:
+                    config.read('config.ini')
+                    logging.warning(f"Falling back to default encoding in worker {os.getpid()}")
+                except Exception as fallback_err:
+                    logging.error(f"Failed to read config in any encoding: {fallback_err}")
+                    
             worker_matcher_instance = ProductMatcher(config)
             logging.info(f"Initialized matcher in worker {os.getpid()}")
         except Exception as e:
@@ -835,13 +870,26 @@ def process_matching(
     if progress_queue:
         progress_queue.emit("status", f"상품 매칭 시작 (GPU: {gpu_available}, 작업자: {max_workers})")
     
+    # 임시 컬럼 추가로 필수 컬럼 부재 문제 해결
+    if '기본수량(1)' not in haoreum_df.columns:
+        haoreum_df['기본수량(1)'] = haoreum_df.get('본사 기본수량', 1)
+        logging.info(f"기본수량(1) 컬럼이 없어 추가했습니다.")
+    
+    if '판매단가(V포함)' not in haoreum_df.columns and '판매단가' in haoreum_df.columns:
+        haoreum_df['판매단가(V포함)'] = haoreum_df['판매단가']
+        logging.info(f"판매단가(V포함) 컬럼이 없어 판매단가에서 복사했습니다.")
+    elif '판매단가(V포함)' not in haoreum_df.columns:
+        haoreum_df['판매단가(V포함)'] = 0
+        logging.info(f"판매단가(V포함) 컬럼이 없어 0값으로 추가했습니다.")
+    
     # Initialize matcher and multiprocessing
-        total_products = len(haoreum_df)
+    total_products = len(haoreum_df)
     
     # Initialize a multiprocessing pool
     # We'll initialize a ProductMatcher instance in each process to avoid sharing
     try:
         logging.info(f"Initializing process pool for matching with {max_workers} workers")
+        # 초기화 함수에 encoding 인자 전달
         pool = multiprocessing.Pool(
             processes=max_workers,
             initializer=_init_worker_matcher,
@@ -956,6 +1004,11 @@ def process_matching(
         
         # Return original dataframe if error occurs
         result_df = haoreum_df.copy()
+        # 필수 컬럼 추가
+        if '기본수량(1)' not in result_df.columns:
+            result_df['기본수량(1)'] = result_df.get('본사 기본수량', 1)
+        if '판매단가(V포함)' not in result_df.columns:
+            result_df['판매단가(V포함)'] = result_df.get('판매단가', 0)
         return result_df
 
 def _filter_candidates_by_text(product_name: str, candidates: List[Dict], matcher: Optional[ProductMatcher] = None, config: Optional[configparser.ConfigParser] = None) -> List[Dict]:
