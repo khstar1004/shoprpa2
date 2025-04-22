@@ -58,13 +58,15 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         # Adjust matcher workers based on GPU availability
         if gpu_available:
             try:
+                # Optimize for more VRAM utilization to increase accuracy
                 matcher_workers = config.getint('Concurrency', 'matcher_max_workers_gpu', fallback=2)
                 logging.info(f"GPU detected. Using up to {matcher_workers} CPU workers for matching coordination/CPU-bound tasks (GPU handles main load).")
             except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
                 logging.warning("MATCHER_MAX_WORKERS_GPU not found in config [Concurrency]. Using default GPU worker setting (2).")
                 matcher_workers = 2
         else:
-            matcher_workers = matcher_workers_config
+            # For CPU-only mode, use more workers but not too many to prevent contention
+            matcher_workers = min(matcher_workers_config, max(2, os.cpu_count() - 1))
             logging.info(f"No GPU detected. Using up to {matcher_workers} CPU workers for matching.")
         logging.info(f"Using up to {download_workers} workers for downloads/preprocessing.")
 
@@ -114,12 +116,27 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
         if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
 
-        # 3. Crawl External Data
-        log_step(4, total_steps, "Starting crawling process...")
+        # 3. Crawl External Data - Increased crawling and image downloads
+        log_step(4, total_steps, "Starting enhanced crawling process (increased depth for accuracy)...")
         step_start_time = time.time()
         try:
+            # Increase crawling depth for better accuracy
+            original_max_items = config.getint('ScraperSettings', 'kogift_max_items', fallback=10)
+            # Temporarily increase the crawling depth by 50% for more candidates
+            config.set('ScraperSettings', 'kogift_max_items', str(int(original_max_items * 1.5)))
+            
+            # Also increase the retry count for better results
+            original_retries = config.getint('Network', 'max_retries', fallback=2)
+            config.set('Network', 'max_retries', str(original_retries + 1))
+            
+            logging.info(f"Enhanced crawling: items per product increased to {int(original_max_items * 1.5)}, retries to {original_retries + 1}")
+            
             kogift_crawl_results, naver_crawl_results, haereum_image_url_map = await crawl_all_sources(haoreum_df, config)
-            logging.debug(f"Crawling completed in {time.time() - step_start_time:.2f} sec")
+            logging.debug(f"Enhanced crawling completed in {time.time() - step_start_time:.2f} sec")
+            
+            # Reset config values to their original settings
+            config.set('ScraperSettings', 'kogift_max_items', str(original_max_items))
+            config.set('Network', 'max_retries', str(original_retries))
             
             # Validate crawl results immediately
             if debug_mode:
@@ -355,9 +372,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
 
         logging.info(f"Data maps prepared for matching. Duration: {time.time() - map_prep_start_time:.2f} sec")
         
-        # 고려기프트 이미지 다운로드 사전 확인 (선택적)
-        if kogift_map and config.getboolean('Matching', 'predownload_kogift_images', fallback=False):
-            logging.info("고려기프트 이미지 사전 다운로드 시작...")
+        # 일반 로그 출력
+        logging.info(f"읽어온 설정값: GPU={gpu_available}, 텍스트 임계치={config.getfloat('Matching', 'text_threshold', fallback=0.55)}, 이미지 임계치={config.getfloat('Matching', 'image_threshold', fallback=0.5)}")
+
+        # 고려기프트 이미지 다운로드 사전 확인 - 모든 이미지 다운로드
+        if kogift_map:
+            logging.info("고려기프트 이미지 사전 다운로드 시작 (향상된 정확도를 위해 모든 이미지 다운로드)...")
             kogift_img_start_time = time.time()
             
             # 다운로드할 이미지 URL 목록 생성
@@ -394,10 +414,16 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             else:
                 logging.warning("다운로드할 고려기프트 이미지 URL이 없습니다.")
 
-        # 4. Match Products (Run in thread to avoid blocking asyncio loop)
+        # 4. Match Products with improved accuracy (longer but more accurate)
         step_start_time = time.time()
-        logging.info(f"[Step 5/7] Starting product matching (GPU: {gpu_available}, CPU Workers: {matcher_workers})...")
-        if progress_queue: progress_queue.emit("status", "Matching products...")
+        
+        # Use config values instead of hardcoding
+        use_ensemble = config.getboolean('Matching', 'use_ensemble_models', fallback=True)
+        use_multiple_models = config.getboolean('ImageMatching', 'use_multiple_models', fallback=True)
+        use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=True)
+        
+        logging.info(f"[Step 5/7] Starting product matching with enhanced accuracy settings (GPU: {gpu_available}, CPU Workers: {matcher_workers})...")
+        if progress_queue: progress_queue.emit("status", "Matching products with enhanced accuracy (might take longer)...")
         matched_df = pd.DataFrame() # Initialize empty DataFrame
         try:
             # Use ThreadPoolExecutor instead of asyncio.to_thread

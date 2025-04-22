@@ -11,7 +11,6 @@ import requests
 from io import BytesIO
 import configparser
 import tempfile
-from enhanced_image_matcher import EnhancedImageMatcher
 
 # Load config
 config = configparser.ConfigParser()
@@ -256,18 +255,46 @@ def preprocess_image(img_path: str) -> Union[tf.Tensor, None]:
         logging.error(f"Error preprocessing image {img_path}: {e}", exc_info=True)
         return None
 
-def get_enhanced_matcher(config: configparser.ConfigParser) -> EnhancedImageMatcher:
+def get_enhanced_matcher(config: configparser.ConfigParser) -> Any:
     """Get or create an EnhancedImageMatcher instance."""
     global ENHANCED_MATCHER_INSTANCE
     if ENHANCED_MATCHER_INSTANCE is None:
+        # 원형 의존성 방지를 위해 지연 임포트 사용
+        from enhanced_image_matcher import EnhancedImageMatcher
         ENHANCED_MATCHER_INSTANCE = EnhancedImageMatcher(config)
     return ENHANCED_MATCHER_INSTANCE
 
 def calculate_image_similarity(img_path1: str, img_path2: str, config: configparser.ConfigParser) -> float:
     """Calculate image similarity using EnhancedImageMatcher."""
-    matcher = get_enhanced_matcher(config)
-    similarity, _ = matcher.calculate_combined_similarity(img_path1, img_path2)
-    return similarity
+    try:
+        matcher = get_enhanced_matcher(config)
+        similarity, _ = matcher.calculate_combined_similarity(img_path1, img_path2)
+        return similarity
+    except Exception as e:
+        logging.error(f"Error calculating image similarity: {e}", exc_info=True)
+        # 오류 발생 시 fallback으로 기본 이미지 유사도 계산 시도
+        try:
+            model = load_image_model()
+            if model is None:
+                return 0.0
+                
+            # 이미지 전처리
+            img1_tensor = preprocess_image(img_path1)
+            img2_tensor = preprocess_image(img_path2)
+            
+            if img1_tensor is None or img2_tensor is None:
+                return 0.0
+                
+            # 특징 추출
+            features1 = model.predict(img1_tensor, verbose=0).flatten()
+            features2 = model.predict(img2_tensor, verbose=0).flatten()
+            
+            # 코사인 유사도 계산
+            similarity = np.dot(features1, features2) / (np.linalg.norm(features1) * np.linalg.norm(features2))
+            return float(similarity)
+        except Exception as fallback_err:
+            logging.error(f"Fallback image similarity calculation also failed: {fallback_err}")
+            return 0.0
 
 # Example Usage (Optional - for testing)
 if __name__ == "__main__":

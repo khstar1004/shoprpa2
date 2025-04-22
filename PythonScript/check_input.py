@@ -50,44 +50,54 @@ def check_input_file():
         # Clean column names
         df.columns = [col.strip() if isinstance(col, str) else col for col in df.columns]
         
-        # Check for column name variations
-        column_aliases = {
-            '담 당자': '담당자',
-            '상품코드': 'Code',
-            '카테고리(중분류)': '중분류카테고리',
-            'name': '상품명',
-            '본사 기본수량': '기본수량(1)',
-            '판매단가1(VAT포함)': '판매단가(V포함)',
-            '본사링크': '본사상품링크',
-        }
+        # Required columns that must exist and have content
+        required_columns = [
+            '구분', '담당자', '업체명', '업체코드', 'Code', 
+            '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
+        ]
         
-        # Apply known aliases to the column names for checking
-        actual_columns = list(df.columns)
-        standardized_columns = []
-        for col in actual_columns:
-            if col in column_aliases:
-                standardized_columns.append(column_aliases[col])
-            else:
-                standardized_columns.append(col)
+        # Optional columns that should exist but can be empty
+        optional_columns = [
+            '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', 
+            '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', 
+            '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+        ]
         
-        # Mandatory columns that must exist for processing
-        required_columns = ['상품명', 'Code', '기본수량(1)', '판매단가(V포함)', '본사상품링크']
-        missing_columns = [col for col in required_columns if col not in standardized_columns]
-        
+        # Check for missing required columns
+        missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             logging.error(f"Input file is missing required columns: {missing_columns}")
             return False
+            
+        # Check for missing optional columns
+        missing_optional = [col for col in optional_columns if col not in df.columns]
+        if missing_optional:
+            logging.warning(f"Input file is missing optional columns: {missing_optional}")
+            # Add missing optional columns with empty values
+            for col in missing_optional:
+                df[col] = '-'
         
-        # Optional columns that are used if available
-        optional_columns = [
-            '구분', '담당자', '업체명', '업체코드', '중분류카테고리', '본사 이미지',
-            '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지',
-            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '네이버 이미지'
-        ]
+        # Check content of required columns
+        empty_columns = []
+        for col in required_columns:
+            # Check for empty values (NaN, None, empty string, or whitespace)
+            empty_mask = (
+                df[col].isna() | 
+                (df[col].astype(str).str.strip() == '') |
+                (df[col].astype(str).str.strip() == '-')
+            )
+            empty_count = empty_mask.sum()
+            
+            if empty_count > 0:
+                empty_columns.append((col, empty_count))
+                logging.warning(f"Column '{col}' has {empty_count} empty values")
         
-        for col in optional_columns:
-            if col not in standardized_columns:
-                logging.warning(f"Optional column '{col}' is missing")
+        if empty_columns:
+            logging.error("Some required columns have empty values:")
+            for col, count in empty_columns:
+                logging.error(f"- {col}: {count} empty values")
+            return False
         
         # Check data types and validate
         logging.info("Validating data types...")
@@ -102,14 +112,17 @@ def check_input_file():
                     non_numeric_count = numeric_values.isna().sum()
                     
                     if non_numeric_count > 0:
-                        logging.warning(f"Column '{col}' has {non_numeric_count} non-numeric values")
+                        logging.error(f"Column '{col}' has {non_numeric_count} non-numeric values")
+                        return False
                     
-                    # Check for empty or zero values
-                    empty_count = (numeric_values.isna() | (numeric_values == 0)).sum()
-                    if empty_count > 0:
-                        logging.warning(f"Column '{col}' has {empty_count} empty or zero values")
+                    # Check for zero or negative values
+                    invalid_count = (numeric_values <= 0).sum()
+                    if invalid_count > 0:
+                        logging.error(f"Column '{col}' has {invalid_count} zero or negative values")
+                        return False
         except Exception as e:
             logging.error(f"Error validating numeric columns: {e}")
+            return False
         
         # Print a sample of the data
         logging.info("Sample data from input file:")

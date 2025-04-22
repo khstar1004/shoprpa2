@@ -1,0 +1,75 @@
+[Paths]
+# 모델 경로 설정
+text_model_path = sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+# 파일 경로 설정
+input_dir = ./input
+output_dir = ./output
+temp_dir = ./temp
+images_dir = ./images
+cached_features_dir = ./temp/image_features
+
+[Matching]
+# 텍스트/이미지 유사도 임계값
+text_threshold = 0.7
+image_threshold = 0.6
+# 카테고리 임계값 사용 여부
+use_category_thresholds = True
+# 가중치 설정
+text_weight = 0.7
+image_weight = 0.3
+price_weight = 0.1
+# 캐시 설정
+max_cache_size = 1000
+use_persistent_cache = True
+cache_expiry_days = 30
+# 이미지 처리 설정
+image_resize_dimension = 224
+# 기타 설정
+minimum_combined_score = 0.4
+use_price_similarity = False
+use_enhanced_matcher = True
+use_gpu = False
+skip_image_if_size_exceeds_mb = 5
+image_similarity_timeout_sec = 10.0
+max_retries_downloads = 3
+verify_sample_percent = 10
+verify_image_urls = True
+predownload_kogift_images = True
+kogift_special_domain_handling = True
+batch_size = 50
+gc_after_batch = True
+
+[CategoryThresholds]
+# 카테고리별 텍스트,이미지 임계값 (콤마로 구분)
+가전 = 0.8, 0.7
+생활용품 = 0.75, 0.65
+식품 = 0.7, 0.6
+화장품 = 0.85, 0.75
+의류 = 0.8, 0.7
+도서 = 0.9, 0.5
+가구 = 0.75, 0.8
+주방용품 = 0.75, 0.7
+스포츠 = 0.7, 0.75
+디지털 = 0.85, 0.8
+
+[MatchQualityThresholds]
+# 매칭 품질 평가 임계값
+high_quality = 0.85
+medium_quality = 0.70
+low_quality = 0.50
+reject_threshold = 0.40
+
+[Concurrency]
+# 동시 작업 설정
+max_crawl_workers = 4
+max_match_workers = 4
+matcher_max_workers_gpu = 2
+
+[Network]
+# 네트워크 설정
+connect_timeout = 5
+read_timeout = 15
+
+[Debug]
+# 디버그 모드 설정
+enabled = False 

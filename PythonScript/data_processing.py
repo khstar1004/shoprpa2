@@ -121,9 +121,28 @@ def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[
     output_df = input_df.copy()
     logging.info(f"Starting data formatting. Input rows: {len(output_df)}")
 
-    # Initialize required columns with '-', excluding 기본수량(1) and 판매단가(V포함)
-    for col in FINAL_COLUMN_ORDER:
-        if col not in output_df.columns and col not in ['기본수량(1)', '판매단가(V포함)']:
+    # Ensure all required columns exist
+    required_columns = [
+        '구분', '담당자', '업체명', '업체코드', 'Code', 
+        '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
+    ]
+    
+    # Check if all required columns exist
+    missing_columns = [col for col in required_columns if col not in output_df.columns]
+    if missing_columns:
+        logging.error(f"Missing required columns in input DataFrame: {missing_columns}")
+        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns}")
+
+    # Initialize optional columns with '-' if they don't exist
+    optional_columns = [
+        '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', 
+        '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', 
+        '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+    ]
+    
+    for col in optional_columns:
+        if col not in output_df.columns:
             output_df[col] = '-'
 
     # --- Process Each Row --- 
@@ -135,13 +154,19 @@ def format_product_data_for_output(input_df: pd.DataFrame, kogift_results: Dict[
 
         # --- Get Base Price (Haoreum Price) --- 
         try:
-            haoreum_price = float(str(row['판매단가(V포함)']).replace(',', '').strip())
-            if haoreum_price <= 0:
-                logging.warning(f"Invalid Haoreum price ({haoreum_price}) for product: {product_name}")
+            # Get price from the required column
+            price_str = str(row['판매단가(V포함)']).replace(',', '').strip()
+            if price_str and price_str != '-':
+                haoreum_price = float(price_str)
+                if haoreum_price <= 0:
+                    logging.warning(f"Invalid Haoreum price ({haoreum_price}) for product: {product_name}")
+                    haoreum_price = None
+            else:
                 haoreum_price = None
-        except (ValueError, TypeError):
+                logging.warning(f"Empty price for product: {product_name}")
+        except Exception as e:
             haoreum_price = None
-            logging.warning(f"Could not parse Haoreum price for product: {product_name}")
+            logging.warning(f"Could not parse Haoreum price for product: {product_name}, Error: {str(e)}")
 
         # --- Process KoGift Data ---
         if product_name in kogift_results and kogift_results[product_name]:

@@ -5,6 +5,8 @@ This module provides improved image matching capabilities by combining:
 1. SIFT (Scale-Invariant Feature Transform) for local feature matching
 2. AKAZE (Accelerated-KAZE) for handling non-linear transformations
 3. EfficientNetB0 for deep feature extraction and similarity
+4. ORB (Oriented FAST and Rotated BRIEF) for additional feature matching
+5. RANSAC-based homography for geometric verification
 
 The combined approach provides better accuracy for product image matching.
 """
@@ -29,14 +31,23 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Default Constants
-DEFAULT_IMG_SIZE = (224, 224)
-DEFAULT_FEATURE_MATCH_THRESHOLD = 10
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.75
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 50
-DEFAULT_COMBINED_THRESHOLD = 0.65
-DEFAULT_WEIGHTS = {'sift': 0.3, 'akaze': 0.2, 'deep': 0.5}
+# Default Constants - Optimized for accuracy
+DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
+DEFAULT_FEATURE_MATCH_THRESHOLD = 15  # Increased from 10
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.70  # More strict (was 0.75)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 40  # More strict (was 50)
+DEFAULT_COMBINED_THRESHOLD = 0.55  # Lower to allow more potential matches
+DEFAULT_WEIGHTS = {'sift': 0.25, 'akaze': 0.20, 'deep': 0.40, 'orb': 0.15}  # New weights with ORB
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
+
+# Enhanced parameters
+DEFAULT_SIFT_FEATURES = 2000  # Increased number of SIFT features
+DEFAULT_AKAZE_FEATURES = 2000  # Increased number of AKAZE features
+DEFAULT_ORB_FEATURES = 2000    # Number of ORB features
+
+# Add quality check parameters
+DEFAULT_MIN_MATCH_COUNT = 10   # Minimum number of matches for geometric verification
+DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
 
 def _load_config() -> configparser.ConfigParser:
     """Load configuration from config.ini"""
@@ -71,16 +82,32 @@ def _get_config_values(config: configparser.ConfigParser) -> Dict:
                 'akaze': config.getfloat('ImageMatching', 'akaze_weight', 
                                        fallback=DEFAULT_WEIGHTS['akaze']),
                 'deep': config.getfloat('ImageMatching', 'deep_weight', 
-                                      fallback=DEFAULT_WEIGHTS['deep'])
+                                      fallback=DEFAULT_WEIGHTS['deep']),
+                'orb': config.getfloat('ImageMatching', 'orb_weight',
+                                     fallback=DEFAULT_WEIGHTS['orb']),
             },
             'USE_BACKGROUND_REMOVAL': config.getboolean('ImageMatching', 'use_background_removal_before_matching', 
-                                                       fallback=False),
+                                                       fallback=True),
             'CACHE_FEATURES': config.getboolean('ImageMatching', 'cache_extracted_features', 
                                               fallback=True),
             'MAX_CACHE_ITEMS': config.getint('ImageMatching', 'max_feature_cache_items', 
                                            fallback=1000),
             'FEATURE_CACHE_DIR': config.get('ImageMatching', 'feature_cache_dir', 
-                                          fallback=DEFAULT_CACHE_DIR)
+                                          fallback=DEFAULT_CACHE_DIR),
+            'SIFT_FEATURES': config.getint('ImageMatching', 'sift_features',
+                                        fallback=DEFAULT_SIFT_FEATURES),
+            'AKAZE_FEATURES': config.getint('ImageMatching', 'akaze_features',
+                                         fallback=DEFAULT_AKAZE_FEATURES),
+            'ORB_FEATURES': config.getint('ImageMatching', 'orb_features',
+                                       fallback=DEFAULT_ORB_FEATURES),
+            'MIN_MATCH_COUNT': config.getint('ImageMatching', 'min_match_count',
+                                          fallback=DEFAULT_MIN_MATCH_COUNT),
+            'INLIER_THRESHOLD': config.getfloat('ImageMatching', 'inlier_threshold',
+                                             fallback=DEFAULT_INLIER_THRESHOLD),
+            'APPLY_CLAHE': config.getboolean('ImageMatching', 'apply_clahe',
+                                          fallback=True),
+            'USE_MULTIPLE_MODELS': config.getboolean('ImageMatching', 'use_multiple_models',
+                                                  fallback=True)
         }
     except Exception as e:
         logger.error(f"Error getting config values: {e}")
@@ -94,10 +121,17 @@ SETTINGS = _get_config_values(CONFIG) or {
     'AKAZE_DISTANCE_THRESHOLD': DEFAULT_AKAZE_DISTANCE_THRESHOLD,
     'COMBINED_THRESHOLD': DEFAULT_COMBINED_THRESHOLD,
     'WEIGHTS': DEFAULT_WEIGHTS,
-    'USE_BACKGROUND_REMOVAL': False,
+    'USE_BACKGROUND_REMOVAL': True,
     'CACHE_FEATURES': True,
     'MAX_CACHE_ITEMS': 1000,
-    'FEATURE_CACHE_DIR': DEFAULT_CACHE_DIR
+    'FEATURE_CACHE_DIR': DEFAULT_CACHE_DIR,
+    'SIFT_FEATURES': DEFAULT_SIFT_FEATURES,
+    'AKAZE_FEATURES': DEFAULT_AKAZE_FEATURES,
+    'ORB_FEATURES': DEFAULT_ORB_FEATURES,
+    'MIN_MATCH_COUNT': DEFAULT_MIN_MATCH_COUNT,
+    'INLIER_THRESHOLD': DEFAULT_INLIER_THRESHOLD,
+    'APPLY_CLAHE': True,
+    'USE_MULTIPLE_MODELS': True
 }
 
 # Log settings
@@ -210,413 +244,520 @@ class EnhancedImageMatcher:
             config: ConfigParser instance with settings (optional)
             use_gpu: Whether to use GPU for TensorFlow operations
         """
-        # Load config if not provided
-        if config is None:
-            self.settings = SETTINGS
-        else:
-            self.settings = _get_config_values(config) or SETTINGS
+        self.config = config
         
-        # Configure TensorFlow for GPU if needed
-        if not use_gpu:
-            try:
-                tf.config.set_visible_devices([], 'GPU')
-                logger.info("GPU disabled for TensorFlow operations")
-            except Exception as e:
-                logger.warning(f"Could not configure GPU settings: {e}")
+        # Load configuration values
+        if config:
+            settings = _get_config_values(config)
+            if settings:
+                global SETTINGS
+                SETTINGS.update(settings)
+                
+        # Update global settings for feature extraction parameters
+        self.sift_features = SETTINGS['SIFT_FEATURES']
+        self.akaze_features = SETTINGS['AKAZE_FEATURES']
+        self.orb_features = SETTINGS['ORB_FEATURES']
+        self.min_match_count = SETTINGS['MIN_MATCH_COUNT']
+        self.inlier_threshold = SETTINGS['INLIER_THRESHOLD']
+        self.apply_clahe = SETTINGS['APPLY_CLAHE']
+        self.use_multiple_models = SETTINGS['USE_MULTIPLE_MODELS']
         
-        # Initialize OpenCV feature detectors
-        self.sift = cv2.SIFT_create()
-        self.akaze = cv2.AKAZE_create()
+        # Initialize cache
+        self.feature_cache = FeatureCache()
         
-        # Initialize matchers
+        # Initialize models
+        self.use_gpu = use_gpu
+        self._initialize_deep_models()
+        
+        # Initialize feature extractors with improved parameters
+        self.sift = cv2.SIFT_create(nfeatures=self.sift_features, nOctaveLayers=5, contrastThreshold=0.03, edgeThreshold=10, sigma=1.6)
+        self.akaze = cv2.AKAZE_create(descriptor_type=cv2.AKAZE_DESCRIPTOR_MLDB, descriptor_size=0, descriptor_channels=3, threshold=0.001)
+        self.orb = cv2.ORB_create(nfeatures=self.orb_features, scaleFactor=1.2, nlevels=8, edgeThreshold=31, firstLevel=0, WTA_K=2, patchSize=31)
+        
+        # Initialize FLANN matcher for SIFT
         FLANN_INDEX_KDTREE = 1
         index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-        search_params = dict(checks=50)
+        search_params = dict(checks=50)  # Increased from typical 32 for more accuracy
         self.flann = cv2.FlannBasedMatcher(index_params, search_params)
-        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         
-        # Load EfficientNetB0 model
-        logger.info("Loading EfficientNetB0 model...")
-        self.efficientnet_model = None
+        # Initialize Brute Force matchers for AKAZE and ORB
+        self.bf_akaze = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.bf_orb = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        
+        # Add CLAHE for contrast enhancement
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        
+        logger.info(f"Initialized EnhancedImageMatcher (GPU: {use_gpu}, SIFT features: {self.sift_features}, AKAZE features: {self.akaze_features}, ORB features: {self.orb_features})")
+
+    def _initialize_deep_models(self):
+        """Initialize deep learning models for feature extraction with GPU if available"""
         try:
-            base_model = tf.keras.applications.EfficientNetB0(
-                weights='imagenet', 
-                include_top=False,
-                input_shape=(DEFAULT_IMG_SIZE[0], DEFAULT_IMG_SIZE[1], 3)
+            # Configure GPU usage
+            if self.use_gpu:
+                gpus = tf.config.list_physical_devices('GPU')
+                if gpus:
+                    for gpu in gpus:
+                        tf.config.experimental.set_memory_growth(gpu, True)
+                    logger.info(f"Using GPU: {len(gpus)} devices available")
+                else:
+                    logger.warning("No GPU devices found despite GPU flag")
+            else:
+                # Disable GPU
+                tf.config.set_visible_devices([], 'GPU')
+                logger.info("GPU disabled for TensorFlow")
+                
+            # Initialize primary model (EfficientNetB0)
+            self.model = tf.keras.applications.EfficientNetB0(
+                include_top=False, 
+                weights='imagenet',
+                pooling='avg'
             )
-            global_avg_layer = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
-            self.efficientnet_model = tf.keras.Model(inputs=base_model.input, outputs=global_avg_layer)
-            logger.info("EfficientNetB0 model loaded successfully")
+            
+            # Initialize additional models for ensemble if enabled
+            self.models = []
+            if self.use_multiple_models:
+                # Add MobileNetV2 (faster but still good features)
+                try:
+                    mobilenet = tf.keras.applications.MobileNetV2(
+                        include_top=False,
+                        weights='imagenet',
+                        pooling='avg'
+                    )
+                    self.models.append(('mobilenet', mobilenet))
+                    logger.info("MobileNetV2 model loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load MobileNetV2: {e}")
+                
+                # Add ResNet50 (better accuracy, slower)
+                try:
+                    resnet = tf.keras.applications.ResNet50(
+                        include_top=False,
+                        weights='imagenet',
+                        pooling='avg'
+                    )
+                    self.models.append(('resnet', resnet))
+                    logger.info("ResNet50 model loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load ResNet50: {e}")
+            
+            # Standard preprocessing functions
+            self.efficient_preprocess = tf.keras.applications.efficientnet.preprocess_input
+            self.mobilenet_preprocess = tf.keras.applications.mobilenet_v2.preprocess_input
+            self.resnet_preprocess = tf.keras.applications.resnet.preprocess_input
+            
+            logger.info(f"Deep learning models initialized. Using ensemble: {self.use_multiple_models}")
+            
         except Exception as e:
-            logger.error(f"Failed to load EfficientNetB0 model: {e}")
-
-        # Initialize feature cache
-        self.feature_cache = FeatureCache(
-            cache_dir=self.settings['FEATURE_CACHE_DIR'],
-            max_items=self.settings['MAX_CACHE_ITEMS'],
-            enabled=self.settings['CACHE_FEATURES']
-        )
-        
-        # Create cache directory if needed
-        if self.settings['CACHE_FEATURES']:
-            os.makedirs(self.settings['FEATURE_CACHE_DIR'], exist_ok=True)
-            logger.info(f"Created/verified feature cache directory: {self.settings['FEATURE_CACHE_DIR']}")
-
+            logger.error(f"Error initializing deep learning models: {e}")
+            self.model = None
+            self.models = []
+    
     def _load_and_prepare_image(self, image_path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        Load image from path and prepare for both CV and deep learning
-        
-        Args:
-            image_path: Path to the image file
-            
-        Returns:
-            Tuple of (OpenCV image, TensorFlow preprocessed image) or (None, None) if failed
+        Load and prepare an image for processing with preprocessing and contrast enhancement
+        Returns color and grayscale versions
         """
-        if not os.path.exists(image_path):
-            logger.warning(f"Image file not found: {image_path}")
-            return None, None
-            
         try:
-            # Load for OpenCV processing (grayscale)
-            cv_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-            if cv_image is None:
-                raise ValueError(f"OpenCV could not read image: {image_path}")
+            # Check if image exists
+            if not os.path.exists(image_path):
+                logger.warning(f"Image does not exist: {image_path}")
+                return None, None
                 
-            # Load for TensorFlow processing (color)
-            tf_img = tf.keras.preprocessing.image.load_img(
-                image_path, 
-                target_size=DEFAULT_IMG_SIZE, 
-                color_mode='rgb'
-            )
-            tf_array = tf.keras.preprocessing.image.img_to_array(tf_img)
-            tf_batch = tf.expand_dims(tf_array, 0)
-            tf_preprocessed = tf.keras.applications.efficientnet.preprocess_input(tf_batch)
+            # Load image
+            img = cv2.imread(image_path)
+            if img is None:
+                logger.warning(f"Unable to read image: {image_path}")
+                return None, None
+                
+            # Get grayscale version
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
-            return cv_image, tf_preprocessed
+            # Apply contrast enhancement if enabled
+            if self.apply_clahe:
+                gray = self.clahe.apply(gray)
+            
+            return img, gray
+            
         except Exception as e:
             logger.error(f"Error loading image {image_path}: {e}")
             return None, None
-
-    def _remove_background(self, img_path: str) -> Optional[str]:
-        """
-        Remove background from image if requested
-        
-        Args:
-            img_path: Path to the image
-            
-        Returns:
-            Path to the processed image, or original path if not processed
-        """
-        if not self.settings['USE_BACKGROUND_REMOVAL']:
-            return img_path
-            
-        try:
-            # Import rembg here to not require it if not used
-            from rembg import remove, new_session
-            
-            # Create output path
-            output_path = os.path.join(os.path.dirname(img_path), 
-                                     f"nobg_{os.path.basename(img_path)}")
-            output_path = output_path.replace('.jpg', '.png').replace('.jpeg', '.png')
-            
-            # Process image if output doesn't already exist
-            if not os.path.exists(output_path):
-                # Read image
-                with open(img_path, 'rb') as f:
-                    img_data = f.read()
                 
-                # Remove background
-                session = new_session("u2net")
-                output_data = remove(img_data, session=session)
-                
-                # Save result
-                with open(output_path, 'wb') as f:
-                    f.write(output_data)
-                    
-                logger.info(f"Background removed from {img_path}, saved to {output_path}")
-            
-            return output_path
-        except Exception as e:
-            logger.warning(f"Error removing background from {img_path}: {e}")
-            return img_path
-
     def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate SIFT feature similarity between two images with optimized matching."""
-        # Check cache first
-        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
-        if cached_result is not None:
-            return float(cached_result)
-
-        # Load and check images
-        img1, _ = self._load_and_prepare_image(img_path1)
-        img2, _ = self._load_and_prepare_image(img_path2)
-        if img1 is None or img2 is None:
-            return 0.0
-
+        """Calculate SIFT feature similarity with geometric verification"""
         try:
-            # Extract SIFT keypoints and descriptors
-            kp1, des1 = self.sift.detectAndCompute(img1, None)
-            kp2, des2 = self.sift.detectAndCompute(img2, None)
-
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
+            if cached_result is not None:
+                return cached_result
+            
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
+            
+            if gray1 is None or gray2 is None:
+                return 0.0
+                
+            # Extract keypoints and descriptors
+            kp1, des1 = self.sift.detectAndCompute(gray1, None)
+            kp2, des2 = self.sift.detectAndCompute(gray2, None)
+            
             if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
                 return 0.0
-
-            # Use ratio test for better matching
+                
+            # Match features
             matches = self.flann.knnMatch(des1, des2, k=2)
+            
+            # Store good matches using Lowe's ratio test
             good_matches = []
-
-            # Apply Lowe's ratio test with dynamic threshold
-            min_matches = 4  # Minimum matches required for homography
-            max_matches = 50  # Maximum matches to consider
-            ratio_threshold = self.settings['SIFT_RATIO_THRESHOLD']
-
-            for match_pair in matches:
-                if len(match_pair) == 2:
-                    m, n = match_pair
-                    if m.distance < ratio_threshold * n.distance:
-                        good_matches.append(m)
-
-                    # Dynamically adjust ratio threshold if not finding enough matches
-                    if len(good_matches) < min_matches and ratio_threshold < 0.9:
-                        ratio_threshold *= 1.1
-
-                    # Stop if we have enough good matches
-                    if len(good_matches) >= max_matches:
-                        break
-
-            # Calculate similarity based on matches quality
-            if len(good_matches) >= min_matches:
-                # Extract matched keypoints
+            for m, n in matches:
+                if m.distance < SETTINGS['SIFT_RATIO_THRESHOLD'] * n.distance:
+                    good_matches.append(m)
+                    
+            num_good_matches = len(good_matches)
+            logger.debug(f"SIFT: {num_good_matches} good matches found")
+            
+            # Calculate normalized score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-
-                # Find homography with RANSAC
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                inliers = np.sum(mask) if mask is not None else 0
-
-                # Calculate similarity score
-                match_quality = inliers / len(good_matches) if good_matches else 0
-                match_quantity = min(1.0, len(good_matches) / max_matches)
-                similarity = 0.7 * match_quality + 0.3 * match_quantity
-
-                # Cache result
-                self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", np.array([similarity]))
-                return float(similarity)
-
-            return 0.0
-
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"SIFT: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale the final score
+            final_score = min(1.0, match_score * 1.5)  # Scale up to better differentiate
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", final_score)
+            
+            return final_score
+            
         except Exception as e:
-            logging.error(f"Error in SIFT similarity calculation: {e}")
+            logger.error(f"Error calculating SIFT similarity: {e}")
             return 0.0
-
+    
     def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate AKAZE feature similarity between two images with improved matching."""
-        # Check cache first
-        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
-        if cached_result is not None:
-            return float(cached_result)
-
-        # Load and check images
-        img1, _ = self._load_and_prepare_image(img_path1)
-        img2, _ = self._load_and_prepare_image(img_path2)
-        if img1 is None or img2 is None:
-            return 0.0
-
+        """Calculate AKAZE feature similarity with geometric verification"""
         try:
-            # Extract AKAZE keypoints and descriptors
-            kp1, des1 = self.akaze.detectAndCompute(img1, None)
-            kp2, des2 = self.akaze.detectAndCompute(img2, None)
-
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
+            if cached_result is not None:
+                return cached_result
+            
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
+            
+            if gray1 is None or gray2 is None:
+                return 0.0
+                
+            # Extract keypoints and descriptors
+            kp1, des1 = self.akaze.detectAndCompute(gray1, None)
+            kp2, des2 = self.akaze.detectAndCompute(gray2, None)
+            
             if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
                 return 0.0
-
-            # Match features with cross-checking
-            matches = self.bf.match(des1, des2)
-            matches = sorted(matches, key=lambda x: x.distance)
-
-            # Dynamic threshold based on distance distribution
-            if len(matches) >= 4:  # Need at least 4 matches for meaningful statistics
-                distances = [m.distance for m in matches]
-                mean_dist = np.mean(distances)
-                std_dist = np.std(distances)
-                # Set threshold as mean - 2*std to include ~95% of better matches
-                distance_threshold = mean_dist - 2 * std_dist
-                distance_threshold = max(distance_threshold, self.settings['AKAZE_DISTANCE_THRESHOLD'])
-            else:
-                distance_threshold = self.settings['AKAZE_DISTANCE_THRESHOLD']
-
-            # Filter good matches
-            good_matches = [m for m in matches if m.distance < distance_threshold]
-
-            if len(matches) > 0:
-                # Calculate similarity score
-                num_good_matches = len(good_matches)
-                max_possible_matches = min(len(kp1), len(kp2))
-                match_ratio = num_good_matches / max_possible_matches
-                avg_distance = np.mean([m.distance for m in matches[:min(len(matches), 30)]])
-                norm_dist = max(0, 1 - (avg_distance / 100))
-
-                # Weighted combination of quantity and quality metrics
-                if num_good_matches > self.settings['FEATURE_MATCH_THRESHOLD']:
-                    similarity = 0.6 * match_ratio + 0.4 * norm_dist
-                else:
-                    similarity = 0.3 * match_ratio + 0.2 * norm_dist
-
-                # Cache result
-                self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", np.array([similarity]))
-                return float(similarity)
-
-            return 0.0
-
-        except Exception as e:
-            logging.error(f"Error in AKAZE similarity calculation: {e}")
-            return 0.0
-
-    def calculate_deep_similarity(self, img_path1: str, img_path2: str) -> float:
-        """
-        Calculate deep feature similarity using EfficientNetB0
-        
-        Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
-            
-        Returns:
-            Cosine similarity between feature vectors (0.0 to 1.0)
-        """
-        # Check if result is in cache
-        cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
-        if cached_result is not None:
-            return float(cached_result)
-        
-        # Remove background if requested
-        if self.settings['USE_BACKGROUND_REMOVAL']:
-            img_path1 = self._remove_background(img_path1)
-            img_path2 = self._remove_background(img_path2)
-        
-        if self.efficientnet_model is None:
-            logger.warning("Deep learning model not loaded, cannot calculate deep similarity")
-            return 0.0
-        
-        # Load and prepare images
-        _, tf_image1 = self._load_and_prepare_image(img_path1)
-        _, tf_image2 = self._load_and_prepare_image(img_path2)
-        
-        if tf_image1 is None or tf_image2 is None:
-            return 0.0
-            
-        try:
-            # Check if features are cached individually
-            features1 = self.feature_cache.get(img_path1, "deep_features")
-            if features1 is None:
-                # Extract features
-                features1 = self.efficientnet_model(tf_image1).numpy().flatten()
-                # Cache features
-                self.feature_cache.put(img_path1, "deep_features", features1)
                 
-            features2 = self.feature_cache.get(img_path2, "deep_features")
-            if features2 is None:
-                # Extract features
-                features2 = self.efficientnet_model(tf_image2).numpy().flatten()
-                # Cache features
-                self.feature_cache.put(img_path2, "deep_features", features2)
+            # Match features
+            matches = self.bf_akaze.knnMatch(des1, des2, k=2)
             
-            # Calculate cosine similarity
-            norm1 = np.linalg.norm(features1)
-            norm2 = np.linalg.norm(features2)
+            # Filter matches
+            good_matches = []
+            for match in matches:
+                if len(match) == 2:
+                    m, n = match
+                    if m.distance < (SETTINGS['AKAZE_DISTANCE_THRESHOLD'] / 100.0) * n.distance:
+                        good_matches.append(m)
+                        
+            num_good_matches = len(good_matches)
+            logger.debug(f"AKAZE: {num_good_matches} good matches found")
             
-            if norm1 == 0 or norm2 == 0:
-                logger.warning(f"Zero norm detected in deep features: {img_path1}, {img_path2}")
+            # Calculate base score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
+                src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"AKAZE: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale
+            final_score = min(1.0, match_score * 1.5)
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", final_score)
+            
+            return final_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating AKAZE similarity: {e}")
+            return 0.0
+            
+    def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate ORB feature similarity with geometric verification"""
+        try:
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "orb_similarity")
+            if cached_result is not None:
+                return cached_result
+            
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
+            
+            if gray1 is None or gray2 is None:
                 return 0.0
                 
-            similarity = np.dot(features1, features2) / (norm1 * norm2)
+            # Extract keypoints and descriptors
+            kp1, des1 = self.orb.detectAndCompute(gray1, None)
+            kp2, des2 = self.orb.detectAndCompute(gray2, None)
             
-            # Clip to valid range
-            similarity = float(max(0.0, min(1.0, similarity)))
+            if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
+                return 0.0
+                
+            # Match features
+            matches = self.bf_orb.knnMatch(des1, des2, k=2)
             
-            # Cache result
-            self.feature_cache.put(f"{img_path1}|{img_path2}", "deep_similarity", np.array([similarity]))
+            # Filter matches
+            good_matches = []
+            for match in matches:
+                if len(match) == 2:
+                    m, n = match
+                    if m.distance < 0.75 * n.distance:  # Standard ratio for ORB
+                        good_matches.append(m)
+                        
+            num_good_matches = len(good_matches)
+            logger.debug(f"ORB: {num_good_matches} good matches found")
             
-            return similarity
+            # Calculate base score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
+                src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"ORB: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale
+            final_score = min(1.0, match_score * 1.5)
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "orb_similarity", final_score)
+            
+            return final_score
+            
         except Exception as e:
-            logger.error(f"Error calculating deep similarity between {img_path1} and {img_path2}: {e}")
+            logger.error(f"Error calculating ORB similarity: {e}")
+            return 0.0
+    
+    def calculate_deep_similarity(self, img_path1: str, img_path2: str) -> float:
+        """
+        Calculate deep learning feature similarity using ensemble of models
+        """
+        try:
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
+            if cached_result is not None:
+                return cached_result
+                
+            # Check if model is available
+            if self.model is None:
+                logger.warning("Deep model not available")
+                return 0.0
+                
+            # Try to get cached features
+            features1 = self.feature_cache.get(img_path1, "deep_features")
+            features2 = self.feature_cache.get(img_path2, "deep_features")
+            
+            # Extract features if not in cache
+            if features1 is None:
+                features1 = self._extract_deep_features(img_path1)
+                if features1 is not None:
+                    self.feature_cache.put(img_path1, "deep_features", features1)
+                    
+            if features2 is None:
+                features2 = self._extract_deep_features(img_path2)
+                if features2 is not None:
+                    self.feature_cache.put(img_path2, "deep_features", features2)
+                    
+            # Check if we got valid features
+            if features1 is None or features2 is None:
+                return 0.0
+                
+            # Calculate cosine similarity
+            similarity = np.dot(features1['primary'], features2['primary']) / (
+                np.linalg.norm(features1['primary']) * np.linalg.norm(features2['primary']))
+                
+            # If we have ensemble features, combine them
+            ensemble_similarity = similarity
+            if self.use_multiple_models and 'ensemble' in features1 and 'ensemble' in features2:
+                for model_name in features1['ensemble'].keys():
+                    if model_name in features2['ensemble']:
+                        model_sim = np.dot(features1['ensemble'][model_name], features2['ensemble'][model_name]) / (
+                            np.linalg.norm(features1['ensemble'][model_name]) * np.linalg.norm(features2['ensemble'][model_name]))
+                        # Weight by model importance
+                        if model_name == 'mobilenet':
+                            model_weight = 0.3
+                        elif model_name == 'resnet':
+                            model_weight = 0.4
+                        else:
+                            model_weight = 0.2
+                            
+                        ensemble_similarity = ensemble_similarity * 0.7 + model_sim * 0.3
+                
+            # Cache final similarity
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "deep_similarity", float(ensemble_similarity))
+            
+            return float(ensemble_similarity)
+        
+        except Exception as e:
+            logger.error(f"Error calculating deep similarity: {e}")
             return 0.0
             
+    def _extract_deep_features(self, img_path: str) -> Optional[Dict[str, np.ndarray]]:
+        """Extract deep features from image using ensemble of models"""
+        try:
+            # Check if image exists
+            if not os.path.exists(img_path):
+                logger.warning(f"Image does not exist: {img_path}")
+                return None
+                
+            # Load and preprocess image for EfficientNet
+            img = tf.keras.preprocessing.image.load_img(img_path, target_size=DEFAULT_IMG_SIZE)
+            x = tf.keras.preprocessing.image.img_to_array(img)
+            x = np.expand_dims(x, axis=0)
+            x = self.efficient_preprocess(x)
+            
+            # Extract primary features using EfficientNet
+            features = self.model.predict(x, verbose=0)
+            features = features.flatten()
+            
+            # Normalize features
+            features = features / np.linalg.norm(features)
+            
+            result = {'primary': features}
+            
+            # Extract ensemble features if enabled
+            if self.use_multiple_models and self.models:
+                ensemble_features = {}
+                for model_name, model in self.models:
+                    try:
+                        # Preprocess according to model
+                        if model_name == 'mobilenet':
+                            x_model = self.mobilenet_preprocess(np.expand_dims(tf.keras.preprocessing.image.img_to_array(img), axis=0))
+                        elif model_name == 'resnet':
+                            x_model = self.resnet_preprocess(np.expand_dims(tf.keras.preprocessing.image.img_to_array(img), axis=0))
+                        else:
+                            x_model = x
+                            
+                        # Extract features
+                        model_features = model.predict(x_model, verbose=0).flatten()
+                        model_features = model_features / np.linalg.norm(model_features)
+                        ensemble_features[model_name] = model_features
+                    except Exception as e:
+                        logger.warning(f"Error extracting {model_name} features: {e}")
+                
+                result['ensemble'] = ensemble_features
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error extracting deep features: {e}")
+            return None
+    
     def calculate_combined_similarity(self, img_path1: str, img_path2: str, 
                                       weights: Optional[Dict[str, float]] = None) -> Tuple[float, Dict[str, float]]:
         """
-        Calculate combined similarity score using all methods
-        
-        Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
-            weights: Optional dictionary with weights for each method
-                     (default: values from config)
-            
-        Returns:
-            Tuple of (combined similarity score, individual scores dictionary)
+        Calculate combined similarity using all methods
+        Returns the weighted score and individual scores
         """
-        # Use weights from config if not provided
-        if weights is None:
-            weights = self.settings['WEIGHTS']
+        if not weights:
+            weights = SETTINGS['WEIGHTS']
             
-        # Check if files exist
-        if not os.path.exists(img_path1) or not os.path.exists(img_path2):
-            logger.warning(f"One or both image paths don't exist: {img_path1}, {img_path2}")
-            return 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0}
-            
-        # Calculate individual similarities
-        start_time = time.time()
+        # Calculate similarities
+        sift_score = self.calculate_sift_similarity(img_path1, img_path2)
+        akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
+        deep_score = self.calculate_deep_similarity(img_path1, img_path2)
+        orb_score = self.calculate_orb_similarity(img_path1, img_path2)
         
-        sift_similarity = self.calculate_sift_similarity(img_path1, img_path2)
-        akaze_similarity = self.calculate_akaze_similarity(img_path1, img_path2)
-        deep_similarity = self.calculate_deep_similarity(img_path1, img_path2)
-        
-        # Record individual scores
+        # Store individual scores
         scores = {
-            'sift': sift_similarity,
-            'akaze': akaze_similarity,
-            'deep': deep_similarity
+            'sift': sift_score,
+            'akaze': akaze_score,
+            'deep': deep_score,
+            'orb': orb_score
         }
         
-        # Calculate weighted combination
-        combined = (
-            sift_similarity * weights['sift'] +
-            akaze_similarity * weights['akaze'] +
-            deep_similarity * weights['deep']
-        )
-        
-        logger.debug(
-            f"Image similarity for {os.path.basename(img_path1)} and {os.path.basename(img_path2)}: "
-            f"SIFT={sift_similarity:.4f}, AKAZE={akaze_similarity:.4f}, Deep={deep_similarity:.4f}, "
-            f"Combined={combined:.4f} (took {time.time() - start_time:.2f}s)"
-        )
-        
-        return combined, scores
-    
-    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
-        """
-        Determine if two images match based on combined similarity
-        
-        Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
-            threshold: Optional custom threshold (default: from config)
+        # Calculate weighted sum
+        if sum(weights.values()) == 0:
+            logger.warning("All weights are zero, defaulting to equal weights")
+            weights = {k: 1.0/len(weights) for k in weights}
             
-        Returns:
-            Tuple of (is_match, similarity_score, individual_scores_dict)
-        """
-        if threshold is None:
-            threshold = self.settings['COMBINED_THRESHOLD']
-            
-        combined, scores = self.calculate_combined_similarity(img_path1, img_path2)
-        is_match = combined >= threshold
+        combined_score = 0.0
+        weight_sum = 0.0
         
-        return is_match, combined, scores
-
-    def clear_cache(self):
-        """Clear the feature cache to free memory"""
-        self.feature_cache = FeatureCache()
-        logger.info("Feature cache cleared")
+        for method, score in scores.items():
+            if method in weights:
+                combined_score += score * weights[method]
+                weight_sum += weights[method]
+                
+        # Normalize by weight sum
+        if weight_sum > 0:
+            combined_score /= weight_sum
+            
+        # Boost score if multiple methods agree
+        high_scores = sum(1 for score in scores.values() if score > 0.65)
+        if high_scores >= 3:
+            combined_score = min(1.0, combined_score * 1.1)  # +10% boost if 3+ methods agree
+        elif high_scores >= 2:
+            combined_score = min(1.0, combined_score * 1.05)  # +5% boost if 2+ methods agree
+            
+        logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
+        
+        return combined_score, scores
 
 
 # Helper function to get the common file extension

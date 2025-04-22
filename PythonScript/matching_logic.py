@@ -17,6 +17,7 @@ import pickle # 특성 저장
 import shutil # 디렉토리 관리
 import hashlib # 파일 해시
 import torch
+import multiprocessing
 
 # Import the enhanced image matcher if available
 try:
@@ -220,87 +221,128 @@ class MatchQualityEvaluator:
 # --- Product Matching Logic ---
 class ProductMatcher:
     def __init__(self, config: configparser.ConfigParser):
-        """Initialize ProductMatcher with configuration"""
+        """
+        Initialize a ProductMatcher with configuration
+
+        Args:
+            config: Configuration object with matching settings
+        """
+        # Extract configuration values with fallbacks
         self.config = config
         
+        # Thresholds
+        self.text_similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.55)  # Lowered from 0.7
+        self.image_similarity_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.5)  # Lowered from 0.6
+        self.combined_threshold = config.getfloat('Matching', 'combined_threshold', fallback=0.6)  # Baseline for combined score
+        
+        # Weights for combined score
+        self.text_weight = config.getfloat('Matching', 'text_weight', fallback=0.6)  # Increased text weight for combined score
+        self.image_weight = config.getfloat('Matching', 'image_weight', fallback=0.4)  # Decreased image weight
+        
+        # Model paths
+        self.text_model_path = config.get('Matching', 'text_model_name', 
+                                         fallback='jhgan/ko-sroberta-multitask')
+        self.image_model_path = config.get('Matching', 'image_model_name', 
+                                          fallback='efficientnet_b0')
+        
+        # Enhanced text matching settings
+        self.exact_match_bonus = config.getfloat('Matching', 'exact_match_bonus', fallback=0.2)
+        self.token_match_weight = config.getfloat('Matching', 'token_match_weight', fallback=0.3)
+        self.use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=True)
+        self.ensemble_models = config.getboolean('Matching', 'use_ensemble_models', fallback=True)
+        self.fuzzy_match_threshold = config.getfloat('Matching', 'fuzzy_match_threshold', fallback=0.8)
+        
         # Enhanced image matching settings
-        self.use_enhanced_matcher = config.getboolean('Matching', 'use_enhanced_matcher', fallback=ENHANCED_MATCHER_AVAILABLE)
-        self.use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
-        
-        # Text similarity settings
-        self.text_model_path = config.get('Paths', 'text_model_path', fallback='sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
-        self.text_similarity_threshold = config.getfloat('Matching', 'text_similarity_threshold', fallback=0.7)
-        
-        # Image similarity settings
-        self.image_resize_dimension = config.getint('Matching', 'image_resize_dimension', fallback=224)
-        self.image_similarity_threshold = config.getfloat('Matching', 'image_similarity_threshold', fallback=0.7)
-        self.skip_image_if_size_exceeds_mb = config.getint('Matching', 'skip_image_if_size_exceeds_mb', fallback=0)
-        self.image_similarity_timeout_sec = config.getfloat('Matching', 'image_similarity_timeout_sec', fallback=10.0)
-        
-        # Weighting for combined text/image similarity
-        self.text_weight = config.getfloat('Matching', 'text_weight', fallback=0.7)
-        self.image_weight = config.getfloat('Matching', 'image_weight', fallback=0.3)
-        self.price_weight = config.getfloat('Matching', 'price_weight', fallback=0.1)
-        self.use_price_similarity = config.getboolean('Matching', 'use_price_similarity', fallback=False)
-        self.minimum_combined_score = config.getfloat('Matching', 'minimum_combined_score', fallback=0.4)
+        self.use_gpu = config.getboolean('GPU', 'use_gpu', fallback=False)
+        self.image_ensemble = config.getboolean('ImageMatching', 'use_multiple_models', fallback=True)
         
         # Category-specific thresholds
-        self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=False)
+        self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=True)
         self.category_thresholds = {}
-        if self.use_category_thresholds:
-            try:
-                thresholds = config.get('Matching', 'category_thresholds', fallback='{}')
-                self.category_thresholds = json.loads(thresholds)
-            except Exception as e:
-                logging.warning(f"Failed to load category thresholds: {e}")
-                self.use_category_thresholds = False
+        self._load_category_thresholds(config)
         
-        # Image feature caching
+        # Initialize models lazily when needed
+        self.text_model = None
+        self.image_model = None
+        
+        # Initialize additional tools and caches for enhanced accuracy
         self.feature_cache = FeatureCache(config)
         
-        # Initialize models
-        self.text_model = None
-        self.image_model = None
+        # Initialize tfidf vectorizer if used
+        if self.use_tfidf:
+            from koSBERT_text_similarity import initialize_tfidf_vectorizer
+            self.tfidf_vectorizer = initialize_tfidf_vectorizer()
         
-        # GPU settings for TensorFlow
-        if not self.use_gpu:
-            try:
-                tf.config.set_visible_devices([], 'GPU')
-                logging.info("GPU disabled for TensorFlow")
-            except Exception as e:
-                logging.warning(f"Failed to disable GPU: {e}")
+        logging.info(f"ProductMatcher initialized with thresholds: text={self.text_similarity_threshold}, "
+                   f"image={self.image_similarity_threshold}, combined={self.combined_threshold}")
         
-        # Initialize sentence transformer model
-        self._initialize_text_model()
+        # Log advanced settings
+        logging.info(f"Enhanced matching settings: token_weight={self.token_match_weight}, "
+                   f"use_tfidf={self.use_tfidf}, ensemble_models={self.ensemble_models}, "
+                   f"image_ensemble={self.image_ensemble}, use_category_thresholds={self.use_category_thresholds}, "
+                   f"fuzzy_match_threshold={self.fuzzy_match_threshold}")
+    
+    def is_match_triple(self, product_haoreum: Dict[str, Any], product_kogift: Optional[Dict[str, Any]], product_naver: Optional[Dict[str, Any]]) -> Tuple[bool, float, float, float, float, float]:
+        """Determine if Kogift/Naver products match Haoreum based on text and combined image similarity."""
         
-        # Initialize EfficientNetB0 model (if enhanced matcher isn't being used or as fallback)
-        if not self.use_enhanced_matcher or not ENHANCED_MATCHER_AVAILABLE:
-            self._initialize_image_model()
-        elif ENHANCED_MATCHER_AVAILABLE:
-            # When using enhanced matcher, we'll defer image model loading until needed
-            logging.info("Using enhanced image matcher, deferring basic image model initialization")
-            # The enhanced matcher will be initialized on demand in calculate_image_similarity
+        # --- Text Similarity --- 
+        # Calculate text similarity for Haoreum vs Kogift and Haoreum vs Naver
+        text_sim_hk = self.calculate_text_similarity(product_haoreum.get('name'), product_kogift.get('name')) if product_kogift else 0.0
+        text_sim_hn = self.calculate_text_similarity(product_haoreum.get('name'), product_naver.get('name')) if product_naver else 0.0
 
-    def __del__(self):
-        """Cleanup method to release resources when the instance is being destroyed."""
-        try:
-            # Clear TensorFlow session to free GPU memory
-            tf.keras.backend.clear_session()
-            logging.debug("TensorFlow session cleared in ProductMatcher destructor")
-        except Exception as e:
-            logging.warning(f"Error during TensorFlow cleanup: {e}")
-            
-        # Explicitly delete large objects
-        self.text_model = None
-        self.image_model = None
-
-    def get_thresholds_for_category(self, category: Optional[str]) -> Tuple[float, float]:
-        """카테고리에 따라 적절한 임계값을 반환"""
-        if not self.use_category_thresholds or not category or category not in self.category_thresholds:
-            return self.text_similarity_threshold, self.image_similarity_threshold
-            
-        cat_thresholds = self.category_thresholds[category]
-        return cat_thresholds['text'], cat_thresholds['image']
+        # --- Image Similarity ---        
+        img_path_h = product_haoreum.get('image_path')
+        img_path_k = product_kogift.get('image_path') if product_kogift else None
+        img_path_n = product_naver.get('image_path') if product_naver else None
+        
+        # Calculate image similarity between Haoreum vs Kogift and Haoreum vs Naver
+        img_sim_hk = self.calculate_image_similarity(img_path_h, img_path_k) if (img_path_h and img_path_k) else 0.0
+        img_sim_hn = self.calculate_image_similarity(img_path_h, img_path_n) if (img_path_h and img_path_n) else 0.0
+        
+        # --- Get Category-Specific Thresholds ---
+        category = product_haoreum.get('카테고리(중분류)')
+        text_threshold, image_threshold = self.get_thresholds_for_category(category)
+        
+        # --- Calculate Combined Scores ---
+        # For Haoreum vs Kogift
+        combined_hk = 0.0
+        if product_kogift:
+            combined_hk = (text_sim_hk * self.text_weight) + (img_sim_hk * self.image_weight)
+            # Apply a small bonus if both text and image are decent matches
+            if text_sim_hk > text_threshold * 0.8 and img_sim_hk > image_threshold * 0.8:
+                combined_hk = min(1.0, combined_hk * 1.1)  # 10% boost
+        
+        # For Haoreum vs Naver
+        combined_hn = 0.0
+        if product_naver:
+            combined_hn = (text_sim_hn * self.text_weight) + (img_sim_hn * self.image_weight)
+            # Apply a small bonus if both text and image are decent matches
+            if text_sim_hn > text_threshold * 0.8 and img_sim_hn > image_threshold * 0.8:
+                combined_hn = min(1.0, combined_hn * 1.1)  # 10% boost
+        
+        # --- Determine Final Match Status ---
+        # Match if either Kogift or Naver scores exceed thresholds
+        match_text_k = text_sim_hk >= text_threshold
+        match_img_k = img_sim_hk >= image_threshold
+        match_combined_k = combined_hk >= self.combined_threshold
+        match_k = match_text_k or (match_img_k and (text_sim_hk > text_threshold * 0.7))  # Image match needs some text support
+        
+        match_text_n = text_sim_hn >= text_threshold
+        match_img_n = img_sim_hn >= image_threshold
+        match_combined_n = combined_hn >= self.combined_threshold
+        match_n = match_text_n or (match_img_n and (text_sim_hn > text_threshold * 0.7))  # Image match needs some text support
+        
+        # Final match if either source is a match
+        final_match = match_k or match_n or match_combined_k or match_combined_n
+        
+        # Enhanced logging for matches
+        if final_match:
+            match_source = "Kogift" if match_k else "Naver" if match_n else "Combined"
+            logging.debug(f"Triple Match for '{product_haoreum.get('name')}': {match_source} match. "
+                        f"Kogift (T={text_sim_hk:.3f},I={img_sim_hk:.3f},C={combined_hk:.3f}), "
+                        f"Naver (T={text_sim_hn:.3f},I={img_sim_hn:.3f},C={combined_hn:.3f})")
+        
+        return final_match, text_sim_hk, img_sim_hk, text_sim_hn, img_sim_hn, max(combined_hk, combined_hn)
 
     def calculate_text_similarity(self, text1: Optional[str], text2: Optional[str]) -> float:
         """
@@ -311,48 +353,120 @@ class ProductMatcher:
             return 0.0
         
         try:
-            # koSBERT_text_similarity의 향상된 기능 활용
+            # 개선된 koSBERT_text_similarity 모듈 사용
             from koSBERT_text_similarity import (
-                preprocess_text, encode_text, count_common_tokens, 
-                MODEL_NAME, BOOST_EXACT_MATCH, NAME_SPLIT_MATCHING, EXACT_MATCH_BONUS
+                calculate_text_similarity, 
+                calculate_ensemble_similarity,
+                calculate_token_similarity,
+                calculate_fuzzy_similarity,
+                calculate_tfidf_similarity,
+                get_number_match_score,
+                preprocess_text
             )
             
             # 텍스트 전처리
-            text1 = preprocess_text(text1)
-            text2 = preprocess_text(text2)
+            text1_prep = preprocess_text(text1)
+            text2_prep = preprocess_text(text2)
             
-            if not text1 or not text2:
+            if not text1_prep or not text2_prep:
                 return 0.0
             
-            # 임베딩 계산
-            embedding1 = encode_text(text1, model_name=self.text_model_path)
-            embedding2 = encode_text(text2, model_name=self.text_model_path)
+            # 완전히 동일한 경우
+            if text1_prep == text2_prep:
+                return 1.0
             
-            if embedding1 is None or embedding2 is None:
-                return 0.0
+            # 토큰 기반 유사도
+            token_sim = calculate_token_similarity(text1_prep, text2_prep)
             
-            # 코사인 유사도 계산
-            similarity = torch.cosine_similarity(embedding1.unsqueeze(0), embedding2.unsqueeze(0), dim=1).item()
+            # 숫자 매칭 점수
+            number_sim = get_number_match_score(text1_prep, text2_prep)
             
-            # 토큰 기반 보너스 적용 (설정에 따라)
-            if BOOST_EXACT_MATCH and NAME_SPLIT_MATCHING:
-                common_count = count_common_tokens(text1, text2)
-                if common_count > 0:
-                    # 공통 토큰이 많을수록 더 큰 보너스
-                    token_boost = min(common_count * 0.05, EXACT_MATCH_BONUS)
-                    similarity = min(1.0, similarity + token_boost)
-                    
-                # 정확히 일치하는 경우 추가 보너스
-                if text1 == text2:
-                    similarity = min(1.0, similarity + EXACT_MATCH_BONUS)
+            # 퍼지 매칭
+            fuzzy_sim = calculate_fuzzy_similarity(text1_prep, text2_prep)
             
-            return similarity
+            # TF-IDF 유사도
+            tfidf_sim = 0.0
+            if self.use_tfidf:
+                tfidf_sim = calculate_tfidf_similarity(text1_prep, text2_prep)
+            
+            # 인코딩 기반 유사도 (앙상블 또는 단일 모델)
+            if self.ensemble_models:
+                model_sim = calculate_ensemble_similarity(text1_prep, text2_prep)
+            else:
+                # 단일 모델 유사도 계산
+                model_sim = calculate_text_similarity(text1_prep, text2_prep, self.text_model_path)
+            
+            # 가중치 적용하여 최종 점수 계산
+            final_sim = (
+                0.55 * model_sim +    # 인코딩 기반 (앙상블)
+                0.20 * token_sim +    # 토큰 기반
+                0.10 * fuzzy_sim +    # 퍼지 매칭
+                0.10 * tfidf_sim +    # TF-IDF
+                0.05 * number_sim     # 숫자 매칭
+            )
+            
+            # 정확히 일치하는 경우 보너스
+            if text1_prep == text2_prep:
+                final_sim = min(1.0, final_sim + self.exact_match_bonus)
+            
+            logging.debug(f"Text similarity [{text1[:20]}...] vs [{text2[:20]}...]: {final_sim:.4f}")
+            
+            return final_sim
             
         except Exception as e:
             logging.error(f"텍스트 유사도 계산 중 오류 발생: {e}", exc_info=True)
             
             # 모듈 임포트 실패 또는 다른 오류 발생 시 기존 방식으로 처리
             return self._fallback_text_similarity(text1, text2)
+
+    def calculate_image_similarity(self, img_path1: Optional[str], img_path2: Optional[str]) -> float:
+        """
+        두 이미지 간의 유사도를 계산합니다.
+        enhanced_image_matcher.py의 향상된 로직을 사용합니다.
+        """
+        if not img_path1 or not img_path2:
+            return 0.0
+        
+        if not os.path.exists(img_path1) or not os.path.exists(img_path2):
+            logging.warning(f"이미지 파일이 존재하지 않습니다: {img_path1} 또는 {img_path2}")
+            return 0.0
+        
+        try:
+            # EnhancedImageMatcher 활용
+            from enhanced_image_matcher import EnhancedImageMatcher
+            
+            # EnhancedImageMatcher 인스턴스 캐싱 (성능 향상)
+            if not hasattr(self, 'image_matcher') or self.image_matcher is None:
+                # GPU 사용 여부, 다중 모델 앙상블 설정
+                self.image_matcher = EnhancedImageMatcher(config=self.config, use_gpu=self.use_gpu)
+                logging.info(f"EnhancedImageMatcher 초기화 완료 (GPU: {self.use_gpu}, 앙상블: {self.image_ensemble})")
+            
+            # 향상된 이미지 매칭 로직으로 유사도 계산
+            # 개선된 가중치 사용
+            enhanced_weights = {
+                'sift': 0.25,    # SIFT 가중치
+                'akaze': 0.20,   # AKAZE 가중치
+                'deep': 0.40,    # 딥러닝 가중치
+                'orb': 0.15      # ORB 가중치
+            }
+            
+            combined_similarity, scores = self.image_matcher.calculate_combined_similarity(
+                img_path1, img_path2, weights=enhanced_weights
+            )
+            
+            # 로깅
+            logging.debug(f"이미지 유사도: {combined_similarity:.4f} (SIFT={scores.get('sift', 0):.2f}, "
+                        f"AKAZE={scores.get('akaze', 0):.2f}, Deep={scores.get('deep', 0):.2f}, "
+                        f"ORB={scores.get('orb', 0):.2f})")
+            
+            return combined_similarity
+        
+        except Exception as e:
+            logging.error(f"향상된 이미지 유사도 계산 중 오류 발생: {e}", exc_info=True)
+            logging.info("기본 이미지 유사도 계산 방식으로 전환합니다")
+            
+            # 실패 시 기존 로직으로 폴백
+            return self._fallback_image_similarity(img_path1, img_path2)
         
     def _fallback_text_similarity(self, text1: str, text2: str) -> float:
         """기존 텍스트 유사도 계산 방식 (fallback)"""
@@ -374,45 +488,6 @@ class ProductMatcher:
             logging.error(f"기본 텍스트 유사도 계산 중 오류 발생: {e}")
             return 0.0
 
-    def calculate_image_similarity(self, img_path1: Optional[str], img_path2: Optional[str]) -> float:
-        """
-        두 이미지 간의 유사도를 계산합니다.
-        enhanced_image_matcher.py의 향상된 로직을 사용합니다.
-        """
-        if not img_path1 or not img_path2:
-            return 0.0
-        
-        if not os.path.exists(img_path1) or not os.path.exists(img_path2):
-            logging.warning(f"이미지 파일이 존재하지 않습니다: {img_path1} 또는 {img_path2}")
-            return 0.0
-        
-        try:
-            # EnhancedImageMatcher 활용
-            from enhanced_image_matcher import EnhancedImageMatcher, WEIGHTS
-            
-            # EnhancedImageMatcher 인스턴스 캐싱 (성능 향상)
-            if not hasattr(self, 'image_matcher') or self.image_matcher is None:
-                self.image_matcher = EnhancedImageMatcher(use_gpu=self.use_gpu)
-                logging.info("EnhancedImageMatcher 초기화 완료")
-            
-            # 향상된 이미지 매칭 로직으로 유사도 계산
-            combined_similarity, scores = self.image_matcher.calculate_combined_similarity(
-                img_path1, img_path2, weights=WEIGHTS
-            )
-            
-            # 로깅
-            logging.debug(f"향상된 이미지 유사도: {combined_similarity:.4f} (SIFT={scores['sift']:.2f}, "
-                        f"AKAZE={scores['akaze']:.2f}, Deep={scores['deep']:.2f})")
-            
-            return combined_similarity
-        
-        except Exception as e:
-            logging.error(f"향상된 이미지 유사도 계산 중 오류 발생: {e}", exc_info=True)
-            logging.info("기본 이미지 유사도 계산 방식으로 전환합니다")
-            
-            # 실패 시 기존 로직으로 폴백
-            return self._fallback_image_similarity(img_path1, img_path2)
-        
     def _fallback_image_similarity(self, img_path1: str, img_path2: str) -> float:
         """기존 이미지 유사도 계산 방식 (fallback)"""
         try:
@@ -444,111 +519,6 @@ class ProductMatcher:
             logging.error(f"기본 이미지 유사도 계산 중 오류: {e}")
             return 0.0
 
-    def is_match(self, product1: Dict[str, Any], product2: Dict[str, Any]) -> Tuple[bool, float, float, float]:
-        """Determine if two products match based on text and image similarity."""
-        # 카테고리별 임계값 적용
-        category = product1.get('카테고리(중분류)')
-        text_threshold, image_threshold = self.get_thresholds_for_category(category)
-        
-        text_similarity = self.calculate_text_similarity(product1.get('name'), product2.get('name'))
-
-        image_similarity = 0.0
-        img_path1 = product1.get('image_path')
-        img_path2 = product2.get('image_path')
-
-        if img_path1 and img_path2 and os.path.exists(img_path1) and os.path.exists(img_path2):
-            image_similarity = self.calculate_image_similarity(img_path1, img_path2)
-        else:
-            logging.debug(f"Skipping image similarity: One or both image paths missing/invalid for product pair ({product1.get('name', '?')} vs {product2.get('name', '?')}). Paths: '{img_path1}', '{img_path2}'")
-
-        combined_score = (text_similarity * self.text_weight) + (image_similarity * self.image_weight)
-        text_match = text_similarity >= text_threshold
-        image_match = image_similarity >= image_threshold if (img_path1 and img_path2 and os.path.exists(img_path1) and os.path.exists(img_path2)) else False
-        final_match = text_match or image_match
-
-        logging.debug(f"Matching '{product1.get('name')}' vs '{product2.get('name')}': Text Sim={text_similarity:.4f} (Thresh={text_threshold}, Match={text_match}), Image Sim={image_similarity:.4f} (Thresh={image_threshold}, Match={image_match}), Combined={combined_score:.4f}, Final Match={final_match}")
-
-        return final_match, combined_score, text_similarity, image_similarity
-
-    # New method to handle matching with three images
-    def is_match_triple(self, product_haoreum: Dict[str, Any], product_kogift: Optional[Dict[str, Any]], product_naver: Optional[Dict[str, Any]]) -> Tuple[bool, float, float, float, float, float]:
-        """Determine if Kogift/Naver products match Haoreum based on text and combined image similarity."""
-        
-        # --- Text Similarity --- 
-        # Calculate text similarity for Haoreum vs Kogift and Haoreum vs Naver
-        text_sim_hk = self.calculate_text_similarity(product_haoreum.get('name'), product_kogift.get('name')) if product_kogift else 0.0
-        text_sim_hn = self.calculate_text_similarity(product_haoreum.get('name'), product_naver.get('name')) if product_naver else 0.0
-
-        # --- Image Similarity ---        
-        img_path_h = product_haoreum.get('image_path')
-        img_path_k = product_kogift.get('image_path') if product_kogift else None
-        img_path_n = product_naver.get('image_path') if product_naver else None
-
-        img_sim_hk = 0.0
-        img_sim_hn = 0.0
-        valid_comparisons = 0
-
-        if img_path_h and img_path_k and os.path.exists(img_path_h) and os.path.exists(img_path_k):
-            img_sim_hk = self.calculate_image_similarity(img_path_h, img_path_k)
-            valid_comparisons += 1
-        elif img_path_h or img_path_k: # Log if only one exists
-             logging.debug(f"Skipping HK image sim: H='{img_path_h}', K='{img_path_k}'")
-
-        if img_path_h and img_path_n and os.path.exists(img_path_h) and os.path.exists(img_path_n):
-            img_sim_hn = self.calculate_image_similarity(img_path_h, img_path_n)
-            valid_comparisons += 1
-        elif img_path_h or img_path_n: # Log if only one exists
-             logging.debug(f"Skipping HN image sim: H='{img_path_h}', N='{img_path_n}'")
-
-        # Calculate average image similarity only from valid comparisons
-        avg_image_similarity = (img_sim_hk + img_sim_hn) / valid_comparisons if valid_comparisons > 0 else 0.0
-
-        # --- Combined Score & Matching Decision --- 
-        # Decide which text similarity to use for combined score (e.g., average, max? Let's use average for now)
-        avg_text_similarity = (text_sim_hk + text_sim_hn) / 2 if product_kogift and product_naver else (text_sim_hk or text_sim_hn) # Handle cases where one is missing
-
-        combined_score = (avg_text_similarity * self.text_weight) + (avg_image_similarity * self.image_weight)
-
-        # Determine match based on thresholds (apply to individual sims? average sims?)
-        # Let's keep the original logic: match if EITHER text OR image sim meets threshold, applied to the average
-        text_match = avg_text_similarity >= self.text_similarity_threshold
-        image_match = avg_image_similarity >= self.image_similarity_threshold
-        # Final match could be based on individual pairs or the combined score/average thresholds
-        # Sticking to the original OR logic applied to averages for simplicity, adjust if needed
-        final_match = text_match or image_match 
-
-        logging.debug(
-            f"Triple Match '{product_haoreum.get('name')}': "
-            f"  Text HK={text_sim_hk:.4f}, Text HN={text_sim_hn:.4f}, AvgText={avg_text_similarity:.4f} (Thresh={self.text_similarity_threshold}, Match={text_match})"
-            f"  Image HK={img_sim_hk:.4f}, Image HN={img_sim_hn:.4f}, AvgImage={avg_image_similarity:.4f} (Thresh={self.image_similarity_threshold}, Match={image_match})"
-            f"  CombinedScore={combined_score:.4f}, Final Match={final_match}"
-        )
-
-        # Return individual similarities along with overall match status and combined score
-        return final_match, combined_score, text_sim_hk, text_sim_hn, img_sim_hk, img_sim_hn
-
-    def _load_category_thresholds(self, config):
-        """Load category-specific thresholds from config if available"""
-        category_thresholds = {}
-        if self.use_category_thresholds:
-            try:
-                # Try to load from [CategoryThresholds] section
-                if 'CategoryThresholds' in config:
-                    for category, threshold_str in config['CategoryThresholds'].items():
-                        try:
-                            values = [float(x.strip()) for x in threshold_str.split(',')]
-                            if len(values) >= 2:
-                                category_thresholds[category] = {
-                                    'text_threshold': values[0],
-                                    'image_threshold': values[1]
-                                }
-                        except (ValueError, IndexError) as e:
-                            logging.warning(f"Invalid threshold format for category {category}: {threshold_str}. Error: {e}")
-                    logging.info(f"Loaded {len(category_thresholds)} category-specific thresholds")
-            except Exception as e:
-                logging.warning(f"Failed to load category thresholds: {e}. Using default thresholds.")
-        return category_thresholds
-
     def _initialize_text_model(self):
         """Initialize the text similarity model"""
         try:
@@ -579,6 +549,35 @@ class ProductMatcher:
             logging.error(f"Failed to load image model: {e}", exc_info=True)
             self.image_model = None
             return False
+
+    def _load_category_thresholds(self, config):
+        """Load category-specific thresholds from config."""
+        if not self.use_category_thresholds:
+            return
+            
+        category_section = 'CategoryThresholds'
+        if not config.has_section(category_section):
+            logging.warning("Category thresholds enabled but no CategoryThresholds section in config")
+            return
+            
+        for category in config.options(category_section):
+            try:
+                thresholds = config.get(category_section, category).split(',')
+                if len(thresholds) == 2:
+                    text_thresh = float(thresholds[0].strip())
+                    image_thresh = float(thresholds[1].strip())
+                    self.category_thresholds[category] = (text_thresh, image_thresh)
+                else:
+                    logging.warning(f"Invalid threshold format for category {category}")
+            except (ValueError, configparser.Error) as e:
+                logging.error(f"Error loading thresholds for category {category}: {e}")
+
+    def get_thresholds_for_category(self, category: Optional[str]) -> Tuple[float, float]:
+        """Get text and image thresholds for a specific category."""
+        if not self.use_category_thresholds or not category or category not in self.category_thresholds:
+            return self.text_similarity_threshold, self.image_similarity_threshold
+            
+        return self.category_thresholds[category]
 
 def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict], naver_data: List[Dict], product_type: str, matcher: ProductMatcher, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
     """Matches a single Haoreum product against Kogift and Naver data."""
@@ -809,140 +808,191 @@ def process_matching(
     progress_queue=None,
     max_workers: Optional[int] = None
 ) -> pd.DataFrame:
-    """Process matching between Haoreum products and Kogift/Naver products."""
-    try:
-        # Enhanced input validation
-        if haoreum_df is None or not isinstance(haoreum_df, pd.DataFrame) or haoreum_df.empty:
-            logging.warning("Invalid or empty Haoreum DataFrame.")
-            return pd.DataFrame()
+    """
+    Process product matching using multiple workers and enhanced matching logic
 
-        # Validate required columns
-        required_columns = ['상품명', 'Code']
-        missing_columns = [col for col in required_columns if col not in haoreum_df.columns]
-        if missing_columns:
-            logging.error(f"Missing required columns: {missing_columns}")
-            return pd.DataFrame()
+    Args:
+        haoreum_df: DataFrame containing Haoreum product data
+        kogift_map: Dictionary mapping product names to Kogift product data
+        naver_map: Dictionary mapping product names to Naver product data
+        input_file_image_map: Dictionary mapping product IDs to local image paths
+        config: Configuration object
+        gpu_available: Whether GPU is available for image processing
+        progress_queue: Optional queue to send progress updates
+        max_workers: Maximum number of workers to use
 
-        # Configure batch and worker settings
+    Returns:
+        DataFrame containing matched products
+    """
+    start_time = time.time()
+    
+    # Determine the number of CPU cores to use
+    if max_workers is None:
+        max_workers = config.getint('Concurrency', 'max_match_workers', 
+                                   fallback=max(1, os.cpu_count() // 2))
+    
+    logging.info(f"Starting product matching with {max_workers} workers")
+    if progress_queue:
+        progress_queue.emit("status", f"상품 매칭 시작 (GPU: {gpu_available}, 작업자: {max_workers})")
+    
+    # Initialize matcher and multiprocessing
         total_products = len(haoreum_df)
-        batch_size = min(
-            config.getint('Matching', 'batch_size', fallback=50),
-            max(1, total_products // 4)  # 전체 데이터의 1/4을 넘지 않도록
+    
+    # Initialize a multiprocessing pool
+    # We'll initialize a ProductMatcher instance in each process to avoid sharing
+    try:
+        logging.info(f"Initializing process pool for matching with {max_workers} workers")
+        pool = multiprocessing.Pool(
+            processes=max_workers,
+            initializer=_init_worker_matcher,
+            initargs=(config,)
         )
         
-        # CPU 코어 수에 따른 worker 수 최적화
-        cpu_count = os.cpu_count() or 4
-        if gpu_available:
-            # GPU 사용 시 더 적은 수의 worker (GPU 메모리 고려)
-            suggested_workers = min(2, cpu_count // 2)
-        else:
-            # CPU 전용 시 코어 수의 75%까지만 사용
-            suggested_workers = max(1, min(cpu_count * 3 // 4, 8))
+        # Get product type
+        product_type = config.get('Processing', 'product_type', fallback='default')
+
+        # Prepare arguments for parallel processing
+        tasks = []
+        for i, row in enumerate(haoreum_df.to_dict('records')):
+            product_name = row.get('상품명', '')
+            
+            # Skip empty product names
+            if not product_name:
+                continue
+                
+            # Get lists of candidates
+            kogift_candidates = kogift_map.get(product_name, [])
+            naver_candidates = naver_map.get(product_name, [])
+            
+            # Get Haoreum image path
+            haoreum_img_path = None
+            if 'Code' in row and row['Code'] in input_file_image_map:
+                haoreum_img_path = input_file_image_map[row['Code']]
+            elif '상품코드' in row and row['상품코드'] in input_file_image_map:
+                haoreum_img_path = input_file_image_map[row['상품코드']]
+                
+            # Log task details
+            logging.debug(f"Task {i+1}/{total_products}: '{product_name}' - " 
+                        f"Kogift: {len(kogift_candidates)}, Naver: {len(naver_candidates)}, "
+                        f"Image: {'Yes' if haoreum_img_path else 'No'}")
+                
+            tasks.append((i, row, kogift_candidates, naver_candidates, product_type, haoreum_img_path))
         
-        max_workers = min(
-            max_workers or suggested_workers,
-            config.getint('Concurrency', 'max_match_workers', fallback=suggested_workers)
-        )
-
-        logging.info(f"Matching configuration: batch_size={batch_size}, max_workers={max_workers}, gpu={gpu_available}")
-
-        # Initialize results list and progress tracking
+        # Process in batches to avoid overwhelming the queue
+        batch_size = min(100, total_products)  # Adjust batch size based on total
         results = []
-        processed_count = 0
-        error_count = 0
 
-        # Process in batches
         for batch_start in range(0, total_products, batch_size):
             batch_end = min(batch_start + batch_size, total_products)
-            batch_df = haoreum_df.iloc[batch_start:batch_end]
+            batch_tasks = tasks[batch_start:batch_end]
             
-            # 각 배치의 제품들을 텍스트 유사도로 먼저 필터링
-            batch_tasks = []
+            if not batch_tasks:
+                continue
+                
+            logging.info(f"Processing batch {batch_start//batch_size + 1}: items {batch_start+1}-{batch_end} of {total_products}")
             
-            with ThreadPoolExecutor(max_workers=max_workers) if not gpu_available else ProcessPoolExecutor(max_workers=max_workers) as executor:
-                for i, row in batch_df.iterrows():
-                    try:
-                        haoreum_row_dict = row.to_dict()
-                        product_name = haoreum_row_dict.get('상품명')
-                        
-                        if not product_name or pd.isna(product_name):
-                            continue
-                            
-                        # 텍스트 매칭 먼저 수행
-                        kogift_candidates = _filter_candidates_by_text(
-                            product_name,
-                            kogift_map.get(product_name, []),
-                            config
-                        )
-                        
-                        naver_candidates = _filter_candidates_by_text(
-                            product_name,
-                            naver_map.get(product_name, []),
-                            config
-                        )
-                        
-                        # 이미지 매칭은 텍스트 유사도가 높은 후보들만 대상으로
-                        task_args = (
-                            i, haoreum_row_dict, 
-                            kogift_candidates[:5],  # 상위 5개만
-                            naver_candidates[:5],   # 상위 5개만
-                            haoreum_row_dict.get('구분', 'A'),
-                            input_file_image_map.get(haoreum_row_dict.get('Code'))
-                        )
-                        
-                        if gpu_available:
-                            future = executor.submit(_match_single_product_wrapper, *task_args)
-                        else:
-                            future = executor.submit(_match_single_product, *task_args)
-                        batch_tasks.append(future)
-                        
-                    except Exception as e:
-                        logging.error(f"Error preparing task for product {product_name}: {e}")
-                        error_count += 1
-                        continue
-
-                # Process completed tasks
-                for future in as_completed(batch_tasks):
-                    try:
-                        idx, result = future.result(timeout=300)  # 5분 타임아웃
-                        if result:
-                            results.append(result)
-                            processed_count += 1
-                        if progress_queue:
-                            progress_queue.emit("match", processed_count, total_products)
-                    except Exception as e:
-                        logging.error(f"Error processing task result: {e}")
-                        error_count += 1
-
-            # 배치 처리 후 메모리 정리
-            if config.getboolean('Matching', 'gc_after_batch', fallback=True):
-                import gc
-                gc.collect()
-
-            # 진행상황 로깅
-            logging.info(f"Batch {batch_start//batch_size + 1} completed. "
-                        f"Processed: {processed_count}, Errors: {error_count}, "
-                        f"Progress: {processed_count/total_products*100:.1f}%")
-
-        # 결과 DataFrame 생성
-        if not results:
-            logging.warning("No matches found. Creating empty result DataFrame.")
-            return pd.DataFrame()
-
-        result_df = pd.DataFrame(results)
-        logging.info(f"Matching completed. Total processed: {processed_count}, "
-                    f"Errors: {error_count}, Success rate: {len(result_df)/total_products*100:.1f}%")
+            # Use optimized wrapper function to reduce memory overhead
+            batch_results = pool.starmap(_match_single_product_wrapper, batch_tasks)
+            results.extend([r for r in batch_results if r[1] is not None])
+            
+            # Update progress
+            progress_pct = min(100, int((batch_end / total_products) * 100))
+            if progress_queue:
+                progress_queue.emit("status", f"상품 매칭 진행 중: {progress_pct}% ({batch_end}/{total_products})")
+            
+            logging.info(f"Batch {batch_start//batch_size + 1} completed: {len([r for r in batch_results if r[1] is not None])} matches found")
+            
+        # Close pool
+        pool.close()
+        pool.join()
+        
+        # Create DataFrame from results
+        result_df = haoreum_df.copy()
+        
+        # Initialize new columns
+        result_df['매칭_여부'] = 'N'
+        result_df['매칭_정확도'] = 0.0
+        result_df['텍스트_유사도'] = 0.0
+        result_df['이미지_유사도'] = 0.0
+        result_df['제안_가격'] = None
+        result_df['매칭_URL'] = None
+        result_df['매칭_이미지'] = None
+        result_df['매칭_상품명'] = None
+        result_df['매칭_사이트'] = None
+        result_df['가격차이'] = None
+        result_df['매칭_품질'] = None
+        
+        # Update matched products
+        for idx, result in results:
+            if result and isinstance(result, dict):
+                # Set match flag
+                result_df.at[idx, '매칭_여부'] = 'Y'
+                
+                # Copy fields from match result
+                for field in ['매칭_정확도', '텍스트_유사도', '이미지_유사도', 
+                            '제안_가격', '매칭_URL', '매칭_이미지',
+                            '매칭_상품명', '매칭_사이트', '가격차이']:
+                    if field in result:
+                        result_df.at[idx, field] = result[field]
+        
+        # Add match quality labels based on match scores
+        quality_evaluator = MatchQualityEvaluator(config)
+        result_df = quality_evaluator.apply_quality_labels(result_df)
+        
+        # Calculate execution time
+        execution_time = time.time() - start_time
+        logging.info(f"Product matching completed in {execution_time:.2f} seconds")
+        logging.info(f"Found {len([r for r in results if r[1] is not None])} matches out of {total_products} products")
+        
+        if progress_queue:
+            progress_queue.emit("status", f"상품 매칭 완료 ({len([r for r in results if r[1] is not None])}/{total_products})")
 
         return result_df
 
     except Exception as e:
-        logging.error(f"Error in process_matching: {e}", exc_info=True)
-        return pd.DataFrame()
+        logging.error(f"Error in product matching: {str(e)}", exc_info=True)
+        if progress_queue:
+            progress_queue.emit("error", f"상품 매칭 중 오류 발생: {str(e)}")
+        
+        # Return original dataframe if error occurs
+        result_df = haoreum_df.copy()
+        return result_df
 
-def _filter_candidates_by_text(product_name: str, candidates: List[Dict], config: configparser.ConfigParser) -> List[Dict]:
+def _filter_candidates_by_text(product_name: str, candidates: List[Dict], matcher: Optional[ProductMatcher] = None, config: Optional[configparser.ConfigParser] = None) -> List[Dict]:
     """텍스트 유사도로 후보군 필터링"""
     try:
-        text_threshold = config.getfloat('Matching', 'text_similarity_threshold', fallback=0.5)
+        # 일관된 임계값 사용
+        if matcher is not None:
+            # ProductMatcher 인스턴스가 제공된 경우 해당 임계값 사용
+            text_threshold = matcher.text_similarity_threshold
+            text_sim_func = matcher.calculate_text_similarity
+        elif config is not None:
+            # 설정에서 일관된 이름의 임계값 사용
+            text_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.5)
+            
+            # calculate_text_similarity 함수 정의 (ProductMatcher 없을 때 사용)
+            def text_sim_func(text1: str, text2: str) -> float:
+                try:
+                    # 가능하면 koSBERT 모듈 사용
+                    from koSBERT_text_similarity import calculate_text_similarity
+                    return calculate_text_similarity(text1, text2)
+                except ImportError:
+                    # 간단한 fallback 구현
+                    from sentence_transformers import SentenceTransformer, util
+                    model_name = config.get('Paths', 'text_model_path', 
+                                           fallback='sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+                    model = SentenceTransformer(model_name)
+                    embedding1 = model.encode(text1, convert_to_tensor=True)
+                    embedding2 = model.encode(text2, convert_to_tensor=True)
+                    return util.pytorch_cos_sim(embedding1, embedding2).item()
+                except Exception as e:
+                    logging.error(f"텍스트 유사도 계산 중 오류: {e}")
+                    return 0.0
+        else:
+            # 둘 다 없는 경우 기본값 사용
+            text_threshold = 0.5
+            return candidates[:5]  # 최소한의 처리만 수행
+        
         text_matches = []
         
         for candidate in candidates:
@@ -951,7 +1001,7 @@ def _filter_candidates_by_text(product_name: str, candidates: List[Dict], config
                 continue
                 
             # 텍스트 유사도 계산
-            text_sim = calculate_text_similarity(product_name, candidate_name)
+            text_sim = text_sim_func(product_name, candidate_name)
             if text_sim >= text_threshold:
                 text_matches.append((text_sim, candidate))
         
@@ -961,7 +1011,7 @@ def _filter_candidates_by_text(product_name: str, candidates: List[Dict], config
         
     except Exception as e:
         logging.error(f"Error in text filtering for {product_name}: {e}")
-        return []
+        return candidates[:5]  # 오류 발생 시 상위 5개만 반환
 
 def combine_match_results(df_input, kogift_matches, naver_matches, config):
     """

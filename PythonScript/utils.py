@@ -123,38 +123,41 @@ def load_config(config_file_path: str = 'config.ini') -> configparser.ConfigPars
 
 # --- Network Utilities ---
 
-def get_requests_session(config: configparser.ConfigParser, user_agent: Optional[str] = None) -> requests.Session:
-    """Creates a requests session with retry logic based on ConfigParser config."""
-    # Get settings using configparser methods with fallbacks
-    try:
-        max_retries = config.getint('Network', 'max_retries')
-        backoff_factor = config.getfloat('Network', 'backoff_factor')
-        status_codes_str = config.get('Network', 'retry_status_codes_requests')
-        status_forcelist = [int(code.strip()) for code in status_codes_str.split(',') if code.strip().isdigit()]
-    except (configparser.Error, ValueError) as e:
-        logging.warning(f"Error reading network retry config from [Network]: {e}. Using hardcoded defaults.")
-        max_retries = 5
-        backoff_factor = 0.3
-        status_forcelist = [429, 500, 502, 503, 504]
-
-    # Get User-Agent, prioritize argument, then config, then default
-    final_user_agent = user_agent or config.get('ScraperSettings', 'user_agent', fallback=DEFAULT_CONFIG['ScraperSettings']['user_agent'])
-
+def get_requests_session(config: configparser.ConfigParser) -> requests.Session:
+    """Get a requests session with retry configuration."""
     session = requests.Session()
+    
+    # Get settings from config
     try:
-        retry_strategy = Retry(
-            total=max_retries,
-            backoff_factor=backoff_factor,
-            status_forcelist=status_forcelist,
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        session.headers.update({"User-Agent": final_user_agent})
-    except Exception as e:
-         logging.error(f"Failed to setup requests session retry strategy: {e}")
-         # Return session without retries if setup fails
+        retry_codes = [int(code.strip()) for code in config.get('Network', 'retry_status_codes_requests', fallback='429,500,502,503,504').split(',')]
+        max_retries = config.getint('Network', 'max_retries', fallback=3)
+        backoff_factor = config.getfloat('Network', 'backoff_factor', fallback=0.3)
+        verify_ssl = config.getboolean('Network', 'verify_ssl', fallback=True)
+        allow_redirects = config.getboolean('Network', 'allow_redirects', fallback=True)
+        user_agent = config.get('Network', 'user_agent', fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
+    except (configparser.Error, ValueError) as e:
+        logging.warning(f"Error reading session settings: {e}. Using defaults.")
+        retry_codes = [429, 500, 502, 503, 504]
+        max_retries = 3
+        backoff_factor = 0.3
+        verify_ssl = True
+        allow_redirects = True
+        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
+    
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=max_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=retry_codes,
+    )
+    
+    # Configure session
+    session.mount('http://', HTTPAdapter(max_retries=retry_strategy))
+    session.mount('https://', HTTPAdapter(max_retries=retry_strategy))
+    session.verify = verify_ssl
+    session.allow_redirects = allow_redirects
+    session.headers.update({'User-Agent': user_agent})
+    
     return session
 
 def get_async_httpx_client(config: configparser.ConfigParser, user_agent: Optional[str] = None) -> httpx.AsyncClient:
@@ -215,51 +218,125 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        connect_timeout = config.getfloat('Network', 'connect_timeout')
-        read_timeout = config.getfloat('Network', 'read_timeout')
+        connect_timeout = config.getfloat('Network', 'connect_timeout', fallback=5.0)
+        read_timeout = config.getfloat('Network', 'read_timeout', fallback=15.0)
+        max_retries = config.getint('Network', 'max_retries', fallback=3)
+        retry_delay = config.getfloat('Network', 'backoff_factor', fallback=0.3)
     except (configparser.Error, ValueError) as e:
-        logging.warning(f"Download image: Error reading network timeouts: {e}. Using defaults.")
+        logging.warning(f"Download image: Error reading network settings: {e}. Using defaults.")
         connect_timeout = 5.0
         read_timeout = 15.0
+        max_retries = 3
+        retry_delay = 0.3
         
     session = get_requests_session(config)
 
-    try:
-        logging.debug(f"Attempting to download image: {url} -> {save_path}")
-        response = session.get(url, timeout=(connect_timeout, read_timeout), stream=True)
-        response.raise_for_status()
+    # Check if it's a kogift URL
+    is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
 
-        with open(save_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                 f.write(chunk)
-        logging.debug(f"Image file saved: {save_path}")
+    # Normalize URL for kogift
+    if is_kogift and not url.startswith('https://'):
+        url = 'https://' + url.lstrip('/')
 
-        # Validate image
+    for attempt in range(max_retries):
         try:
-            img = Image.open(save_path)
-            img.verify()
-            img = Image.open(save_path) # Re-open after verify
-            if img.format.lower() not in ['jpeg', 'png', 'gif', 'bmp', 'webp']:
-                 logging.warning(f"Downloaded file is not a common image format: {img.format} from {url}")
-            logging.debug(f"Image validated successfully: {save_path}")
-            return True
-        except (IOError, SyntaxError, Image.DecompressionBombError) as img_err:
-            logging.warning(f"Downloaded file is not a valid image ({url}): {img_err}")
-            if save_path.exists():
-                try: os.remove(save_path); logging.debug(f"Removed invalid image: {save_path}")
-                except OSError as remove_err: logging.error(f"Could not remove invalid image {save_path}: {remove_err}")
-            return False
-    except requests.exceptions.Timeout as err:
-        logging.warning(f"Timeout downloading image {url}: {err}")
-    except requests.exceptions.RequestException as err:
-        logging.error(f"Request error downloading image {url}: {err}")
-    except OSError as err:
-         logging.error(f"OS error saving image to {save_path}: {err}")
-    except Exception as err:
-        logging.error(f"Unexpected error downloading image {url}: {err}", exc_info=True)
-        if save_path.exists(): # Cleanup partial download
-            try: os.remove(save_path)
-            except OSError: pass
+            logging.debug(f"Attempting to download image: {url} -> {save_path} (attempt {attempt + 1}/{max_retries})")
+            response = session.get(url, timeout=(connect_timeout, read_timeout), stream=True)
+            response.raise_for_status()
+
+            # Check content type
+            content_type = response.headers.get('Content-Type', '')
+            if not content_type.startswith('image/'):
+                if is_kogift:
+                    logging.warning(f"Non-image content type for Kogift URL: {content_type}, proceeding anyway")
+                else:
+                    logging.warning(f"Non-image content type: {content_type}, URL: {url}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+
+            # Check content length
+            content_length = response.headers.get('Content-Length')
+            if content_length and int(content_length) < 100:
+                if is_kogift:
+                    logging.warning(f"Small content length for Kogift image: {content_length} bytes")
+                else:
+                    logging.warning(f"Content too small: {content_length} bytes")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            # Validate downloaded file
+            if not os.path.exists(save_path) or os.path.getsize(save_path) < 100:
+                logging.warning(f"Downloaded file is too small or missing: {save_path}")
+                if os.path.exists(save_path):
+                    os.remove(save_path)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                return False
+
+            # Validate image format
+            try:
+                img = Image.open(save_path)
+                img.verify()
+                img = Image.open(save_path)  # Re-open after verify
+                
+                # Check image dimensions
+                if img.width < 10 or img.height < 10:
+                    logging.warning(f"Image dimensions too small: {img.width}x{img.height}")
+                    if not is_kogift and attempt < max_retries - 1:
+                        os.remove(save_path)
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+
+                if img.format.lower() not in ['jpeg', 'png', 'gif', 'bmp', 'webp']:
+                    if is_kogift:
+                        logging.warning(f"Unusual image format for Kogift image: {img.format}")
+                    else:
+                        logging.warning(f"Unsupported image format: {img.format}")
+                        if attempt < max_retries - 1:
+                            os.remove(save_path)
+                            time.sleep(retry_delay * (attempt + 1))
+                            continue
+
+                logging.debug(f"Image validated successfully: {save_path}")
+                return True
+
+            except (IOError, SyntaxError, Image.DecompressionBombError) as img_err:
+                logging.warning(f"Invalid image file ({url}): {img_err}")
+                if os.path.exists(save_path):
+                    os.remove(save_path)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                return False
+
+        except requests.exceptions.Timeout as err:
+            logging.warning(f"Timeout downloading image {url} (attempt {attempt + 1}): {err}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+        except requests.exceptions.RequestException as err:
+            logging.error(f"Request error downloading image {url} (attempt {attempt + 1}): {err}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+        except OSError as err:
+            logging.error(f"OS error saving image to {save_path} (attempt {attempt + 1}): {err}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+        except Exception as err:
+            logging.error(f"Unexpected error downloading image {url} (attempt {attempt + 1}): {err}", exc_info=True)
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+
     return False
 
 async def download_image_async(url: str, save_path: Union[str, Path], client: httpx.AsyncClient, config: configparser.ConfigParser) -> bool:
