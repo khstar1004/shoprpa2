@@ -11,6 +11,8 @@ import requests
 from io import BytesIO
 import configparser
 import tempfile
+import aiohttp
+from image_downloader import download_image as async_download_image
 
 # Load config
 config = configparser.ConfigParser()
@@ -74,20 +76,26 @@ def initialize_rembg_session(model_name="u2net"):
             rembg_session = None # Ensure session remains None if initialization fails
     return rembg_session
 
-def get_image_from_url(image_url: str) -> Union[Image.Image, None]:
+async def get_image_from_url(session: aiohttp.ClientSession, image_url: str) -> Union[Image.Image, None]:
     """Downloads an image from a URL and returns it as a PIL Image object."""
     try:
-        response = requests.get(image_url, timeout=30)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        image = Image.open(BytesIO(response.content))
-        return image
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error downloading image from {image_url}: {e}")
-    except IOError as e:
-        logging.error(f"Error opening image from {image_url}: {e}")
+        # Use the async downloader
+        url, success, image_path = await async_download_image(session, image_url)
+
+        if success and image_path and os.path.exists(image_path):
+            try:
+                image = Image.open(image_path)
+                # Return a copy in case the temporary file is deleted later
+                return image.copy()
+            except IOError as e:
+                logging.error(f"Error opening downloaded image {image_path}: {e}")
+                return None
+        else:
+            logging.error(f"Failed to download image from {image_url} or file not found.")
+            return None
     except Exception as e:
         logging.error(f"An unexpected error occurred while getting image from {image_url}: {e}")
-    return None
+        return None
 
 # --- Background Removal ---
 

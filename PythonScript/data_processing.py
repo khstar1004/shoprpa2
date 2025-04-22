@@ -227,8 +227,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # --- Process and add images ---
     # Ensure image columns exist and add from crawl results if missing
     if '본사 이미지' not in df.columns:
-        df['본사 이미지'] = df.get('해오름이미지URL', None)
-        logging.info("Added '본사 이미지' column from crawled Haeoeum image URLs")
+        df['본사 이미지'] = df.get('해오름이미지경로', None)
+        logging.info("Added '본사 이미지' column from downloaded Haeoreum image paths")
     
     # Add Kogift images from crawl results if available
     if kogift_results and '고려기프트 이미지' in df.columns:
@@ -265,6 +265,20 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             naver_img_count += 1
                             break
         logging.info(f"Added {naver_img_count} missing Naver images from crawl results")
+    
+    # Add additional logic to ensure Haereum images are included
+    if '본사 이미지' in df.columns and '해오름이미지경로' in df.columns:
+        # Use the Haereum image URL if the original image is missing
+        haoreum_img_missing = (df['본사 이미지'].isnull()) | (df['본사 이미지'] == '') | (df['본사 이미지'] == '-')
+        # 해오름이미지경로가 존재하는 경우를 체크
+        haoreum_path_present = ~(df['해오름이미지경로'].isnull() | (df['해오름이미지경로'] == ''))
+
+        # 본사 이미지가 비어있고 해오름이미지경로가 존재하는 경우 업데이트 마스크
+        update_mask = haoreum_img_missing & haoreum_path_present
+        if update_mask.any():
+            # '본사 이미지' 컬럼에 '해오름이미지경로' 컬럼의 값을 할당
+            df.loc[update_mask, '본사 이미지'] = df.loc[update_mask, '해오름이미지경로'].astype(str)
+            logging.info(f"Updated {update_mask.sum()} missing '본사 이미지' with downloaded paths from '해오름이미지경로'")
     
     # --- Calculate additional fields ---
     # Calculate price differences if base price exists
@@ -331,6 +345,10 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
         naver_results = {}   # This would normally come from naver processing
         
         formatted_df = format_product_data_for_output(filtered_df, kogift_results, naver_results)
+        
+        # Create output directory if it doesn't exist
+        output_dir = config.get('Paths', 'output_dir')
+        os.makedirs(output_dir, exist_ok=True)
         
         return formatted_df
         

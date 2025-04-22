@@ -11,10 +11,12 @@ import tempfile
 import argparse
 import configparser
 from typing import Union, Optional, Dict, List, Tuple, Any
+import asyncio
+import aiohttp
 
 # Import centralized utilities
 from utils import get_requests_session, download_image, load_config
-from image_utils import calculate_image_similarity
+from image_utils import calculate_image_similarity, get_image_from_url as get_image_from_url_async
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -168,7 +170,7 @@ def extract_main_image_url_haeoeum(product_url: str, session: requests.Session) 
         return None
 
 # --- Main Workflow ---
-def get_image_similarity_for_urls(url1: str, url2: str) -> Union[float, None]:
+async def get_image_similarity_for_urls(url1: str, url2: str, config: configparser.ConfigParser) -> Union[float, None]:
     """
     Gets the main images from two Haeoeum URLs, downloads them temporarily,
     and calculates their similarity using centralized utilities.
@@ -176,54 +178,60 @@ def get_image_similarity_for_urls(url1: str, url2: str) -> Union[float, None]:
     Args:
         url1: The first Haeoeum product URL.
         url2: The second Haeoeum product URL.
+        config: Configuration object
 
     Returns:
         The similarity score (0.0 to 1.0) or None if an error occurs.
     """
-    session = get_requests_session() # Use utility session
+    # Use a synchronous session for scraping the page to get the image URL
+    requests_session = get_requests_session()
     image_path1 = None
     image_path2 = None
     similarity = None
+    img1_pil = None # To hold PIL Image objects
+    img2_pil = None # To hold PIL Image objects
 
     try:
-        # 1. Extract Image URLs
-        logging.info(f"Extracting image URL from: {url1}")
-        img_url1 = extract_main_image_url_haeoeum(url1, session)
-        if not img_url1:
-            logging.error(f"Could not extract image URL from {url1}")
-            return None
+        # Use an async session for downloading the images themselves
+        async with aiohttp.ClientSession() as session:
+            # 1. Extract Image URLs (still using sync requests for page scraping)
+            logging.info(f"Extracting image URL from: {url1}")
+            img_url1 = extract_main_image_url_haeoeum(url1, requests_session)
+            if not img_url1:
+                logging.error(f"Could not extract image URL from {url1}")
+                return None
 
-        logging.info(f"Extracting image URL from: {url2}")
-        img_url2 = extract_main_image_url_haeoeum(url2, session)
-        if not img_url2:
-            logging.error(f"Could not extract image URL from {url2}")
-            return None
+            logging.info(f"Extracting image URL from: {url2}")
+            img_url2 = extract_main_image_url_haeoeum(url2, requests_session)
+            if not img_url2:
+                logging.error(f"Could not extract image URL from {url2}")
+                return None
 
-        # 2. Download Images Temporarily
-        logging.info(f"Downloading image 1: {img_url1}")
-        # Create temporary file paths
+            # 2. Download Images Temporarily using the async utility
+            logging.info(f"Downloading image 1: {img_url1}")
+            img1_pil = await get_image_from_url_async(session, img_url1)
+            if not img1_pil:
+                logging.error(f"Failed to download and open image from {img_url1}")
+                return None
+
+            logging.info(f"Downloading image 2: {img_url2}")
+            img2_pil = await get_image_from_url_async(session, img_url2)
+            if not img2_pil:
+                logging.error(f"Failed to download and open image from {img_url2}")
+                return None
+
+        # Save PIL images to temporary files for similarity calculation
         _, file_ext1 = os.path.splitext(urlparse(img_url1).path)
-        temp_file1 = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext1 or '.jpg', dir=TEMP_IMAGE_DIR)
-        image_path1 = temp_file1.name
-        temp_file1.close() # Close handle so download can write
+        image_path1 = os.path.join(TEMP_IMAGE_DIR, f"img1_{hashlib.md5(img_url1.encode()).hexdigest()}{file_ext1 or '.jpg'}")
+        img1_pil.save(image_path1)
 
-        if not download_image(img_url1, image_path1, config): # Pass config to the download_image function
-            logging.error(f"Failed to download image from {img_url1}")
-            return None
-
-        logging.info(f"Downloading image 2: {img_url2}")
         _, file_ext2 = os.path.splitext(urlparse(img_url2).path)
-        temp_file2 = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext2 or '.jpg', dir=TEMP_IMAGE_DIR)
-        image_path2 = temp_file2.name
-        temp_file2.close()
+        image_path2 = os.path.join(TEMP_IMAGE_DIR, f"img2_{hashlib.md5(img_url2.encode()).hexdigest()}{file_ext2 or '.jpg'}")
+        img2_pil.save(image_path2)
 
-        if not download_image(img_url2, image_path2, config): # Pass config to the download_image function
-            logging.error(f"Failed to download image from {img_url2}")
-            return None
-
-        # 3. Calculate Similarity
+        # 3. Calculate Similarity using the centralized utility
         logging.info(f"Calculating similarity between {image_path1} and {image_path2}")
-        similarity = calculate_image_similarity(image_path1, image_path2) # Use utility function
+        similarity = calculate_image_similarity(image_path1, image_path2, config) # Use utility function
         logging.info(f"Calculated Similarity: {similarity:.4f}")
 
         return similarity
@@ -246,6 +254,11 @@ def get_image_similarity_for_urls(url1: str, url2: str) -> Union[float, None]:
                 logging.debug(f"Cleaned up temporary file: {image_path2}")
             except OSError as e:
                 logging.warning(f"Could not remove temporary file {image_path2}: {e}")
+        # Ensure PIL objects are closed if they were opened
+        if img1_pil:
+             img1_pil.close()
+        if img2_pil:
+             img2_pil.close()
 
 # --- Command-Line Execution ---
 if __name__ == "__main__":
@@ -256,7 +269,12 @@ if __name__ == "__main__":
 
     logging.info(f"Starting comparison for:\nURL1: {args.url1}\nURL2: {args.url2}")
 
-    similarity_score = get_image_similarity_for_urls(args.url1, args.url2)
+    # Load config for the async function
+    script_config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+    script_config.read(config_path, encoding='utf-8')
+
+    similarity_score = asyncio.run(get_image_similarity_for_urls(args.url1, args.url2, script_config))
 
     if similarity_score is not None:
         print(f"\nImage Similarity Score: {similarity_score:.4f}")
