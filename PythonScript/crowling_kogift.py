@@ -616,7 +616,8 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
 async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False):
     """Scrape product data from Koreagift using a shared Browser instance."""
     # Create a new semaphore for this function call
-    scraping_semaphore = asyncio.Semaphore(3)  # Reduced from 5 to 3
+    max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
+    scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows
     
     async with scraping_semaphore:  # Acquire semaphore before starting
         if config is None:

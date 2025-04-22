@@ -78,7 +78,8 @@ def _normalize_text(text: str) -> str:
 async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
     """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
     # Create a new semaphore for this function call
-    scraping_semaphore = asyncio.Semaphore(3)  # Reduced from 5 to 3
+    max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
+    scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows
     
     retry_count = 0
     last_error = None
