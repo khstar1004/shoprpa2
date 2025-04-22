@@ -636,18 +636,17 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
             user_agent = config.get('ScraperSettings', 'user_agent', 
                                   fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
             
-            # Create a new context with increased timeout
+            # Create a new context with proper settings
             context = await browser.new_context(
                 user_agent=user_agent,
-                viewport={'width': 1920, 'height': 1080},
-                timeout=BROWSER_CONTEXT_TIMEOUT
+                viewport={'width': 1920, 'height': 1080}
             )
             
             # Create a new page with increased timeouts
             page = await context.new_page()
             page.set_default_timeout(PAGE_TIMEOUT)
             page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
-            
+
             if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                 await setup_page_optimizations(page)
             

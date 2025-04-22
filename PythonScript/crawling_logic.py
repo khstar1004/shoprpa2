@@ -488,6 +488,13 @@ def _process_single_haoreum_image(product_code, image_info, config):
         # Create a consistent hash of URL for uniqueness
         url_hash = hashlib.md5(image_url.encode('utf-8', errors='ignore')).hexdigest()[:8]
         
+        # Determine file extension from URL
+        parsed_url = urlparse(image_url)
+        file_ext = os.path.splitext(parsed_url.path)[1].lower()
+        # Default to .jpg if no extension or invalid extension
+        if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+            file_ext = '.jpg'
+        
         # Include source information in the filename with consistent format
         main_img_filename = f"haereum_{sanitized_code}_{url_hash}{file_ext}"
         main_img_path = os.path.normpath(os.path.join(main_dir, main_img_filename))
