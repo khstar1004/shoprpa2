@@ -581,31 +581,37 @@ async def extract_price_table(page, product_url, timeout=30000):
 # --- 이미지 URL 처리 전용 함수 추가 ---
 def normalize_kogift_image_url(img_url: str, base_url: str = "https://www.kogift.com") -> Tuple[str, bool]:
     """
-    고려기프트 이미지 URL을 표준화하고 유효성을 검사합니다.
-    
+    고려기프트 및 애드판촉 이미지 URL을 표준화하고 유효성을 검사합니다.
+    '/ez/' 경로를 필요한 경우 추가합니다.
+
     Args:
         img_url: 원본 이미지 URL 또는 경로
         base_url: 기본 도메인 URL
-        
+
     Returns:
         Tuple[str, bool]: 정규화된 이미지 URL과 유효성 여부
     """
     if not img_url:
         return "", False
-    
+
     # data:image URI인 경우 (인라인 이미지)
     if img_url.startswith('data:image/'):
         logger.warning(f"Data URI 이미지 발견 (사용 불가)")
         return "", False
-    
+
+    # 대상 도메인 리스트
+    target_domains = ['koreagift.com', 'adpanchok.co.kr']
+
     # 이미 완전한 URL인 경우
     if img_url.startswith(('http://', 'https://')):
         parsed_url = urlparse(img_url)
         domain = parsed_url.netloc
         path = parsed_url.path
-        
-        # koreagift.com 도메인인 경우 항상 /ez/ 경로가 있는지 확인
-        if 'koreagift.com' in domain:
+
+        # 대상 도메인인지 확인
+        is_target_domain = any(td in domain for td in target_domains)
+
+        if is_target_domain:
             # 이미 /ez/가 있는 경우 그대로 사용
             if '/ez/' in path:
                 return img_url, True
@@ -613,56 +619,66 @@ def normalize_kogift_image_url(img_url: str, base_url: str = "https://www.kogift
             elif path.startswith('/upload/'):
                 new_path = '/ez' + path
                 return f"{parsed_url.scheme}://{domain}{new_path}", True
-            # 그 외 경로는 그대로 사용
+            # 루트 경로 등 /ez/가 필요 없는 경우 (예: /main/img.jpg)
+            elif not path.startswith('/upload/'):
+                 # /ez/ 가 없고, /upload/ 도 아니면 그대로 사용
+                 return img_url, True
+            # 그 외 대상 도메인의 경로는 일단 유효하다고 간주
             else:
-                return img_url, True
-        
-        # 유효한 도메인 확인
-        kogift_domains = ['kogift.com', 'www.kogift.com', 'img.kogift.com', 'adpanchok.co.kr', 'www.adpanchok.co.kr']
-        if any(kogift_domain in domain for kogift_domain in kogift_domains):
-            return img_url, True
+                 return img_url, True
         else:
-            # 다른 도메인이면 기존 URL 그대로 반환하되 유효하지 않음 표시
-            return img_url, False
-    
+            # 대상 도메인이 아니면, 유효한 URL 형식인지 확인 후 반환
+            if domain and path: # 기본적인 유효성 검사
+                return img_url, True
+            else:
+                return img_url, False # 유효하지 않은 형식
+
     # '//' 시작하는 프로토콜-상대 URL 처리
     if img_url.startswith('//'):
-        return f"https:{img_url}", True
-    
-    # './웹 경로' 상대 경로 처리
+        # // 다음이 도메인이어야 함
+        temp_url = f"https:{img_url}"
+        parsed_temp = urlparse(temp_url)
+        if parsed_temp.netloc:
+            # 재귀 호출로 /ez/ 처리 위임
+            return normalize_kogift_image_url(temp_url, base_url)
+        else:
+            return "", False # // 다음에 도메인이 없는 잘못된 형식
+
+    # './' 시작하는 상대 경로 처리
     if img_url.startswith('./'):
         img_url = img_url[2:]  # './' 제거
-    
-    # 절대 경로('/upload/'로 시작)인 경우
-    if img_url.startswith('/upload/'):
-        # koreagift.com 도메인에 대해서는 항상 /ez/ 경로 추가
-        if 'koreagift.com' in base_url:
+
+    # 절대 경로 ('/'로 시작)
+    if img_url.startswith('/'):
+        # 대상 도메인이고 /upload/로 시작하면 /ez/ 추가
+        is_target_domain = any(td in base_url for td in target_domains)
+        if is_target_domain and img_url.startswith('/upload/'):
             img_url = '/ez' + img_url
-    # 기타 절대 경로
-    elif img_url.startswith('/'):
-        # 그대로 사용
-        pass
-    # 상대 경로(파일명 또는 하위 경로)
+        # 그 외 절대 경로는 그대로 사용
+    # 상대 경로 (파일명 또는 하위 경로)
     else:
-        # 경로가 'upload/'로 시작하면 앞에 '/'를 추가
-        if img_url.startswith('upload/'):
-            # koreagift.com 도메인에 대해서는 항상 /ez/ 경로 추가
-            if 'koreagift.com' in base_url:
-                img_url = '/ez/' + img_url
-            else:
-                img_url = '/' + img_url
-        # 기타 경로는 그대로 /를 붙여서 사용
+        # 대상 도메인이고 'upload/'로 시작하면 /ez/ 추가
+        is_target_domain = any(td in base_url for td in target_domains)
+        if is_target_domain and img_url.startswith('upload/'):
+            img_url = '/ez/' + img_url
+        # 그 외 상대 경로는 앞에 '/' 추가
         else:
             img_url = '/' + img_url
-    
-    # 최종 URL 생성
+
+    # 최종 URL 생성 (urljoin 사용)
     final_url = urljoin(base_url, img_url)
-    
-    # 중복 경로 확인 및 수정
+
+    # 중복 경로 확인 및 수정 ('/ez/ez/' -> '/ez/')
     if '/ez/ez/' in final_url:
         final_url = final_url.replace('/ez/ez/', '/ez/')
-    
-    return final_url, True
+
+    # 최종 URL 유효성 검사 (간단히)
+    parsed_final = urlparse(final_url)
+    if parsed_final.scheme and parsed_final.netloc:
+        return final_url, True
+    else:
+        logger.warning(f"최종 URL 생성 실패: base='{base_url}', img='{img_url}', final='{final_url}'")
+        return final_url, False # 생성 실패
 
 async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 10) -> List[Dict]:
     """고려기프트 상품 목록의 이미지 URL을 검증하고 표준화한 후, 이미지를 다운로드합니다."""
@@ -983,50 +999,10 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                 logger.debug(f"🔗 Raw product href: {a_href}")
                                 logger.debug(f"🌐 Base domain URL: {base_domain_url}")
                                 
-                                # 이미지 URL 처리
-                                if img_src:
-                                    # 이미지 소스 처리
-                                    if img_src.startswith('http'):
-                                        # 이미 완전한 URL인 경우
-                                        processed_img_src = img_src
-                                    elif img_src.startswith('./'):
-                                        # './로 시작하는 상대 경로를 /ez/로 변환 (koreagift.com)
-                                        if 'koreagift.com' in base_domain_url:
-                                            processed_img_src = '/ez/' + img_src[2:]  # './' 제거하고 /ez/ 추가
-                                        else:
-                                            processed_img_src = '/' + img_src[2:]  # './' 제거
-                                    elif img_src.startswith('/upload/'):
-                                        # /upload/로 시작하는 경로에 /ez/ 추가 (koreagift.com)
-                                        if 'koreagift.com' in base_domain_url:
-                                            processed_img_src = '/ez' + img_src
-                                        else:
-                                            processed_img_src = img_src
-                                    elif img_src.startswith('/'):
-                                        # 다른 절대 경로는 그대로 사용
-                                        processed_img_src = img_src
-                                    else:
-                                        # 상대 경로는 적절히 처리
-                                        if 'koreagift.com' in base_domain_url and img_src.startswith('upload/'):
-                                            processed_img_src = f"/ez/{img_src}"
-                                        else:
-                                            processed_img_src = f"/{img_src}"
-                                    
-                                    # /ez/ez/ 중복 수정
-                                    if '/ez/ez/' in processed_img_src:
-                                        processed_img_src = processed_img_src.replace('/ez/ez/', '/ez/')
-                                        
-                                    # 최종 URL 생성
-                                    final_img_url = urljoin(base_domain_url, processed_img_src)
-                                    
-                                    # 이미지 URL 검증 - 기본 구조만 확인
-                                    valid_img_url = False
-                                    if final_img_url and final_img_url.startswith('http'):
-                                        url_parts = urlparse(final_img_url)
-                                        if url_parts.netloc and url_parts.path:
-                                            valid_img_url = True
-                                else:
-                                    final_img_url = ""
-                                    valid_img_url = False
+                                # 이미지 URL 정규화 (normalize_kogift_image_url 함수 사용)
+                                final_img_url, valid_img_url = normalize_kogift_image_url(img_src, base_domain_url)
+                                if not valid_img_url:
+                                    logger.warning(f"⚠️ Invalid or unnormalizable image URL skipped: {img_src}")
                                 
                                 # 상품 URL 처리
                                 if a_href:
@@ -1075,7 +1051,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                     item_data['image_url'] = final_img_url
                                     item_data['src'] = final_img_url
                                 else:
-                                    logger.warning(f"⚠️ 유효하지 않은 이미지 URL 무시: {img_src}")
+                                    # 경고는 normalize_kogift_image_url 내부 또는 위에서 이미 발생
                                     item_data['image_path'] = None
                                     item_data['image_url'] = None
                                     item_data['src'] = None

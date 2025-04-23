@@ -86,33 +86,30 @@ async def get_image_from_url(session: aiohttp.ClientSession, image_url: str) -> 
         # URL 정규화
         if not image_url.startswith(('http://', 'https://')):
             if "kogift" in image_url.lower() or "koreagift" in image_url.lower() or "adpanchok" in image_url.lower() or "jclgift" in image_url.lower():
-                image_url = f"https://{image_url}" if not image_url.startswith('//') else f"https:{image_url}"
+                image_url = f"https:{image_url}" if not image_url.startswith('//') else f"https:{image_url}"
                 logging.debug(f"Normalized image URL: {image_url}")
             else:
                 logging.error(f"Invalid image URL scheme: {image_url}")
                 return None
 
-        # Use the async downloader
-        result = await async_download_image(session, image_url)
+        # Use the async downloader - IMPORTANT: This needs the session and save_directory potentially
+        # This function might need redesign if it's intended to directly use the downloader's logic
+        # For now, let's assume it relies on a pre-downloaded path or needs its own download logic
         
-        # Check if result is a tuple with the expected structure
-        if not isinstance(result, tuple) or len(result) != 3:
-            logging.error(f"Unexpected result format from async_download_image: {result}")
-            return None
-            
-        url, success, image_path = result
+        # Simplified direct download for this utility function
+        async with session.get(image_url, timeout=15) as response:
+            if response.status == 200:
+                try:
+                    content = await response.read()
+                    image = Image.open(BytesIO(content))
+                    return image.copy()
+                except Exception as e:
+                    logging.error(f"Error reading image data from {image_url}: {e}")
+                    return None
+            else:
+                 logging.error(f"Failed to download image from {image_url}. Status: {response.status}")
+                 return None
 
-        if success and image_path and os.path.exists(image_path):
-            try:
-                image = Image.open(image_path)
-                # Return a copy in case the temporary file is deleted later
-                return image.copy()
-            except IOError as e:
-                logging.error(f"Error opening downloaded image {image_path}: {e}")
-                return None
-        else:
-            logging.error(f"Failed to download image from {image_url} or file not found. Path: {image_path}, Success: {success}")
-            return None
     except Exception as e:
         logging.error(f"An unexpected error occurred while getting image from {image_url}: {e}")
         return None

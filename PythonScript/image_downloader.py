@@ -5,23 +5,19 @@ import aiohttp
 import aiofiles
 import hashlib
 import configparser
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional, Union
 from urllib.parse import urlparse, unquote
 import time
 from PIL import Image
-import io
 from pathlib import Path
 import random
-import re
-import requests
-import shutil
+import io  # Add missing io import
 
 # 로거 설정
 logger = logging.getLogger(__name__)
 
 # config.ini 파일 로드
 config = configparser.ConfigParser()
-# Use Path object for robustness
 config_ini_path = Path(__file__).resolve().parent.parent / 'config.ini'
 
 try:
@@ -34,7 +30,6 @@ try:
     VERIFY_SAMPLE_PERCENT = config.getint('Matching', 'verify_sample_percent', fallback=10)
     VERIFY_IMAGE_URLS = config.getboolean('Matching', 'verify_image_urls', fallback=True)
     PREDOWNLOAD_KOGIFT_IMAGES = config.getboolean('Matching', 'predownload_kogift_images', fallback=True)
-    KOGIFT_SPECIAL_DOMAIN_HANDLING = config.getboolean('Matching', 'kogift_special_domain_handling', fallback=True)
 
     # 이미지 저장 경로 - Use Target/kogift for this downloader
     try:
@@ -44,7 +39,7 @@ try:
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
         logger.error(f"Error getting image_target_dir from config: {e}. Using default.")
         KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift'
-        logger.info(f"Using default Kogift image directory: {KOGIFT_IMAGE_DIR}")
+        logger.info(f"Using default Kogift image directory (Target): {KOGIFT_IMAGE_DIR}")
 
 except Exception as e:
     logger.error(f"Error loading config from {config_ini_path}: {e}, using default values")
@@ -53,47 +48,44 @@ except Exception as e:
     VERIFY_SAMPLE_PERCENT = 10
     VERIFY_IMAGE_URLS = True
     PREDOWNLOAD_KOGIFT_IMAGES = True
-    KOGIFT_SPECIAL_DOMAIN_HANDLING = True
     # Default Kogift image directory
     KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift' 
-    logger.info(f"Using default Kogift image directory: {KOGIFT_IMAGE_DIR}")
+    logger.info(f"Using default Kogift image directory (Target): {KOGIFT_IMAGE_DIR}")
 
 # 이미지 경로 생성 및 권한 확인
 try:
     # Use the specific KOGIFT_IMAGE_DIR
     KOGIFT_IMAGE_DIR.mkdir(parents=True, exist_ok=True) 
-    
     # 쓰기 권한 확인
     if not os.access(KOGIFT_IMAGE_DIR, os.W_OK):
         # 대체 경로 사용 - config에서 정의된 경로 사용
         try:
-            image_target_dir = config.get('Paths', 'image_target_dir')
+            image_target_dir = config.get('Paths', 'image_target_dir') # 대체 경로는 Target으로
             fallback_dir = Path(image_target_dir) / 'kogift'
             fallback_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
             KOGIFT_IMAGE_DIR = fallback_dir
         except (configparser.NoSectionError, configparser.NoOptionError) as e:
-            logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA path.")
-            fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift'
+            logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA Target path.")
+            fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift' # 기본 대체 경로는 Target
             fallback_dir.mkdir(parents=True, exist_ok=True)
             KOGIFT_IMAGE_DIR = fallback_dir
 except Exception as e:
     # 기본 대체 경로 사용 - config에서 정의된 경로 사용
     try:
-        image_target_dir = config.get('Paths', 'image_target_dir')
+        image_target_dir = config.get('Paths', 'image_target_dir') # 기본 대체 경로는 Target
         fallback_dir = Path(image_target_dir) / 'kogift'
         fallback_dir.mkdir(parents=True, exist_ok=True)
         logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
         KOGIFT_IMAGE_DIR = fallback_dir
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
-        logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA path.")
-        fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift'
+        logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA Target path.")
+        fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift' # 기본 대체 경로는 Target
         fallback_dir.mkdir(parents=True, exist_ok=True)
         KOGIFT_IMAGE_DIR = fallback_dir
 
 # 파일 작업을 위한 세마포어 생성
 file_semaphore = asyncio.Semaphore(1)
-
 async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: int = 10) -> Tuple[str, bool, Optional[str]]:
     """이미지 URL이 유효한지 확인하는 함수"""
     if not url:
@@ -249,6 +241,13 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                     return await download_image(session, url, retry_count + 1)
                 return url, False, ""
             
+            # Content-Type 확인 (text/plain 등 이미지 아닌 경우 처리)
+            content_type = response.headers.get('Content-Type', '').lower()
+            if not content_type.startswith('image/') and 'octet-stream' not in content_type:
+                logger.warning(f"URL does not return an image (Content-Type: {content_type}): {url}")
+                # 재시도 없이 바로 실패 처리 (서버가 이미지를 주지 않음)
+                return url, False, ""
+            
             # 이미지 데이터 읽기
             data = await response.read()
             
@@ -283,9 +282,21 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                 return url, False, ""
             
             # 임시 파일을 실제 파일로 이동
+            logger.debug(f"Attempting to move temp file {temp_path} to {image_path}")
             if image_path.exists():
+                logger.debug(f"Destination file {image_path} exists, attempting to remove it first.")
                 image_path.unlink()
-            temp_path.rename(image_path)
+            try:
+                temp_path.rename(image_path)
+                logger.info(f"Successfully moved temp file to final path: {image_path}")
+            except OSError as e:
+                logger.error(f"Failed to move temp file {temp_path} to {image_path}: {e}")
+                # 이동 실패 시 파일을 삭제하거나 다른 처리를 할 수 있음
+                try:
+                    temp_path.unlink() # 임시 파일 삭제 시도
+                except OSError as unlink_e:
+                    logger.error(f"Could not remove temporary file {temp_path} after move failed: {unlink_e}")
+                return url, False, "" # 이동 실패 시 다운로드 실패로 처리
             
             logger.info(f"Successfully downloaded image: {url} -> {image_path}")
             return url, True, str(image_path)
@@ -363,12 +374,23 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
         completed = await asyncio.gather(*tasks, return_exceptions=True)
         
         # 결과 처리
-        for url, (_, success, path) in zip(to_download, completed):
-            if success and path:
-                results[url] = path
-                logger.info(f"Successfully downloaded: {url} -> {path}")
+        for url, completed_task_result in zip(to_download, completed):
+            # gather 결과가 예외일 수 있으므로 확인
+            if isinstance(completed_task_result, Exception):
+                logger.error(f"Task failed for URL {url}: {completed_task_result}")
+                continue
+            
+            # download_image의 반환값 (url, success, path) 처리
+            if isinstance(completed_task_result, tuple) and len(completed_task_result) == 3:
+                _, success, path = completed_task_result
+                if success and path:
+                    results[url] = path
+                    # 로그는 download_image 내부에서 이미 출력됨
+                    # logger.info(f"Successfully downloaded: {url} -> {path}") 
+                else:
+                    logger.warning(f"Failed to download: {url}")
             else:
-                logger.warning(f"Failed to download: {url}")
+                 logger.error(f"Unexpected task result format for URL {url}: {completed_task_result}")
     
     success_count = len(results)
     logger.info(f"Downloaded {success_count}/{len(image_urls)} images successfully")
