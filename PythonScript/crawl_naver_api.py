@@ -12,6 +12,9 @@ import configparser
 import pprint
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
+import aiohttp
+import aiofiles
+from PIL import Image
 
 # Import based on how the file is run
 try:
@@ -287,6 +290,82 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
     return best_result_list
 
 
+async def download_naver_image(url: str, save_dir: str, product_name: str) -> Optional[str]:
+    """
+    Download a single Naver image to the specified directory.
+
+    Args:
+        url (str): The image URL to download.
+        save_dir (str): The directory to save the image in.
+        product_name (str): The product name for generating the filename.
+
+    Returns:
+        Optional[str]: The local path to the downloaded image, or None if download failed.
+    """
+    if not url or not save_dir:
+        logger.warning("Empty URL or save directory provided to download_naver_image.")
+        return None
+
+    try:
+        # Ensure save directory exists
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Generate safe filename
+        safe_name = re.sub(r'[^\w\-_.]', '_', product_name)[:50]
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+        
+        # Get file extension from URL
+        _, ext = os.path.splitext(urlparse(url).path)
+        ext = ext.lower() if ext.lower() in ['.jpg', '.jpeg', '.png', '.gif'] else '.jpg'
+        
+        # Create filename
+        filename = f"naver_{safe_name}_{url_hash}{ext}"
+        local_path = os.path.join(save_dir, filename)
+        
+        # Skip if file exists
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            logger.debug(f"Image already exists: {local_path}")
+            return local_path
+
+        # Download image
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to download image: {url}, status: {response.status}")
+                    return None
+                
+                # Save to temporary file
+                temp_path = f"{local_path}.{time.time_ns()}.tmp"
+                try:
+                    async with aiofiles.open(temp_path, 'wb') as f:
+                        await f.write(await response.read())
+                    
+                    # Validate image
+                    with Image.open(temp_path) as img:
+                        img.verify()
+                    with Image.open(temp_path) as img:
+                        if img.mode in ('RGBA', 'LA'):
+                            img = img.convert('RGB')
+                            img.save(temp_path, 'JPEG', quality=85)
+                    
+                    # Move temp file to final location
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    os.rename(temp_path, local_path)
+                    logger.info(f"Successfully downloaded image: {url} -> {local_path}")
+                    return local_path
+                except Exception as e:
+                    logger.error(f"Error processing image {url}: {e}")
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except:
+                            pass
+                    return None
+    except Exception as e:
+        logger.error(f"Error downloading image {url}: {e}")
+        return None
+
 async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     Crawl product information from Naver Shopping using API asynchronously for multiple product rows,
@@ -309,258 +388,130 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     total_products = len(product_rows)
     logger.info(f"🟢 --- Starting Naver product crawl for {total_products} products (Async) ---")
 
-    # Get config values using ConfigParser methods
+    # Get config values
     try:
-        image_target_dir = config.get('Paths', 'image_target_dir', fallback=None)
+        base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
+        # Use image_target_dir for Naver images
+        naver_base_dir = config.get('Paths', 'image_target_dir', fallback='C:\\RPA\\Image\\Target')
+        # Construct the Naver-specific directory
+        naver_image_target_dir = os.path.join(naver_base_dir, 'Naver')
+        os.makedirs(naver_image_target_dir, exist_ok=True)
+        
         use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
-        # API keys checked within crawl_naver, no need to re-check here
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
-        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={image_target_dir}")
-    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-        logger.error(f"Error reading required configuration for Naver crawl: {e}. Aborting Naver crawl.", exc_info=True)
-        return pd.DataFrame() # Return empty DF on config error
+        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_target_dir}")
+    except Exception as e:
+        logger.error(f"Error reading config: {e}")
+        return pd.DataFrame()
 
-    # Create a semaphore to limit concurrent API requests
+    # Create semaphore for concurrent API requests
     api_semaphore = asyncio.Semaphore(max_concurrent_api)
-    logger.debug(f"API Semaphore initialized with limit: {max_concurrent_api}")
 
-    # --- Prepare and run API search tasks concurrently ---
-    api_search_tasks = []
-    processed_indices = set() # Keep track of indices being processed
-
+    # Create tasks for concurrent processing
+    tasks = []
     async with get_async_httpx_client(config=config) as client:
-        logger.debug("Async HTTPX client created for Naver API calls.")
-        # Create tasks for each row
-        for idx in product_rows.index:
-            if idx in processed_indices:
-                 logger.warning(f"Skipping duplicate index {idx} found in input DataFrame.")
-                 continue
-            processed_indices.add(idx)
-
-            row = product_rows.loc[idx]
-            product_name = row.get('상품명', '')
-            if not product_name or pd.isna(product_name):
-                logger.warning(f"🟢 Skipping row index {idx}: Missing or invalid product name ('{product_name}').")
-                continue
-
-            # Calculate reference price safely
-            reference_price = 0.0
-            ref_price_val = row.get('판매단가(V포함)')
-            if pd.notna(ref_price_val):
-                try:
-                    # Remove commas and convert
-                    reference_price = float(str(ref_price_val).replace(',', ''))
-                except (ValueError, TypeError):
-                    logger.warning(f"Could not parse reference price '{ref_price_val}' for index {idx}. Using 0.", exc_info=True)
-                    reference_price = 0.0
-
-            logger.debug(f"Creating API search task for index {idx}, product: '{product_name}', ref_price: {reference_price}")
-            api_search_tasks.append(
-                asyncio.create_task(
-                    _run_single_naver_search(idx, row, product_name, row.get('구분', 'A'), reference_price, client, config, naver_scrape_limit, api_semaphore)
+        for idx, row in product_rows.iterrows():
+            tasks.append(
+                _process_single_naver_row(
+                    idx, row, config, client, api_semaphore, 
+                    naver_scrape_limit, naver_image_target_dir
                 )
             )
+        
+        # Run tasks concurrently and collect results
+        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Gather all API search results
-        logger.info(f"Gathering results from {len(api_search_tasks)} API search tasks...")
-        start_gather_time = time.monotonic()
-        # Use return_exceptions=True to handle potential errors in tasks
-        api_results_raw: List[Union[Tuple[int, pd.Series, str, Optional[List[Dict]]], Exception]] = await asyncio.gather(*api_search_tasks, return_exceptions=True)
-        gather_time = time.monotonic() - start_gather_time
-        logger.info(f"Finished gathering API results in {gather_time:.2f} seconds.")
+    # Filter out exceptions and flatten results
+    results = []
+    for res in processed_results:
+        if isinstance(res, Exception):
+            logger.error(f"Error processing Naver row: {res}")
+        elif res is not None:
+            results.append(res)
 
-        # --- Process API Results and Prepare Image Downloads ---
-        logger.info("Processing API results and preparing image downloads...")
-        image_tasks = []
-        image_info_map: Dict[asyncio.Task, Tuple[int, str]] = {} # Map task to (index, target_path)
-        processed_results: Dict[int, Dict[str, Any]] = {} # Store final data indexed by original DataFrame index
-        successful_api_calls = 0
-        failed_api_calls = 0
+    # Create final DataFrame
+    if not results:
+        logger.warning("No valid results obtained from Naver crawl.")
+        # Return original DataFrame with empty Naver columns if needed, or just empty
+        # Let's add empty columns for consistency if results were expected
+        empty_naver_cols = {
+            '네이버_상품명': '검색된 상품이 없음', '기본수량(3)': '검색된 상품이 없음', 
+            '판매단가(V포함)(3)': '검색된 상품이 없음', '공급사명': '검색된 상품이 없음', 
+            '네이버 쇼핑 링크': '검색된 상품이 없음', '공급사 상품링크': '검색된 상품이 없음', 
+            '네이버 이미지': '검색된 상품이 없음'
+        }
+        final_df = product_rows.assign(**empty_naver_cols)
+    else:
+        # Create DataFrame from results (which now include original data)
+        final_df = pd.DataFrame(results)
+        
+    logger.info(f"🟢 Naver crawl finished. Processed {len(final_df)} rows.")
+    
+    return final_df
 
-        for idx_in_results, result_or_exc in enumerate(api_results_raw):
-            if isinstance(result_or_exc, Exception):
-                 logger.error(f"🟢 API Task {idx_in_results} failed with exception: {result_or_exc}", exc_info=result_or_exc)
-                 failed_api_calls += 1
-                 # Need to find the original index if possible, maybe pass index to gather?
-                 # For now, we can't map this failure back to a specific row easily without more info.
-                 continue # Skip processing this failed task
+# Helper function to process a single row for crawl_naver_products
+async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_target_dir):
+    """Processes a single product row for Naver API search and image download."""
+    product_name = row.get('상품명', '')
+    if not product_name or pd.isna(product_name):
+        logger.debug(f"Skipping row {idx} due to missing product name.")
+        return None # Skip this row
 
-            # Unpack the successful result
-            idx, original_row, product_type, naver_data = result_or_exc
-            successful_api_calls += 1
-            logger.debug(f"Processing result for index {idx}...")
+    # Get reference price
+    reference_price = 0.0
+    if '판매단가(V포함)' in row and pd.notna(row['판매단가(V포함)']):
+        try:
+            reference_price = float(str(row['판매단가(V포함)']).replace(',', ''))
+        except:
+            pass
 
-            # Placeholder for the final data for this row
-            row_output_data = {
-                'original_row': original_row.to_dict(), # Store the original row data
-                '네이버_상품명': None,
-                '기본수량(3)': None,
-                '판매단가(V포함)(3)': None,
-                '공급사명': None,
-                '네이버 쇼핑 링크': None,
-                '공급사 상품링크': None,
-                '네이버 이미지': None
-            }
+    # Search Naver API
+    async with api_semaphore:
+        naver_data = await crawl_naver(
+            original_query=product_name,
+            client=client,
+            config=config,
+            max_items=naver_scrape_limit,
+            reference_price=reference_price
+        )
 
-            if naver_data: # If API returned results for this product
-                # Use the first result from the Naver API data
-                first_item = naver_data[0]
-                logger.debug(f"  -> Found {len(naver_data)} Naver items for index {idx}. Using first: '{first_item.get('name', 'N/A')[:50]}...'")
+    # Prepare result dictionary starting with original row data
+    result_data = row.to_dict() 
+    # Add default Naver columns
+    result_data.update({
+        '네이버_상품명': '검색된 상품이 없음',
+        '기본수량(3)': '검색된 상품이 없음',
+        '판매단가(V포함)(3)': '검색된 상품이 없음',
+        '공급사명': '검색된 상품이 없음',
+        '네이버 쇼핑 링크': '검색된 상품이 없음',
+        '공급사 상품링크': '검색된 상품이 없음',
+        '네이버 이미지': '검색된 상품이 없음'
+    })
 
-                # Populate the output data dictionary with actual values from API
-                row_output_data['네이버_상품명'] = first_item.get('name')
-                row_output_data['기본수량(3)'] = first_item.get('quantity', '1')  # Default to '1' if not specified
-                row_output_data['판매단가(V포함)(3)'] = first_item.get('price')
-                row_output_data['공급사명'] = first_item.get('mallName')
-                row_output_data['네이버 쇼핑 링크'] = first_item.get('link')
-                row_output_data['공급사 상품링크'] = first_item.get('mallProductUrl')
-                row_output_data['네이버 이미지'] = first_item.get('image_url')
+    if naver_data:
+        first_item = naver_data[0]
+        result_data.update({
+            '네이버_상품명': first_item.get('name'),
+            '기본수량(3)': first_item.get('quantity', '1'),
+            '판매단가(V포함)(3)': first_item.get('price'),
+            '공급사명': first_item.get('mallName'),
+            '네이버 쇼핑 링크': first_item.get('link'),
+            '공급사 상품링크': first_item.get('mallProductUrl'),
+            # '네이버 이미지': first_item.get('image_url') # Store URL initially, path after download
+        })
+
+        # Download image if URL exists
+        image_url = first_item.get('image_url')
+        if image_url:
+            # Pass the specific Naver image directory
+            local_path = await download_naver_image(image_url, naver_image_target_dir, product_name) 
+            if local_path:
+                result_data['네이버 이미지'] = local_path # Update with local path
             else:
-                logger.debug(f"No Naver data found for index {idx}")
-
-            # Replace any remaining None values with error message
-            for key in row_output_data:
-                if key != 'original_row' and row_output_data[key] is None:
-                    row_output_data[key] = '검색된 상품이 없음'
-
-            # Store the processed data (with or without API results) for this index
-            processed_results[idx] = row_output_data
-
-        logger.info(f"Processed {successful_api_calls} successful API calls, {failed_api_calls} failed API calls.")
-        logger.info(f"Prepared {len(image_tasks)} image download tasks.")
-
-        # --- Wait for Image Downloads and Optional Background Removal ---
-        if image_tasks:
-            logger.info(f"Waiting for {len(image_tasks)} image downloads to complete...")
-            start_img_time = time.monotonic()
-            # Use return_exceptions=True for image downloads as well
-            image_results_raw: List[Union[bool, Exception]] = await asyncio.gather(*image_tasks, return_exceptions=True)
-            img_time = time.monotonic() - start_img_time
-            logger.info(f"Finished image downloads in {img_time:.2f} seconds.")
-
-            successful_downloads = 0
-            failed_downloads = 0
-            bg_removal_tasks = []
-            bg_removal_info_map: Dict[asyncio.Task, Tuple[int, str]] = {} # Map task to (index, bg_removed_path)
-
-            for task, result_or_exc in zip(image_tasks, image_results_raw):
-                original_idx, target_path = image_info_map[task] # Get original index and path
-
-                if isinstance(result_or_exc, Exception):
-                    logger.error(f"Image download failed for index {original_idx}, target '{target_path}': {result_or_exc}", exc_info=result_or_exc)
-                    failed_downloads += 1
-                    continue # Skip processing this failed download
-
-                if result_or_exc: # If download succeeded (result is True)
-                    successful_downloads += 1
-                    logger.debug(f"Image downloaded successfully for index {original_idx} to '{target_path}'")
-                    # Update the image path in the results dict immediately
-                    if original_idx in processed_results:
-                        processed_results[original_idx]['네이버 이미지'] = target_path
-
-                        # Handle background removal if enabled and download succeeded
-                        if use_bg_removal:
-                            try:
-                                # Create path for background removed image (use PNG format)
-                                bg_removed_path = target_path.replace('.jpg', '_no_bg.png').replace('.jpeg', '_no_bg.png').replace('.gif', '_no_bg.png')
-                                if bg_removed_path == target_path: # Ensure filename changes if extension wasn't common
-                                    base, _ = os.path.splitext(target_path)
-                                    bg_removed_path = base + '_no_bg.png'
-
-                                logger.debug(f"  -> Preparing background removal task for index {original_idx}: Source='{target_path}', Target='{bg_removed_path}'")
-                                bg_task = asyncio.create_task(
-                                    remove_background_async(target_path, bg_removed_path)
-                                )
-                                bg_removal_tasks.append(bg_task)
-                                bg_removal_info_map[bg_task] = (original_idx, bg_removed_path)
-                            except Exception as e:
-                                logger.error(f"Error preparing background removal task for index {original_idx}: {e}", exc_info=True)
-                    else:
-                         logger.warning(f"Downloaded image for index {original_idx}, but no corresponding entry found in processed_results.")
-                else: # Download function returned False (should ideally not happen if it raises exceptions)
-                    logger.warning(f"Image download reported failure (returned False) for index {original_idx}, target '{target_path}'.")
-                    failed_downloads += 1
-
-            logger.info(f"{successful_downloads} images downloaded successfully, {failed_downloads} failed.")
-
-            # Wait for background removal tasks if any
-            if bg_removal_tasks:
-                logger.info(f"Waiting for {len(bg_removal_tasks)} background removal tasks...")
-                start_bg_time = time.monotonic()
-                bg_results_raw = await asyncio.gather(*bg_removal_tasks, return_exceptions=True)
-                bg_time = time.monotonic() - start_bg_time
-                logger.info(f"Finished background removal tasks in {bg_time:.2f} seconds.")
-
-                successful_bg = 0
-                failed_bg = 0
-                for task, result_or_exc in zip(bg_removal_tasks, bg_results_raw):
-                    original_idx, bg_removed_path = bg_removal_info_map[task]
-
-                    if isinstance(result_or_exc, Exception):
-                        logger.error(f"Background removal failed for index {original_idx}, target '{bg_removed_path}': {result_or_exc}", exc_info=result_or_exc)
-                        failed_bg += 1
-                        continue
-
-                    if result_or_exc: # Background removal succeeded
-                        successful_bg += 1
-                        logger.debug(f"Background removed successfully for index {original_idx}, saved to '{bg_removed_path}'")
-                        # Update the image path in results to the background-removed version
-                        if original_idx in processed_results:
-                            processed_results[original_idx]['네이버 이미지'] = bg_removed_path
-                        else:
-                            logger.warning(f"Removed background for index {original_idx}, but no corresponding entry found in processed_results.")
-                    else: # Background removal returned False
-                        logger.warning(f"Background removal reported failure (returned False) for index {original_idx}, target '{bg_removed_path}'.")
-                        failed_bg += 1
-                logger.info(f"{successful_bg} backgrounds removed successfully, {failed_bg} failed.")
-
-
-    # --- Convert Processed Results to DataFrame ---
-    logger.info("Converting processed results to DataFrame...")
-    final_results_list = []
-    # Iterate through the original DataFrame's index to maintain order
-    for idx in product_rows.index:
-        if idx in processed_results:
-            final_results_list.append(processed_results[idx])
-        else:
-            # This case handles rows that were initially skipped (e.g., missing product name)
-            # or rows where the API task failed entirely before reaching processed_results.
-            logger.warning(f"No processed result found for original index {idx}. Adding placeholder.")
-            final_results_list.append({
-                    'original_row': product_rows.loc[idx].to_dict() if idx in product_rows.index else {'상품명': 'Unknown - Skipped Index'},
-                    '네이버_상품명': '-',
-                    '기본수량(3)': '-',
-                    '판매단가(V포함)(3)': '-',
-                    '공급사명': '-',
-                    '네이버 쇼핑 링크': '-',
-                    '공급사 상품링크': '-',
-                    '네이버 이미지': '-'
-                })
-
-    if not final_results_list:
-         logger.warning("No results were processed. Returning empty DataFrame.")
-         return pd.DataFrame()
-
-    # Create the final DataFrame
-    final_df = pd.DataFrame(final_results_list)
-
-    # Ensure all required columns exist, adding placeholders if necessary
-    # Price diff columns are intentionally excluded here
-    required_output_columns = ['original_row', '네이버_상품명', '기본수량(3)', '판매단가(V포함)(3)',
-                                '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '네이버 이미지']
-    missing_cols = []
-    for col in required_output_columns:
-        if col not in final_df.columns:
-             missing_cols.append(col)
-             final_df[col] = '-' # Add missing column with default value
-
-    if missing_cols:
-        logger.warning(f"The following required columns were missing in the final DataFrame and were added: {missing_cols}")
-
-    logger.info(f"Naver crawl finished. Returning DataFrame with {len(final_df)} rows and columns: {final_df.columns.tolist()}")
-    # Return only the required columns in the specified order
-    return final_df[required_output_columns]
+                 result_data['네이버 이미지'] = image_url # Keep URL if download failed
+    
+    return result_data
 
 
 async def _run_single_naver_search(idx: int, row: pd.Series, product_name: str, product_type: str, reference_price: float, client: httpx.AsyncClient, config: configparser.ConfigParser, naver_scrape_limit: int, api_semaphore: asyncio.Semaphore) -> Tuple[int, pd.Series, str, Optional[List[Dict]]]:
@@ -698,8 +649,10 @@ async def _test_main():
             return # Cannot proceed
 
     # Ensure test image directory exists using config or fallback
+    # Use target_dir for Naver test images
     default_img_dir = os.path.join(script_dir, '..', 'naver_test_images')
-    test_image_dir = config.get('Paths', 'image_target_dir', fallback=default_img_dir)
+    test_image_base_dir = config.get('Paths', 'image_target_dir', fallback=default_img_dir)
+    test_image_dir = os.path.join(test_image_base_dir, 'Naver') # Specify Naver subdirectory
 
     # Create the directory if it doesn't exist
     if not os.path.exists(test_image_dir):
@@ -710,70 +663,36 @@ async def _test_main():
              # Log error but continue, image download might fail later
              logger.error(f"Could not create test image directory {test_image_dir}: {e}. Image download might fail.")
 
-    # Test products list (from user example)
-    test_products = [
-        "마루는강쥐 클리어미니케이스",
+    # Test products list (Common Test Data)
+    common_test_products = [
+        "777쓰리쎄븐 TS-6500C 손톱깎이 13P세트",
         "휴대용 360도 회전 각도조절 접이식 핸드폰 거치대",
         "피에르가르뎅 3단 슬림 코지가든 우양산",
-        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학",
-        "티드 텔유 Y타입 치실 15개입 연세대학교 치과대학",
-        "티드 푸치카 불소 1000ppm 버블치약 50ml 거품치약 어린이치약 36개월이상 연세대학교 치과대학"
+        "마루는강쥐 클리어미니케이스",
+        "아테스토니 뱀부사 소프트 3P 타올 세트",
+        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학"
     ]
-
-    # Create test DataFrame with reference prices
+    
+    # Create test DataFrame with reference prices (Using common test data)
     test_data = {
-        '구분': ['A'] * len(test_products),
-        '담당자': ['테스트'] * len(test_products),
-        '업체명': ['테스트업체'] * len(test_products),
-        '업체코드': ['T001'] * len(test_products),
-        'Code': [f'CODE{i+1:03d}' for i in range(len(test_products))],
-        '중분류카테고리': ['테스트카테고리'] * len(test_products),
-        '상품명': test_products,
-        '기본수량(1)': [1] * len(test_products),
-        '판매단가(V포함)': [10000, 15000, 25000, 12000, 5000, 8000], # Updated reference prices
-        '본사상품링크': ['http://example.com/product{i+1}' for i in range(len(test_products))]
+        '구분': ['A'] * len(common_test_products),
+        '담당자': ['테스트'] * len(common_test_products),
+        '업체명': ['테스트업체'] * len(common_test_products),
+        '업체코드': ['T001'] * len(common_test_products),
+        'Code': [f'CODE{i+1:03d}' for i in range(len(common_test_products))],
+        '중분류카테고리': ['테스트카테고리'] * len(common_test_products),
+        '상품명': common_test_products,
+        '기본수량(1)': [1] * len(common_test_products),
+        '판매단가(V포함)': [10000, 15000, 25000, 12000, 5000, 8000], # Example reference prices
+        '본사상품링크': [f'http://example.com/product{i+1}' for i in range(len(common_test_products))]
     }
     test_df = pd.DataFrame(test_data)
-
+    
     print(f"Testing Naver API with {len(test_df)} products...")
     logger.info(f"Testing Naver API with {len(test_df)} products using DataFrame:")
     logger.info(test_df.to_string()) # Log the test data
-
+    
     try:
-        # Test each product individually first (optional, good for debugging)
-        print("Testing individual products via crawl_naver...")
-        logger.info("--- Testing individual products via crawl_naver ---")
-        individual_results = {}
-        async with get_async_httpx_client(config=config) as direct_client:
-            for idx, row in test_df.iterrows():
-                product = row['상품명']
-                ref_price = row['판매단가(V포함)']
-                print(f"Testing direct Naver API call for '{product}' (Ref Price: {ref_price})...")
-                logger.info(f"Testing direct crawl_naver for '{product}' (Ref Price: {ref_price})")
-                direct_results = await crawl_naver(
-                    original_query=product,
-                    client=direct_client,
-                    config=config,
-                    max_items=5, # Limit results for individual test
-                    reference_price=ref_price
-                )
-                individual_results[product] = direct_results
-
-                if direct_results:
-                    print(f"✅ Direct Naver API call successful! Found {len(direct_results)} results")
-                    logger.info(f"Direct call for '{product}' successful. Found {len(direct_results)} results.")
-                    for i, item in enumerate(direct_results[:3], 1):  # Show first 3 results
-                        print(f"  Result {i}: Name='{item.get('name', 'N/A')[:50]}...', Price=₩{item.get('price', 'N/A')}, Seller='{item.get('seller', 'N/A')}'")
-                        logger.debug(f"  Result {i}: {item}")
-                else:
-                    print(f"⛔ Direct Naver API call returned no results for '{product}'")
-                    logger.warning(f"Direct call for '{product}' returned no results.")
-
-                # Add delay between requests to avoid rate limits during testing
-                test_api_delay = config.getfloat('ScraperSettings', 'naver_api_delay', fallback=1.0)
-                logger.debug(f"Adding test delay of {test_api_delay:.2f}s")
-                await asyncio.sleep(test_api_delay)
-
         # Now test the full crawl_naver_products function
         print("--- Testing full crawl_naver_products function ---")
         logger.info("--- Testing full crawl_naver_products function ---")
@@ -784,15 +703,15 @@ async def _test_main():
         )
         full_crawl_time = time.monotonic() - start_full_crawl_time
         logger.info(f"crawl_naver_products completed in {full_crawl_time:.2f} seconds.")
-
+    
         print(f"--- Test Results (crawl_naver_products processed {len(results_df)} rows) ---")
         logger.info(f"--- Test Results (crawl_naver_products processed {len(results_df)} rows) ---")
         logger.info(f"Result DataFrame columns: {results_df.columns.tolist()}")
         # Log the first few rows of the result DataFrame for inspection
         logger.info("Result DataFrame head:")
         logger.info(results_df.head().to_string())
-
-
+    
+    
         # Check if the DataFrame is empty or has the expected columns
         if results_df.empty:
             print("ERROR: results_df is empty!")
@@ -810,20 +729,20 @@ async def _test_main():
             rows_with_data = sum(1 for x in results_df['네이버_상품명'] if x != '-' and pd.notna(x))
             print(f"Results with actual Naver data in '네이버_상품명': {rows_with_data}/{len(results_df)}")
             logger.info(f"Results with actual Naver data in '네이버_상품명': {rows_with_data}/{len(results_df)}")
-
+    
         # Log example data for each product from the final DataFrame
         for idx, row in results_df.iterrows():
             try:
                 # Safely get original product name from the 'original_row' dictionary
                 original_row_data = row.get('original_row', {})
                 original_name = original_row_data.get('상품명', 'Unknown Original Name') if isinstance(original_row_data, dict) else 'Original Row Data Missing/Invalid'
-
+    
                 # Safely get Naver data, defaulting to '-' if column missing or value is null/NaN
                 naver_name = row.get('네이버_상품명', '-')
                 naver_price = row.get('판매단가(V포함)(3)', '-') # Use the correct output column name
                 naver_seller = row.get('공급사명', '-')          # Use the correct output column name
                 naver_image = row.get('네이버 이미지', '-')
-
+    
                 print(f"Processed Row {idx}: Original Product='{original_name}'")
                 logger.info(f"Processed Row {idx}: Original Product='{original_name}'")
                 if naver_name != '-' and pd.notna(naver_name):
@@ -835,7 +754,7 @@ async def _test_main():
                 else:
                     print(f"  No Naver results found or populated for this row.")
                     logger.warning(f"  -> No Naver results found or populated for '{original_name}' (Index {idx})")
-
+    
             except KeyError as ke:
                  logger.error(f"KeyError processing test result row {idx}: Missing key {ke}. Row data: {row.to_dict()}", exc_info=True)
                  print(f"KeyError processing row {idx}: {ke}. Check logs.")
@@ -844,7 +763,7 @@ async def _test_main():
                  logger.error(f"Error processing test result row {idx} ('{original_name}'): {e}", exc_info=True)
                  print(f"Error processing row {idx}: {e}. Check logs.")
                  continue # Skip to next row on other errors
-
+    
         # Final success/failure assessment based on whether *any* data was found
         if rows_with_data == 0 and not results_df.empty:
             print("⛔ TEST FAILED: No data was returned for any products in the final DataFrame!")
@@ -855,11 +774,11 @@ async def _test_main():
         else:
             print(f"✅ TEST COMPLETED: Data was returned for {rows_with_data} products.")
             logger.info(f"✅ TEST COMPLETED: Data was returned for {rows_with_data} products.")
-
+    
     except Exception as e:
         print(f"An error occurred during the async test run: {e}")
         logger.error(f"An error occurred during the async test run: {e}", exc_info=True)
-
+    
     logger.info("--- Naver API Test (Async) Finished ---")
     print("--- Naver API Test (Async) Finished ---")
 

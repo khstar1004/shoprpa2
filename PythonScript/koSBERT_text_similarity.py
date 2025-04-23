@@ -115,7 +115,7 @@ def initialize_tfidf_vectorizer(sample_texts=None):
     global _tfidf_vectorizer, _tfidf_initialized
     
     try:
-        if _tfidf_initialized:
+        if _tfidf_initialized and _tfidf_vectorizer is not None:
             return _tfidf_vectorizer
             
         # Create vectorizer with Korean-specific settings
@@ -130,8 +130,14 @@ def initialize_tfidf_vectorizer(sample_texts=None):
         # If sample texts provided, fit the vectorizer
         if sample_texts and len(sample_texts) > 10:
             preprocessed_texts = [preprocess_text(text) for text in sample_texts if text]
-            _tfidf_vectorizer.fit(preprocessed_texts)
-            logger.info(f"TF-IDF vectorizer initialized with {len(preprocessed_texts)} texts")
+            preprocessed_texts = [text for text in preprocessed_texts if text]  # Remove empty texts
+            if len(preprocessed_texts) >= 2:  # Need at least 2 documents for TF-IDF
+                _tfidf_vectorizer.fit(preprocessed_texts)
+                logger.info(f"TF-IDF vectorizer initialized with {len(preprocessed_texts)} texts")
+            else:
+                logger.warning("Not enough valid texts to fit TF-IDF vectorizer")
+                _tfidf_initialized = False
+                return None
         else:
             logger.info("TF-IDF vectorizer initialized without fitting")
             
@@ -402,8 +408,12 @@ def calculate_tfidf_similarity(text1: str, text2: str) -> float:
         
     try:
         # Initialize vectorizer if needed
-        if not _tfidf_initialized:
+        if not _tfidf_initialized or _tfidf_vectorizer is None:
             initialize_tfidf_vectorizer([text1, text2])
+            
+        if not _tfidf_initialized or _tfidf_vectorizer is None:
+            logger.warning("TF-IDF vectorizer not properly initialized")
+            return 0.0
             
         # Transform texts to TF-IDF vectors
         tfidf_matrix = _tfidf_vectorizer.transform([text1, text2])

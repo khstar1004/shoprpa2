@@ -802,18 +802,6 @@ def process_matching(
     if progress_queue:
         progress_queue.emit("status", f"상품 매칭 시작 (GPU: {gpu_available}, 작업자: {max_workers})")
     
-    # 임시 컬럼 추가로 필수 컬럼 부재 문제 해결
-    if '기본수량(1)' not in haoreum_df.columns:
-        haoreum_df['기본수량(1)'] = haoreum_df.get('본사 기본수량', 1)
-        logging.info(f"기본수량(1) 컬럼이 없어 추가했습니다.")
-    
-    if '판매단가(V포함)' not in haoreum_df.columns and '판매단가' in haoreum_df.columns:
-        haoreum_df['판매단가(V포함)'] = haoreum_df['판매단가']
-        logging.info(f"판매단가(V포함) 컬럼이 없어 판매단가에서 복사했습니다.")
-    elif '판매단가(V포함)' not in haoreum_df.columns:
-        haoreum_df['판매단가(V포함)'] = 0
-        logging.info(f"판매단가(V포함) 컬럼이 없어 0값으로 추가했습니다.")
-    
     # Initialize matcher and multiprocessing
     total_products = len(haoreum_df)
     
@@ -864,6 +852,34 @@ def process_matching(
         if progress_queue:
             progress_queue.emit("status", "이미지 다운로드 중 오류 발생")
     
+    # --- IMPORTANT: Update candidate maps with downloaded local paths --- 
+    logging.info("Updating candidate data with local image paths...")
+    # Update Kogift map
+    for product_name, products in kogift_map.items():
+        if isinstance(products, list):
+            for product_dict in products:
+                if isinstance(product_dict, dict):
+                    # Get original URL (might be under different keys)
+                    original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src')
+                    if original_url and original_url in image_paths:
+                        product_dict['image_path'] = image_paths[original_url]
+                    elif original_url:
+                         logging.warning(f"Kogift image URL {original_url} not found in downloaded paths map.")
+
+    # Update Naver map
+    for product_name, products in naver_map.items():
+        if isinstance(products, list):
+            for product_dict in products:
+                if isinstance(product_dict, dict):
+                    # Get original URL (might be under different keys)
+                    original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src') or product_dict.get('네이버 이미지')
+                    if original_url and original_url in image_paths:
+                        product_dict['image_path'] = image_paths[original_url]
+                    elif original_url:
+                         logging.warning(f"Naver image URL {original_url} not found in downloaded paths map.")
+    logging.info("Finished updating candidate data with local image paths.")
+    # ----------------------------------------------------------------
+
     # Initialize a multiprocessing pool
     try:
         logging.info(f"Initializing process pool for matching with {max_workers} workers")
@@ -1083,11 +1099,6 @@ def process_matching(
         
         # Return original dataframe if error occurs
         result_df = haoreum_df.copy()
-        # 필수 컬럼 추가
-        if '기본수량(1)' not in result_df.columns:
-            result_df['기본수량(1)'] = result_df.get('본사 기본수량', 1)
-        if '판매단가(V포함)' not in result_df.columns:
-            result_df['판매단가(V포함)'] = result_df.get('판매단가', 0)
         return result_df
 
 def _filter_candidates_by_text(product_name: str, candidates: List[Dict], matcher: Optional[ProductMatcher] = None, config: Optional[configparser.ConfigParser] = None) -> List[Dict]:

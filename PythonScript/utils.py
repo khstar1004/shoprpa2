@@ -216,7 +216,19 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
         return False
         
     save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Ensure parent directory exists and is writable
+    try:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        if not os.access(save_path.parent, os.W_OK):
+            # Try to use a fallback directory in the current working directory
+            fallback_dir = Path.cwd() / "downloaded_images"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            save_path = fallback_dir / save_path.name
+            logging.warning(f"Original save path not writable, using fallback: {save_path}")
+    except Exception as e:
+        logging.error(f"Error creating save directory: {e}")
+        return False
 
     try:
         connect_timeout = config.getfloat('Network', 'connect_timeout', fallback=5.0)
@@ -267,15 +279,17 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
                         time.sleep(retry_delay * (attempt + 1))
                         continue
 
-            with open(save_path, 'wb') as f:
+            # Create a temporary file for downloading
+            temp_path = save_path.with_suffix('.tmp')
+            with open(temp_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
             # Validate downloaded file
-            if not os.path.exists(save_path) or os.path.getsize(save_path) < 100:
-                logging.warning(f"Downloaded file is too small or missing: {save_path}")
-                if os.path.exists(save_path):
-                    os.remove(save_path)
+            if not os.path.exists(temp_path) or os.path.getsize(temp_path) < 100:
+                logging.warning(f"Downloaded file is too small or missing: {temp_path}")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
@@ -283,15 +297,15 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
 
             # Validate image format
             try:
-                img = Image.open(save_path)
+                img = Image.open(temp_path)
                 img.verify()
-                img = Image.open(save_path)  # Re-open after verify
+                img = Image.open(temp_path)  # Re-open after verify
                 
                 # Check image dimensions
                 if img.width < 10 or img.height < 10:
                     logging.warning(f"Image dimensions too small: {img.width}x{img.height}")
                     if not is_kogift and attempt < max_retries - 1:
-                        os.remove(save_path)
+                        os.remove(temp_path)
                         time.sleep(retry_delay * (attempt + 1))
                         continue
 
@@ -301,17 +315,22 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
                     else:
                         logging.warning(f"Unsupported image format: {img.format}")
                         if attempt < max_retries - 1:
-                            os.remove(save_path)
+                            os.remove(temp_path)
                             time.sleep(retry_delay * (attempt + 1))
                             continue
 
-                logging.debug(f"Image validated successfully: {save_path}")
+                # If all validations pass, move temp file to final location
+                if os.path.exists(save_path):
+                    os.remove(save_path)
+                os.rename(temp_path, save_path)
+                
+                logging.debug(f"Image validated and saved successfully: {save_path}")
                 return True
 
             except (IOError, SyntaxError, Image.DecompressionBombError) as img_err:
                 logging.warning(f"Invalid image file ({url}): {img_err}")
-                if os.path.exists(save_path):
-                    os.remove(save_path)
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue

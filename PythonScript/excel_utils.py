@@ -296,17 +296,16 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
     logger.debug("Finished applying cell styles.")
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Processes image columns, handling local images and URLs with improved Excel 2021 compatibility."""
+    """Process and embed images in Excel worksheet."""
     logger.debug("Processing image columns...")
     
     # Get image column indices
-    image_cols = {col: idx for idx, col in enumerate(df.columns, 1) if col in IMAGE_COLUMNS}
+    image_cols = {col: idx for idx, col in enumerate(df.columns, 1) 
+                 if col in IMAGE_COLUMNS}
     
     if not image_cols:
-        logger.debug("No image columns found in DataFrame")
         return
-    
-    # Process each row
+        
     for row_idx in range(2, worksheet.max_row + 1):
         for col_name, col_idx in image_cols.items():
             cell = worksheet.cell(row=row_idx, column=col_idx)
@@ -314,56 +313,72 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 continue
 
             try:
-                img_path = str(cell.value)
-
-                # Handle local image path
-                if os.path.exists(img_path):
-                    try:
-                        # Open and validate image
-                        with Image.open(img_path) as img:
-                            # Convert to RGB if needed
-                            if img.mode in ('RGBA', 'LA'):
-                                img = img.convert('RGB')
-                            
-                            # Resize if too large (Excel 2021 limit)
-                            max_size = (1200, 1200)
-                            if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
-                                img.thumbnail(max_size, Image.Resampling.LANCZOS)
-                            
-                            # Save as optimized JPG if not already
-                            if not img_path.lower().endswith('.jpg'):
-                                temp_path = os.path.join(
-                                    os.path.dirname(img_path),
-                                    f"temp_{os.path.basename(img_path)}.jpg"
-                                )
-                                img.save(temp_path, 'JPEG', quality=85, optimize=True)
-                                img_path = temp_path
-                        
-                        # Add to worksheet with Excel 2021 features
-                        excel_img = openpyxl.drawing.image.Image(img_path)
-                        excel_img.width = 120  # Standard width
-                        excel_img.height = 120  # Standard height
-                        excel_img.anchor = f"{cell.coordinate}"
-                        worksheet.add_image(excel_img)
-                        
-                        # Clean up temp file if created
-                        if 'temp_' in img_path:
-                            try:
-                                os.remove(img_path)
-                            except:
-                                pass
-                            
-                    except Exception as img_e:
-                        logger.error(f"Error processing image {img_path}: {img_e}")
-                        cell.value = ERROR_MESSAGES['processing_error']
+                # Handle both string paths and dictionary image info
+                if isinstance(cell.value, dict):
+                    img_info = cell.value
+                    img_path = img_info.get('local_path', None)
+                    if not img_path:
+                        img_path = img_info.get('url', None)
                 else:
-                    logger.warning(f"Local image not found: {img_path}")
-                    cell.value = ERROR_MESSAGES['file_not_found']
+                    img_path = str(cell.value)
+
+                # Normalize path
+                img_path = os.path.normpath(img_path) if img_path else None
+                
+                # Verify image file exists and is valid
+                if not img_path or not os.path.exists(img_path):
+                    # Try URL if local path doesn't exist
+                    if isinstance(cell.value, dict) and cell.value.get('url'):
+                        logger.warning(f"Image file not found: {cell.value}")
+                        cell.value = cell.value.get('url')
+                    else:
+                        logger.warning(f"Image file not found: {img_path}")
+                        cell.value = '-'
+                    continue
+                    
+                try:
+                    # Open and validate image
+                    with Image.open(img_path) as img:
+                        # Convert to RGB if needed
+                        if img.mode in ('RGBA', 'LA'):
+                            img = img.convert('RGB')
+                        
+                        # Resize if too large
+                        if img.size[0] > IMAGE_MAX_SIZE[0] or img.size[1] > IMAGE_MAX_SIZE[1]:
+                            img.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+                            
+                        # Save as optimized JPG if not already
+                        if not img_path.lower().endswith('.jpg'):
+                            temp_path = os.path.join(
+                                os.path.dirname(img_path),
+                                f"temp_{os.path.basename(img_path)}.jpg"
+                            )
+                            img.save(temp_path, 'JPEG', quality=85, optimize=True)
+                            img_path = temp_path
+                    
+                    # Add to worksheet
+                    excel_img = openpyxl.drawing.image.Image(img_path)
+                    excel_img.width = IMAGE_STANDARD_SIZE[0]
+                    excel_img.height = IMAGE_STANDARD_SIZE[1]
+                    excel_img.anchor = f"{cell.coordinate}"
+                    worksheet.add_image(excel_img)
+                    
+                    # Clean up temp file if created
+                    if 'temp_' in img_path:
+                        try:
+                            os.remove(img_path)
+                        except:
+                            pass
+                            
+                except Exception as img_e:
+                    logger.error(f"Error processing image {img_path}: {img_e}")
+                    cell.value = ERROR_MESSAGES['processing_error']
+                    
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
                 cell.value = ERROR_MESSAGES['processing_error']
     
-    logger.debug("Finished image processing.")
+    logger.debug("Finished processing image columns")
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""

@@ -113,28 +113,18 @@ def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.Da
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
                              naver_results: Dict[str, List[Dict]] = None) -> pd.DataFrame:
-    """Format matched data for final output, ensuring all required columns and image URLs.
+    """Format matched data for final output, ensuring all required columns and image URLs."""
     
-    Args:
-        input_df: Input DataFrame with matched products
-        kogift_results: Dictionary of Kogift results by product name
-        naver_results: Dictionary of Naver results by product name
-        
-    Returns:
-        Formatted DataFrame ready for Excel output
-    """
-    logging.info(f"Starting data formatting. Input rows: {len(input_df)}")
-
-    # Store original columns to check later
-    original_columns = set(input_df.columns)
-
     # Deep copy to avoid modifying original
     df = input_df.copy()
+    
+    # Store original columns to check what existed in input
+    original_columns = df.columns.tolist()
     
     # 필수 컬럼 목록 - 최종 결과에 반드시 포함되어야 하는 컬럼
     required_columns = ['기본수량(1)', '판매단가(V포함)']
     
-    # 필수 컬럼 추가 (누락된 경우)
+    # 필수 컬럼 추가 (누락된 경우에만)
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         logging.warning(f"일부 필수 컬럼이 누락되어 있습니다: {missing_columns}")
@@ -142,17 +132,15 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         # 필수 컬럼 추가 - 누락된 컬럼을 기본값으로 추가
         for col in missing_columns:
             if col == '기본수량(1)':
-                # 본사 기본수량 컬럼이 있으면 그 값을 사용, 없으면 1로 기본값 설정
-                df['기본수량(1)'] = df.get('본사 기본수량', 1)
+                # 본사 기본수량 컬럼이 있으면 그 값을 사용, 없으면 기존 값 유지
+                if '본사 기본수량' in df.columns:
+                    df['기본수량(1)'] = df['본사 기본수량']
                 logging.info("'기본수량(1)' 컬럼이 추가되었습니다.")
             elif col == '판매단가(V포함)':
-                # 다른 가격 컬럼이 있으면 그 값 사용, 없으면 0으로 기본값 설정
+                # 다른 가격 컬럼이 있으면 그 값 사용, 없으면 기존 값 유지
                 if '판매단가' in df.columns:
                     df['판매단가(V포함)'] = df['판매단가']
                     logging.info("'판매단가(V포함)' 컬럼이 '판매단가'에서 복사되었습니다.")
-                else:
-                    df['판매단가(V포함)'] = 0
-                    logging.info("'판매단가(V포함)' 컬럼이 0값으로 추가되었습니다.")
     
     # 컬럼 확인 (추가 후 다시 확인)
     missing_columns_after_add = [col for col in required_columns if col not in df.columns]
@@ -164,8 +152,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # --- Standardize column names if needed ---
     # Add mapping for common column name variations
     column_name_map = {
-        '상품코드': '상품코드',
-        'Code': '상품코드',
+        # 'Code': '상품코드', # 최종 출력에 Code 컬럼이 필요하므로 주석 처리
         '제품코드': '상품코드',
         '상품분류': '상품분류',
         '상품명': '상품명',
@@ -181,7 +168,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # --- Ensure all expected output columns exist ---
     # Define final columns structure with defaults
     expected_output_columns = {
-        '상품코드': None,
+        'Code': None, # 상품코드 대신 Code 사용
         '상품분류': None,
         '상품명': None,
         '본사 이미지': None,
@@ -203,9 +190,25 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         '가격차이(3)(%)': None
     }
     
+    # 보호해야 할 초기 입력 컬럼 목록 (표준화된 이름 기준)
+    protected_initial_columns = {
+        'Code', # 상품코드 대신 Code 보호
+        '상품명', '기본수량(1)', '판매단가(V포함)',
+        # 사용자가 언급한 다른 초기 컬럼들도 추가 (만약 expected_output_columns에 포함될 경우 대비)
+        '구분', '담당자', '업체명', '업체코드', '중분류카테고리', '본사상품링크' 
+    }
+
     # Add missing columns with defaults, ONLY if they were not in the original input
+    # AND are not protected initial columns
     for col, default_value in expected_output_columns.items():
         if col not in df.columns:
+            # 보호해야 할 컬럼인 경우, 기본값 할당 로직 건너뛰기
+            if col in protected_initial_columns:
+                logging.warning(f"Protected initial column '{col}' was missing. Skipping default assignment.")
+                # 필요하다면 None으로 추가할 수는 있음 (현재는 그냥 건너뛰기)
+                # df[col] = None 
+                continue 
+
             # Check if the column was present in the original input DataFrame
             if col not in original_columns:
                 logging.warning(f"Column '{col}' was missing from original input and current df. Adding with default: {default_value}")
@@ -242,37 +245,59 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         df['본사 이미지'] = df.get('해오름이미지경로', None)
         logging.info("Added '본사 이미지' column from downloaded Haeoreum image paths")
     
-    # Add Kogift images from crawl results if available
-    if kogift_results and '고려기프트 이미지' in df.columns:
-        kogift_img_count = 0
+    # Add Kogift data from crawl results if available
+    if kogift_results:
+        kogift_update_count = 0
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
-            if pd.isna(row['고려기프트 이미지']) and product_name in kogift_results:
-                # Get first image from Kogift results
+            if product_name in kogift_results:
+                # Get first matching result from Kogift
                 kogift_data = kogift_results[product_name]
                 if kogift_data and len(kogift_data) > 0:
-                    for item in kogift_data:
-                        if 'image_path' in item and item['image_path']:
-                            df.at[idx, '고려기프트 이미지'] = item['image_path']
-                            kogift_img_count += 1
-                            break
-        logging.info(f"Added {kogift_img_count} missing Kogift images from crawl results")
+                    item = kogift_data[0]  # Use the first match
+                    
+                    # Update Kogift related columns
+                    if '기본수량(2)' in df.columns and 'quantity' in item:
+                        df.at[idx, '기본수량(2)'] = item['quantity']
+                    if '판매단가(V포함)(2)' in df.columns and 'price' in item:
+                        df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                    if '고려기프트 상품링크' in df.columns and 'link' in item:
+                        df.at[idx, '고려기프트 상품링크'] = item['link']
+                    if '고려기프트 이미지' in df.columns and 'image_path' in item:
+                        df.at[idx, '고려기프트 이미지'] = item['image_path']
+                    
+                    kogift_update_count += 1
+        
+        logging.info(f"Updated {kogift_update_count} rows with Kogift data")
                             
-    # Add Naver images from crawl results if available
-    if naver_results and '네이버 이미지' in df.columns:
-        naver_img_count = 0
+    # Add Naver data from crawl results if available
+    if naver_results:
+        naver_update_count = 0
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
-            if pd.isna(row['네이버 이미지']) and product_name in naver_results:
-                # Get first image from Naver results
+            if product_name in naver_results:
+                # Get first matching result from Naver
                 naver_data = naver_results[product_name]
                 if naver_data and len(naver_data) > 0:
-                    for item in naver_data:
-                        if 'image_path' in item and item['image_path']:
-                            df.at[idx, '네이버 이미지'] = item['image_path']
-                            naver_img_count += 1
-                            break
-        logging.info(f"Added {naver_img_count} missing Naver images from crawl results")
+                    item = naver_data[0]  # Use the first match
+                    
+                    # Update Naver related columns
+                    if '기본수량(3)' in df.columns and 'quantity' in item:
+                        df.at[idx, '기본수량(3)'] = item['quantity']
+                    if '판매단가(V포함)(3)' in df.columns and 'price' in item:
+                        df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                    if '네이버 쇼핑 링크' in df.columns and 'link' in item:
+                        df.at[idx, '네이버 쇼핑 링크'] = item['link']
+                    if '공급사 상품링크' in df.columns and 'seller_link' in item:
+                        df.at[idx, '공급사 상품링크'] = item['seller_link']
+                    if '공급사명' in df.columns and 'seller_name' in item:
+                        df.at[idx, '공급사명'] = item['seller_name']
+                    if '네이버 이미지' in df.columns and 'image_path' in item:
+                        df.at[idx, '네이버 이미지'] = item['image_path']
+                    
+                    naver_update_count += 1
+        
+        logging.info(f"Updated {naver_update_count} rows with Naver data")
     
     # Add additional logic to ensure Haereum images are included
     if '본사 이미지' in df.columns and '해오름이미지경로' in df.columns:
@@ -325,6 +350,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                 axis=1
             )
     
+    # Ensure image paths exist and are valid
+    for img_col in ['네이버 이미지', '고려기프트 이미지', '본사 이미지']:
+        if img_col in df.columns:
+            df[img_col] = df[img_col].apply(
+                lambda x: str(x) if pd.notna(x) and os.path.exists(str(x)) 
+                and os.path.getsize(str(x)) > 0 else '-'
+            )
+    
     # --- Final formatting and cleanup ---
     # Convert NaN values to None/empty for cleaner Excel output
     df = df.replace({pd.NA: None, np.nan: None})
@@ -332,9 +365,20 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     logging.info(f"Data formatting complete. Output rows: {len(df)}")
     return df
 
-def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
+def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
+                    kogift_results: Optional[Dict[str, List[Dict]]] = None,
+                    naver_results: Optional[Dict[str, List[Dict]]] = None) -> pd.DataFrame:
     """
     Process input DataFrame with necessary data processing steps.
+    
+    Args:
+        df: Input DataFrame to process
+        config: Configuration object
+        kogift_results: Dictionary mapping product names to Kogift crawl results
+        naver_results: Dictionary mapping product names to Naver crawl results
+    
+    Returns:
+        Processed DataFrame
     """
     if config is None:
         config = configparser.ConfigParser()
@@ -348,11 +392,12 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
             logging.error("Failed to filter results")
             return df
             
-        # Format data for output
-        kogift_results = {}  # This would normally come from kogift processing
-        naver_results = {}   # This would normally come from naver processing
-        
-        formatted_df = format_product_data_for_output(filtered_df, kogift_results, naver_results)
+        # Format data for output using provided crawl results
+        formatted_df = format_product_data_for_output(
+            filtered_df,
+            kogift_results=kogift_results or {},
+            naver_results=naver_results or {}
+        )
         
         # Create output directory if it doesn't exist
         output_dir = config.get('Paths', 'output_dir')

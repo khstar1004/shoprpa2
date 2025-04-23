@@ -10,106 +10,128 @@ from urllib.parse import urlparse, unquote
 import time
 from PIL import Image
 import io
+from pathlib import Path
+import random
+import re
+import requests
+import shutil
 
 # 로거 설정
 logger = logging.getLogger(__name__)
 
 # config.ini 파일 로드
 config = configparser.ConfigParser()
-config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-config.read(config_path, encoding='utf-8')
+# Use Path object for robustness
+config_ini_path = Path(__file__).resolve().parent.parent / 'config.ini'
 
-# 설정 로드
-MAX_RETRIES = config.getint('Matching', 'max_retries_downloads', fallback=3)
-VERIFY_SAMPLE_PERCENT = config.getint('Matching', 'verify_sample_percent', fallback=10)
-VERIFY_IMAGE_URLS = config.getboolean('Matching', 'verify_image_urls', fallback=True)
-PREDOWNLOAD_KOGIFT_IMAGES = config.getboolean('Matching', 'predownload_kogift_images', fallback=True)
-KOGIFT_SPECIAL_DOMAIN_HANDLING = config.getboolean('Matching', 'kogift_special_domain_handling', fallback=True)
+try:
+    config.read(config_ini_path, encoding='utf-8')
+    if not config.sections():
+        raise FileNotFoundError(f"Config file not found or empty: {config_ini_path}")
 
-# 이미지 저장 경로 - 'images_dir' 값 사용
-IMAGE_DIR = config.get('Matching', 'images_dir', fallback='C:\\RPA\\Image\\Target')
-logger.info(f"Using image directory from config: {IMAGE_DIR}")
-os.makedirs(IMAGE_DIR, exist_ok=True)
+    # 설정 로드
+    MAX_RETRIES = config.getint('Matching', 'max_retries_downloads', fallback=3)
+    VERIFY_SAMPLE_PERCENT = config.getint('Matching', 'verify_sample_percent', fallback=10)
+    VERIFY_IMAGE_URLS = config.getboolean('Matching', 'verify_image_urls', fallback=True)
+    PREDOWNLOAD_KOGIFT_IMAGES = config.getboolean('Matching', 'predownload_kogift_images', fallback=True)
+    KOGIFT_SPECIAL_DOMAIN_HANDLING = config.getboolean('Matching', 'kogift_special_domain_handling', fallback=True)
 
-async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: int = 5) -> Tuple[str, bool, Optional[str]]:
-    """
-    이미지 URL이 유효한지 확인하는 함수
+    # 이미지 저장 경로 - Use Target/kogift for this downloader
+    try:
+        image_target_dir = config.get('Paths', 'image_target_dir')
+        KOGIFT_IMAGE_DIR = Path(image_target_dir) / 'kogift'
+        logger.info(f"Using Kogift image directory from config: {KOGIFT_IMAGE_DIR}")
+    except (configparser.NoSectionError, configparser.NoOptionError) as e:
+        logger.error(f"Error getting image_target_dir from config: {e}. Using default.")
+        KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift'
+        logger.info(f"Using default Kogift image directory: {KOGIFT_IMAGE_DIR}")
+
+except Exception as e:
+    logger.error(f"Error loading config from {config_ini_path}: {e}, using default values")
+    # 기본값 설정
+    MAX_RETRIES = 3
+    VERIFY_SAMPLE_PERCENT = 10
+    VERIFY_IMAGE_URLS = True
+    PREDOWNLOAD_KOGIFT_IMAGES = True
+    KOGIFT_SPECIAL_DOMAIN_HANDLING = True
+    # Default Kogift image directory
+    KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift' 
+    logger.info(f"Using default Kogift image directory: {KOGIFT_IMAGE_DIR}")
+
+# 이미지 경로 생성 및 권한 확인
+try:
+    # Use the specific KOGIFT_IMAGE_DIR
+    KOGIFT_IMAGE_DIR.mkdir(parents=True, exist_ok=True) 
     
-    Args:
-        session: aiohttp 세션
-        url: 확인할 이미지 URL
-        timeout: 요청 타임아웃 (초)
-        
-    Returns:
-        Tuple[str, bool, Optional[str]]: (URL, 유효 여부, 오류 메시지)
-    """
+    # 쓰기 권한 확인
+    if not os.access(KOGIFT_IMAGE_DIR, os.W_OK):
+        # 대체 경로 사용
+        fallback_dir = Path.cwd() / "downloaded_images" / "kogift" # Add kogift subfolder here too
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
+        KOGIFT_IMAGE_DIR = fallback_dir
+except Exception as e:
+    # 기본 대체 경로 사용
+    fallback_dir = Path.cwd() / "downloaded_images" / "kogift"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
+    KOGIFT_IMAGE_DIR = fallback_dir
+
+# 파일 작업을 위한 세마포어 생성
+file_semaphore = asyncio.Semaphore(1)
+
+async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: int = 10) -> Tuple[str, bool, Optional[str]]:
+    """이미지 URL이 유효한지 확인하는 함수"""
     if not url:
         return url, False, "Empty URL"
     
+    # URL 정규화
+    if not url.startswith(('http://', 'https://')):
+        if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+            url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
+        else:
+            return url, False, "Invalid URL scheme"
+
     try:
-        # 먼저 HEAD 요청으로 빠르게 확인
+        # GET 요청으로 이미지 확인
         try:
-            async with session.head(url, timeout=timeout) as response:
+            async with session.get(url, timeout=timeout, allow_redirects=True) as response:
                 if response.status != 200:
                     return url, False, f"HTTP status {response.status}"
                 
                 content_type = response.headers.get('Content-Type', '')
-                # 고려기프트 URL에 대해서는 Content-Type 검사를 덜 엄격하게 적용
-                is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
+                # 네이버 이미지 URL은 별도 처리
+                is_naver = "pstatic.net" in url.lower()
                 
-                if not content_type.startswith('image/') and not is_kogift:
-                    # 일부 서버는 HEAD 요청에 제대로 응답하지 않을 수 있으므로,
-                    # content-type이 이미지가 아니면 GET 요청으로 다시 시도
-                    raise ValueError("Not an image content type in HEAD response")
-                
-                # 응답 헤더만으로는 불충분할 수 있으므로 일부 데이터를 읽어 확인
-                chunk = await response.content.read(10240)  # 최대 10KB만 읽음
-                try:
-                    img = Image.open(io.BytesIO(chunk))
-                    img.verify()  # 이미지 데이터 검증
-                    return url, True, None
-                except Exception as e:
-                    # 고려기프트 URL인 경우 이미지 검증 실패해도 계속 진행할 수 있게 함
-                    if is_kogift:
-                        # 너무 작은 파일이면 오류로 간주
-                        if len(chunk) < 100:
-                            return url, False, f"Invalid Kogift image data (too small): {len(chunk)} bytes"
-                        # 오류 메시지 기록하고 유효하다고 간주
-                        logger.warning(f"Kogift image validation failed but proceeding: {url}, Error: {str(e)}")
-                        return url, True, None
-                    return url, False, f"Invalid image data: {str(e)}"
-        except (asyncio.TimeoutError, ValueError, aiohttp.ClientError):
-            # HEAD 요청이 실패하면 GET 요청으로 재시도
-            async with session.get(url, timeout=timeout) as response:
-                if response.status != 200:
-                    return url, False, f"HTTP status {response.status}"
-                
-                content_type = response.headers.get('Content-Type', '')
-                # 고려기프트 URL에 대해서는 Content-Type 검사를 덜 엄격하게 적용
-                is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
-                
-                if not content_type.startswith('image/') and not is_kogift:
+                if not content_type.startswith('image/') and not is_naver:
                     return url, False, f"Not an image (content-type: {content_type})"
                 
+                # 응답 크기 확인
+                if 'Content-Length' in response.headers:
+                    content_length = int(response.headers['Content-Length'])
+                    if content_length < 100:
+                        return url, False, f"Content too small: {content_length} bytes"
+                
                 # 응답 헤더만으로는 불충분할 수 있으므로 일부 데이터를 읽어 확인
                 chunk = await response.content.read(10240)  # 최대 10KB만 읽음
+                if len(chunk) < 100:
+                    return url, False, f"Response too small: {len(chunk)} bytes"
+                
                 try:
                     img = Image.open(io.BytesIO(chunk))
                     img.verify()  # 이미지 데이터 검증
                     return url, True, None
                 except Exception as e:
-                    # 고려기프트 URL인 경우 이미지 검증 실패해도 계속 진행할 수 있게 함
-                    if is_kogift:
-                        # 너무 작은 파일이면 오류로 간주
-                        if len(chunk) < 100:
-                            return url, False, f"Invalid Kogift image data (too small): {len(chunk)} bytes"
-                        # 오류 메시지 기록하고 유효하다고 간주
-                        logger.warning(f"Kogift image validation failed but proceeding: {url}, Error: {str(e)}")
+                    # 네이버 이미지 URL인 경우 이미지 검증 실패해도 계속 진행
+                    if is_naver:
+                        logger.warning(f"Naver image validation failed but proceeding: {url}, Error: {str(e)}")
                         return url, True, None
                     return url, False, f"Invalid image data: {str(e)}"
                 
-        return url, True, None
-        
+            return url, True, None
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            return url, False, f"Request error: {str(e)}"
+            
     except asyncio.TimeoutError:
         return url, False, "Request timeout"
     except aiohttp.ClientError as e:
@@ -118,7 +140,15 @@ async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: in
         return url, False, f"Unexpected error: {str(e)}"
 
 def get_image_path(url: str) -> str:
-    """이미지 URL에 대한 로컬 파일 경로 생성"""
+    """이미지 URL에 대한 로컬 파일 경로 생성 (Kogift 전용 경로 사용)"""
+    if not url:
+        return None
+        
+    # URL 정규화
+    if not url.startswith(('http://', 'https://')):
+        if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+            url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
+            
     # URL 해시를 파일명으로 사용
     url_hash = hashlib.md5(url.encode()).hexdigest()
     
@@ -137,7 +167,14 @@ def get_image_path(url: str) -> str:
         ext = '.jpg'  # 허용되지 않은 확장자 또는 kogift 이미지는 .jpg로 변환
     
     filename = f"{url_hash}{ext}"
-    return os.path.join(IMAGE_DIR, filename)
+    
+    # 이미지 경로 생성 (Use the globally defined KOGIFT_IMAGE_DIR)
+    image_path = KOGIFT_IMAGE_DIR / filename
+    
+    # 디렉토리 존재 확인 및 생성 (Redundant if done globally, but safe)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    return str(image_path)
 
 async def download_image(session: aiohttp.ClientSession, url: str, retry_count: int = 0) -> Tuple[str, bool, str]:
     """이미지 다운로드 함수"""
@@ -146,79 +183,205 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         return url, False, ""
     
     try:
+        # URL 정규화
+        if not url.startswith(('http://', 'https://')):
+            if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower() or "jclgift" in url.lower():
+                url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
+            else:
+                logger.warning(f"Invalid URL format: {url}")
+                return url, False, ""
+        
         # URL 검증
         if VERIFY_IMAGE_URLS:
-            url_valid, valid, error_msg = await verify_image_url(session, url)
+            verified_url, valid, error_msg = await verify_image_url(session, url)
             if not valid:
                 logger.warning(f"Invalid image URL: {url}, Error: {error_msg}")
                 return url, False, ""
+            url = verified_url
         
-        # 고려기프트 도메인 특별 처리
-        if KOGIFT_SPECIAL_DOMAIN_HANDLING and "kogift" in url.lower():
-            parsed_url = urlparse(url)
-            if not parsed_url.scheme:  # URL에 스킴이 없는 경우
-                url = "https://" + url
-        
+        # 이미지 경로 생성
         image_path = get_image_path(url)
+        if not image_path:
+            logger.warning(f"Could not generate image path for URL: {url}")
+            return url, False, ""
+            
+        # 이미지 경로를 Path 객체로 변환
+        image_path = Path(image_path)
+        
+        # 고유한 임시 파일 경로 생성 (충돌 방지)
+        temp_path = image_path.with_name(f"{image_path.stem}_{random.randint(1000, 9999)}.tmp")
         
         # 이미지가 이미 있는지 확인
-        if os.path.exists(image_path):
-            file_size = os.path.getsize(image_path)
+        if image_path.exists():
+            file_size = image_path.stat().st_size
             if file_size > 0:  # 파일이 있고 내용이 있으면 다운로드 스킵
-                return url, True, image_path
+                logger.debug(f"Image already exists: {url} -> {image_path}")
+                return url, True, str(image_path)
         
         # 이미지 다운로드
-        async with session.get(url, timeout=10) as response:
-            if response.status != 200:
-                logger.warning(f"HTTP error while downloading {url}: {response.status}")
-                # 재시도
-                return await download_image(session, url, retry_count + 1)
-            
-            # Content-Type 확인
-            content_type = response.headers.get('Content-Type', '')
-            logger.info(f"Content-Type for {url}: {content_type}")
-            
-            # 이미지 데이터 받기
-            data = await response.read()
-            
-            # 고려기프트 URL의 경우 Content-Type 검사를 덜 엄격하게 적용
-            # 작은 HTML 오류 페이지가 아니라면 계속 진행
-            if content_type and 'text/html' in content_type and len(data) < 1000:
-                logger.warning(f"URL likely returns HTML error page instead of image: {url}")
-                return url, False, ""
-            
-            if not data or len(data) < 100:  # 이미지 데이터가 너무 작으면 의심
-                logger.warning(f"Downloaded image too small: {len(data)} bytes, URL: {url}")
-                return url, False, ""
-            
-            # 이미지 데이터 검증 시도
-            try:
-                img = Image.open(io.BytesIO(data))
-                img.verify()
-            except Exception as e:
-                logger.warning(f"Invalid image data from {url}: {str(e)}")
-                return url, False, ""
-            
-            # 이미지 저장
-            async with aiofiles.open(image_path, 'wb') as f:
-                await f.write(data)
-            
-            logger.info(f"Downloaded image: {url} -> {image_path}")
-            return url, True, image_path
-    
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout error while downloading {url}")
-        # 재시도
-        return await download_image(session, url, retry_count + 1)
-    
-    except aiohttp.ClientError as e:
-        logger.warning(f"Client error while downloading {url}: {str(e)}")
-        # 재시도
-        return await download_image(session, url, retry_count + 1)
+        try:
+            async with session.get(url, timeout=15, allow_redirects=True) as response:
+                if response.status != 200:
+                    logger.warning(f"HTTP error while downloading {url}: {response.status}")
+                    # 재시도
+                    await asyncio.sleep(1.0 * (retry_count + 1))
+                    return await download_image(session, url, retry_count + 1)
+                
+                # Content-Type 확인
+                content_type = response.headers.get('Content-Type', '')
+                logger.debug(f"Content-Type for {url}: {content_type}")
+                
+                # 이미지 데이터 받기
+                data = await response.read()
+                
+                # 고려기프트 URL의 경우 Content-Type 검사를 덜 엄격하게 적용
+                # 작은 HTML 오류 페이지가 아니라면 계속 진행
+                is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower() or "jclgift" in url.lower()
+                
+                if content_type and 'text/html' in content_type and len(data) < 1000 and not is_kogift:
+                    logger.warning(f"URL likely returns HTML error page instead of image: {url}")
+                    return url, False, ""
+                
+                if not data or len(data) < 100:  # 이미지 데이터가 너무 작으면 의심
+                    logger.warning(f"Downloaded image too small: {len(data)} bytes, URL: {url}")
+                    # 재시도
+                    await asyncio.sleep(1.0 * (retry_count + 1))
+                    return await download_image(session, url, retry_count + 1)
+                
+                # 이미지 데이터 임시 파일에 저장
+                try:
+                    # 임시 파일 저장을 위한 디렉토리 생성
+                    try:
+                        temp_path.parent.mkdir(parents=True, exist_ok=True)
+                    except (PermissionError, OSError) as e:
+                        logger.warning(f"Cannot create directory for {temp_path.parent}: {e}")
+                        # 대체 디렉토리로 시도
+                        fallback_dir = Path('downloaded_images') / "kogift"
+                        fallback_dir.mkdir(exist_ok=True)
+                        temp_path = fallback_dir / temp_path.name
+                        image_path = fallback_dir / image_path.name
+                    
+                    async with aiofiles.open(temp_path, 'wb') as f:
+                        await f.write(data)
+                        await f.flush()
+                    
+                    # 파일 핸들러가 완전히 닫히도록 잠시 대기
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    logger.error(f"Error writing temporary file {temp_path}: {e}")
+                    return url, False, ""
+                
+                # 이미지 데이터 검증 시도
+                try:
+                    img = Image.open(temp_path)
+                    img.verify()
+                    
+                    # 이미지 크기 검증
+                    img = Image.open(temp_path)
+                    if img.width < 10 or img.height < 10:
+                        logger.warning(f"Image dimensions too small: {img.width}x{img.height}, URL: {url}")
+                        # 고려기프트 이미지는 작은 이미지도 허용
+                        if not is_kogift:
+                            if temp_path.exists():
+                                try:
+                                    temp_path.unlink()
+                                except:
+                                    pass
+                            # 재시도
+                            await asyncio.sleep(1.0 * (retry_count + 1))
+                            return await download_image(session, url, retry_count + 1)
+                    
+                    # 이미지 검증 성공 후 파일 이동 시도 (다양한 방법으로)
+                    move_success = False
+                    error_msg = ""
+                    
+                    # 기존 파일 제거 시도
+                    if image_path.exists():
+                        try:
+                            image_path.unlink()
+                        except Exception as e:
+                            logger.warning(f"Could not remove existing file {image_path}: {e}")
+                            # 대체 파일명 생성
+                            image_path = image_path.with_name(f"{image_path.stem}_{int(time.time())}{image_path.suffix}")
+                    
+                    # 파일 이동 시도 (여러 방법)
+                    for attempt in range(3):
+                        try:
+                            # 1. rename으로 시도
+                            temp_path.rename(image_path)
+                            move_success = True
+                            break
+                        except Exception as e:
+                            error_msg = str(e)
+                            logger.debug(f"Rename attempt {attempt+1} failed: {error_msg}")
+                            await asyncio.sleep(0.5)  # 다음 시도 전 지연
+                            
+                            # 2. shutil.move로 시도
+                            if attempt == 1:
+                                try:
+                                    import shutil
+                                    shutil.move(str(temp_path), str(image_path))
+                                    move_success = True
+                                    break
+                                except Exception as e2:
+                                    error_msg += f" | Move error: {str(e2)}"
+                                    await asyncio.sleep(0.5)
+                            
+                            # 3. 복사 후 삭제 시도
+                            if attempt == 2:
+                                try:
+                                    import shutil
+                                    shutil.copy2(str(temp_path), str(image_path))
+                                    try:
+                                        temp_path.unlink()
+                                    except:
+                                        pass
+                                    move_success = True
+                                    break
+                                except Exception as e3:
+                                    error_msg += f" | Copy error: {str(e3)}"
+                    
+                    # 모든 이동 시도 실패
+                    if not move_success:
+                        logger.error(f"Failed to move temporary file to final location after multiple attempts: {error_msg}")
+                        if temp_path.exists() and temp_path.stat().st_size > 0:
+                            # 임시 파일을 결과로 반환
+                            logger.warning(f"Using temp file path as fallback: {temp_path}")
+                            return url, True, str(temp_path)
+                        return url, False, ""
+                    
+                    logger.info(f"Downloaded image: {url} -> {image_path}")
+                    return url, True, str(image_path)
+                    
+                except Exception as e:
+                    logger.warning(f"Invalid image data from {url}: {str(e)}")
+                    if temp_path.exists():
+                        try:
+                            temp_path.unlink()
+                        except:
+                            pass
+                    
+                    # 재시도
+                    await asyncio.sleep(1.0 * (retry_count + 1))
+                    return await download_image(session, url, retry_count + 1)
+        
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout error while downloading {url}")
+            # 재시도
+            await asyncio.sleep(1.0 * (retry_count + 1))
+            return await download_image(session, url, retry_count + 1)
+        
+        except aiohttp.ClientError as e:
+            logger.warning(f"Client error while downloading {url}: {str(e)}")
+            # 재시도
+            await asyncio.sleep(1.0 * (retry_count + 1))
+            return await download_image(session, url, retry_count + 1)
     
     except Exception as e:
         logger.error(f"Unexpected error while downloading {url}: {str(e)}", exc_info=True)
         # 재시도
+        await asyncio.sleep(1.0 * (retry_count + 1))
         return await download_image(session, url, retry_count + 1)
 
 async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
@@ -226,15 +389,30 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     # 결과를 저장할 딕셔너리: {url: local_path}
     results = {}
     
+    # 빈 URL 제거
+    image_urls = [url for url in image_urls if url]
+    
+    if not image_urls:
+        logger.warning("No image URLs provided for download")
+        return results
+    
+    # URL 정규화
+    normalized_urls = []
+    for url in image_urls:
+        if not url.startswith(('http://', 'https://')):
+            if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+                norm_url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
+                normalized_urls.append(norm_url)
+            else:
+                logger.warning(f"Skipping invalid URL: {url}")
+        else:
+            normalized_urls.append(url)
+    
     # 이미 로컬에 다운로드된 이미지 필터링
     to_download = []
-    for url in image_urls:
-        if not url:
-            results[url] = None
-            continue
-            
+    for url in normalized_urls:
         path = get_image_path(url)
-        if os.path.exists(path) and os.path.getsize(path) > 0:
+        if path and os.path.exists(path) and os.path.getsize(path) > 0:
             logger.debug(f"Image already exists: {url} -> {path}")
             results[url] = path
         else:
@@ -246,15 +424,37 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     
     logger.info(f"Downloading {len(to_download)} images...")
     
-    # 비동기 세션 생성 및 동시 다운로드
-    async with aiohttp.ClientSession() as session:
-        # 병렬로 다운로드 작업 실행
-        tasks = [download_image(session, url) for url in to_download]
-        downloads = await asyncio.gather(*tasks)
+    # TCP 연결 재사용을 위한 세션 설정
+    timeout = aiohttp.ClientTimeout(total=30)
+    conn_limit = min(10, len(to_download))  # 최대 10개 연결 제한
+    
+    # 사용자 에이전트 설정
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    # 비동기 세션 생성 및 연결 제한 설정
+    connector = aiohttp.TCPConnector(limit=conn_limit, ssl=False)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
+        # 다운로드 작업 생성 (동시성 제한 적용)
+        semaphore = asyncio.Semaphore(5)  # 최대 5개 동시 다운로드
+        
+        async def download_with_semaphore(url):
+            async with semaphore:
+                return await download_image(session, url)
+        
+        tasks = [download_with_semaphore(url) for url in to_download]
+        downloads = await asyncio.gather(*tasks, return_exceptions=True)
         
         # 결과 처리
-        for url, success, path in downloads:
-            results[url] = path if success else None
+        for i, result in enumerate(downloads):
+            url = to_download[i]
+            if isinstance(result, Exception):
+                logger.error(f"Error downloading {url}: {str(result)}")
+                results[url] = None
+            else:
+                url_result, success, path = result
+                results[url] = path if success else None
     
     # 다운로드 결과 요약
     success_count = sum(1 for path in results.values() if path)
@@ -268,26 +468,31 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
         logger.info("Pre-downloading of 고려기프트 images is disabled in config")
         return {}
         
+    if not product_list:
+        logger.warning("No product list provided for Kogift image predownload")
+        return {}
+        
     logger.info(f"Pre-downloading images for {len(product_list)} 고려기프트 products")
     
     # 모든 이미지 URL 추출
     image_urls = []
     for product in product_list:
+        if not isinstance(product, dict):
+            continue
+            
         # 여러 필드명 지원 (하위 호환성)
         img_url = None
-        for field in ['image', 'image_path', 'src']:
+        for field in ['image', 'image_path', 'src', 'img_src', 'image_url']:
             if field in product and product[field]:
                 img_url = product[field]
                 break
                 
         if img_url:
-            # 고려기프트 도메인 URL 처리
-            if KOGIFT_SPECIAL_DOMAIN_HANDLING and "kogift" in img_url.lower():
-                parsed_url = urlparse(img_url)
-                if not parsed_url.scheme:  # URL에 스킴이 없는 경우
-                    img_url = "https://" + img_url
-            
             image_urls.append(img_url)
+    
+    if not image_urls:
+        logger.warning("No image URLs found in the product list")
+        return {}
     
     # 중복 제거
     unique_urls = list(set(image_urls))
@@ -305,20 +510,40 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
         
         logger.info(f"Verifying {len(urls_to_verify)} sample Kogift image URLs ({VERIFY_SAMPLE_PERCENT}%)")
         
+        # TCP 연결 재사용을 위한 세션 설정
+        timeout = aiohttp.ClientTimeout(total=15)
+        connector = aiohttp.TCPConnector(limit=5, ssl=False)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
         # 샘플 URL 검증
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
             tasks = [verify_image_url(session, url) for url in urls_to_verify]
-            verify_results = await asyncio.gather(*tasks)
+            verify_results = await asyncio.gather(*tasks, return_exceptions=True)
             
             # 검증 결과 확인
-            invalid_count = sum(1 for _, valid, _ in verify_results if not valid)
-            if invalid_count:
-                logger.warning(f"Found {invalid_count}/{len(urls_to_verify)} invalid Kogift image URLs in sample")
+            valid_count = 0
+            invalid_count = 0
+            error_count = 0
+            
+            for i, result in enumerate(verify_results):
+                url = urls_to_verify[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Error verifying {url}: {str(result)}")
+                    error_count += 1
+                else:
+                    _, valid, _ = result
+                    if valid:
+                        valid_count += 1
+                    else:
+                        invalid_count += 1
+            
+            if invalid_count + error_count:
+                logger.warning(f"Found {invalid_count} invalid and {error_count} error URLs out of {len(urls_to_verify)} sample")
                 # 문제가 많은 경우 경고 출력
-                if invalid_count > len(urls_to_verify) // 2:
-                    logger.error(f"More than 50% of Kogift image URLs are invalid! Consider checking the source.")
-                
-                # 문제가 많아도 계속 진행 (실패 이미지는 download_image에서 필터링됨)
+                if (invalid_count + error_count) > len(urls_to_verify) // 2:
+                    logger.error(f"More than 50% of Kogift image URLs are problematic! Consider checking the source.")
     
     # 이미지 다운로드
     image_paths = await download_images(unique_urls)
@@ -329,6 +554,24 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
     
     return image_paths
 
+async def download_all_images(products: List[Dict]) -> Dict[str, Optional[str]]:
+    """모든 제품의 이미지를 다운로드하는 함수"""
+    image_urls = []
+    
+    # 제품 목록에서 이미지 URL 추출
+    for product in products:
+        if isinstance(product, dict):
+            # 이미지 URL 필드 이름이 다양할 수 있으므로 모든 가능성 체크
+            image_url = product.get('image') or product.get('image_url') or product.get('imageUrl') or product.get('img_url')
+            if image_url:
+                image_urls.append(image_url)
+    
+    # 중복 제거
+    image_urls = list(set(image_urls))
+    
+    # 이미지 다운로드 실행
+    return await download_images(image_urls)
+
 async def main():
     """테스트 함수"""
     # 테스트 이미지 URL 목록
@@ -336,17 +579,34 @@ async def main():
         "https://www.kogift.com/web/product/big/202010/758bfe210ff0765832a812a6f4893762.jpg",
         "https://www.kogift.com/web/product/extra/small/202010/92b2c92a05c3b4cc7b84a0b763784332.jpg",
         "https://img.kogift.com/web/product/medium/202105/210edd76a72d2356f9d3af01da6c5dcb.jpg",
+        # 상대 경로 URL 테스트
+        "www.kogift.com/web/product/big/202010/758bfe210ff0765832a812a6f4893762.jpg",
         # 잘못된 URL 테스트
         "https://example.com/not-an-image.html",
         # 존재하지 않는 이미지 URL
-        "https://www.kogift.com/nonexistent-image.jpg"
+        "https://www.kogift.com/nonexistent-image.jpg",
+        # 네이버 이미지 URL 테스트
+        "https://shopping-phinf.pstatic.net/main_8463641/84636418311.1.jpg",
+        # 하른 이미지 URL 테스트
+        "https://www.jclgift.com/upload/product/simg3/EECZ00010000s(332).jpg"
     ]
     
     logger.info("Testing image URL verification...")
-    async with aiohttp.ClientSession() as session:
+    # TCP 연결 재사용을 위한 세션 설정
+    timeout = aiohttp.ClientTimeout(total=15)
+    connector = aiohttp.TCPConnector(limit=5, ssl=False)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
         for url in test_urls:
-            url, valid, error_msg = await verify_image_url(session, url)
-            status = "Valid" if valid else f"Invalid: {error_msg}"
+            result = await verify_image_url(session, url)
+            if isinstance(result, Exception):
+                status = f"Error: {str(result)}"
+            else:
+                url, valid, error_msg = result
+                status = "Valid" if valid else f"Invalid: {error_msg}"
             logger.info(f"URL: {url} - {status}")
     
     logger.info("\nTesting image downloads...")
@@ -360,11 +620,24 @@ async def main():
     for url, path in result.items():
         status = f"-> {path}" if path else "-> Failed"
         logger.info(f"{url} {status}")
+    
+    # 저장된 이미지 파일 존재 확인
+    logger.info("\nVerifying downloaded image files...")
+    for url, path in result.items():
+        if path:
+            file_exists = os.path.exists(path)
+            file_size = os.path.getsize(path) if file_exists else 0
+            status = f"Exists ({file_size} bytes)" if file_exists else "Missing"
+            logger.info(f"{path}: {status}")
 
 # 스크립트가 직접 실행될 때만 메인 함수 호출
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("shopRPA_log.log"),
+            logging.StreamHandler()
+        ]
     )
     asyncio.run(main()) 

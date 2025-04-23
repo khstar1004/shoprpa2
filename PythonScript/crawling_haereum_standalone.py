@@ -25,6 +25,7 @@ import json # Import json for parsing selectors
 import aiohttp
 import aiofiles
 import hashlib
+from PIL import Image
 
 # Ensure utils can be imported if run directly
 # Assuming utils.py is in the same directory or Python path is set correctly
@@ -44,6 +45,9 @@ from crowling_kogift import should_block_request, setup_page_optimizations
 
 # 로거 설정
 logger = logging.getLogger(__name__)
+
+# Global semaphore for file operations
+file_semaphore = asyncio.Semaphore(1)
 
 # Constants moved to config or passed in scrape_haereum_data
 # HAEREUM_MAIN_URL = "https://www.jclgift.com/"
@@ -162,6 +166,34 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     await page.wait_for_timeout(5000)
                     logger.info("🔍 Search button clicked, waiting for results")
 
+                    # 검색 결과가 없는 경우를 먼저 확인
+                    try:
+                        # 검색 결과 없음 메시지의 다양한 패턴 확인
+                        no_results_selectors = [
+                            'td[align="center"]:has-text("0개의 상품이 검색되었습니다")',
+                            'td:has-text("검색된 상품이 없습니다")',
+                            'td:has-text("검색결과가 없습니다")',
+                            'td[align="center"]:has-text("0")'
+                        ]
+                        
+                        for selector in no_results_selectors:
+                            no_results = await page.query_selector(selector)
+                            if no_results:
+                                logger.info(f"No search results found for keyword: {keyword}")
+                                return None
+                                
+                        # 검색 결과 수가 0인지 확인
+                        try:
+                            results_count_text = await page.evaluate('document.body.innerText')
+                            if '0개의 상품' in results_count_text or '검색된 상품이 없습니다' in results_count_text:
+                                logger.info(f"No search results found for keyword: {keyword}")
+                                return None
+                        except Exception as e:
+                            logger.debug(f"Error checking results count text: {e}")
+                            
+                    except Exception as e:
+                        logger.debug(f"Error checking for no results message: {e}")
+
                     # --- Enhanced image URL extraction ---
                     try:
                         # Wait for the product list to load with multiple possible selectors
@@ -270,87 +302,35 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
     return None
 
 async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, max_retries: int = 3) -> Optional[str]:
-    """Download an image to the main folder with target information.
-    
-    Args:
-        image_url: The URL of the image to download.
-        product_name: The name of the product.
-        config: ConfigParser object containing configuration settings.
-        max_retries: Maximum number of retry attempts for transient errors.
-        
-    Returns:
-        The local path to the downloaded image, or None if download failed.
-    """
+    """Download an image to the main folder with target information."""
     if not image_url:
         logger.warning("Empty image URL provided to download_image_to_main")
         return None
         
     # Get the main directory from config 
     try:
-        main_dir = config.get('Paths', 'image_main_dir', fallback=None)
+        main_dir = config.get('Paths', 'image_main_dir')
         if not main_dir:
-            # Use fallback path if config path not found
-            main_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
-            logger.warning(f"image_main_dir not found in config, using fallback: {main_dir}")
+            logger.error("image_main_dir not found in config")
+            return None
         
         # Ensure the directory exists
-        if not os.path.exists(main_dir):
-            logger.info(f"Creating image directory: {main_dir}")
-            os.makedirs(main_dir, exist_ok=True)
-            
-        # Check if directory is writable
+        os.makedirs(main_dir, exist_ok=True)
         if not os.access(main_dir, os.W_OK):
-            logger.error(f"Image directory is not writable: {main_dir}")
-            # Try to use current directory as fallback
-            main_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            logger.warning(f"Using fallback directory: {main_dir}")
+            logger.error(f"No write permission for directory: {main_dir}")
+            return None
             
     except Exception as e:
-        logger.error(f"Error accessing or creating image directory: {e}")
-        # Use current directory as fallback
-        main_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        logger.warning(f"Using fallback directory: {main_dir}")
-        os.makedirs(main_dir, exist_ok=True)
+        logger.error(f"Error accessing image directory: {e}")
+        return None
     
-    # Ensure product_name is a string and properly encoded
-    if product_name is None:
-        product_name = "unknown_product"
-    elif not isinstance(product_name, str):
-        product_name = str(product_name)
-    
-    # Handle potential URL encoding issues (for Korean characters)
+    # Generate a safe filename
     try:
-        # Normalize URL if it contains Korean characters
-        if any('\uAC00' <= c <= '\uD7A3' for c in image_url):
-            # Korean character range check
-            parsed = urlparse(image_url)
-            encoded_path = parsed.path.encode('utf-8').decode('iso-8859-1')
-            image_url = parsed._replace(path=encoded_path).geturl()
-            logger.debug(f"URL contains Korean characters, normalized to: {image_url}")
-    except Exception as url_err:
-        logger.warning(f"URL normalization error (non-critical): {url_err}")
-    
-    # Create a safe product code from the product name
-    # Handle Korean characters by replacing them with transliteration or just use the hash
-    try:
-        # If product name contains Korean, use only the hash part for safer filenames
-        if any('\uAC00' <= c <= '\uD7A3' for c in product_name):
-            # For Korean product names, use a hash of the full name 
-            product_code = hashlib.md5(product_name.encode('utf-8')).hexdigest()[:16]
-            logger.debug(f"Using hash-based product code for Korean name: {product_code}")
-        else:
-            # For non-Korean names, keep some readable portion plus normalization
-            product_code = re.sub(r'[^\w\d-]', '_', product_name)[:30]
-    except Exception as code_err:
-        # Fallback to simple hash if any encoding/processing issues
-        product_code = hashlib.md5(product_name.encode('utf-8', errors='ignore')).hexdigest()[:16]
-        logger.warning(f"Error processing product name, using hash: {code_err}")
-    
-    # Create a hash of URL for uniqueness
-    url_hash = hashlib.md5(image_url.encode('utf-8', errors='ignore')).hexdigest()[:8]  # Use shorter hash
-    
-    # Get file extension from URL
-    try:
+        # Use product name to generate a safe filename
+        safe_name = re.sub(r'[^\w\-_.]', '_', product_name)[:50]  # Limit length
+        url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
+        
+        # Get file extension from URL
         parsed_url = urlparse(image_url)
         _, ext = os.path.splitext(parsed_url.path)
         ext = ext.lower() or ".jpg"  # Default to .jpg if no extension
@@ -360,114 +340,129 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             logger.warning(f"Suspicious file extension: {ext}, defaulting to .jpg")
             ext = '.jpg'
             
+        # Create final filename
+        filename = f"haereum_{safe_name}_{url_hash}{ext}"
+        local_path = os.path.normpath(os.path.join(main_dir, filename))
+        
+        # Generate unique temporary filename
+        temp_path = f"{local_path}.{time.time_ns()}.tmp"
+        
+        # Check if file already exists
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            logger.info(f"Image already exists, skipping download: {local_path}")
+            return local_path
+            
     except Exception as e:
-        logger.error(f"Error parsing URL for file extension: {e}")
-        ext = '.jpg'  # Default to .jpg on error
+        logger.error(f"Error generating filename: {e}")
+        return None
     
-    # Include target/source information in the filename
-    # Format: source_productcode_hash.ext
-    filename = f"haereum_{product_code}_{url_hash}{ext}"
-    # Use os.path.normpath to normalize the path
-    local_path = os.path.normpath(os.path.join(main_dir, filename))
-    
-    # Check if file already exists
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-        logger.info(f"Image already exists, skipping download: {local_path}")
-        return local_path
-    
-    # Set up retry logic
-    remaining_retries = max_retries
-    last_error = None
-    retry_delay = RETRY_DELAY  # Start with base delay
-    
-    while remaining_retries >= 0:
-        try:
-            # Create an aiohttp session to download the image
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                try:
-                    headers = {
-                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                    }
-                    
-                    async with session.get(image_url, headers=headers) as response:
-                        if response.status != 200:
-                            logger.warning(f"Failed to download image, HTTP status: {response.status}")
-                            if remaining_retries > 0 and 500 <= response.status < 600:
-                                # Only retry for server errors (5xx)
-                                remaining_retries -= 1
-                                await asyncio.sleep(retry_delay)
-                                retry_delay *= RETRY_BACKOFF_FACTOR  # Exponential backoff
-                                logger.info(f"Retrying download due to server error (remaining attempts: {remaining_retries})")
-                                continue
-                            return None
-                        
-                        # Check content type
-                        content_type = response.headers.get('Content-Type', '')
-                        if not content_type.startswith('image/'):
-                            logger.warning(f"URL does not return an image (Content-Type: {content_type})")
-                            return None
-                            
-                        # Read the image data
-                        image_data = await response.read()
-                        
-                        # Check image data size
-                        if len(image_data) < 100:  # Extremely small file, probably not a valid image
-                            logger.warning(f"Image data too small ({len(image_data)} bytes), probably not a valid image")
-                            return None
-                        
-                        # Save the image to the main folder
-                        try:
-                            async with aiofiles.open(local_path, 'wb') as f:
-                                await f.write(image_data)
+    # Download the image with concurrency control
+    try:
+        async with file_semaphore:  # Use global semaphore for file operations
+            async with aiohttp.ClientSession() as session:
+                for attempt in range(max_retries):
+                    try:
+                        async with session.get(image_url, timeout=30) as response:
+                            if response.status != 200:
+                                logger.warning(f"HTTP error {response.status} downloading image (attempt {attempt+1}/{max_retries}): {image_url}")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 * (attempt + 1))
+                                    continue
+                                return None
                                 
-                            logger.info(f"Downloaded Haereum image to main folder: {local_path}")
-                            return local_path
-                        except IOError as e:
-                            logger.error(f"IO error saving image file: {e}")
-                            return None
-                except aiohttp.ClientError as e:
-                    last_error = e
-                    logger.error(f"HTTP client error downloading image: {e}")
-                    if remaining_retries > 0:
-                        remaining_retries -= 1
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= RETRY_BACKOFF_FACTOR
-                        logger.info(f"Retrying download due to client error (remaining attempts: {remaining_retries})")
-                        continue
-                    return None
-                except asyncio.TimeoutError:
-                    last_error = "Timeout"
-                    logger.error(f"Timeout downloading image from {image_url}")
-                    if remaining_retries > 0:
-                        remaining_retries -= 1
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= RETRY_BACKOFF_FACTOR
-                        logger.info(f"Retrying download due to timeout (remaining attempts: {remaining_retries})")
-                        continue
-                    return None
-                    
-        except Exception as e:
-            last_error = e
-            logger.error(f"Unexpected error downloading image from {image_url}: {e}")
-            if remaining_retries > 0:
-                remaining_retries -= 1
-                await asyncio.sleep(retry_delay)
-                retry_delay *= RETRY_BACKOFF_FACTOR
-                logger.info(f"Retrying download due to unexpected error (remaining attempts: {remaining_retries})")
-                continue
-            return None
+                            # Check content type
+                            content_type = response.headers.get('Content-Type', '')
+                            if not content_type.startswith('image/'):
+                                logger.warning(f"Non-image content type: {content_type}")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 * (attempt + 1))
+                                    continue
+                                return None
+                                
+                            # Download image data
+                            data = await response.read()
+                            if len(data) < 100:  # Too small to be a valid image
+                                logger.warning(f"Downloaded image too small: {len(data)} bytes")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 * (attempt + 1))
+                                    continue
+                                return None
+                                
+                            # Save to temporary file
+                            try:
+                                async with aiofiles.open(temp_path, 'wb') as f:
+                                    await f.write(data)
+                                
+                                # Wait for file handle to be fully closed
+                                await asyncio.sleep(0.1)
+                                
+                                # Validate image
+                                try:
+                                    with Image.open(temp_path) as img:
+                                        img.verify()
+                                    with Image.open(temp_path) as img:
+                                        pass  # Just verify it can be opened
+                                    
+                                    # Remove existing file if it exists
+                                    if os.path.exists(local_path):
+                                        try:
+                                            os.remove(local_path)
+                                            await asyncio.sleep(0.1)  # Wait for file system
+                                        except OSError as e:
+                                            logger.error(f"Could not remove existing file: {e}")
+                                            if os.path.exists(temp_path):
+                                                os.remove(temp_path)
+                                            return None
+                                    
+                                    # Move temp file to final location
+                                    os.rename(temp_path, local_path)
+                                    logger.info(f"Successfully downloaded image: {local_path}")
+                                    return local_path
+                                    
+                                except Exception as img_err:
+                                    logger.error(f"Invalid image file: {img_err}")
+                                    if os.path.exists(temp_path):
+                                        os.remove(temp_path)
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 * (attempt + 1))
+                                        continue
+                                    return None
+                                    
+                            except Exception as file_err:
+                                logger.error(f"Error saving file: {file_err}")
+                                if os.path.exists(temp_path):
+                                    try:
+                                        os.remove(temp_path)
+                                    except:
+                                        pass
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 * (attempt + 1))
+                                    continue
+                                return None
+                                
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout downloading image (attempt {attempt+1}/{max_retries}): {image_url}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1 * (attempt + 1))
+                            continue
+                        return None
+                        
+                    except Exception as e:
+                        logger.error(f"Error downloading image (attempt {attempt+1}/{max_retries}): {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1 * (attempt + 1))
+                            continue
+                        return None
+                        
+    except Exception as e:
+        logger.error(f"Unexpected error downloading image: {e}")
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        return None
         
-        # If we reach here without continuing the retry loop, break out
-        break
-        
-    # If we exhausted all retries
-    if last_error:
-        logger.error(f"Failed to download image after {max_retries} retries. Last error: {last_error}")
-    
     return None
 
 # Example usage (Updated for ConfigParser)
@@ -482,12 +477,12 @@ async def _test_main():
         return
         
     test_keywords = [
-        "사랑이 엔젤하트 투포켓 에코백",
-        "사랑이 큐피트화살 투포켓 에코백",
-        "행복이 스마일플라워 투포켓 에코백",
-        "행운이 네잎클로버 투포켓 에코백",
-        "캐치티니핑 53 스무디 입체리본 투명 아동우산",
-        "아테스토니 뱀부사 소프트 3P 타올 세트"
+        "777쓰리쎄븐 TS-6500C 손톱깎이 13P세트",
+        "휴대용 360도 회전 각도조절 접이식 핸드폰 거치대",
+        "피에르가르뎅 3단 슬림 코지가든 우양산",
+        "마루는강쥐 클리어미니케이스",
+        "아테스토니 뱀부사 소프트 3P 타올 세트",
+        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학"
     ]
     
     logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_keywords)} keywords ---")

@@ -79,8 +79,28 @@ def initialize_rembg_session(model_name="u2net"):
 async def get_image_from_url(session: aiohttp.ClientSession, image_url: str) -> Union[Image.Image, None]:
     """Downloads an image from a URL and returns it as a PIL Image object."""
     try:
+        if not image_url:
+            logging.error("Empty image URL provided to get_image_from_url")
+            return None
+            
+        # URL 정규화
+        if not image_url.startswith(('http://', 'https://')):
+            if "kogift" in image_url.lower() or "koreagift" in image_url.lower() or "adpanchok" in image_url.lower() or "jclgift" in image_url.lower():
+                image_url = f"https://{image_url}" if not image_url.startswith('//') else f"https:{image_url}"
+                logging.debug(f"Normalized image URL: {image_url}")
+            else:
+                logging.error(f"Invalid image URL scheme: {image_url}")
+                return None
+
         # Use the async downloader
-        url, success, image_path = await async_download_image(session, image_url)
+        result = await async_download_image(session, image_url)
+        
+        # Check if result is a tuple with the expected structure
+        if not isinstance(result, tuple) or len(result) != 3:
+            logging.error(f"Unexpected result format from async_download_image: {result}")
+            return None
+            
+        url, success, image_path = result
 
         if success and image_path and os.path.exists(image_path):
             try:
@@ -91,7 +111,7 @@ async def get_image_from_url(session: aiohttp.ClientSession, image_url: str) -> 
                 logging.error(f"Error opening downloaded image {image_path}: {e}")
                 return None
         else:
-            logging.error(f"Failed to download image from {image_url} or file not found.")
+            logging.error(f"Failed to download image from {image_url} or file not found. Path: {image_path}, Success: {success}")
             return None
     except Exception as e:
         logging.error(f"An unexpected error occurred while getting image from {image_url}: {e}")
