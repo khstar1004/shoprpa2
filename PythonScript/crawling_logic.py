@@ -112,23 +112,33 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
          raise
     finally:
         # Ensure Playwright browser and instance are closed cleanly
-        try:
-            if browser:
-                try:
-                    # Try to close browser gracefully
+        logging.info("Entering finally block for Playwright cleanup...")
+        # Add a small delay to allow tasks to fully release resources (optional, pragmatic fix)
+        await asyncio.sleep(1.0) 
+        
+        if browser:
+            try:
+                if browser.is_connected():
+                    logging.info("Attempting to close shared Playwright browser...")
                     await browser.close()
                     logging.info("Closed shared Playwright browser.")
-                except Exception as e:
-                    logging.warning(f"Error closing browser: {e}")
-        except Exception as e:
-            logging.warning(f"Error in browser cleanup: {e}")
+                else:
+                    logging.warning("Shared Playwright browser was already disconnected before explicit close.")
+            except Exception as e:
+                # Log error during browser close but proceed to playwright stop
+                logging.warning(f"Error closing Playwright browser: {e}")
+        else:
+             logging.info("No shared browser instance to close.")
             
-        try:
-            if playwright:
+        if playwright:
+            try:
+                logging.info("Attempting to stop Playwright instance...")
                 await playwright.stop()
                 logging.info("Stopped Playwright instance.")
-        except Exception as e:
-            logging.warning(f"Error stopping playwright: {e}")
+            except Exception as e:
+                logging.warning(f"Error stopping playwright instance: {e}")
+        else:
+            logging.info("No Playwright instance to stop.")
 
     end_time = time.time()
     logging.info(f"--- Finished Concurrent Crawling orchestration in {end_time - start_time:.2f} seconds ---")
