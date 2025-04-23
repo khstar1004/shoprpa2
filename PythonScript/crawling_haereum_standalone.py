@@ -163,9 +163,30 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     
                     # Click the search button and wait for navigation
                     await search_button.click(timeout=WAIT_TIMEOUT)
-                    await page.wait_for_timeout(5000)
-                    logger.info("🔍 Search button clicked, waiting for results")
+                    # Reduced wait time (1 second) before checking for errors or results
+                    await page.wait_for_timeout(1000)
+                    logger.info("🔍 Search button clicked, checking for server errors or results")
 
+                    # --- Check for specific ADODB server error --- (Added)
+                    try:
+                        page_content = await page.content(timeout=2000) # Short timeout for getting content
+                        adodb_error_msg = "ADODB.Command 오류 '800a0d5d'"
+                        invalid_format_msg = "응용 프로그램이 현재 작업에 대해 잘못된 형식을 가진 값을 사용하고 있습니다."
+
+                        if adodb_error_msg in page_content or invalid_format_msg in page_content:
+                            logger.warning(f"⚠️ Detected server-side ADODB error ('800a0d5d') for keyword: {keyword}. Skipping.")
+                            await context.close()
+                            return None
+                    except PlaywrightError as pe:
+                        # Handle potential timeout error when getting content if page is stuck
+                        logger.warning(f"⚠️ Timed out or error checking for ADODB error message: {pe}")
+                        # Optionally, decide to return None here as well if content check fails
+                        # await context.close()
+                        # return None
+                    except Exception as e:
+                        logger.debug(f"Could not check page content for ADODB error: {e}")
+
+                    # --- Existing logic: Check for "no results" --- (Modified indentation)
                     # 검색 결과가 없는 경우를 먼저 확인
                     try:
                         # 검색 결과 없음 메시지의 다양한 패턴 확인
@@ -175,57 +196,82 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             'td:has-text("검색결과가 없습니다")',
                             'td[align="center"]:has-text("0")'
                         ]
-                        
+
+                        # Use a shorter timeout for checking no results, as the ADODB error check happened first
+                        no_results_found = False
                         for selector in no_results_selectors:
-                            no_results = await page.query_selector(selector)
-                            if no_results:
+                            try:
+                                # Check if selector exists within a short time
+                                await page.wait_for_selector(selector, state="visible", timeout=3000) # 3 seconds
+                                no_results_found = True
+                                break
+                            except PlaywrightError:
+                                continue # Selector not found, try next
+
+                        if no_results_found:
                                 logger.info(f"No search results found for keyword: {keyword}")
+                                await context.close()
                                 return None
-                                
-                        # 검색 결과 수가 0인지 확인
-                        try:
-                            results_count_text = await page.evaluate('document.body.innerText')
-                            if '0개의 상품' in results_count_text or '검색된 상품이 없습니다' in results_count_text:
-                                logger.info(f"No search results found for keyword: {keyword}")
-                                return None
-                        except Exception as e:
-                            logger.debug(f"Error checking results count text: {e}")
-                            
+
+                        # Additional check for results count text as a fallback
+                        if not no_results_found:
+                            try:
+                                results_count_text = await page.evaluate('document.body.innerText', timeout=2000)
+                                if '0개의 상품' in results_count_text or '검색된 상품이 없습니다' in results_count_text:
+                                    logger.info(f"No search results found for keyword (text check): {keyword}")
+                                    await context.close()
+                                    return None
+                            except Exception as e:
+                                logger.debug(f"Error checking results count text: {e}")
+
                     except Exception as e:
                         logger.debug(f"Error checking for no results message: {e}")
 
                     # --- Enhanced image URL extraction ---
                     try:
-                        # Wait for the product list to load with multiple possible selectors
-                        selectors_to_try = [
+                        # Wait for the product list to load with multiple possible selectors combined
+                        # Use a shorter timeout (e.g., 15 seconds) for finding images
+                        IMAGE_SEARCH_TIMEOUT = 15000  # 15 seconds
+
+                        combined_selector = ', '.join([
                             'img[src*="/upload/product/"]',  # More general pattern
                             'img[src*="/upload/product/simg3/"]',  # Original pattern
                             'td[align="center"] img',  # General product image
-                            'form[name="ListForm"] img'  # Any image in product list
-                        ]
-                        
-                        # Try each selector until we find images
+                            'form[name="ListForm"] img'  # Any image in product list form
+                        ])
+
                         product_images = []
-                        for selector in selectors_to_try:
-                            try:
-                                await page.wait_for_selector(selector, timeout=WAIT_TIMEOUT)
-                                images = await page.query_selector_all(selector)
-                                if images:
-                                    product_images = images
-                                    logger.info(f"📸 Found {len(product_images)} product images using selector: {selector}")
-                                    break
-                            except Exception as e:
-                                logger.debug(f"Selector {selector} not found: {str(e)}")
-                                continue
-                        
-                        if not product_images:
-                            logger.warning("⚠️ No product images found on the page with any selector")
+                        try:
+                            # Wait for the first matching image element to appear
+                            await page.wait_for_selector(combined_selector, state="visible", timeout=IMAGE_SEARCH_TIMEOUT)
+                            # Query all matching images
+                            images = await page.query_selector_all(combined_selector)
+                            if images:
+                                product_images = images
+                                logger.info(f"📸 Found {len(product_images)} product images using combined selector.")
+                        except PlaywrightError as e:
+                            # Handle timeout or other selector errors
+                            if "Timeout" in str(e):
+                                logger.warning(f"⚠️ No product images found within {IMAGE_SEARCH_TIMEOUT / 1000} seconds using combined selector.")
+                            else:
+                                logger.warning(f"⚠️ Error waiting for image selector: {str(e)}")
+                            # No need to continue if no images found or error occurred
+                            await context.close() # Close context before returning
                             return None
-                        
+                        except Exception as e:
+                             logger.warning(f"⚠️ Unexpected error waiting for image selector: {str(e)}")
+                             await context.close() # Close context before returning
+                             return None
+
+                        if not product_images:
+                            logger.warning("⚠️ No product images found on the page after waiting.")
+                            await context.close() # Ensure context is closed
+                            return None
+
                         # Get the first product image URL with better error handling
                         first_image = product_images[0]
                         img_src = await first_image.get_attribute('src')
-                        
+
                         if not img_src:
                             logger.warning("⚠️ Could not get image source attribute")
                             # Try alternative attributes
@@ -234,28 +280,39 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                                 if img_src:
                                     logger.info(f"Found image URL in alternative attribute: {attr}")
                                     break
-                        
+
                         if img_src:
                             # Construct full URL if needed
                             if not img_src.startswith(('http://', 'https://')):
                                 found_image_url = urljoin(haereum_main_url, img_src)
                             else:
                                 found_image_url = img_src
-                                
+
                             logger.info(f"✅ Found image URL: {found_image_url}")
-                            
+
                             # Download the image
                             local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=3)
+
+                            # Close context before returning result
+                            await context.close()
+
                             if local_path:
                                 return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
                             else:
                                 return {"url": found_image_url, "local_path": None, "source": "haereum"}
                         else:
                             logger.warning("⚠️ Could not get image source from any attribute")
+                            await context.close() # Ensure context is closed
                             return None
-                        
+
                     except Exception as e:
                         logger.error(f"❌ Error during image URL extraction: {e}", exc_info=True)
+                        # Ensure context is closed in case of error
+                        try:
+                            if 'context' in locals() and not context.is_closed():
+                                await context.close()
+                        except Exception as ce:
+                             logger.warning(f"⚠️ Error closing context during exception handling: {ce}")
                         return None
                         
                 except PlaywrightError as pe:

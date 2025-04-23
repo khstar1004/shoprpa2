@@ -147,9 +147,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # 최종 확인: 필수 컬럼이 여전히 누락되었는지 확인 (추가 시도 후)
     missing_columns_after_add = [col for col in required_columns if col not in df.columns]
     if missing_columns_after_add:
-        # 에러 대신 경고 로깅
-        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Processing will continue, but results may be incomplete.")
-        # raise ValueError(f"Input DataFrame is missing required columns: {missing_columns_after_add}") # Replaced with warning
+        # 에러 대신 경고 로깅하고 기본값으로 채우기 시도
+        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Filling with '-' or NaN.")
+        for col in missing_columns_after_add:
+             # Ensure column exists, fill with default value
+             df[col] = df.get(col, pd.NA) # Use pd.NA for missing values, or '-' if appropriate
 
     # --- Standardize column names if needed ---
     # Add mapping for common column name variations

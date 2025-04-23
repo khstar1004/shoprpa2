@@ -1051,36 +1051,64 @@ def process_matching(
                 result_df.at[idx, '매칭_품질'] = '실패'
                 result_df.at[idx, '매칭_오류메시지'] = '매칭 결과 없음' # Or a more specific error if available
 
-        # --- Post-processing: Calculate Price Differences --- 
+        # --- Post-processing: Calculate Price Differences ---
         # Ensure base price column exists and is numeric
-        if '판매단가(V포함)' in result_df.columns:
+        if '판매단가(V포함)' in result_df.columns:  # Check if the base column exists
             base_price_col = pd.to_numeric(result_df['판매단가(V포함)'], errors='coerce')
 
             # Calculate for Kogift
             if '판매단가(V포함)(2)' in result_df.columns:
                 kogift_price_col = pd.to_numeric(result_df['판매단가(V포함)(2)'], errors='coerce')
-                diff = kogift_price_col - base_price_col
-                result_df['가격차이(2)'] = diff
-                # Avoid division by zero
-                result_df['가격차이(2)(%)'] = np.where(
-                    (base_price_col.notna() & (base_price_col != 0) & diff.notna()),
-                    (diff / base_price_col) * 100,
-                    None
-                )
+                # Only calculate if base price is valid
+                valid_base = base_price_col.notna() & (base_price_col != 0)
+                valid_kogift = kogift_price_col.notna()
+                calculate_mask = valid_base & valid_kogift
+
+                if calculate_mask.any(): # Proceed only if there are valid prices to compare
+                   diff = kogift_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
+                   result_df['가격차이(2)'] = diff
+                   result_df['가격차이(2)(%)'] = np.where(
+                       calculate_mask, # Use the combined mask
+                       (diff / base_price_col.where(calculate_mask)) * 100,
+                       None
+                   )
+                else:
+                   logging.debug("No valid base or Kogift prices found for difference calculation (Kogift).")
+                   # Ensure columns exist even if calculation is skipped
+                   if '가격차이(2)' not in result_df.columns: result_df['가격차이(2)'] = None
+                   if '가격차이(2)(%)' not in result_df.columns: result_df['가격차이(2)(%)'] = None
+
 
             # Calculate for Naver
             if '판매단가(V포함)(3)' in result_df.columns:
                 naver_price_col = pd.to_numeric(result_df['판매단가(V포함)(3)'], errors='coerce')
-                diff = naver_price_col - base_price_col
-                result_df['가격차이(3)'] = diff
-                 # Avoid division by zero
-                result_df['가격차이(3)(%)'] = np.where(
-                    (base_price_col.notna() & (base_price_col != 0) & diff.notna()),
-                    (diff / base_price_col) * 100,
-                    None
-                )
+                 # Only calculate if base price is valid
+                valid_base = base_price_col.notna() & (base_price_col != 0)
+                valid_naver = naver_price_col.notna()
+                calculate_mask = valid_base & valid_naver
+
+                if calculate_mask.any(): # Proceed only if there are valid prices to compare
+                   diff = naver_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
+                   result_df['가격차이(3)'] = diff
+                   result_df['가격차이(3)(%)'] = np.where(
+                       calculate_mask, # Use the combined mask
+                       (diff / base_price_col.where(calculate_mask)) * 100,
+                       None
+                   )
+                else:
+                   logging.debug("No valid base or Naver prices found for difference calculation (Naver).")
+                   # Ensure columns exist even if calculation is skipped
+                   if '가격차이(3)' not in result_df.columns: result_df['가격차이(3)'] = None
+                   if '가격차이(3)(%)' not in result_df.columns: result_df['가격차이(3)(%)'] = None
+
         else:
-            logging.warning("Base price column '판매단가(V포함)' not found for difference calculation.")
+            # This case is hit if '판매단가(V포함)' is missing entirely
+            logging.warning("Base price column '판매단가(V포함)' not found in input haoreum_df. Skipping all price difference calculations.")
+            # Ensure difference columns still exist, filled with None
+            result_df['가격차이(2)'] = None
+            result_df['가격차이(2)(%)'] = None
+            result_df['가격차이(3)'] = None
+            result_df['가격차이(3)(%)'] = None
 
         # Log completion
         elapsed_time = time.time() - start_time
