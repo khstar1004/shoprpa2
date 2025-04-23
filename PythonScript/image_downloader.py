@@ -65,17 +65,31 @@ try:
     
     # 쓰기 권한 확인
     if not os.access(KOGIFT_IMAGE_DIR, os.W_OK):
-        # 대체 경로 사용
-        fallback_dir = Path.cwd() / "downloaded_images" / "kogift" # Add kogift subfolder here too
-        fallback_dir.mkdir(parents=True, exist_ok=True)
-        logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
-        KOGIFT_IMAGE_DIR = fallback_dir
+        # 대체 경로 사용 - config에서 정의된 경로 사용
+        try:
+            image_target_dir = config.get('Paths', 'image_target_dir')
+            fallback_dir = Path(image_target_dir) / 'kogift'
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
+            KOGIFT_IMAGE_DIR = fallback_dir
+        except (configparser.NoSectionError, configparser.NoOptionError) as e:
+            logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA path.")
+            fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift'
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            KOGIFT_IMAGE_DIR = fallback_dir
 except Exception as e:
-    # 기본 대체 경로 사용
-    fallback_dir = Path.cwd() / "downloaded_images" / "kogift"
-    fallback_dir.mkdir(parents=True, exist_ok=True)
-    logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
-    KOGIFT_IMAGE_DIR = fallback_dir
+    # 기본 대체 경로 사용 - config에서 정의된 경로 사용
+    try:
+        image_target_dir = config.get('Paths', 'image_target_dir')
+        fallback_dir = Path(image_target_dir) / 'kogift'
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
+        KOGIFT_IMAGE_DIR = fallback_dir
+    except (configparser.NoSectionError, configparser.NoOptionError) as e:
+        logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA path.")
+        fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift'
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        KOGIFT_IMAGE_DIR = fallback_dir
 
 # 파일 작업을 위한 세마포어 생성
 file_semaphore = asyncio.Semaphore(1)

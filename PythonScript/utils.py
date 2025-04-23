@@ -221,11 +221,18 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
     try:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         if not os.access(save_path.parent, os.W_OK):
-            # Try to use a fallback directory in the current working directory
-            fallback_dir = Path.cwd() / "downloaded_images"
-            fallback_dir.mkdir(parents=True, exist_ok=True)
-            save_path = fallback_dir / save_path.name
-            logging.warning(f"Original save path not writable, using fallback: {save_path}")
+            # Try to use a fallback directory from config
+            try:
+                image_target_dir = config.get('Paths', 'image_target_dir')
+                fallback_dir = Path(image_target_dir)
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                save_path = fallback_dir / save_path.name
+                logging.warning(f"Original save path not writable, using fallback: {save_path}")
+            except (configparser.NoSectionError, configparser.NoOptionError) as e:
+                logging.error(f"Error getting image_target_dir from config: {e}. Using default RPA path.")
+                fallback_dir = Path('C:\\RPA\\Image\\Target')
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                save_path = fallback_dir / save_path.name
     except Exception as e:
         logging.error(f"Error creating save directory: {e}")
         return False
@@ -303,7 +310,6 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
-                return False
 
             # Validate image format
             try:
@@ -652,42 +658,94 @@ async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]
         return row_id, None
 
 async def preprocess_and_download_images(
-    df: pd.DataFrame, 
-    url_column_name: str, 
-    id_column_name: str, 
-    prefix: str, 
-    config: configparser.ConfigParser, 
+    df: pd.DataFrame,
+    url_column_name: str,
+    id_column_name: str,
+    prefix: str,
+    config: configparser.ConfigParser,
     max_workers: Optional[int] = None
 ) -> Dict[Any, Optional[str]]:
-    """Wrapper function that uses image_downloader.py functionality."""
-    logging.info("Using enhanced image downloader for preprocessing images...")
-    
+    """
+    Downloads images specified in a DataFrame column asynchronously, saves them
+    to the appropriate subfolder within the image_main_dir, and optionally removes background.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing image URLs and IDs.
+        url_column_name (str): Name of the column containing image URLs.
+        id_column_name (str): Name of the column containing unique IDs for rows.
+        prefix (str): Prefix used for subfolder name (e.g., 'haereum', 'input') and filename.
+        config (configparser.ConfigParser): Configuration object.
+        max_workers (Optional[int]): Max concurrent download workers. If None, uses default.
+
+    Returns:
+        Dict[Any, Optional[str]]: Dictionary mapping row IDs to the local path of the
+                                  (potentially background-removed) downloaded image, or None if failed.
+    """
     if df is None or df.empty:
         logging.info(f"Skipping image preprocessing (prefix: '{prefix}'): DataFrame is empty.")
         return {}
-        
+
     if url_column_name not in df.columns or id_column_name not in df.columns:
         logging.error(f"Missing required columns '{url_column_name}' or '{id_column_name}'. Cannot preprocess (prefix: '{prefix}').")
         return {}
 
-    # Extract URLs and IDs
-    image_urls = []
-    row_ids = []
-    for idx, row in df.iterrows():
-        image_url = row.get(url_column_name)
-        row_id = row.get(id_column_name)
-        if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http'):
-            continue
-        image_urls.append(image_url)
-        row_ids.append(row_id)
+    # Determine the correct save directory (image_main_dir / prefix)
+    try:
+        base_save_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:/RPA/Image/Main'))
+        save_dir = base_save_dir / prefix
+        save_dir.mkdir(parents=True, exist_ok=True) # Ensure the directory exists
+        logging.info(f"Image save directory for prefix '{prefix}': {save_dir}")
+    except Exception as e:
+        logging.error(f"Could not create or access save directory for prefix '{prefix}': {e}")
+        return {} # Cannot proceed without a save directory
 
-    # Use image_downloader's functionality
-    results = await download_images(image_urls)
-    
-    # Convert results to expected format
+    # Get concurrency settings
+    default_workers = max(1, os.cpu_count() // 2)
+    if max_workers is None:
+         try:
+             max_workers = config.getint('Concurrency', 'max_crawl_workers', fallback=default_workers)
+         except (configparser.Error, ValueError):
+             max_workers = default_workers
+
+    logging.info(f"Starting image download/processing for prefix '{prefix}' with {max_workers} workers...")
+    start_time = time.monotonic()
+
+    tasks = []
+    async with get_async_httpx_client(config=config) as client:
+        for idx, row in df.iterrows():
+            image_url = row.get(url_column_name)
+            row_id = row.get(id_column_name)
+            # Skip invalid URLs or missing IDs
+            if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http') or pd.isna(row_id):
+                continue
+
+            # Prepare arguments for the wrapper function
+            args = (idx, row_id, image_url, save_dir, prefix, config, client)
+            tasks.append(_process_single_image_wrapper(args))
+
+        # Run tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
     image_path_map = {}
-    for row_id, url in zip(row_ids, image_urls):
-        image_path_map[row_id] = results.get(url)
+    success_count = 0
+    fail_count = 0
+    for result in results:
+        if isinstance(result, Exception):
+            logging.error(f"Error during image processing task: {result}", exc_info=result)
+            fail_count += 1
+        elif isinstance(result, tuple) and len(result) == 2:
+            row_id, final_path = result
+            image_path_map[row_id] = final_path
+            if final_path:
+                success_count += 1
+            else:
+                fail_count += 1
+        else:
+             logging.error(f"Unexpected result format from image processing task: {result}")
+             fail_count += 1 # Count unexpected formats as failures
+
+    elapsed_time = time.monotonic() - start_time
+    logging.info(f"Finished image download/processing for prefix '{prefix}'. Success: {success_count}, Failures: {fail_count}. Duration: {elapsed_time:.2f} sec")
 
     return image_path_map
 

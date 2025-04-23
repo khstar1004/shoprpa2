@@ -391,9 +391,9 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     # Get config values
     try:
         base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
-        # Use image_target_dir for Naver images
-        naver_base_dir = config.get('Paths', 'image_target_dir', fallback='C:\\RPA\\Image\\Target')
-        # Construct the Naver-specific directory
+        # Use image_main_dir for Naver images now
+        naver_base_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main') # Changed from image_target_dir
+        # Construct the Naver-specific directory under the main directory
         naver_image_target_dir = os.path.join(naver_base_dir, 'Naver')
         os.makedirs(naver_image_target_dir, exist_ok=True)
         

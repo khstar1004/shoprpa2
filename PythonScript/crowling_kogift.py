@@ -677,8 +677,8 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
     verify_enabled = config.getboolean('Matching', 'verify_image_urls', fallback=True)
     download_enabled = config.getboolean('Matching', 'download_images', fallback=True)
     
-    # 이미지 저장 경로 설정
-    base_image_dir = config.get('Paths', 'image_target_dir', fallback='C:\\RPA\\Image\\Target')
+    # 이미지 저장 경로 설정 (Main 디렉토리로 변경)
+    base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main') # Changed from image_target_dir
     images_dir = os.path.join(base_image_dir, 'kogift')  # kogift 하위 디렉토리 사용
     os.makedirs(images_dir, exist_ok=True)
     
