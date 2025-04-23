@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor # Keep for potential sync task
 from datetime import datetime
 from image_downloader import download_images, predownload_kogift_images
 import aiofiles
+import inspect
 
 # --- Configuration Loading ---
 
@@ -409,8 +410,10 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
             # Content-Type check removed to handle cases where servers incorrectly return 'text/plain'
             # for image content (specifically for koreagift.com)
             
-            # Read the image data
-            image_data = await response.read()
+            # Read the image data - fixed to handle response.read() correctly
+            image_data = response.read()
+            if inspect.isawaitable(image_data):
+                image_data = await image_data
             
             # Check image data size
             if len(image_data) < 100:  # Extremely small file, probably not a valid image

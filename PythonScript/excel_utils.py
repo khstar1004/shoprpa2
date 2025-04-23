@@ -305,6 +305,13 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     
     if not image_cols:
         return
+    
+    # Create a temporary directory for image processing if needed
+    temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'temp_images')
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Track processed images to avoid duplicate processing
+    processed_images = {}
         
     for row_idx in range(2, worksheet.max_row + 1):
         for col_name, col_idx in image_cols.items():
@@ -325,6 +332,16 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 # Normalize path and handle backslashes
                 img_path = os.path.normpath(img_path.replace('\\', '/')) if img_path else None
                 
+                # Skip processing if this image was already processed
+                if img_path in processed_images:
+                    excel_img = processed_images[img_path]['image']
+                    # Calculate cell position for proper image placement
+                    cell_anchor = f"{cell.coordinate}"
+                    excel_img.anchor = cell_anchor
+                    # Add image to worksheet
+                    worksheet.add_image(excel_img)
+                    continue
+                
                 # Verify image file exists and is valid
                 if not img_path or not os.path.exists(img_path):
                     # Try URL if local path doesn't exist
@@ -333,47 +350,55 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         cell.value = cell.value.get('url')
                     else:
                         logger.warning(f"Image file not found: {img_path}")
-                        cell.value = '-'
+                        cell.value = ERROR_MESSAGES['file_not_found']
                     continue
                     
                 try:
-                    # Open and validate image
-                    with Image.open(img_path) as img:
-                        # Convert to RGB if needed
-                        if img.mode in ('RGBA', 'LA'):
-                            img = img.convert('RGB')
-                        
-                        # Resize if too large
-                        if img.size[0] > IMAGE_MAX_SIZE[0] or img.size[1] > IMAGE_MAX_SIZE[1]:
-                            img.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+                    # Generate a hash-based filename for the processed image to avoid name conflicts
+                    img_hash = hashlib.md5(img_path.encode()).hexdigest()[:10]
+                    temp_path = os.path.join(temp_dir, f"temp_{img_hash}.jpg")
+                    
+                    # Check if we've already processed this image in a previous run
+                    if os.path.exists(temp_path) and os.path.getmtime(temp_path) > os.path.getmtime(img_path):
+                        # Use cached processed image if it exists and is newer than source
+                        img_path = temp_path
+                    else:
+                        # Open and validate image
+                        with Image.open(img_path) as img:
+                            # Convert to RGB if needed
+                            if img.mode in ('RGBA', 'LA'):
+                                img = img.convert('RGB')
                             
-                        # Save as optimized JPG if not already
-                        if not img_path.lower().endswith('.jpg'):
-                            temp_path = os.path.join(
-                                os.path.dirname(img_path),
-                                f"temp_{os.path.basename(img_path)}.jpg"
-                            )
-                            img.save(temp_path, 'JPEG', quality=85, optimize=True)
+                            # Resize if too large
+                            if img.size[0] > IMAGE_MAX_SIZE[0] or img.size[1] > IMAGE_MAX_SIZE[1]:
+                                img.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+                                
+                            # Save as optimized JPG 
+                            img.save(temp_path, 'JPEG', quality=IMAGE_QUALITY, optimize=True)
                             img_path = temp_path
                     
                     # Add to worksheet with proper positioning
                     excel_img = openpyxl.drawing.image.Image(img_path)
-                    excel_img.width = IMAGE_STANDARD_SIZE[0]
-                    excel_img.height = IMAGE_STANDARD_SIZE[1]
+                    
+                    # Adjust size proportionally based on standard size
+                    with Image.open(img_path) as img:
+                        width, height = img.size
+                        ratio = min(IMAGE_STANDARD_SIZE[0] / width, IMAGE_STANDARD_SIZE[1] / height)
+                        excel_img.width = int(width * ratio)
+                        excel_img.height = int(height * ratio)
                     
                     # Calculate cell position for proper image placement
                     cell_anchor = f"{cell.coordinate}"
                     excel_img.anchor = cell_anchor
                     
+                    # Store processed image info
+                    processed_images[img_path] = {
+                        'image': excel_img,
+                        'temp_path': temp_path if temp_path != img_path else None
+                    }
+                    
                     # Add image to worksheet
                     worksheet.add_image(excel_img)
-                    
-                    # Clean up temp file if created
-                    if 'temp_' in img_path:
-                        try:
-                            os.remove(img_path)
-                        except:
-                            pass
                             
                 except Exception as img_e:
                     logger.error(f"Error processing image {img_path}: {img_e}")
@@ -383,7 +408,18 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
                 cell.value = ERROR_MESSAGES['processing_error']
     
-    logger.debug("Finished processing image columns")
+    logger.debug(f"Finished processing {len(processed_images)} unique images in {len(image_cols)} columns")
+    
+    # Clean up temp files (optional, can keep them for caching)
+    # Uncomment if you want to clean up temp files immediately
+    """
+    for img_info in processed_images.values():
+        if img_info['temp_path'] and os.path.exists(img_info['temp_path']):
+            try:
+                os.remove(img_info['temp_path'])
+            except:
+                pass
+    """
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
@@ -546,98 +582,132 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"Preparing data for Excel export. Initial rows: {len(df_prepared)}, Initial columns: {df_prepared.columns.tolist()}")
 
     # 1. Ensure all FINAL columns exist, add if missing with '-'
-    for col in FINAL_COLUMN_ORDER:
-        if col not in df_prepared.columns:
-            logger.warning(f"Column '{col}' missing in input data for preparation, adding with default '-'.")
+    missing_cols = [col for col in FINAL_COLUMN_ORDER if col not in df_prepared.columns]
+    if missing_cols:
+        logger.warning(f"Missing columns in input data: {missing_cols}")
+        for col in missing_cols:
             df_prepared[col] = '-'
 
     # 2. Select and Reorder columns STRICTLY according to FINAL_COLUMN_ORDER
-    # Only keep columns defined in FINAL_COLUMN_ORDER, discard others
     try:
         df_prepared = df_prepared[FINAL_COLUMN_ORDER]
         logger.debug(f"Columns reordered and selected. Final columns: {df_prepared.columns.tolist()}")
     except KeyError as ke:
-        logger.error(f"KeyError during column selection/reordering. Missing columns likely: {ke}. DataFrame columns: {df.columns.tolist()}")
-        # Return DataFrame with available columns from FINAL_COLUMN_ORDER if error
+        logger.error(f"KeyError during column selection: {ke}")
+        # Fall back to ensuring all required columns exist
         available_final_cols = [col for col in FINAL_COLUMN_ORDER if col in df.columns]
         df_prepared = df[available_final_cols]
-        # Add truly missing ones back with '-'
+        # Add missing ones with '-'
         for col in FINAL_COLUMN_ORDER:
-             if col not in df_prepared.columns:
-                  df_prepared[col] = '-'
-        df_prepared = df_prepared[FINAL_COLUMN_ORDER] # Try reordering again
+            if col not in df_prepared.columns:
+                df_prepared[col] = '-'
+        df_prepared = df_prepared[FINAL_COLUMN_ORDER]  # Try reordering again
 
-    # 3. Format Numeric Data (Carefully preserving non-numeric error messages)
-    logger.debug("Formatting numeric columns...")
+    # 3. Fill NaN values with '-' for consistency
+    df_prepared.fillna('-', inplace=True)
+    
+    # 4. Format data by column type using vectorized operations where possible
+    
+    # --- Format text columns ---
+    text_cols = [col for col in TEXT_COLUMNS if col in df_prepared.columns]
+    if text_cols:
+        # Convert to string, strip whitespace, replace empty with '-'
+        df_prepared[text_cols] = df_prepared[text_cols].astype(str)
+        for col in text_cols:
+            # Handle special characters and whitespace
+            df_prepared[col] = (df_prepared[col]
+                               .str.replace('\xa0', ' ')
+                               .str.strip()
+                               .replace('', '-'))
+    
+    # --- Format price columns with clean handling of error messages ---
     for col_name in df_prepared.columns:
         is_price_col = col_name in PRICE_COLUMNS
         is_qty_col = col_name in QUANTITY_COLUMNS
         is_pct_col = col_name in PERCENTAGE_COLUMNS
 
         if is_price_col or is_qty_col or is_pct_col:
-            def format_value(value):
-                original_value = value # Keep original for fallback
-                formatted_value = '-' # Default formatted value
-
-                if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
-                    return '-'
-                elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
-                    return value # Preserve error messages
-
+            # Create a mask for error message rows that should not be converted
+            error_mask = df_prepared[col_name].astype(str).apply(
+                lambda x: any(err_msg in x for err_msg in ERROR_MESSAGE_VALUES)
+            )
+            
+            # Create a mask for empty or placeholder values
+            empty_mask = df_prepared[col_name].astype(str).apply(
+                lambda x: x.strip().lower() in ['-', '', 'none', 'nan'] or pd.isna(x)
+            )
+            
+            # Extract values for non-error, non-empty cells
+            valid_values = df_prepared.loc[~(error_mask | empty_mask), col_name]
+            
+            if len(valid_values) > 0:
+                # Clean the numeric strings and convert
                 try:
-                    # Remove commas and % for numeric conversion
-                    cleaned_value_str = str(value).replace(',', '').replace('%','').strip()
+                    # Remove commas and percent signs from numeric strings
+                    numeric_values = valid_values.astype(str).str.replace(',', '').str.replace('%', '').astype(float)
                     
-                    # Skip conversion if it's an error message or placeholder
-                    if cleaned_value_str == '-' or any(err_msg in cleaned_value_str for err_msg in ERROR_MESSAGE_VALUES):
-                        return cleaned_value_str
-
-                    numeric_value = float(cleaned_value_str)
-
                     # Format based on column type
                     if is_price_col:
-                        if numeric_value == 0:
-                            return '-'
-                        return f"{numeric_value:,.0f}" # Comma separated integer
+                        # Format as integers with commas
+                        formatted_values = numeric_values.apply(lambda x: '-' if x == 0 else f"{x:,.0f}")
                     elif is_qty_col:
-                        if numeric_value == 0:
-                            return '-'
-                        return f"{int(numeric_value):,}" # Comma separated integer
+                        # Format as integers with commas
+                        formatted_values = numeric_values.apply(lambda x: '-' if x == 0 else f"{int(x):,}")
                     elif is_pct_col:
-                        return f"{numeric_value:.1f}%" # One decimal place percentage
-                    else:
-                        return str(original_value).strip()
-
-                except (ValueError, TypeError):
-                    # If conversion fails, try to clean the string
-                    cleaned_str = str(original_value).strip()
-                    if cleaned_str in ['', '-', 'nan', 'None', 'none']:
-                        return '-'
-                    return cleaned_str
-
-            # Apply the formatting function to numeric columns
-            df_prepared[col_name] = df_prepared[col_name].apply(format_value)
+                        # Format as percentages with one decimal
+                        formatted_values = numeric_values.apply(lambda x: f"{x:.1f}%")
+                        
+                    # Update only the valid cells, preserving errors and empties
+                    df_prepared.loc[~(error_mask | empty_mask), col_name] = formatted_values.values
+                except Exception as e:
+                    logger.warning(f"Error formatting numeric column {col_name}: {e}")
+                    # Fall back to using apply for this column
+                    df_prepared[col_name] = df_prepared[col_name].apply(_format_numeric_value, 
+                                                                       args=(is_price_col, is_qty_col, is_pct_col))
             
-    logger.debug("Finished numeric formatting.")
-
-    # 4. Clean Text Data (Strip whitespace, handle NaN)
-    logger.debug("Cleaning text columns...")
-    for col_name in TEXT_COLUMNS:
-        if col_name in df_prepared.columns:
-            # Ensure column is treated as string, fill NA with '-', then strip
-            df_prepared[col_name] = df_prepared[col_name].astype(str).fillna('-')
-            # Remove \xa0 characters and strip whitespace
-            df_prepared[col_name] = df_prepared[col_name].str.replace('\xa0', ' ').str.strip()
-            # Replace empty strings resulting from fillna/strip back to '-'
-            df_prepared[col_name] = df_prepared[col_name].replace({'': '-'})
-
-    # 5. Fill any remaining NaN/NaT values in other columns with '-' for consistent output
-    # This handles columns not explicitly formatted above (like links, image paths before processing)
-    df_prepared.fillna('-', inplace=True)
-    logger.debug("Filled remaining NaN values with '-'.")
-
+            # Set all empty values to '-'
+            df_prepared.loc[empty_mask, col_name] = '-'
+    
     logger.info(f"Data preparation finished. Final rows: {len(df_prepared)}")
     return df_prepared
+
+def _format_numeric_value(value, is_price_col, is_qty_col, is_pct_col):
+    """Helper function to format individual numeric values with error handling."""
+    if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
+        return '-'
+    elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
+        return value  # Preserve error messages
+
+    try:
+        # Remove commas and % for numeric conversion
+        cleaned_value_str = str(value).replace(',', '').replace('%', '').strip()
+        
+        # Skip conversion if it's an error message or placeholder
+        if cleaned_value_str == '-' or any(err_msg in cleaned_value_str for err_msg in ERROR_MESSAGE_VALUES):
+            return cleaned_value_str
+
+        numeric_value = float(cleaned_value_str)
+
+        # Format based on column type
+        if is_price_col:
+            if numeric_value == 0:
+                return '-'
+            return f"{numeric_value:,.0f}"  # Comma separated integer
+        elif is_qty_col:
+            if numeric_value == 0:
+                return '-'
+            return f"{int(numeric_value):,}"  # Comma separated integer
+        elif is_pct_col:
+            return f"{numeric_value:.1f}%"  # One decimal place percentage
+        else:
+            return str(value).strip()
+
+    except (ValueError, TypeError):
+        # If conversion fails, return clean string
+        cleaned_str = str(value).strip()
+        if cleaned_str in ['', '-', 'nan', 'None', 'none']:
+            return '-'
+        return cleaned_str
 
 def safe_excel_operation(func):
     """
@@ -738,22 +808,42 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     if not image_cols:
         return
         
-    # Adjust column widths for image columns
+    # Adjust column widths for image columns consistently
     for col_name, col_idx in image_cols.items():
         col_letter = get_column_letter(col_idx)
         worksheet.column_dimensions[col_letter].width = IMAGE_CELL_WIDTH
     
-    # Adjust row heights for rows containing images
+    # Create a set of rows that need height adjustment
+    rows_with_images = set()
+    
+    # Find rows that have actual images (not error messages or empty cells)
     for row_idx in range(2, worksheet.max_row + 1):
-        has_image = False
         for col_name, col_idx in image_cols.items():
             cell = worksheet.cell(row=row_idx, column=col_idx)
-            if cell.value and cell.value != '-':
-                has_image = True
+            cell_value = str(cell.value) if cell.value else ""
+            
+            # If the cell has content that looks like a path and not an error message
+            if (cell_value and cell_value != '-' and 
+                not any(err_msg in cell_value for err_msg in ERROR_MESSAGE_VALUES) and
+                ('\\' in cell_value or '/' in cell_value or '.jpg' in cell_value.lower() or 
+                 '.png' in cell_value.lower() or '.jpeg' in cell_value.lower())):
+                rows_with_images.add(row_idx)
                 break
-        
-        if has_image:
-            worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
     
-    logger.debug("Finished adjusting image cell dimensions.")
+    # Apply height to rows with images
+    for row_idx in rows_with_images:
+        worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
+        
+        # Also center-align all cells in this row to ensure uniform appearance
+        for col_idx in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            # Only adjust vertical alignment to ensure content displays correctly with images
+            current_alignment = cell.alignment
+            cell.alignment = Alignment(
+                horizontal=current_alignment.horizontal,
+                vertical="center",
+                wrap_text=current_alignment.wrap_text
+            )
+    
+    logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images")
 
