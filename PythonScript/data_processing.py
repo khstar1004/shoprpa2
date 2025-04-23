@@ -124,30 +124,32 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # 필수 컬럼 목록 - 최종 결과에 반드시 포함되어야 하는 컬럼
     required_columns = ['기본수량(1)', '판매단가(V포함)']
     
-    # 필수 컬럼 추가 (누락된 경우에만)
+    # 필수 컬럼 확인 및 추가 로직 강화
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
-        logging.warning(f"일부 필수 컬럼이 누락되어 있습니다: {missing_columns}")
-        
-        # 필수 컬럼 추가 - 누락된 컬럼을 기본값으로 추가
+        logging.warning(f"Initial check found missing required columns: {missing_columns}. Attempting to add them.")
         for col in missing_columns:
             if col == '기본수량(1)':
-                # 본사 기본수량 컬럼이 있으면 그 값을 사용, 없으면 기존 값 유지
                 if '본사 기본수량' in df.columns:
                     df['기본수량(1)'] = df['본사 기본수량']
-                logging.info("'기본수량(1)' 컬럼이 추가되었습니다.")
+                    logging.info(f"Added missing column '{col}' by copying from '본사 기본수량'.")
+                else:
+                    df[col] = '-' # Default to '-' if fallback is missing
+                    logging.warning(f"Added missing column '{col}' with default value '-' as '본사 기본수량' was also missing.")
             elif col == '판매단가(V포함)':
-                # 다른 가격 컬럼이 있으면 그 값 사용, 없으면 기존 값 유지
                 if '판매단가' in df.columns:
                     df['판매단가(V포함)'] = df['판매단가']
-                    logging.info("'판매단가(V포함)' 컬럼이 '판매단가'에서 복사되었습니다.")
-    
-    # 컬럼 확인 (추가 후 다시 확인)
+                    logging.info(f"Added missing column '{col}' by copying from '판매단가'.")
+                else:
+                    df[col] = '-' # Default to '-' if fallback is missing
+                    logging.warning(f"Added missing column '{col}' with default value '-' as '판매단가' was also missing.")
+
+    # 최종 확인: 필수 컬럼이 여전히 누락되었는지 확인 (추가 시도 후)
     missing_columns_after_add = [col for col in required_columns if col not in df.columns]
     if missing_columns_after_add:
-        # 여전히 누락된 컬럼이 있으면 에러 발생
-        logging.error(f"Input DataFrame is still missing required columns after attempting to add them: {missing_columns_after_add}")
-        raise ValueError(f"Input DataFrame is missing required columns: {missing_columns_after_add}")
+        # 에러 대신 경고 로깅
+        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Processing will continue, but results may be incomplete.")
+        # raise ValueError(f"Input DataFrame is missing required columns: {missing_columns_after_add}") # Replaced with warning
 
     # --- Standardize column names if needed ---
     # Add mapping for common column name variations
