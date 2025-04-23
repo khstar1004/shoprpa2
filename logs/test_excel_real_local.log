@@ -151,3 +151,117 @@
 2025-04-22 03:44:47,508 - INFO - [excel_utils.py:734] - Successfully created and formatted Excel file: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
 2025-04-22 03:44:47,508 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250422_034447.xlsx
 2025-04-22 03:44:47,510 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---
+2025-04-23 16:00:26,952 - INFO - [test_excel_creation_local.py:85] - --- Starting Excel Creation Test with REAL Local Images ---
+2025-04-23 16:00:26,953 - DEBUG - [utils.py:95] - Default configuration loaded into parser.
+2025-04-23 16:00:26,954 - INFO - [utils.py:107] - Successfully read and merged configuration from: C:\Users\james\Desktop\Shoprpa2\config.ini
+2025-04-23 16:00:26,954 - INFO - [test_excel_creation_local.py:63] - Scanning for JPG images in: ['C:\\\\RPA\\\\Image\\\\Main', 'C:\\\\RPA\\\\Image\\\\Target']
+2025-04-23 16:00:26,955 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Main
+2025-04-23 16:00:26,955 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Target
+2025-04-23 16:00:26,956 - WARNING - [test_excel_creation_local.py:79] - No local JPG images found in configured directories.
+2025-04-23 16:00:26,956 - INFO - [test_excel_creation_local.py:95] - Total local JPG images found: 0
+2025-04-23 16:00:26,956 - INFO - [test_excel_creation_local.py:100] - Ensured output directory exists: C:\Users\james\Desktop\Shoprpa2\OUTPUT
+2025-04-23 16:00:26,959 - INFO - [test_excel_creation_local.py:165] - Sample DataFrame created with 4 rows using real data structure.
+2025-04-23 16:00:26,993 - DEBUG - [test_excel_creation_local.py:166] - Sample DataFrame Head:
+  구분   담당자        업체명  업체코드        Code    중분류카테고리                        상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크 기본수량(2) 판매가(V포함)(2) 판매단가(V포함)(2) 가격차이(2) 가격차이(2)(%)                                                           고려기프트 상품링크 기본수량(3) 판매단가(V포함)(3) 가격차이(3) 가격차이(3)(%) 공급사명                                              네이버 쇼핑 링크 공급사 상품링크                                               본사 이미지                                                      고려기프트 이미지                                                      네이버 이미지
+0  A   김균아  엠제이(MJ)기획  3941      437611  가방(에코백/면)           사랑이 엔젤하트 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437611       -           -            -       -          -                                       가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음       -            -       -          -    -                                가격이 범위내에 없거나 검색된 상품이 없음        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+1  A   김균아  엠제이(MJ)기획  3941      437593  가방(에코백/면)          사랑이 큐피트화살 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437593     200     570,900       2854.5  -115.5       -3.9  http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303       -            -       -          -    -                          일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2  A   김균아  엠제이(MJ)기획  3941      437551      어린이우산  캐치티니핑 53 스무디 입체리본 투명 아동우산       50      17820  http://www.jclgift.com/product/product_view.asp?p_idx=437551      50     842,600        16852    -968       -5.4  http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277       1        14490   -3330      -18.6  네이버  https://search.shopping.naver.com/catalog/53165134501        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+3  D  테스터4      경로테스트  P001  PathTest01          -             잘못된 경로 이미지 테스트        1       1000                                                             -       -           -            -       -          -                                                                    -       -            -       -          -    -                                                      -        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:26,994 - INFO - [test_excel_creation_local.py:169] - Calling create_final_output_excel to generate: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160026.xlsx
+2025-04-23 16:00:26,995 - INFO - [excel_utils.py:667] - Starting creation of final Excel output: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160026.xlsx
+2025-04-23 16:00:26,996 - INFO - [excel_utils.py:546] - Preparing data for Excel export. Initial rows: 4, Initial columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:26,997 - DEBUG - [excel_utils.py:558] - Columns reordered and selected. Final columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:26,997 - DEBUG - [excel_utils.py:571] - Formatting numeric columns...
+2025-04-23 16:00:26,998 - DEBUG - [excel_utils.py:621] - Finished numeric formatting.
+2025-04-23 16:00:26,998 - DEBUG - [excel_utils.py:624] - Cleaning text columns...
+2025-04-23 16:00:27,006 - DEBUG - [excel_utils.py:637] - Filled remaining NaN values with '-'.
+2025-04-23 16:00:27,006 - INFO - [excel_utils.py:639] - Data preparation finished. Final rows: 4
+2025-04-23 16:00:27,037 - DEBUG - [excel_utils.py:688] - DataFrame written to sheet 'Results'. Max Row: 5, Max Col: 26
+2025-04-23 16:00:27,039 - DEBUG - [excel_utils.py:228] - Applying column widths. DataFrame columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:27,039 - DEBUG - [excel_utils.py:258] - Finished applying column widths.
+2025-04-23 16:00:27,039 - DEBUG - [excel_utils.py:262] - Applying cell styles and alignments.
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:296] - Finished applying cell styles.
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:390] - Applying conditional formatting.
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:430] - Finished applying conditional formatting for negative price differences.
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:300] - Processing image columns...
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:386] - Finished processing image columns
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:733] - Adjusting dimensions for image cells...
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:758] - Finished adjusting image cell dimensions.
+2025-04-23 16:00:27,046 - DEBUG - [excel_utils.py:452] - Adding hyperlinks. Link columns defined: ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크', '네이버 쇼핑 링크']
+2025-04-23 16:00:27,046 - INFO - [excel_utils.py:493] - Finished adding hyperlinks. Added 6 links. Found 0 non-URL values in link columns.
+2025-04-23 16:00:27,062 - DEBUG - [excel_utils.py:434] - Setting up page layout.
+2025-04-23 16:00:27,062 - DEBUG - [excel_utils.py:446] - Page layout settings applied.
+2025-04-23 16:00:27,062 - WARNING - [excel_utils.py:505] - Could not set header/footer: 'Worksheet' object has no attribute 'header_footer'
+2025-04-23 16:00:27,062 - DEBUG - [excel_utils.py:533] - Applied Excel table format 'TableStyleMedium2' to range A1:Z5
+2025-04-23 16:00:27,105 - INFO - [excel_utils.py:714] - Successfully created and formatted Excel file: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160026.xlsx
+2025-04-23 16:00:27,106 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160026.xlsx
+2025-04-23 16:00:27,108 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---
+2025-04-23 16:00:35,968 - INFO - [test_excel_creation_local.py:85] - --- Starting Excel Creation Test with REAL Local Images ---
+2025-04-23 16:00:35,968 - DEBUG - [utils.py:95] - Default configuration loaded into parser.
+2025-04-23 16:00:35,991 - INFO - [utils.py:107] - Successfully read and merged configuration from: c:\Users\james\Desktop\Shoprpa2\config.ini
+2025-04-23 16:00:35,992 - INFO - [test_excel_creation_local.py:63] - Scanning for JPG images in: ['C:\\\\RPA\\\\Image\\\\Main', 'C:\\\\RPA\\\\Image\\\\Target']
+2025-04-23 16:00:35,993 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Main
+2025-04-23 16:00:35,994 - INFO - [test_excel_creation_local.py:68] - Found 0 JPG images in C:\\RPA\\Image\\Target
+2025-04-23 16:00:35,994 - WARNING - [test_excel_creation_local.py:79] - No local JPG images found in configured directories.
+2025-04-23 16:00:35,994 - INFO - [test_excel_creation_local.py:95] - Total local JPG images found: 0
+2025-04-23 16:00:35,994 - INFO - [test_excel_creation_local.py:100] - Ensured output directory exists: c:\Users\james\Desktop\Shoprpa2\OUTPUT
+2025-04-23 16:00:35,996 - INFO - [test_excel_creation_local.py:165] - Sample DataFrame created with 4 rows using real data structure.
+2025-04-23 16:00:36,003 - DEBUG - [test_excel_creation_local.py:166] - Sample DataFrame Head:
+  구분   담당자        업체명  업체코드        Code    중분류카테고리                        상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크 기본수량(2) 판매가(V포함)(2) 판매단가(V포함)(2) 가격차이(2) 가격차이(2)(%)                                                           고려기프트 상품링크 기본수량(3) 판매단가(V포함)(3) 가격차이(3) 가격차이(3)(%) 공급사명                                              네이버 쇼핑 링크 공급사 상품링크                                               본사 이미지                                                      고려기프트 이미지                                                      네이버 이미지
+0  A   김균아  엠제이(MJ)기획  3941      437611  가방(에코백/면)           사랑이 엔젤하트 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437611       -           -            -       -          -                                       가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음       -            -       -          -    -                                가격이 범위내에 없거나 검색된 상품이 없음        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+1  A   김균아  엠제이(MJ)기획  3941      437593  가방(에코백/면)          사랑이 큐피트화살 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437593     200     570,900       2854.5  -115.5       -3.9  http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303       -            -       -          -    -                          일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2  A   김균아  엠제이(MJ)기획  3941      437551      어린이우산  캐치티니핑 53 스무디 입체리본 투명 아동우산       50      17820  http://www.jclgift.com/product/product_view.asp?p_idx=437551      50     842,600        16852    -968       -5.4  http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277       1        14490   -3330      -18.6  네이버  https://search.shopping.naver.com/catalog/53165134501        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+3  D  테스터4      경로테스트  P001  PathTest01          -             잘못된 경로 이미지 테스트        1       1000                                                             -       -           -            -       -          -                                                                    -       -            -       -          -    -                                                      -        -  C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg  C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,004 - INFO - [test_excel_creation_local.py:169] - Calling create_final_output_excel to generate: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160035.xlsx
+2025-04-23 16:00:36,005 - INFO - [excel_utils.py:667] - Starting creation of final Excel output: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160035.xlsx
+2025-04-23 16:00:36,005 - INFO - [excel_utils.py:546] - Preparing data for Excel export. Initial rows: 4, Initial columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:36,005 - DEBUG - [excel_utils.py:558] - Columns reordered and selected. Final columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:36,005 - DEBUG - [excel_utils.py:571] - Formatting numeric columns...
+2025-04-23 16:00:36,005 - DEBUG - [excel_utils.py:621] - Finished numeric formatting.
+2025-04-23 16:00:36,011 - DEBUG - [excel_utils.py:624] - Cleaning text columns...
+2025-04-23 16:00:36,019 - DEBUG - [excel_utils.py:637] - Filled remaining NaN values with '-'.
+2025-04-23 16:00:36,021 - INFO - [excel_utils.py:639] - Data preparation finished. Final rows: 4
+2025-04-23 16:00:36,021 - DEBUG - [excel_utils.py:688] - DataFrame written to sheet 'Results'. Max Row: 5, Max Col: 26
+2025-04-23 16:00:36,021 - DEBUG - [excel_utils.py:228] - Applying column widths. DataFrame columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+2025-04-23 16:00:36,021 - DEBUG - [excel_utils.py:258] - Finished applying column widths.
+2025-04-23 16:00:36,021 - DEBUG - [excel_utils.py:262] - Applying cell styles and alignments.
+2025-04-23 16:00:36,039 - DEBUG - [excel_utils.py:296] - Finished applying cell styles.
+2025-04-23 16:00:36,039 - DEBUG - [excel_utils.py:390] - Applying conditional formatting.
+2025-04-23 16:00:36,039 - DEBUG - [excel_utils.py:430] - Finished applying conditional formatting for negative price differences.
+2025-04-23 16:00:36,039 - DEBUG - [excel_utils.py:300] - Processing image columns...
+2025-04-23 16:00:36,039 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,040 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,040 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,040 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,040 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,040 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,041 - WARNING - [excel_utils.py:335] - Image file not found: C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:386] - Finished processing image columns
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:733] - Adjusting dimensions for image cells...
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:758] - Finished adjusting image cell dimensions.
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:452] - Adding hyperlinks. Link columns defined: ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크', '네이버 쇼핑 링크']
+2025-04-23 16:00:36,042 - INFO - [excel_utils.py:493] - Finished adding hyperlinks. Added 6 links. Found 0 non-URL values in link columns.
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:434] - Setting up page layout.
+2025-04-23 16:00:36,042 - DEBUG - [excel_utils.py:446] - Page layout settings applied.
+2025-04-23 16:00:36,043 - WARNING - [excel_utils.py:505] - Could not set header/footer: 'Worksheet' object has no attribute 'header_footer'
+2025-04-23 16:00:36,043 - DEBUG - [excel_utils.py:533] - Applied Excel table format 'TableStyleMedium2' to range A1:Z5
+2025-04-23 16:00:36,065 - INFO - [excel_utils.py:714] - Successfully created and formatted Excel file: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160035.xlsx
+2025-04-23 16:00:36,065 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: c:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_160035.xlsx
+2025-04-23 16:00:36,066 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---

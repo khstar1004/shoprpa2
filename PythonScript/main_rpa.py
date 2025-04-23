@@ -13,7 +13,7 @@ import datetime
 import traceback
 
 # --- Import Refactored Modules ---
-from matching_logic import match_products, _init_worker_matcher
+from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
 from excel_utils import create_final_output_excel
 from crawling_logic import crawl_all_sources
@@ -104,15 +104,30 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         if progress_queue: progress_queue.emit("status", "Preprocessing input images...")
         
         try:
-            input_file_image_map = await preprocess_and_download_images(
-                df=haoreum_df,
-                url_column_name='본사 이미지',
-                id_column_name='Code',
-                prefix='input',
-                config=config,
-                max_workers=download_workers
-            )
-            processed_count = len(input_file_image_map)
+            # <<< CHOOSE CORRECT URL COLUMN >>>
+            if '본사 이미지' in haoreum_df.columns:
+                input_url_col = '본사 이미지'
+            elif '본사상품링크' in haoreum_df.columns:
+                input_url_col = '본사상품링크'
+                logging.info("'본사 이미지' column not found, using '본사상품링크' for input image URLs.")
+            else:
+                input_url_col = None # No suitable column found
+                logging.warning("Neither '본사 이미지' nor '본사상품링크' found for input image preprocessing.")
+
+            if input_url_col: # Proceed only if a URL column was found
+                input_file_image_map = await preprocess_and_download_images(
+                    df=haoreum_df,
+                    url_column_name=input_url_col, # Use the determined column name
+                    id_column_name='Code',
+                    prefix='input',
+                    config=config,
+                    max_workers=download_workers
+                )
+                processed_count = len(input_file_image_map)
+            else:
+                input_file_image_map = {}
+                processed_count = 0
+                
             logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
             if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
         except Exception as e:
@@ -478,12 +493,28 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             if progress_queue: progress_queue.emit("finished", "True")
             return # Exit early
 
-        # 5. Filter Results
+        # <<< ADDED: Post-process matching results (cleaning, conditional clearing) >>>
+        try:
+            logging.info(f"Post-processing {len(matched_df)} matched rows (cleaning, formatting, conditional clearing)...")
+            # Call the renamed function from matching_logic
+            processed_matched_df = post_process_matching_results(matched_df, config)
+            logging.info(f"Post-processing finished. Rows remaining: {len(processed_matched_df)}") 
+            # Note: post_process_matching_results should not drop rows, just modify
+        except Exception as post_process_err:
+            logging.error(f"Error during matching post-processing: {post_process_err}", exc_info=True)
+            # Fallback: use the original matched_df if post-processing fails
+            processed_matched_df = matched_df 
+            logging.warning("Using original matched data due to post-processing error.")
+        # <<< END ADDED STEP >>>
+
+        # 5. Filter Results (Use the post-processed DataFrame)
         step_start_time = time.time()
-        logging.info(f"[Step 6/7] Filtering {len(matched_df)} matched rows...")
+        # Use processed_matched_df here
+        logging.info(f"[Step 6/7] Filtering {len(processed_matched_df)} post-processed rows...") 
         if progress_queue: progress_queue.emit("status", "Filtering results...")
         try:
-            filtered_df = filter_results(matched_df, config)  # Removed progress_queue parameter
+            # Pass the processed DataFrame to filter_results
+            filtered_df = filter_results(processed_matched_df, config) 
             # Log columns after filtering
             logging.info(f"Columns in filtered_df AFTER filtering: {filtered_df.columns.tolist() if filtered_df is not None else 'None'}")
 
@@ -492,8 +523,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         except Exception as filter_err:
             logging.error(f"Error during filtering: {filter_err}", exc_info=True)
             if progress_queue: progress_queue.emit("error", f"Filtering failed: {str(filter_err)}")
-            filtered_df = matched_df  # Use unfiltered data as fallback
-            logging.warning("Using unfiltered data due to filtering error")
+            # Use the processed_matched_df as fallback if filtering fails
+            filtered_df = processed_matched_df  
+            logging.warning("Using unfiltered (but post-processed) data due to filtering error")
 
         if filtered_df.empty:
             logging.warning("Filtering removed all rows. No data to output.")

@@ -110,9 +110,9 @@ def run_excel_creation_test():
         '판매단가(V포함)': 2970, '본사상품링크': 'http://www.jclgift.com/product/product_view.asp?p_idx=437611',
         '고려기프트 상품링크': '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음',
         '네이버 쇼핑 링크': '가격이 범위내에 없거나 검색된 상품이 없음',
-        '본사 이미지': r"C:\RPA\Image\Target\201406031810500.jpg",
-        '고려기프트 이미지': '-',
-        '네이버 이미지': '-'
+        '본사 이미지': r"C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '고려기프트 이미지': r"C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '네이버 이미지': r"C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg"
     })
     sample_data.append(row1)
 
@@ -125,9 +125,9 @@ def run_excel_creation_test():
         '기본수량(2)': 200, '판매가(V포함)(2)': '570,900', '판매단가(V포함)(2)': 2854.5, '가격차이(2)': -115.5, '가격차이(2)(%)': -3.9,
         '고려기프트 상품링크': 'http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303',
         '네이버 쇼핑 링크': '일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음',
-        '본사 이미지': r"C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg",
-        '고려기프트 이미지': r"C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg",
-        '네이버 이미지': '-'
+        '본사 이미지': r"C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '고려기프트 이미지': r"C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '네이버 이미지': r"C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg"
     })
     sample_data.append(row2)
 
@@ -141,9 +141,9 @@ def run_excel_creation_test():
         '고려기프트 상품링크': 'http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277',
         '기본수량(3)': 1, '판매단가(V포함)(3)': 14490, '가격차이(3)': -3330, '가격차이(3)(%)': -18.6, '공급사명': '네이버',
         '네이버 쇼핑 링크': 'https://search.shopping.naver.com/catalog/53165134501', '공급사 상품링크': '-',
-        '본사 이미지': r"C:\RPA\Image\Target\201406031810500.jpg",
-        '고려기프트 이미지': r"C:\RPA\Image\Target\kogift_pre_0ba458a095_b2d7df1548.jpg",
-        '네이버 이미지': r"C:\RPA\Image\Target\kogift_pre_0d1743949e_4ac7c21c90.jpg"
+        '본사 이미지': r"C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '고려기프트 이미지': r"C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '네이버 이미지': r"C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg"
     })
     sample_data.append(row3)
 
@@ -152,9 +152,9 @@ def run_excel_creation_test():
     row4.update({
         '구분': 'D', '담당자': '테스터4', '업체명': '경로테스트', '업체코드': 'P001', 'Code': 'PathTest01',
         '상품명': '잘못된 경로 이미지 테스트', '기본수량(1)': 1, '판매단가(V포함)': 1000, '본사상품링크': '-',
-        '본사 이미지': r'C:\Invalid\Path\To\NonExistentImage.jpg',
-        '고려기프트 이미지': random.choice(local_image_files) if local_image_files else '-',
-        '네이버 이미지': 'https://invalid-url.zzz/image.png' # Example invalid URL
+        '본사 이미지': r"C:\RPA\Image\Main\hae_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '고려기프트 이미지': r"C:\RPA\Image\Main\kogift\kogift_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg",
+        '네이버 이미지': r"C:\RPA\Image\Main\Naver\naver_마루는강쥐_클리어미니케이스_15ad2f8e91.jpg"
     })
     sample_data.append(row4)
 

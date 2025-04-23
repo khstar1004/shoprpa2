@@ -406,12 +406,9 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
             response = await client.get(url, follow_redirects=True, timeout=timeout)
             response.raise_for_status()  # Raise an error for bad responses
             
-            # Check Content-Type header for image
-            content_type = response.headers.get('content-type', '')
-            if not content_type.startswith('image/'):
-                logging.warning(f"URL does not return an image (Content-Type: {content_type})")
-                return False
-                
+            # Content-Type check removed to handle cases where servers incorrectly return 'text/plain'
+            # for image content (specifically for koreagift.com)
+            
             # Read the image data
             image_data = await response.read()
             

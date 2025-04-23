@@ -1244,10 +1244,12 @@ def combine_match_results(df_input, kogift_matches, naver_matches, config):
 # Alias for backward compatibility
 match_products = process_matching
 
-def filter_dataframe(df, config):
-    """Filter and process the DataFrame with improved error handling."""
+def post_process_matching_results(df, config):
+    """Cleans, formats, and conditionally clears competitor data in the matched DataFrame.
+    IMPORTANT: This function does NOT filter rows, only modifies column values.
+    """
     if df is None:
-        logging.error("Input DataFrame is None")
+        logging.error("Input DataFrame is None for post-processing")
         return pd.DataFrame()
         
     if not isinstance(df, pd.DataFrame):

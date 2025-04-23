@@ -721,51 +721,6 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
          logger.error(f"Error creating Excel file: {e}", exc_info=True)
          return False
 
-def filter_dataframe(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None) -> pd.DataFrame:
-    """
-    Filter the DataFrame based on configuration settings.
-    
-    Args:
-        df: Input DataFrame to filter
-        config: Optional ConfigParser instance with filter settings
-        
-    Returns:
-        Filtered DataFrame
-    """
-    if df.empty:
-        return df
-        
-    # Default filter settings
-    price_diff_threshold = 0.1
-    quality_threshold = 0.50
-    
-    # Get settings from config if provided
-    if config:
-        try:
-            price_diff_threshold = config.getfloat('PriceDifference', 'threshold', fallback=price_diff_threshold)
-            quality_threshold = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=quality_threshold)
-        except Exception as e:
-            logger.warning(f"Error reading filter settings from config: {e}")
-    
-    # Filter by price difference
-    if '가격차이(2)' in df.columns:
-        df = df[df['가격차이(2)'].abs() <= price_diff_threshold]
-        
-    if '가격차이(3)' in df.columns:
-        df = df[df['가격차이(3)'].abs() <= price_diff_threshold]
-    
-    # Filter by match quality
-    if '매칭품질' in df.columns:
-        df = df[df['매칭품질'].isin(['high', 'medium', 'low'])]
-    
-    return df
-
-# Deprecated functions below (kept for reference or potential reuse if logic changes)
-
-# def filter_dataframe(...) -> Removed, functionality likely elsewhere or combined
-# def add_hyperlinks(...) -> Integrated into _add_hyperlinks_to_worksheet
-# def apply_excel_styles(...) -> Integrated into _apply_cell_styles_and_alignment
-
 def apply_excel_styles(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """
     Apply Excel styles to the worksheet.

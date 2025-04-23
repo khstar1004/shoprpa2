@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 import configparser
-from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER
+from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
 import re
 import time
 from typing import Optional, Tuple, Dict, List
@@ -34,18 +34,27 @@ def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.D
         input_filename = os.path.basename(input_file)
         logging.info(f"Processing input file: {input_file}")
 
-        required_cols = ['Code', '상품명', '본사상품링크', '구분']
-
         # Read the entire Excel file at once
         df = pd.read_excel(input_file, sheet_name=0)
         logging.info(f"Read {len(df)} rows from '{input_filename}'")
-        logging.info(f"Columns read from Excel: {df.columns.tolist()}")
+        
+        # Clean column names
+        original_columns = df.columns.tolist()
+        df.columns = [col.strip().replace('\xa0', '') for col in df.columns]
+        cleaned_columns = df.columns.tolist()
+        if original_columns != cleaned_columns:
+            logging.info(f"Cleaned column names. Original: {original_columns}, Cleaned: {cleaned_columns}")
+        logging.info(f"Columns after cleaning: {df.columns.tolist()}")
 
-        # Check for required columns
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        # Check for required columns using the imported list
+        missing_cols = [col for col in REQUIRED_INPUT_COLUMNS if col not in df.columns]
         if missing_cols:
-            logging.error(f"Input file '{input_filename}' missing columns: {missing_cols}.")
+            logging.error(f"Input file '{input_filename}' missing required columns (defined in excel_utils): {missing_cols}.")
+            logging.error(f"Required columns are: {REQUIRED_INPUT_COLUMNS}")
+            logging.error(f"Columns found in file: {cleaned_columns}")
             return None, input_filename
+        else:
+            logging.info(f"All required columns found: {REQUIRED_INPUT_COLUMNS}")
 
         read_time = time.time() - start_time
         logging.info(f"Read {len(df)} rows from '{input_filename}' in {read_time:.2f} sec.")
