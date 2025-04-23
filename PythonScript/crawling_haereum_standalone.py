@@ -490,17 +490,23 @@ async def _test_main():
     async with async_playwright() as p:
         try:
             headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=False)
+            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
              headless_mode = False
+             max_windows = 3
              
         browser = await p.chromium.launch(headless=headless_mode)
         start_time = time.time()
         
         try:
-            # Create tasks for parallel execution
+            # Create tasks for parallel execution with semaphore
+            scraping_semaphore = asyncio.Semaphore(max_windows)
             tasks = []
             for keyword in test_keywords:
-                task = asyncio.create_task(scrape_haereum_data(browser, keyword, config))
+                async def scrape_with_semaphore(keyword):
+                    async with scraping_semaphore:
+                        return await scrape_haereum_data(browser, keyword, config)
+                task = asyncio.create_task(scrape_with_semaphore(keyword))
                 tasks.append(task)
             
             # Wait for all tasks to complete

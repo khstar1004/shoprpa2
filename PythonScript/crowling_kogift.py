@@ -1279,15 +1279,30 @@ def test_kogift_scraper():
             config.add_section('ScraperSettings')
             config.set('ScraperSettings', 'kogift_max_items', str(args.max_items))
             
+        # Get concurrency settings
+        try:
+            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
+            max_contexts = config.getint('Playwright', 'playwright_max_browser_contexts', fallback=3)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            max_windows = 3
+            max_contexts = 3
+            
         # Launch browser
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=config.getboolean('Playwright', 'playwright_headless', fallback=False))
+            
+            # Create semaphore for concurrent scraping
+            scraping_semaphore = asyncio.Semaphore(max_windows)
             
             for product in test_products:
                 logger.info(f"Starting Kogift test scrape for: {product}")
                 # Pass the ConfigParser object to scrape_data
                 # scrape_data itself doesn't download, verify_kogift_images called later might
-                result_df = await scrape_data(browser, product, config=config, fetch_price_tables=False)
+                async def scrape_with_semaphore(product):
+                    async with scraping_semaphore:
+                        return await scrape_data(browser, product, config=config, fetch_price_tables=False)
+                
+                result_df = await scrape_with_semaphore(product)
                 
                 # After scraping, call verify_kogift_images to trigger download/verification
                 if not result_df.empty:
