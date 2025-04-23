@@ -322,8 +322,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 else:
                     img_path = str(cell.value)
 
-                # Normalize path
-                img_path = os.path.normpath(img_path) if img_path else None
+                # Normalize path and handle backslashes
+                img_path = os.path.normpath(img_path.replace('\\', '/')) if img_path else None
                 
                 # Verify image file exists and is valid
                 if not img_path or not os.path.exists(img_path):
@@ -356,11 +356,16 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             img.save(temp_path, 'JPEG', quality=85, optimize=True)
                             img_path = temp_path
                     
-                    # Add to worksheet
+                    # Add to worksheet with proper positioning
                     excel_img = openpyxl.drawing.image.Image(img_path)
                     excel_img.width = IMAGE_STANDARD_SIZE[0]
                     excel_img.height = IMAGE_STANDARD_SIZE[1]
-                    excel_img.anchor = f"{cell.coordinate}"
+                    
+                    # Calculate cell position for proper image placement
+                    cell_anchor = f"{cell.coordinate}"
+                    excel_img.anchor = cell_anchor
+                    
+                    # Add image to worksheet
                     worksheet.add_image(excel_img)
                     
                     # Clean up temp file if created
@@ -620,7 +625,9 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     for col_name in TEXT_COLUMNS:
         if col_name in df_prepared.columns:
             # Ensure column is treated as string, fill NA with '-', then strip
-            df_prepared[col_name] = df_prepared[col_name].astype(str).fillna('-').str.strip()
+            df_prepared[col_name] = df_prepared[col_name].astype(str).fillna('-')
+            # Remove \xa0 characters and strip whitespace
+            df_prepared[col_name] = df_prepared[col_name].str.replace('\xa0', ' ').str.strip()
             # Replace empty strings resulting from fillna/strip back to '-'
             df_prepared[col_name] = df_prepared[col_name].replace({'': '-'})
 

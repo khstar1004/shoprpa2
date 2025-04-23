@@ -806,78 +806,78 @@ def process_matching(
     total_products = len(haoreum_df)
     
     # Download all images before starting matching process
-    if progress_queue:
-        progress_queue.emit("status", "이미지 다운로드 시작...")
-    
-    try:
-        import asyncio
-        from image_downloader import download_all_images
-        
-        # Create event loop for async operations
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Collect all image URLs from all sources
-        all_products = []
-        
-        # Add Haoreum products
-        for _, row in haoreum_df.iterrows():
-            product = row.to_dict()
-            if 'Code' in product and product['Code'] in input_file_image_map:
-                product['해오름이미지경로'] = input_file_image_map[product['Code']]
-            elif '상품코드' in product and product['상품코드'] in input_file_image_map:
-                product['해오름이미지경로'] = input_file_image_map[product['상품코드']]
-            all_products.append(product)
-        
-        # Add Kogift products
-        for product_name, products in kogift_map.items():
-            for product in products:
-                if isinstance(product, dict):
-                    all_products.append(product)
-        
-        # Add Naver products
-        for product_name, products in naver_map.items():
-            for product in products:
-                if isinstance(product, dict):
-                    all_products.append(product)
-        
-        # Download all images
-        image_paths = loop.run_until_complete(download_all_images(all_products))
-        loop.close()
-        
-        if progress_queue:
-            progress_queue.emit("status", f"이미지 다운로드 완료 ({len(image_paths)}개)")
-    except Exception as e:
-        logging.error(f"Error downloading images: {e}")
-        if progress_queue:
-            progress_queue.emit("status", "이미지 다운로드 중 오류 발생")
-    
-    # --- IMPORTANT: Update candidate maps with downloaded local paths --- 
-    logging.info("Updating candidate data with local image paths...")
-    # Update Kogift map
-    for product_name, products in kogift_map.items():
-        if isinstance(products, list):
-            for product_dict in products:
-                if isinstance(product_dict, dict):
-                    # Get original URL (might be under different keys)
-                    original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src')
-                    if original_url and original_url in image_paths:
-                        product_dict['image_path'] = image_paths[original_url]
-                    elif original_url:
-                         logging.warning(f"Kogift image URL {original_url} not found in downloaded paths map.")
-
-    # Update Naver map
-    for product_name, products in naver_map.items():
-        if isinstance(products, list):
-            for product_dict in products:
-                if isinstance(product_dict, dict):
-                    # Get original URL (might be under different keys)
-                    original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src') or product_dict.get('네이버 이미지')
-                    if original_url and original_url in image_paths:
-                        product_dict['image_path'] = image_paths[original_url]
-                    elif original_url:
-                         logging.warning(f"Naver image URL {original_url} not found in downloaded paths map.")
-    logging.info("Finished updating candidate data with local image paths.")
+    # if progress_queue:
+    #     progress_queue.emit("status", "이미지 다운로드 시작...")
+    # 
+    # try:
+    #     import asyncio
+    #     from image_downloader import download_all_images
+    #     
+    #     # Create event loop for async operations
+    #     loop = asyncio.new_event_loop()
+    #     asyncio.set_event_loop(loop)
+    #     
+    #     # Collect all image URLs from all sources
+    #     all_products = []
+    #     
+    #     # Add Haoreum products
+    #     for _, row in haoreum_df.iterrows():
+    #         product = row.to_dict()
+    #         if 'Code' in product and product['Code'] in input_file_image_map:
+    #             product['해오름이미지경로'] = input_file_image_map[product['Code']]
+    #         elif '상품코드' in product and product['상품코드'] in input_file_image_map:
+    #             product['해오름이미지경로'] = input_file_image_map[product['상품코드']]
+    #         all_products.append(product)
+    #     
+    #     # Add Kogift products
+    #     for product_name, products in kogift_map.items():
+    #         for product in products:
+    #             if isinstance(product, dict):
+    #                 all_products.append(product)
+    #     
+    #     # Add Naver products
+    #     for product_name, products in naver_map.items():
+    #         for product in products:
+    #             if isinstance(product, dict):
+    #                 all_products.append(product)
+    #     
+    #     # Download all images
+    #     image_paths = loop.run_until_complete(download_all_images(all_products))
+    #     loop.close()
+    #     
+    #     if progress_queue:
+    #         progress_queue.emit("status", f"이미지 다운로드 완료 ({len(image_paths)}개)")
+    # except Exception as e:
+    #     logging.error(f"Error downloading images: {e}")
+    #     if progress_queue:
+    #         progress_queue.emit("status", "이미지 다운로드 중 오류 발생")
+    # 
+    # # --- IMPORTANT: Update candidate maps with downloaded local paths --- 
+    # logging.info("Updating candidate data with local image paths...")
+    # # Update Kogift map
+    # for product_name, products in kogift_map.items():
+    #     if isinstance(products, list):
+    #         for product_dict in products:
+    #             if isinstance(product_dict, dict):
+    #                 # Get original URL (might be under different keys)
+    #                 original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src')
+    #                 if original_url and original_url in image_paths:
+    #                     product_dict['image_path'] = image_paths[original_url]
+    #                 elif original_url:
+    #                      logging.warning(f"Kogift image URL {original_url} not found in downloaded paths map.")
+    # 
+    # # Update Naver map
+    # for product_name, products in naver_map.items():
+    #     if isinstance(products, list):
+    #         for product_dict in products:
+    #             if isinstance(product_dict, dict):
+    #                 # Get original URL (might be under different keys)
+    #                 original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src') or product_dict.get('네이버 이미지')
+    #                 if original_url and original_url in image_paths:
+    #                     product_dict['image_path'] = image_paths[original_url]
+    #                 elif original_url:
+    #                      logging.warning(f"Naver image URL {original_url} not found in downloaded paths map.")
+    # logging.info("Finished updating candidate data with local image paths.")
     # ----------------------------------------------------------------
 
     # Initialize a multiprocessing pool

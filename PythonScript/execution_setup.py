@@ -186,36 +186,35 @@ def ensure_directories(config: configparser.ConfigParser) -> bool:
     return all_dirs_ok
 
 def clear_temp_files(config: configparser.ConfigParser):
-    """Clears temporary directories specified in [Paths]."""
-    if not config.has_section('Paths'):
-         logging.error("Cannot clear temp files: [Paths] section missing in config.")
-         return
-         
-    temp_dir_keys = ['temp_dir', 'image_main_dir', 'image_target_dir']
-    temp_dirs_to_clear = [config.get('Paths', key, fallback=None) for key in temp_dir_keys]
-    
-    logging.info(f"Attempting to clear temporary directories: {[d for d in temp_dirs_to_clear if d]}")
-    for temp_dir in temp_dirs_to_clear:
-        if temp_dir and os.path.exists(temp_dir) and os.path.isdir(temp_dir):
+    """Clear temporary directories specified in the [Paths] section of the config file."""
+    try:
+        # Get temp directory from config
+        temp_dir = config.get('Paths', 'temp_dir', fallback=None)
+        if temp_dir and os.path.exists(temp_dir):
+            logging.info(f"Clearing temporary directory: {temp_dir}")
             try:
+                # Remove all files in temp directory
                 for filename in os.listdir(temp_dir):
                     file_path = os.path.join(temp_dir, filename)
                     try:
-                        if os.path.isfile(file_path) or os.path.islink(file_path):
-                            os.unlink(file_path)
-                        elif os.path.isdir(file_path):
-                            shutil.rmtree(file_path)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            logging.debug(f"Removed temporary file: {file_path}")
                     except Exception as e:
-                        logging.error(f'Failed to delete {file_path}. Reason: {e}')
-                logging.info(f"Cleared contents of {temp_dir}")
+                        logging.error(f"Error removing file {file_path}: {e}")
             except Exception as e:
-                logging.error(f"Error clearing directory {temp_dir}: {e}")
-        elif not temp_dir:
-             logging.warning(f"Skipping temp directory clear: Path not defined in config for one of {temp_dir_keys}.")
-        elif not os.path.exists(temp_dir):
-            logging.warning(f"Temporary directory not found, cannot clear: {temp_dir}")
-        elif not os.path.isdir(temp_dir):
-             logging.warning(f"Temporary path is not a directory, cannot clear: {temp_dir}")
+                logging.error(f"Error clearing temp directory {temp_dir}: {e}")
+
+        # Get image directories from config
+        image_main_dir = config.get('Paths', 'image_main_dir', fallback=None)
+        image_target_dir = config.get('Paths', 'image_target_dir', fallback=None)
+        
+        # Note: We are no longer clearing image directories as they are now permanent storage
+        logging.info("Image directories are now permanent storage and will not be cleared")
+        
+    except Exception as e:
+        logging.error(f"Error in clear_temp_files: {e}")
+        raise
 
 def validate_program_operation(config: configparser.ConfigParser) -> bool:
     """Basic checks using ConfigParser to ensure the program can likely run."""

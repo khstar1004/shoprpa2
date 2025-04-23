@@ -168,26 +168,32 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # --- Ensure all expected output columns exist ---
     # Define final columns structure with defaults
     expected_output_columns = {
-        'Code': None, # 상품코드 대신 Code 사용
-        '상품분류': None,
+        '구분': None,
+        '담당자': None,
+        '업체명': None,
+        '업체코드': None,
+        'Code': None,
+        '중분류카테고리': None,
         '상품명': None,
-        '본사 이미지': None,
-        '기본수량(1)': 1,  # Default to 1 if not present
-        '판매단가(V포함)': 0,  # Default to 0 if not present
-        '공급사명': None,
-        '공급사 상품링크': None,
-        '고려 기본수량': None, 
+        '기본수량(1)': None,
+        '판매단가(V포함)': None,
+        '본사상품링크': None,
+        '기본수량(2)': None,
+        '판매가(V포함)(2)': None,
         '판매단가(V포함)(2)': None,
-        '고려기프트 상품링크': None,
-        '고려기프트 이미지': None,
         '가격차이(2)': None,
         '가격차이(2)(%)': None,
-        '네이버 기본수량': None,
+        '고려기프트 상품링크': None,
+        '기본수량(3)': None,
         '판매단가(V포함)(3)': None,
-        '네이버 쇼핑 링크': None,
-        '네이버 이미지': None,
         '가격차이(3)': None,
-        '가격차이(3)(%)': None
+        '가격차이(3)(%)': None,
+        '공급사명': None,
+        '네이버 쇼핑 링크': None,
+        '공급사 상품링크': None,
+        '본사 이미지': None,
+        '고려기프트 이미지': None,
+        '네이버 이미지': None
     }
     
     # 보호해야 할 초기 입력 컬럼 목록 (표준화된 이름 기준)

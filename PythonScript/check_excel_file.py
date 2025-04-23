@@ -48,12 +48,12 @@ def validate_input_excel() -> bool:
             logger.error(f"Validation Failed: Could not read Excel file '{input_file_path}'. Error: {read_err}", exc_info=True)
             return False
 
-        # Clean column names (strip whitespace)
+        # Clean column names (strip whitespace and remove \xa0)
         original_columns = list(df.columns)
-        df.columns = [col.strip() if isinstance(col, str) else col for col in df.columns]
+        df.columns = [col.replace('\xa0', ' ').strip() if isinstance(col, str) else col for col in df.columns]
         cleaned_columns = list(df.columns)
         if original_columns != cleaned_columns:
-             logger.warning(f"Column names were stripped of leading/trailing whitespace.")
+             logger.warning(f"Column names were cleaned of \xa0 characters and whitespace.")
              logger.debug(f"Original columns: {original_columns}")
              logger.debug(f"Cleaned columns: {cleaned_columns}")
 

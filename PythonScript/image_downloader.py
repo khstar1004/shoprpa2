@@ -218,171 +218,70 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                 logger.debug(f"Image already exists: {url} -> {image_path}")
                 return url, True, str(image_path)
         
+        # Kogift 이미지 다운로드를 위한 특별한 헤더 설정
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://koreagift.com/'
+        }
+        
         # 이미지 다운로드
-        try:
-            async with session.get(url, timeout=15, allow_redirects=True) as response:
-                if response.status != 200:
-                    logger.warning(f"HTTP error while downloading {url}: {response.status}")
-                    # 재시도
-                    await asyncio.sleep(1.0 * (retry_count + 1))
+        async with session.get(url, headers=headers, timeout=30) as response:
+            if response.status != 200:
+                logger.warning(f"Failed to download image: {url}, status: {response.status}")
+                if retry_count < MAX_RETRIES - 1:
+                    await asyncio.sleep(1.0 * (2 ** retry_count))  # Exponential backoff
                     return await download_image(session, url, retry_count + 1)
-                
-                # Content-Type 확인
-                content_type = response.headers.get('Content-Type', '')
-                logger.debug(f"Content-Type for {url}: {content_type}")
-                
-                # 이미지 데이터 받기
-                data = await response.read()
-                
-                # 고려기프트 URL의 경우 Content-Type 검사를 덜 엄격하게 적용
-                # 작은 HTML 오류 페이지가 아니라면 계속 진행
-                is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower() or "jclgift" in url.lower()
-                
-                if content_type and 'text/html' in content_type and len(data) < 1000 and not is_kogift:
-                    logger.warning(f"URL likely returns HTML error page instead of image: {url}")
-                    return url, False, ""
-                
-                if not data or len(data) < 100:  # 이미지 데이터가 너무 작으면 의심
-                    logger.warning(f"Downloaded image too small: {len(data)} bytes, URL: {url}")
-                    # 재시도
-                    await asyncio.sleep(1.0 * (retry_count + 1))
+                return url, False, ""
+            
+            # 이미지 데이터 읽기
+            data = await response.read()
+            
+            # 데이터 크기 검증
+            if len(data) < 100:
+                logger.warning(f"Invalid Kogift image data (too small): {len(data)} bytes")
+                if retry_count < MAX_RETRIES - 1:
+                    await asyncio.sleep(1.0 * (2 ** retry_count))
                     return await download_image(session, url, retry_count + 1)
-                
-                # 이미지 데이터 임시 파일에 저장
-                try:
-                    # 임시 파일 저장을 위한 디렉토리 생성
-                    try:
-                        temp_path.parent.mkdir(parents=True, exist_ok=True)
-                    except (PermissionError, OSError) as e:
-                        logger.warning(f"Cannot create directory for {temp_path.parent}: {e}")
-                        # 대체 디렉토리로 시도
-                        fallback_dir = Path('downloaded_images') / "kogift"
-                        fallback_dir.mkdir(exist_ok=True)
-                        temp_path = fallback_dir / temp_path.name
-                        image_path = fallback_dir / image_path.name
-                    
-                    async with aiofiles.open(temp_path, 'wb') as f:
-                        await f.write(data)
-                        await f.flush()
-                    
-                    # 파일 핸들러가 완전히 닫히도록 잠시 대기
-                    await asyncio.sleep(0.1)
-                    
-                except Exception as e:
-                    logger.error(f"Error writing temporary file {temp_path}: {e}")
-                    return url, False, ""
-                
-                # 이미지 데이터 검증 시도
-                try:
-                    img = Image.open(temp_path)
+                return url, False, ""
+            
+            # 임시 파일에 저장
+            async with aiofiles.open(temp_path, 'wb') as f:
+                await f.write(data)
+            
+            # 이미지 유효성 검사
+            try:
+                with Image.open(temp_path) as img:
                     img.verify()
-                    
-                    # 이미지 크기 검증
-                    img = Image.open(temp_path)
+                with Image.open(temp_path) as img:
                     if img.width < 10 or img.height < 10:
-                        logger.warning(f"Image dimensions too small: {img.width}x{img.height}, URL: {url}")
-                        # 고려기프트 이미지는 작은 이미지도 허용
-                        if not is_kogift:
-                            if temp_path.exists():
-                                try:
-                                    temp_path.unlink()
-                                except:
-                                    pass
-                            # 재시도
-                            await asyncio.sleep(1.0 * (retry_count + 1))
+                        logger.warning(f"Image dimensions too small: {img.width}x{img.height}")
+                        if retry_count < MAX_RETRIES - 1:
+                            await asyncio.sleep(1.0 * (2 ** retry_count))
                             return await download_image(session, url, retry_count + 1)
-                    
-                    # 이미지 검증 성공 후 파일 이동 시도 (다양한 방법으로)
-                    move_success = False
-                    error_msg = ""
-                    
-                    # 기존 파일 제거 시도
-                    if image_path.exists():
-                        try:
-                            image_path.unlink()
-                        except Exception as e:
-                            logger.warning(f"Could not remove existing file {image_path}: {e}")
-                            # 대체 파일명 생성
-                            image_path = image_path.with_name(f"{image_path.stem}_{int(time.time())}{image_path.suffix}")
-                    
-                    # 파일 이동 시도 (여러 방법)
-                    for attempt in range(3):
-                        try:
-                            # 1. rename으로 시도
-                            temp_path.rename(image_path)
-                            move_success = True
-                            break
-                        except Exception as e:
-                            error_msg = str(e)
-                            logger.debug(f"Rename attempt {attempt+1} failed: {error_msg}")
-                            await asyncio.sleep(0.5)  # 다음 시도 전 지연
-                            
-                            # 2. shutil.move로 시도
-                            if attempt == 1:
-                                try:
-                                    import shutil
-                                    shutil.move(str(temp_path), str(image_path))
-                                    move_success = True
-                                    break
-                                except Exception as e2:
-                                    error_msg += f" | Move error: {str(e2)}"
-                                    await asyncio.sleep(0.5)
-                            
-                            # 3. 복사 후 삭제 시도
-                            if attempt == 2:
-                                try:
-                                    import shutil
-                                    shutil.copy2(str(temp_path), str(image_path))
-                                    try:
-                                        temp_path.unlink()
-                                    except:
-                                        pass
-                                    move_success = True
-                                    break
-                                except Exception as e3:
-                                    error_msg += f" | Copy error: {str(e3)}"
-                    
-                    # 모든 이동 시도 실패
-                    if not move_success:
-                        logger.error(f"Failed to move temporary file to final location after multiple attempts: {error_msg}")
-                        if temp_path.exists() and temp_path.stat().st_size > 0:
-                            # 임시 파일을 결과로 반환
-                            logger.warning(f"Using temp file path as fallback: {temp_path}")
-                            return url, True, str(temp_path)
                         return url, False, ""
-                    
-                    logger.info(f"Downloaded image: {url} -> {image_path}")
-                    return url, True, str(image_path)
-                    
-                except Exception as e:
-                    logger.warning(f"Invalid image data from {url}: {str(e)}")
-                    if temp_path.exists():
-                        try:
-                            temp_path.unlink()
-                        except:
-                            pass
-                    
-                    # 재시도
-                    await asyncio.sleep(1.0 * (retry_count + 1))
+            except Exception as img_err:
+                logger.warning(f"Invalid image data: {img_err}")
+                if retry_count < MAX_RETRIES - 1:
+                    await asyncio.sleep(1.0 * (2 ** retry_count))
                     return await download_image(session, url, retry_count + 1)
-        
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout error while downloading {url}")
-            # 재시도
-            await asyncio.sleep(1.0 * (retry_count + 1))
-            return await download_image(session, url, retry_count + 1)
-        
-        except aiohttp.ClientError as e:
-            logger.warning(f"Client error while downloading {url}: {str(e)}")
-            # 재시도
-            await asyncio.sleep(1.0 * (retry_count + 1))
-            return await download_image(session, url, retry_count + 1)
-    
+                return url, False, ""
+            
+            # 임시 파일을 실제 파일로 이동
+            if image_path.exists():
+                image_path.unlink()
+            temp_path.rename(image_path)
+            
+            logger.info(f"Successfully downloaded image: {url} -> {image_path}")
+            return url, True, str(image_path)
+            
     except Exception as e:
-        logger.error(f"Unexpected error while downloading {url}: {str(e)}", exc_info=True)
-        # 재시도
-        await asyncio.sleep(1.0 * (retry_count + 1))
-        return await download_image(session, url, retry_count + 1)
+        logger.error(f"Error downloading image {url}: {e}")
+        if retry_count < MAX_RETRIES - 1:
+            await asyncio.sleep(1.0 * (2 ** retry_count))
+            return await download_image(session, url, retry_count + 1)
+        return url, False, ""
 
 async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     """이미지 URL 목록에서 비동기적으로 이미지 다운로드"""
@@ -430,34 +329,34 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     
     # 사용자 에이전트 설정
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://koreagift.com/'
     }
     
     # 비동기 세션 생성 및 연결 제한 설정
     connector = aiohttp.TCPConnector(limit=conn_limit, ssl=False)
+    
     async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
-        # 다운로드 작업 생성 (동시성 제한 적용)
-        semaphore = asyncio.Semaphore(5)  # 최대 5개 동시 다운로드
+        # 동시 다운로드를 위한 태스크 생성
+        tasks = []
+        for url in to_download:
+            task = asyncio.create_task(download_image(session, url))
+            tasks.append(task)
         
-        async def download_with_semaphore(url):
-            async with semaphore:
-                return await download_image(session, url)
-        
-        tasks = [download_with_semaphore(url) for url in to_download]
-        downloads = await asyncio.gather(*tasks, return_exceptions=True)
+        # 모든 태스크 완료 대기
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
         
         # 결과 처리
-        for i, result in enumerate(downloads):
-            url = to_download[i]
-            if isinstance(result, Exception):
-                logger.error(f"Error downloading {url}: {str(result)}")
-                results[url] = None
+        for url, (_, success, path) in zip(to_download, completed):
+            if success and path:
+                results[url] = path
+                logger.info(f"Successfully downloaded: {url} -> {path}")
             else:
-                url_result, success, path = result
-                results[url] = path if success else None
+                logger.warning(f"Failed to download: {url}")
     
-    # 다운로드 결과 요약
-    success_count = sum(1 for path in results.values() if path)
+    success_count = len(results)
     logger.info(f"Downloaded {success_count}/{len(image_urls)} images successfully")
     
     return results

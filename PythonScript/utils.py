@@ -248,13 +248,23 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
     is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
 
     # Normalize URL for kogift
-    if is_kogift and not url.startswith('https://'):
-        url = 'https://' + url.lstrip('/')
+    if is_kogift:
+        if not url.startswith('https://'):
+            url = 'https://' + url.lstrip('/')
+        # Add specific headers for koreagift
+        headers = {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://koreagift.com/'
+        }
+    else:
+        headers = {}
 
     for attempt in range(max_retries):
         try:
             logging.debug(f"Attempting to download image: {url} -> {save_path} (attempt {attempt + 1}/{max_retries})")
-            response = session.get(url, timeout=(connect_timeout, read_timeout), stream=True)
+            response = session.get(url, headers=headers, timeout=(connect_timeout, read_timeout), stream=True)
             response.raise_for_status()
 
             # Check content type
