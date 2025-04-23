@@ -290,7 +290,7 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
     return best_result_list
 
 
-async def download_naver_image(url: str, save_dir: str, product_name: str) -> Optional[str]:
+async def download_naver_image(url: str, save_dir: str, product_name: str, config: configparser.ConfigParser) -> Optional[str]:
     """
     Download a single Naver image to the specified directory.
 
@@ -298,6 +298,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str) -> Op
         url (str): The image URL to download.
         save_dir (str): The directory to save the image in.
         product_name (str): The product name for generating the filename.
+        config (configparser.ConfigParser): ConfigParser object containing configuration.
 
     Returns:
         Optional[str]: The local path to the downloaded image, or None if download failed.
@@ -318,14 +319,38 @@ async def download_naver_image(url: str, save_dir: str, product_name: str) -> Op
         _, ext = os.path.splitext(urlparse(url).path)
         ext = ext.lower() if ext.lower() in ['.jpg', '.jpeg', '.png', '.gif'] else '.jpg'
         
-        # Create filename
+        # Create filename with consistent pattern across all sources
         filename = f"naver_{safe_name}_{url_hash}{ext}"
         local_path = os.path.join(save_dir, filename)
+        final_image_path = local_path
         
         # Skip if file exists
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             logger.debug(f"Image already exists: {local_path}")
-            return local_path
+            
+            # Check for existing background-removed version
+            try:
+                use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                if use_bg_removal:
+                    bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                    if os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0:
+                        final_image_path = bg_removed_path
+                        logger.debug(f"Using existing background-removed image: {final_image_path}")
+                    else:
+                        # Try to remove background if no-bg version doesn't exist
+                        try:
+                            from image_utils import remove_background
+                            if remove_background(local_path, bg_removed_path):
+                                final_image_path = bg_removed_path
+                                logger.debug(f"Background removed for existing Naver image: {final_image_path}")
+                            else:
+                                logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
+                        except Exception as bg_err:
+                            logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+            except Exception as config_err:
+                logger.warning(f"Error reading background removal config: {config_err}. Using original image.")
+            
+            return final_image_path
 
         # Download image
         async with aiohttp.ClientSession() as session:
@@ -353,7 +378,22 @@ async def download_naver_image(url: str, save_dir: str, product_name: str) -> Op
                         os.remove(local_path)
                     os.rename(temp_path, local_path)
                     logger.info(f"Successfully downloaded image: {url} -> {local_path}")
-                    return local_path
+                    
+                    # Attempt background removal if needed
+                    try:
+                        use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                        if use_bg_removal:
+                            from image_utils import remove_background
+                            bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                            if remove_background(local_path, bg_removed_path):
+                                final_image_path = bg_removed_path
+                                logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
+                            else:
+                                logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
+                    except Exception as bg_err:
+                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                        
+                    return final_image_path
                 except Exception as e:
                     logger.error(f"Error processing image {url}: {e}")
                     if os.path.exists(temp_path):
@@ -391,16 +431,14 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     # Get config values
     try:
         base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
-        # Use image_main_dir for Naver images now
-        naver_base_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main') # Changed from image_target_dir
-        # Construct the Naver-specific directory under the main directory
-        naver_image_target_dir = os.path.join(naver_base_dir, 'Naver')
-        os.makedirs(naver_image_target_dir, exist_ok=True)
+        # Use image_main_dir for Naver images to match the pattern used by Kogift and Haereum
+        naver_image_dir = os.path.join(base_image_dir, 'Naver')
+        os.makedirs(naver_image_dir, exist_ok=True)
         
         use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
-        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_target_dir}")
+        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_dir}")
     except Exception as e:
         logger.error(f"Error reading config: {e}")
         return pd.DataFrame()
@@ -415,7 +453,7 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
             tasks.append(
                 _process_single_naver_row(
                     idx, row, config, client, api_semaphore, 
-                    naver_scrape_limit, naver_image_target_dir
+                    naver_scrape_limit, naver_image_dir
                 )
             )
         
@@ -451,7 +489,7 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     return final_df
 
 # Helper function to process a single row for crawl_naver_products
-async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_target_dir):
+async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir):
     """Processes a single product row for Naver API search and image download."""
     product_name = row.get('상품명', '')
     if not product_name or pd.isna(product_name):
@@ -504,8 +542,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         # Download image if URL exists
         image_url = first_item.get('image_url')
         if image_url:
-            # Pass the specific Naver image directory
-            local_path = await download_naver_image(image_url, naver_image_target_dir, product_name) 
+            # Pass the specific Naver image directory and config for background removal
+            local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
             if local_path:
                 result_data['네이버 이미지'] = local_path # Update with local path
             else:

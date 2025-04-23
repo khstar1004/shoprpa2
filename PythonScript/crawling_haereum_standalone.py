@@ -360,25 +360,33 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
 
 async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, max_retries: int = 3) -> Optional[str]:
     """Download an image to the main folder with target information."""
-    if not image_url:
+    if not image_url or not image_url.strip():
         logger.warning("Empty image URL provided to download_image_to_main")
         return None
         
-    # Get the main directory from config 
+    # Get main folder path from config
     try:
-        main_dir = config.get('Paths', 'image_main_dir')
+        main_dir = config.get('Paths', 'image_main_dir', fallback=None)
         if not main_dir:
-            logger.error("image_main_dir not found in config")
-            return None
+            # Use fallback path
+            main_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images', 'Main')
+            logger.warning(f"image_main_dir not specified in config, using fallback: {main_dir}")
+            
+        # Create Haereum-specific subdirectory
+        main_dir = os.path.join(main_dir, 'Haereum')
         
-        # Ensure the directory exists
+        # Create directory if it doesn't exist
         os.makedirs(main_dir, exist_ok=True)
+        
+        # Verify directory is writable
         if not os.access(main_dir, os.W_OK):
-            logger.error(f"No write permission for directory: {main_dir}")
+            logger.error(f"Image directory is not writable: {main_dir}")
             return None
             
+        # Check for use_background_removal setting
+        use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
     except Exception as e:
-        logger.error(f"Error accessing image directory: {e}")
+        logger.error(f"Error accessing config or creating image directory: {e}")
         return None
     
     # Generate a safe filename
@@ -399,15 +407,35 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             
         # Create final filename
         filename = f"haereum_{safe_name}_{url_hash}{ext}"
-        local_path = os.path.normpath(os.path.join(main_dir, filename))
+        local_path = os.path.join(main_dir, filename)
+        final_image_path = local_path
         
         # Generate unique temporary filename
         temp_path = f"{local_path}.{time.time_ns()}.tmp"
         
         # Check if file already exists
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            logger.info(f"Image already exists, skipping download: {local_path}")
-            return local_path
+            logger.info(f"Image already exists: {local_path}")
+            
+            # Check for existing background-removed version
+            if use_bg_removal:
+                nobg_path = local_path.replace('.', '_nobg.', 1)
+                if os.path.exists(nobg_path) and os.path.getsize(nobg_path) > 0:
+                    logger.debug(f"Using existing background-removed image: {nobg_path}")
+                    final_image_path = nobg_path
+                else:
+                    # Try to remove background if no-bg version doesn't exist
+                    try:
+                        from image_utils import remove_background
+                        if remove_background(local_path, nobg_path):
+                            logger.debug(f"Background removed for existing Haereum image: {nobg_path}")
+                            final_image_path = nobg_path
+                        else:
+                            logger.warning(f"Failed to remove background for Haereum image {local_path}. Using original.")
+                    except Exception as bg_err:
+                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+            
+            return final_image_path
             
     except Exception as e:
         logger.error(f"Error generating filename: {e}")
@@ -474,19 +502,31 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                     # Move temp file to final location
                                     os.rename(temp_path, local_path)
                                     logger.info(f"Successfully downloaded image: {local_path}")
-                                    return local_path
                                     
+                                    # Remove background if requested
+                                    if use_bg_removal:
+                                        try:
+                                            from image_utils import remove_background
+                                            nobg_path = local_path.replace('.', '_nobg.', 1)
+                                            if remove_background(local_path, nobg_path):
+                                                logger.info(f"Background removed for Haereum image: {nobg_path}")
+                                                final_image_path = nobg_path
+                                            else:
+                                                logger.warning(f"Failed to remove background for Haereum image {local_path}. Using original.")
+                                        except Exception as bg_err:
+                                            logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                                    
+                                    return final_image_path
                                 except Exception as img_err:
-                                    logger.error(f"Invalid image file: {img_err}")
+                                    logger.error(f"Downloaded file is not a valid image: {img_err}")
                                     if os.path.exists(temp_path):
                                         os.remove(temp_path)
                                     if attempt < max_retries - 1:
                                         await asyncio.sleep(1 * (attempt + 1))
                                         continue
                                     return None
-                                    
-                            except Exception as file_err:
-                                logger.error(f"Error saving file: {file_err}")
+                            except Exception as f_err:
+                                logger.error(f"Error saving or validating image: {f_err}")
                                 if os.path.exists(temp_path):
                                     try:
                                         os.remove(temp_path)
@@ -496,31 +536,15 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                     await asyncio.sleep(1 * (attempt + 1))
                                     continue
                                 return None
-                                
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout downloading image (attempt {attempt+1}/{max_retries}): {image_url}")
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                        logger.warning(f"Network error downloading image (attempt {attempt+1}/{max_retries}): {e}")
                         if attempt < max_retries - 1:
                             await asyncio.sleep(1 * (attempt + 1))
                             continue
                         return None
-                        
-                    except Exception as e:
-                        logger.error(f"Error downloading image (attempt {attempt+1}/{max_retries}): {e}")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(1 * (attempt + 1))
-                            continue
-                        return None
-                        
     except Exception as e:
         logger.error(f"Unexpected error downloading image: {e}")
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except:
-                pass
         return None
-        
-    return None
 
 # Example usage (Updated for ConfigParser)
 async def _test_main():

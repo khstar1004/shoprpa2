@@ -479,6 +479,120 @@ class ProductMatcher:
             self.text_model = None
             return False
 
+    def calculate_image_similarity(self, image_path1: str, image_path2: str) -> float:
+        """
+        Calculate visual similarity between two images.
+        
+        Args:
+            image_path1: Path to the first image
+            image_path2: Path to the second image
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        # Check if enhanced image matcher is available and should be used
+        if ENHANCED_MATCHER_AVAILABLE and self.image_ensemble:
+            try:
+                from enhanced_image_matcher import EnhancedImageMatcher
+                enhanced_matcher = EnhancedImageMatcher()
+                return enhanced_matcher.calculate_similarity(image_path1, image_path2)
+            except Exception as e:
+                logging.warning(f"Enhanced image matcher failed: {e}. Falling back to basic image similarity.")
+        
+        # Use cached features if available
+        img1_features = self.feature_cache.get(image_path1)
+        img2_features = self.feature_cache.get(image_path2)
+        
+        # Extract features if not in cache
+        if img1_features is None:
+            img1_features = self._extract_image_features(image_path1)
+            if img1_features is not None:
+                self.feature_cache.put(image_path1, img1_features)
+                
+        if img2_features is None:
+            img2_features = self._extract_image_features(image_path2)
+            if img2_features is not None:
+                self.feature_cache.put(image_path2, img2_features)
+        
+        # Calculate similarity if features were extracted successfully
+        if img1_features is not None and img2_features is not None:
+            # Calculate cosine similarity between feature vectors
+            similarity = np.dot(img1_features, img2_features) / (
+                np.linalg.norm(img1_features) * np.linalg.norm(img2_features)
+            )
+            return float(similarity)
+        
+        # Return 0 if feature extraction failed
+        return 0.0
+    
+    def _extract_image_features(self, image_path: str) -> Optional[np.ndarray]:
+        """
+        Extract feature vector from an image.
+        
+        Args:
+            image_path: Path to the image
+            
+        Returns:
+            np.ndarray: Feature vector or None if extraction failed
+        """
+        try:
+            # Initialize image model if not already done
+            if self.image_model is None:
+                success = self._initialize_image_model()
+                if not success:
+                    logging.error(f"Failed to initialize image model for feature extraction")
+                    return None
+            
+            # Load and preprocess the image
+            img = self._preprocess_image(image_path)
+            if img is None:
+                return None
+            
+            # Ensure image is in batch format [1, height, width, channels]
+            if len(img.shape) == 3:
+                img = np.expand_dims(img, axis=0)
+            
+            # Extract features
+            features = self.image_model.predict(img, verbose=0)
+            
+            # Normalize features to unit length
+            features = features / np.linalg.norm(features)
+            return features.flatten()
+            
+        except Exception as e:
+            logging.error(f"Error extracting image features from {image_path}: {e}")
+            return None
+    
+    def _preprocess_image(self, image_path: str) -> Optional[np.ndarray]:
+        """
+        Preprocess image for the model.
+        
+        Args:
+            image_path: Path to the image
+            
+        Returns:
+            np.ndarray: Preprocessed image or None if preprocessing failed
+        """
+        try:
+            # Check if image exists
+            if not os.path.exists(image_path):
+                logging.error(f"Image does not exist: {image_path}")
+                return None
+            
+            # Open and resize image
+            img = Image.open(image_path).convert('RGB')
+            img = img.resize((self.image_resize_dimension, self.image_resize_dimension))
+            
+            # Convert to numpy array and preprocess for EfficientNet
+            img_array = np.array(img)
+            img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
+            
+            return img_array
+            
+        except Exception as e:
+            logging.error(f"Error preprocessing image {image_path}: {e}")
+            return None
+
     def _load_category_thresholds(self, config):
         """Load category-specific thresholds from config."""
         if not self.use_category_thresholds:

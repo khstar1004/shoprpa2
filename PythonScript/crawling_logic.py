@@ -431,6 +431,27 @@ def _process_single_haoreum_image(product_code, image_info, config):
         local_path = image_info.get("local_path")
         if local_path and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             logging.debug(f"🟡 Using existing downloaded Haereum image: {local_path}")
+            
+            # Check for existing background-removed version
+            try:
+                use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                if use_bg_removal:
+                    nobg_path = local_path.replace('.', '_nobg.', 1)
+                    if os.path.exists(nobg_path) and os.path.getsize(nobg_path) > 0:
+                        logging.debug(f"🟡 Using existing background-removed Haereum image: {nobg_path}")
+                        return product_code, nobg_path
+                    else:
+                        # Try to remove background if no-bg version doesn't exist
+                        try:
+                            from image_utils import remove_background
+                            if remove_background(local_path, nobg_path):
+                                logging.debug(f"🟡 Background removed for existing Haereum image: {nobg_path}")
+                                return product_code, nobg_path
+                        except Exception as bg_err:
+                            logging.warning(f"🟡 Error during background removal: {bg_err}. Using original image.")
+            except Exception as config_err:
+                logging.warning(f"🟡 Error reading background removal config: {config_err}. Using original image.")
+                
             return product_code, local_path
     else:
         image_url = image_info
@@ -454,32 +475,26 @@ def _process_single_haoreum_image(product_code, image_info, config):
         main_dir = config.get('Paths', 'image_main_dir', fallback=None)
         if not main_dir:
             # Use fallback path
-            main_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images')
+            main_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'images', 'Main')
             logging.warning(f"🟡 image_main_dir not specified in config, using fallback: {main_dir}")
         
+        # Create Haereum-specific subdirectory
+        haereum_dir = os.path.join(main_dir, 'Haereum')
+        
         # Create directory if it doesn't exist
-        if not os.path.exists(main_dir):
-            logging.info(f"🟡 Creating image directory: {main_dir}")
-            os.makedirs(main_dir, exist_ok=True)
+        os.makedirs(haereum_dir, exist_ok=True)
             
         # Verify directory is writable
-        if not os.access(main_dir, os.W_OK):
-            logging.error(f"🟡 Image directory is not writable: {main_dir}")
-            # Try fallback to current directory
-            main_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            logging.warning(f"🟡 Using fallback directory: {main_dir}")
-            os.makedirs(main_dir, exist_ok=True)
+        if not os.access(haereum_dir, os.W_OK):
+            logging.error(f"🟡 Image directory is not writable: {haereum_dir}")
+            return product_code, None
+            
+        # Check for use_background_removal setting
+        use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
     except Exception as e:
         logging.error(f"🟡 Error accessing or creating image directory: {e}")
         return product_code, None
         
-    # Check for use_background_removal setting
-    try:
-        use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
-    except Exception as e:
-        logging.warning(f"🟡 Error reading use_background_removal setting: {e}. Defaulting to True.")
-        use_bg_removal = True
-
     try:
         # Sanitize product code if needed
         if product_code is None:
@@ -507,7 +522,7 @@ def _process_single_haoreum_image(product_code, image_info, config):
         
         # Include source information in the filename with consistent format
         main_img_filename = f"haereum_{sanitized_code}_{url_hash}{file_ext}"
-        main_img_path = os.path.normpath(os.path.join(main_dir, main_img_filename))
+        main_img_path = os.path.join(haereum_dir, main_img_filename)
         final_image_path = main_img_path
 
         # Check if image already exists
@@ -523,6 +538,7 @@ def _process_single_haoreum_image(product_code, image_info, config):
                 else:
                     # Try to remove background if no-bg version doesn't exist
                     try:
+                        from image_utils import remove_background
                         if remove_background(main_img_path, main_img_nobg_path):
                             final_image_path = main_img_nobg_path
                             logging.debug(f"🟡 Background removed for existing Haereum image: {final_image_path}")
@@ -543,9 +559,11 @@ def _process_single_haoreum_image(product_code, image_info, config):
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }
                 
-                # Pass headers to the download function if possible
-                download_kwargs = {'headers': headers} if 'headers' in config else {}
-                downloaded = download_image(image_url, main_img_path, config=config, **download_kwargs)
+                # Use utils.download_image function with proper headers
+                from utils import download_image
+                
+                # Pass headers to the download function
+                downloaded = download_image(image_url, main_img_path, config=config, headers=headers)
                 
                 if downloaded:
                     logging.debug(f"🟡 Downloaded Haereum image to main folder: {main_img_path}")
@@ -554,6 +572,7 @@ def _process_single_haoreum_image(product_code, image_info, config):
                     if use_bg_removal:
                         main_img_nobg_path = main_img_path.replace('.', '_nobg.', 1)
                         try:
+                            from image_utils import remove_background
                             if remove_background(main_img_path, main_img_nobg_path):
                                 final_image_path = main_img_nobg_path
                                 logging.debug(f"🟡 Background removed for downloaded Haereum image: {final_image_path}")

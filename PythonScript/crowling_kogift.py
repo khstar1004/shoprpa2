@@ -785,8 +785,79 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
     
     return product_list
 
+# --- 상세 페이지에서 수량 설정하고 가격 가져오는 함수 추가 ---
+async def get_price_for_specific_quantity(page, product_url, target_quantity, timeout=30000):
+    """
+    상품 상세 페이지에서 특정 수량을 입력하고 업데이트된 가격을 가져옵니다.
+    
+    Args:
+        page: Playwright Page 객체
+        product_url: 상품 상세 페이지 URL
+        target_quantity: 설정할 수량 (int)
+        timeout: 타임아웃(ms)
+        
+    Returns:
+        dict: 수량, 단가(부가세 포함/미포함), 성공 여부
+    """
+    result = {
+        "quantity": target_quantity,
+        "price": 0,
+        "price_with_vat": 0,
+        "success": False
+    }
+    
+    try:
+        await page.goto(product_url, wait_until='domcontentloaded', timeout=timeout)
+        
+        # 수량 입력 필드 확인
+        buynum_input = page.locator('input#buynum')
+        if await buynum_input.count() == 0:
+            logger.warning(f"수량 입력 필드를 찾을 수 없습니다: {product_url}")
+            return result
+            
+        # 현재 값 지우고 타겟 수량 입력
+        await buynum_input.click()
+        await buynum_input.press("Control+a")
+        await buynum_input.press("Delete")
+        await buynum_input.fill(str(target_quantity))
+        
+        # 'change' 이벤트 트리거를 위해 다른 곳 클릭 또는 Enter 키 입력
+        await buynum_input.press("Enter")
+        
+        # 가격이 업데이트될 때까지 짧게 대기
+        await page.wait_for_timeout(1000)
+        
+        # 업데이트된 가격 가져오기
+        price_element = page.locator('span#main_price')
+        if await price_element.count() == 0:
+            logger.warning(f"가격 요소를 찾을 수 없습니다: {product_url}")
+            return result
+            
+        price_text = await price_element.text_content()
+        
+        # 숫자만 추출
+        price_clean = ''.join(filter(str.isdigit, price_text.replace(',', '')))
+        if not price_clean:
+            logger.warning(f"유효한 가격을 찾을 수 없습니다: {product_url}")
+            return result
+            
+        price = int(price_clean)
+        
+        # 항상 부가세 10%를 추가하여 계산
+        price_with_vat = round(price * 1.1)
+
+        result["price"] = price
+        result["price_with_vat"] = price_with_vat
+        result["success"] = True
+
+        return result
+        
+    except Exception as e:
+        logger.error(f"수량 설정 및 가격 조회 중 오류 발생: {e}")
+        return result
+
 # --- Main scraping function에 상세 페이지 크롤링 로직 추가 --- 
-async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False):
+async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False, custom_quantities: List[int] = None):
     """Scrape data from Kogift website."""
     if config is None:
         logger.error("Configuration object is required")
@@ -1159,12 +1230,76 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                 except: pass
             continue # Skip to the next URL
 
+    # --- 검색 및 기본 상품 정보 수집 후 ---
+    
     # Combine all results
     if all_results:
         final_df = pd.concat(all_results, ignore_index=True)
         # If we have duplicates based on URL (from different keyword variations), keep only the first occurrence
         if 'href' in final_df.columns:
             final_df = final_df.drop_duplicates(subset=['href'], keep='first')
+        
+        # --- 상세 페이지에서 수량별 가격 정보 가져오기 ---
+        if custom_quantities and len(final_df) > 0:
+            logger.info(f"지정된 수량 {custom_quantities}에 대한 가격 정보 수집 시작")
+            
+            # 새로운 컨텍스트 생성
+            try:
+                browser_context = await browser.new_context(
+                    user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
+                    viewport={'width': 1920, 'height': 1080}
+                )
+                detail_page = await browser_context.new_page()
+                detail_page.set_default_timeout(PAGE_TIMEOUT)
+                
+                # 결과를 저장할 새로운 컬럼 생성
+                for qty in custom_quantities:
+                    final_df[f'price_{qty}'] = None
+                    final_df[f'price_{qty}_with_vat'] = None
+                
+                # 각 상품별로 상세 페이지 방문하여 수량별 가격 확인
+                for idx, row in final_df.iterrows():
+                    product_url = row['href']
+                    if not product_url:
+                        continue
+                    
+                    logger.info(f"상품 '{row['name'][:30]}...' 수량별 가격 정보 수집 중")
+                    
+                    for qty in custom_quantities:
+                        try:
+                            price_result = await get_price_for_specific_quantity(
+                                detail_page, product_url, qty
+                            )
+                            
+                            if price_result['success']:
+                                # 결과 저장
+                                final_df.at[idx, f'price_{qty}'] = price_result['price']
+                                final_df.at[idx, f'price_{qty}_with_vat'] = price_result['price_with_vat']
+                                logger.info(f"수량 {qty}개: {price_result['price']:,}원 (부가세포함: {price_result['price_with_vat']:,}원)")
+                            else:
+                                logger.warning(f"수량 {qty}개에 대한 가격 정보 수집 실패")
+                            
+                        except Exception as e:
+                            logger.error(f"수량 {qty}개 가격 조회 중 오류: {e}")
+                    
+                    # 브라우저 부하 방지를 위한 짧은 대기
+                    await detail_page.wait_for_timeout(1000)
+                
+                # 브라우저 컨텍스트 정리
+                await detail_page.close()
+                await browser_context.close()
+                
+                logger.info("수량별 가격 정보 수집 완료")
+            except Exception as e:
+                logger.error(f"수량별 가격 정보 수집 중 오류 발생: {e}")
+                # Context cleanup in case of error
+                try:
+                    if 'detail_page' in locals() and detail_page: 
+                        await detail_page.close()
+                    if 'browser_context' in locals() and browser_context:
+                        await browser_context.close()
+                except:
+                    pass
         
         logger.info(f"Total unique results from all keyword variations: {len(final_df)}")
         return final_df
@@ -1174,222 +1309,107 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
 
 # Simple function to test direct image download
 def test_kogift_scraper():
-    """Test both image download and product information retrieval from Kogift"""
-    import asyncio
+    """Test Kogift scraper functionality"""
     import sys
     import os
-    import requests
     import logging
+    import requests
     import random
     import time
     import pandas as pd
-    import argparse
     from datetime import datetime
-    from urllib.parse import urlparse, urljoin
     from playwright.async_api import async_playwright
     from utils import load_config
-    
-    # Setup command-line arguments
-    parser = argparse.ArgumentParser(description='Test Kogift scraper functionality')
-    parser.add_argument('--test-type', choices=['all', 'images', 'products'], default='all',
-                        help='Specify which tests to run (all, images, or products)')
-    parser.add_argument('--max-items', type=int, default=5,
-                        help='Maximum number of items to fetch per keyword')
-    
-    # Parse command-line arguments
-    if len(sys.argv) > 1 and sys.argv[1] == '--test-run':
-        # Remove the --test-run argument that was added automatically when running the script
-        sys.argv.pop(1)
-    args = parser.parse_args()
-    
-    # Setup logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger("kogift_test")
-    
-    # Define the common test product list
-    common_test_products = [
-        "777쓰리쎄븐 TS-6500C 손톱깎이 13P세트",
-        "휴대용 360도 회전 각도조절 접이식 핸드폰 거치대",
-        "피에르가르뎅 3단 슬림 코지가든 우양산",
-        "마루는강쥐 클리어미니케이스",
-        "아테스토니 뱀부사 소프트 3P 타올 세트",
-        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학"
-    ]
 
-    # Test image download functionality
+    # --- command-line args ---
+    parser = argparse.ArgumentParser(description='Test Kogift scraper functionality')
+    parser.add_argument('--test-type', choices=['all','images','products','quantities','test2'], default='all',
+                        help='Which test to run')
+    parser.add_argument('--max-items', type=int, default=5,
+                        help='Max items per keyword')
+    parser.add_argument('--quantity', type=int, action='append',
+                        help='Quantities to test')
+    parser.add_argument('--input-notepad', type=str,
+                        help='Path to tab-delimited input file (test2)')
+    
+    args = parser.parse_args()
+    if not args.quantity:
+        args.quantity = [30,50,100]
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger('kogift_test')
+
+    # Load config
+    config = load_config(os.path.join(os.path.dirname(__file__), '..','config.ini'))
+    # adjust max items
+    if config.has_section('ScraperSettings'):
+        config.set('ScraperSettings','kogift_max_items', str(args.max_items))
+    
+    # --- Helper tests inside test_kogift_scraper() ---
+    # 1) Image download test (synchronous)
     def test_image_download():
         logger.info("=== TESTING IMAGE DOWNLOAD FUNCTIONALITY ===")
-        
-        # Example image URLs to test
         test_urls = [
             "https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg",
-            "https://koreagift.com/upload/mall/shop_1736386408518966_0.jpg",  # Missing /ez/ path
+            "https://koreagift.com/upload/mall/shop_1736386408518966_0.jpg",
             "https://adpanchok.co.kr/upload/mall/shop_1234567890_0.jpg"
         ]
-        
         print(f"Testing direct image download for {len(test_urls)} URLs")
-        
-        # Create save directory - Use the correct Kogift target directory for the test
-        # Load config just for the test path
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
-        test_config = configparser.ConfigParser()
-        test_config.read(config_path, encoding='utf-8')
-        try:
-            test_target_base_dir = test_config.get('Paths', 'image_target_dir', fallback='C:\\RPA\\Image\\Target')
-            save_dir = os.path.join(test_target_base_dir, 'kogift_test_images') # Use a specific test subfolder
-            os.makedirs(save_dir, exist_ok=True)
-            logger.info(f"Test images will be saved to: {save_dir}")
-        except Exception as e:
-            logger.error(f"Error getting test image path from config: {e}, using default test dir")
-            save_dir = 'kogift_test_images' # Fallback test directory
-            os.makedirs(save_dir, exist_ok=True)
-        
-        # Normalize URLs first
-        normalized_urls = []
+        save_dir = os.path.join(config.get('Paths','image_target_dir',fallback='downloaded_images'), 'kogift_test_images')
+        os.makedirs(save_dir, exist_ok=True)
         for url in test_urls:
-            normalized_url, is_valid = normalize_kogift_image_url(url)
-            print(f"Original: {url}")
-            print(f"Normalized: {normalized_url} (Valid: {is_valid})")
-            if is_valid:
-                normalized_urls.append(normalized_url)
-        
-        # Download images
-        if normalized_urls:
-            results = {}
-            for url in normalized_urls:
-                result = download_image(url, save_dir)
-                if result:
-                    results[url] = result
-            
-            # Print results
-            print(f"\nDownload results: {len(results)}/{len(normalized_urls)} successful")
-            for url, path in results.items():
-                print(f"URL: {url}")
-                print(f"Saved to: {path}")
-                print(f"File exists: {os.path.exists(path)}")
-                if os.path.exists(path):
-                    size_kb = os.path.getsize(path) / 1024
-                    print(f"File size: {size_kb:.2f} KB")
-                print("-" * 50)
-    
-    # Test product information retrieval 
-    async def test_product_info():
-        logger.info("=== TESTING PRODUCT INFORMATION RETRIEVAL ===")
-        
-        # Load configuration
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
-        config = load_config(config_path)
-        if not config.sections():
-            logger.error(f"Could not load config from {config_path}")
-            return
-        
-        # Use keywords from command line args
-        test_products = common_test_products
-        logger.info(f"Using keywords for testing: {test_products}")
-        
-        # Modify config to limit number of items
-        if config.has_section('ScraperSettings'):
-            config.set('ScraperSettings', 'kogift_max_items', str(args.max_items))
-        else:
-            config.add_section('ScraperSettings')
-            config.set('ScraperSettings', 'kogift_max_items', str(args.max_items))
-            
-        # Get concurrency settings
-        try:
-            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
-            max_contexts = config.getint('Playwright', 'playwright_max_browser_contexts', fallback=3)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            max_windows = 3
-            max_contexts = 3
-            
-        # Launch browser
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=config.getboolean('Playwright', 'playwright_headless', fallback=False))
-            
-            # Create semaphore for concurrent scraping
-            scraping_semaphore = asyncio.Semaphore(max_windows)
-            
-            for product in test_products:
-                logger.info(f"Starting Kogift test scrape for: {product}")
-                # Pass the ConfigParser object to scrape_data
-                # scrape_data itself doesn't download, verify_kogift_images called later might
-                async def scrape_with_semaphore(product):
-                    async with scraping_semaphore:
-                        return await scrape_data(browser, product, config=config, fetch_price_tables=False)
-                
-                result_df = await scrape_with_semaphore(product)
-                
-                # After scraping, call verify_kogift_images to trigger download/verification
-                if not result_df.empty:
-                    # Convert DataFrame rows to list of dicts for verify_kogift_images
-                    product_list_for_verify = result_df.to_dict('records')
-                    verified_products_list = await verify_kogift_images(product_list_for_verify)
-                    # Convert back to DataFrame if needed or merge paths
-                    # For simplicity, we just print paths found during verification
-                    # Note: verify_kogift_images modifies the list in place
-                    downloaded_paths = [
-                        p.get('local_image_path') for p in verified_products_list 
-                        if p.get('local_image_path')
-                    ]
-                    logger.info(f"Image paths after verification/download: {downloaded_paths}")
-                    # Update the DataFrame with local paths if needed
-                    local_paths_series = pd.Series([p.get('local_image_path') for p in verified_products_list], index=result_df.index)
-                    result_df['local_image_path'] = local_paths_series
+            norm_url, valid = normalize_kogift_image_url(url)
+            if not valid:
+                logger.warning(f"Invalid URL skipped: {url}")
+                continue
+            print(f"Downloading {norm_url}")
+            path = download_image(norm_url, save_dir)
+            print(f" -> {path}")
 
-                print(f"\n--- Test Scrape Results for '{product}' ---")
-                if not result_df.empty:
-                    print(f"Found {len(result_df)} results.")
-                    print(f"First 5 results:")
-                    print(result_df.head())
-                    
-                    # Print all URLs in the result
-                    print(f"\nAll product URLs found ({len(result_df)}):")
-                    for i, (name, link) in enumerate(zip(result_df['name'], result_df['link']), 1):
-                        print(f"{i}. {name[:30]}... : {link}")
-                    
-                    print(f"\nAll image URLs found ({len(result_df)}):")
-                    for i, (name, img) in enumerate(zip(result_df['name'], result_df['image_url']), 1):
-                        print(f"{i}. {name[:30]}... : {img}")
-                    
-                    # 다운로드된 이미지 경로 출력
-                    if 'local_image_path' in result_df.columns:
-                        print(f"\nDownloaded images ({result_df['local_image_path'].notnull().sum()}/{len(result_df)}):")
-                        for i, (name, img_path) in enumerate(zip(result_df['name'], result_df['local_image_path']), 1):
-                            if pd.notnull(img_path):
-                                print(f"{i}. {name[:30]}... : {img_path}")
-                    
-                    # 단가표 정보 출력 (있는 경우)
-                    if 'price_table' in result_df.columns:
-                        print(f"\n수량-단가 정보 추출 결과:")
-                        price_tables_found = 0
-                        for idx, price_table in result_df['price_table'].items():
-                            if isinstance(price_table, pd.DataFrame) and not price_table.empty:
-                                price_tables_found += 1
-                                product_name = result_df.loc[idx, 'name']
-                                print(f"\n상품: {product_name[:30]}...")
-                                print(price_table)
-                        
-                        print(f"\n총 {price_tables_found}개 상품에서 단가표 정보를 추출했습니다.")
-                else:
-                    print("No results found.")
-                
-                print(f"Total results: {len(result_df)}")
-                print("-------------------------\n")
-            
+    # 2) Product info test (requires browser)
+    async def test_product_info(browser):
+        logger.info("=== TESTING PRODUCT INFORMATION RETRIEVAL ===")
+        # Use test keywords instead of quantities for product search
+        test_keywords = ["볼펜", "수첩", "달력"]  # Default test keywords
+        if args.quantity:  # If quantities provided, use first few as test keywords
+            test_keywords = [str(qty) for qty in args.quantity[:3]]
+        
+        for keyword in test_keywords:
+            logger.info(f"Searching for '{keyword}'...")
+            df = await scrape_data(browser, keyword, config=config)
+            print(f"Keyword '{keyword}': found {len(df)} items")
+
+    # 3) Custom quantities pricing test (requires browser)
+    async def test_custom_quantities(browser):
+        logger.info("=== TESTING CUSTOM QUANTITIES FUNCTIONALITY ===")
+        for qty in args.quantity:
+            logger.info(f"Testing quantity {qty}...")
+            # Use a generic search term that's likely to find products
+            df = await scrape_data(browser, "판촉물", config=config, custom_quantities=[qty])
+            col = f'price_{qty}_with_vat'
+            if not df.empty and col in df.columns:
+                print(f"Qty {qty}: {df.iloc[0][col]}")
+            else:
+                print(f"Qty {qty}: no data")
+
+    # 4) Standard test dispatcher
+    async def run_standard_tests():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=config.getboolean('Playwright','playwright_headless',fallback=False))
+            if args.test_type in ['all','images']:
+                test_image_download()
+            if args.test_type in ['all','products']:
+                await test_product_info(browser)
+            if args.test_type in ['all','quantities']:
+                await test_custom_quantities(browser)
             await browser.close()
-    
-    # Run tests based on command-line arguments
-    print(f"Running Kogift scraper tests (mode: {args.test_type})...")
-    
-    if args.test_type in ['all', 'images']:
-        print("\n1. Testing image download functionality")
-        test_image_download()
-    
-    if args.test_type in ['all', 'products']:
-        print("\n2. Testing product information retrieval")
-        asyncio.run(test_product_info())
-    
-    print("\nAll Kogift tests completed")
+
+    # dispatch
+    print(f"Test mode: {args.test_type}")
+    if args.test_type == 'test2':
+        import asyncio; asyncio.run(run_test2())
+    else:
+        import asyncio; asyncio.run(run_standard_tests())
 
 if __name__ == "__main__":
     # If this file is run directly, run the test
@@ -1401,3 +1421,55 @@ if __name__ == "__main__":
         
         # Run the comprehensive test function
         test_kogift_scraper()
+
+# --- 해오름 기프트 입력 데이터에서 수량 추출 함수 ---
+def extract_quantities_from_input(input_data: str) -> List[int]:
+    """
+    탭으로 구분된 입력 데이터에서 수량 컬럼을 찾아 유니크 수량 리스트를 반환합니다.
+    """
+    quantities = []
+    if not input_data:
+        return quantities
+    lines = input_data.strip().split('\n')
+    if len(lines) < 2:
+        return quantities
+    headers = lines[0].split('\t')
+    qty_idx = next((i for i, h in enumerate(headers) if '수량' in h), None)
+    if qty_idx is None:
+        return quantities
+    for row in lines[1:]:
+        cols = row.split('\t')
+        if len(cols) > qty_idx:
+            raw = ''.join(filter(str.isdigit, cols[qty_idx]))
+            if raw:
+                quantities.append(int(raw))
+    return sorted(set(quantities))
+
+# --- 해오름 기프트 입력 데이터에서 상품명/수량/단가 추출 함수 ---
+def extract_products_from_input(input_data: str) -> List[Dict[str, Any]]:
+    """
+    입력 데이터에서 상품명, 수량, 단가 컬럼을 파싱하여 딕셔너리 리스트로 반환합니다.
+    """
+    products = []
+    if not input_data:
+        return products
+    lines = input_data.strip().split('\n')
+    if len(lines) < 2:
+        return products
+    headers = lines[0].split('\t')
+    idx_name = next((i for i,h in enumerate(headers) if '상품명' in h), None)
+    idx_qty  = next((i for i,h in enumerate(headers) if '수량' in h), None)
+    idx_prc  = next((i for i,h in enumerate(headers) if '단가' in h or '가격' in h), None)
+    if idx_name is None:
+        return products
+    for row in lines[1:]:
+        cols = row.split('\t')
+        if len(cols) <= idx_name:
+            continue
+        item = {'name': cols[idx_name].strip()}
+        if idx_qty is not None and len(cols)>idx_qty:
+            raw_q=''.join(filter(str.isdigit,cols[idx_qty])); item['quantity']=int(raw_q) if raw_q else None
+        if idx_prc is not None and len(cols)>idx_prc:
+            raw_p=''.join(filter(str.isdigit,cols[idx_prc])); item['price']=int(raw_p) if raw_p else None
+        products.append(item)
+    return products
