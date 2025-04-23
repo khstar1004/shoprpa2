@@ -39,6 +39,7 @@ def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.D
         # Read the entire Excel file at once
         df = pd.read_excel(input_file, sheet_name=0)
         logging.info(f"Read {len(df)} rows from '{input_filename}'")
+        logging.info(f"Columns read from Excel: {df.columns.tolist()}")
 
         # Check for required columns
         missing_cols = [col for col in required_cols if col not in df.columns]
@@ -148,10 +149,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     missing_columns_after_add = [col for col in required_columns if col not in df.columns]
     if missing_columns_after_add:
         # 에러 대신 경고 로깅하고 기본값으로 채우기 시도
-        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Filling with '-' or NaN.")
+        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Filling with pd.NA.")
         for col in missing_columns_after_add:
-             # Ensure column exists, fill with default value
-             df[col] = df.get(col, pd.NA) # Use pd.NA for missing values, or '-' if appropriate
+             # Ensure column exists, fill with default value pd.NA
+             if col not in df.columns:
+                 df[col] = pd.NA
 
     # --- Standardize column names if needed ---
     # Add mapping for common column name variations

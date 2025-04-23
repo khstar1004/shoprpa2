@@ -431,6 +431,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         if progress_queue: progress_queue.emit("status", "Matching products with enhanced accuracy (might take longer)...")
         matched_df = pd.DataFrame() # Initialize empty DataFrame
         try:
+            # Ensure Haoreum DataFrame is valid before proceeding
+            if haoreum_df is None or haoreum_df.empty:
+                logging.error("[Step 5/7] Haoreum DataFrame is empty or None before matching. Cannot proceed.")
+                raise Exception("Input data processing failed to produce valid Haoreum data.")
+
+            # Log columns before matching
+            logging.info(f"Columns in haoreum_df BEFORE matching: {haoreum_df.columns.tolist()}")
+
             # Use ThreadPoolExecutor instead of asyncio.to_thread
             with ThreadPoolExecutor(max_workers=matcher_workers) as executor:
                 loop = asyncio.get_event_loop()
@@ -447,6 +455,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     matcher_workers
                 )
                 
+                # Log columns after matching
+                logging.info(f"Columns in matched_df AFTER matching: {matched_df.columns.tolist() if matched_df is not None else 'None'}")
+
                 if matched_df is None or matched_df.empty:
                     raise Exception("Product matching returned no results")
                     
@@ -473,6 +484,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         if progress_queue: progress_queue.emit("status", "Filtering results...")
         try:
             filtered_df = filter_results(matched_df, config)  # Removed progress_queue parameter
+            # Log columns after filtering
+            logging.info(f"Columns in filtered_df AFTER filtering: {filtered_df.columns.tolist() if filtered_df is not None else 'None'}")
+
             filter_count = len(filtered_df)
             logging.info(f"[Step 6/7] Filtering finished. {filter_count} rows remaining. Duration: {time.time() - step_start_time:.2f} sec")
         except Exception as filter_err:
