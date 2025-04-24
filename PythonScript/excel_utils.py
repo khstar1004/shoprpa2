@@ -1,32 +1,53 @@
-import pandas as pd
-import numpy as np
-import logging
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Alignment, Border, Side, Font
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.pagebreak import PageBreak
 import os
+import logging
+import pandas as pd
 import datetime
-import configparser
-from typing import Optional, Dict, List, Any, Tuple, Union
-import re
-import time
-import traceback
-import hashlib
-from urllib.parse import urlparse, unquote
-from PIL import Image
-import sys
 import openpyxl
-import io
-import requests
-from functools import wraps
+from openpyxl.styles import Alignment, Border, Side, Font, PatternFill, NamedStyle
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+import hashlib
+from urllib.parse import urlparse
+from PIL import Image
 import functools
-import os.path
+from functools import wraps
+import configparser
+import time
+import re
 from pathlib import Path
+import traceback
+import uuid
+import tempfile
+import requests
+from typing import Optional
 
-# --- Setup Logger ---
+# Check Python/PIL version for proper resampling constant
+try:
+    # Python 3.10+ with newer Pillow
+    RESAMPLING_FILTER = Image.Resampling.LANCZOS
+except (AttributeError, ImportError):
+    try:
+        # Older Pillow versions
+        RESAMPLING_FILTER = Image.LANCZOS
+    except (AttributeError, ImportError):
+        # Very old Pillow versions
+        RESAMPLING_FILTER = Image.ANTIALIAS
+
+# Initialize logger
 logger = logging.getLogger(__name__)
+
+# Initialize config parser
+CONFIG = configparser.ConfigParser()
+config_ini_path = Path(__file__).resolve().parent.parent / 'config.ini'
+try:
+    CONFIG.read(config_ini_path, encoding='utf-8')
+    logger.info(f"Successfully loaded configuration from {config_ini_path}")
+    # Get main paths from config
+    IMAGE_MAIN_DIR = Path(CONFIG.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'))
+except Exception as e:
+    logger.error(f"Error loading config from {config_ini_path}: {e}, using default values")
+    # Default directory if config fails
+    IMAGE_MAIN_DIR = Path('C:\\RPA\\Image\\Main') 
 
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
@@ -84,8 +105,7 @@ FINAL_COLUMN_ORDER = [
     '기본수량(1)', '판매단가(V포함)', '본사상품링크',
     '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
     '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
-    '본사 이미지', '고려기프트 이미지', '네이버 이미지',
-    '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_품질'
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
 
 # Columns that must be present in the input file for processing
@@ -322,192 +342,316 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
         # Process each image column
         for col_name, col_idx in image_column_indices.items():
+            image_path_to_embed = None # Reset for each cell
+            cell = None # Ensure cell is defined
             try:
-                # Get the cell value (image path)
+                # Get the cell value (image path or dictionary)
                 cell = worksheet.cell(row=row_idx, column=col_idx)
                 original_value = cell.value
                 
-                logger.info(f"Row {row_idx}, Column {col_name}:")
-                logger.info(f"  Original value: '{original_value}'")
-                logger.info(f"  Value type: {type(original_value)}")
+                logger.debug(f"Processing cell {cell.coordinate} ({col_name}). Value type: {type(original_value)}, Value: '{str(original_value)[:100]}...'")
                 
-                # Skip empty cells or error messages
-                if not original_value or original_value == '-' or (isinstance(original_value, str) and 
-                                                               any(err in original_value for err in ERROR_MESSAGE_VALUES)):
-                    logger.info(f"  Skipping value: Empty or error message")
+                # Skip empty cells or explicit error messages/placeholders
+                if original_value is None or str(original_value).strip() == '' or str(original_value) == '-' or \
+                   (isinstance(original_value, str) and any(err in original_value for err in ERROR_MESSAGE_VALUES)):
+                    logger.debug(f"  Skipping cell {cell.coordinate}: Empty or error/placeholder value.")
                     continue
                 
-                # Handle dictionary format - This is the preferred format for all image sources
                 img_dict = None
+                # --- Priority 1: Handle Dictionary Format --- 
                 if isinstance(original_value, dict):
                     img_dict = original_value
-                    logger.info(f"  Found image dictionary: {img_dict}")
+                    logger.debug(f"  Cell {cell.coordinate} contains dictionary: {img_dict}")
                 elif isinstance(original_value, str) and original_value.startswith('{') and original_value.endswith('}'):
-                    # Try to parse dictionary from string
                     try:
                         import ast
-                        img_dict = ast.literal_eval(original_value)
-                        if not isinstance(img_dict, dict):
-                            img_dict = None
-                        logger.info(f"  Parsed dictionary from string: {img_dict}")
+                        parsed_dict = ast.literal_eval(original_value)
+                        if isinstance(parsed_dict, dict):
+                            img_dict = parsed_dict
+                            logger.debug(f"  Cell {cell.coordinate} parsed dictionary from string: {img_dict}")
+                        else:
+                            logger.warning(f"  Cell {cell.coordinate} contained dictionary-like string but parsing failed.")
                     except (SyntaxError, ValueError) as e:
-                        logger.warning(f"  Failed to parse dictionary-like string: {e}")
-                        img_dict = None
-                
-                # Process image based on source type
-                if img_dict and isinstance(img_dict, dict):
-                    # Determine image path based on dictionary format
+                        logger.warning(f"  Cell {cell.coordinate} failed to parse dictionary-like string: {e}")
+
+                # --- Process Dictionary if found ---
+                if img_dict:
                     local_path = img_dict.get('local_path')
-                    url = img_dict.get('url')
-                    source = img_dict.get('source', '').lower()
-                    
-                    # Try local_path first if available
-                    if local_path and os.path.isfile(local_path):
-                        image_path = local_path
-                        logger.info(f"  Using local path from dictionary: {local_path}")
-                    # If no valid local path but URL exists, try to download
-                    elif url:
-                        logger.info(f"  No valid local path, attempting to download from URL: {url}")
+                    if local_path and isinstance(local_path, str) and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                        image_path_to_embed = local_path
+                        logger.info(f"  Using local_path from dictionary for cell {cell.coordinate}: {image_path_to_embed}")
+                    else:
+                        logger.warning(f"  Dictionary in cell {cell.coordinate} missing valid local_path: {local_path}")
+                        # Implement fallback to URL download if local_path is missing/invalid
+                        url = img_dict.get('url')
+                        source = img_dict.get('source', 'other').lower()
                         
-                        # Create a temporary directory for downloaded images if not exists
-                        import tempfile
-                        temp_dir = os.path.join(tempfile.gettempdir(), "rpa_image_cache")
-                        os.makedirs(temp_dir, exist_ok=True)
-                        
-                        # Generate unique filename
-                        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
-                        file_ext = os.path.splitext(urlparse(url).path)[1].lower() or '.jpg'
-                        if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
-                            file_ext = '.jpg'
-                            
-                        # Create source-specific filename
-                        if source in ['haoreum', 'kogift', 'naver']:
-                            filename = f"{source}_{url_hash}{file_ext}"
-                        else:
-                            filename = f"image_{url_hash}{file_ext}"
-                            
-                        temp_file_path = os.path.join(temp_dir, filename)
-                        
-                        # Download the image if needed
-                        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
+                        if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                            logger.info(f"  Attempting download from URL in dictionary: {url}")
                             try:
-                                import requests
-                                response = requests.get(url, timeout=10)
-                                response.raise_for_status()
+                                # Create proper download directory based on source
+                                if source == 'haereum' or 'jclgift' in url.lower():
+                                    save_dir = IMAGE_MAIN_DIR / 'Haereum'
+                                elif source == 'kogift' or any(kw in url.lower() for kw in ['kogift', 'koreagift', 'adpanchok']):
+                                    save_dir = IMAGE_MAIN_DIR / 'Kogift'
+                                elif source == 'naver' or 'pstatic' in url.lower():
+                                    save_dir = IMAGE_MAIN_DIR / 'Naver'
+                                else:
+                                    save_dir = IMAGE_MAIN_DIR / 'Other'
                                 
-                                with open(temp_file_path, "wb") as f:
-                                    f.write(response.content)
-                                logger.info(f"  Downloaded image to: {temp_file_path}")
-                                image_path = temp_file_path
-                            except Exception as download_err:
-                                logger.error(f"  Failed to download image: {download_err}")
-                                cell.value = "이미지 다운로드 실패"
+                                # Ensure directory exists
+                                save_dir.mkdir(parents=True, exist_ok=True)
+                                
+                                # Generate filename from URL
+                                url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:10]
+                                ext = os.path.splitext(urlparse(url).path)[1].lower()
+                                if not ext or ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                                    ext = '.jpg'  # Default extension
+                                
+                                # Create filename with source prefix
+                                filename = f"{source}_{url_hash}{ext}"
+                                output_path = save_dir / filename
+                                
+                                # Only download if file doesn't exist or is empty
+                                if not output_path.exists() or output_path.stat().st_size < 100:
+                                    import requests
+                                    # Use session with proper headers
+                                    session = requests.Session()
+                                    session.headers.update({
+                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                                        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                                    })
+                                    
+                                    # Try to download with timeout
+                                    timeout = int(CONFIG.get('Matching', 'download_image_timeout', fallback=30))
+                                    response = session.get(url, timeout=timeout, stream=True)
+                                    response.raise_for_status()
+                                    
+                                    # Check content type
+                                    content_type = response.headers.get('Content-Type', '')
+                                    if not content_type.startswith('image/') and not ('jclgift' in url or 'kogift' in url or 'pstatic' in url):
+                                        logger.warning(f"  URL doesn't return an image: {content_type}")
+                                        cell.value = "이미지 아님 (URL)"
+                                        continue
+                                    
+                                    # Save file
+                                    with open(output_path, 'wb') as f:
+                                        for chunk in response.iter_content(chunk_size=8192):
+                                            if chunk:
+                                                f.write(chunk)
+                                    
+                                    # Verify download was successful
+                                    if output_path.exists() and output_path.stat().st_size > 100:
+                                        logger.info(f"  Successfully downloaded image to {output_path}")
+                                        image_path_to_embed = str(output_path)
+                                    else:
+                                        logger.warning(f"  Downloaded file is too small or invalid: {output_path}")
+                                        cell.value = "다운로드 실패 (파일 크기)"
+                                        continue
+                                else:
+                                    logger.info(f"  Using existing downloaded file: {output_path}")
+                                    image_path_to_embed = str(output_path)
+                            except requests.RequestException as e:
+                                logger.warning(f"  Network error downloading image: {e}")
+                                cell.value = "다운로드 실패 (네트워크)"
+                                continue
+                            except Exception as e:
+                                logger.error(f"  Error downloading image: {e}")
+                                cell.value = "다운로드 실패 (기타 오류)"
                                 continue
                         else:
-                            logger.info(f"  Using cached image at: {temp_file_path}")
-                            image_path = temp_file_path
-                    else:
-                        logger.warning(f"  No valid image path or URL in dictionary")
-                        cell.value = "이미지 경로 없음"
-                        continue
-                # Handle string path directly
-                elif isinstance(original_value, str):
-                    # Check if it's a valid file path
-                    if os.path.isfile(original_value):
-                        image_path = original_value
-                        logger.info(f"  Using direct file path: {image_path}")
-                    # Check if it's a URL
-                    elif original_value.startswith(('http://', 'https://')):
-                        url = original_value
-                        logger.info(f"  Found URL string, attempting to download: {url}")
-                        
-                        # Create a temporary directory for downloaded images if not exists
-                        import tempfile
-                        temp_dir = os.path.join(tempfile.gettempdir(), "rpa_image_cache")
-                        os.makedirs(temp_dir, exist_ok=True)
-                        
-                        # Generate unique filename
-                        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
-                        file_ext = os.path.splitext(urlparse(url).path)[1].lower() or '.jpg'
-                        if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
-                            file_ext = '.jpg'
-                            
-                        # Determine source from column name
-                        if '본사' in col_name:
-                            source = 'haoreum'
-                        elif '고려' in col_name:
-                            source = 'kogift'
-                        elif '네이버' in col_name:
-                            source = 'naver'
-                        else:
-                            source = 'other'
-                            
-                        filename = f"{source}_{url_hash}{file_ext}"
-                        temp_file_path = os.path.join(temp_dir, filename)
-                        
-                        # Download the image if needed
-                        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
-                            try:
-                                import requests
-                                response = requests.get(url, timeout=10)
-                                response.raise_for_status()
-                                
-                                with open(temp_file_path, "wb") as f:
-                                    f.write(response.content)
-                                logger.info(f"  Downloaded image to: {temp_file_path}")
-                                image_path = temp_file_path
-                            except Exception as download_err:
-                                logger.error(f"  Failed to download image: {download_err}")
-                                cell.value = "이미지 다운로드 실패"
-                                continue
-                        else:
-                            logger.info(f"  Using cached image at: {temp_file_path}")
-                            image_path = temp_file_path
-                    else:
-                        logger.warning(f"  Invalid image path: {original_value}")
-                        cell.value = "이미지 파일 없음"
-                        continue
-                
-                # Add image to worksheet
-                try:
-                    # Verify the image file
-                    with Image.open(image_path) as img_check:
-                        img_size = img_check.size
-                        logger.info(f"  Image size: {img_size}")
-                        
-                        # Skip very small images
-                        if img_size[0] < 20 or img_size[1] < 20:
-                            logger.warning(f"  Image too small: {img_size}")
-                            cell.value = "이미지 크기가 너무 작음"
+                            cell.value = "이미지 경로 없음 (URL 없음)" 
                             continue
-                    
-                    # Add the image to the worksheet
-                    img = openpyxl.drawing.image.Image(image_path)
-                    img.width = img_width
-                    img.height = img_height
-                    
-                    # Calculate cell position
-                    cell_address = f"{get_column_letter(col_idx)}{row_idx}"
-                    
-                    # Set image anchor
-                    img.anchor = cell_address
-                    worksheet.add_image(img)
-                    
-                    # Clear the cell value since we're showing the image
-                    cell.value = ""
-                    
-                    logger.info(f"  Successfully added image to cell {cell_address}")
-                except Exception as img_err:
-                    logger.error(f"  Failed to process image {image_path}: {img_err}")
-                    cell.value = "이미지 처리 오류"
+                # --- Priority 2: Handle String Path/URL --- 
+                elif isinstance(original_value, str):
+                    path_str = original_value.strip()
+                    # Check if it's an absolute or relative path that exists
+                    if os.path.exists(path_str) and os.path.isfile(path_str) and os.path.getsize(path_str) > 0:
+                        image_path_to_embed = path_str
+                        logger.info(f"  Using direct file path for cell {cell.coordinate}: {image_path_to_embed}")
+                    # Check if it's a URL (simplistic check)
+                    elif path_str.startswith(('http://', 'https://')):
+                        logger.warning(f"  Cell {cell.coordinate} contains URL string '{path_str[:60]}...'. Attempting to download.")
+                        # Use similar logic to the dictionary URL handling
+                        try:
+                            # Determine source from URL or column name
+                            source = 'other'
+                            if '본사' in col_name or 'haereum' in path_str or 'jclgift' in path_str: 
+                                source = 'haereum'
+                                save_dir = IMAGE_MAIN_DIR / 'Haereum'
+                            elif '고려' in col_name or any(kw in path_str.lower() for kw in ['kogift', 'koreagift', 'adpanchok']): 
+                                source = 'kogift'
+                                save_dir = IMAGE_MAIN_DIR / 'Kogift'
+                            elif '네이버' in col_name or 'naver' in path_str or 'pstatic' in path_str: 
+                                source = 'naver'
+                                save_dir = IMAGE_MAIN_DIR / 'Naver'
+                            else:
+                                save_dir = IMAGE_MAIN_DIR / 'Other'
+                            
+                            # Ensure directory exists
+                            save_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            # Try to find existing file by hash first
+                            url_hash = hashlib.md5(path_str.encode('utf-8', errors='ignore')).hexdigest()[:10]
+                            found_path = None
+                            
+                            # Check if file already exists
+                            for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                                potential_file = save_dir / f"{source}_{url_hash}{ext}"
+                                if potential_file.exists() and potential_file.stat().st_size > 100:
+                                    found_path = str(potential_file)
+                                    logger.info(f"  Found existing file for URL: {found_path}")
+                                    break
+                            
+                            if found_path:
+                                image_path_to_embed = found_path
+                            else:
+                                # Download if not found
+                                import requests
+                                # Generate filename from URL
+                                ext = os.path.splitext(urlparse(path_str).path)[1].lower()
+                                if not ext or ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                                    ext = '.jpg'  # Default extension
+                                
+                                filename = f"{source}_{url_hash}{ext}"
+                                output_path = save_dir / filename
+                                
+                                # Use session with proper headers
+                                session = requests.Session()
+                                session.headers.update({
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                                    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                                })
+                                
+                                # Try to download with timeout
+                                timeout = int(CONFIG.get('Matching', 'download_image_timeout', fallback=30))
+                                response = session.get(path_str, timeout=timeout, stream=True)
+                                response.raise_for_status()
+                                
+                                # Save file
+                                with open(output_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                
+                                # Verify download was successful
+                                if output_path.exists() and output_path.stat().st_size > 100:
+                                    logger.info(f"  Successfully downloaded image to {output_path}")
+                                    image_path_to_embed = str(output_path)
+                                else:
+                                    logger.warning(f"  Downloaded file is too small or invalid: {output_path}")
+                                    cell.value = "다운로드 실패 (파일 크기)"
+                                    continue
+                        except Exception as e:
+                            logger.error(f"  Error handling URL string: {e}")
+                            cell.value = "URL 처리 오류"
+                            continue
+                    else:
+                        logger.warning(f"  Invalid path/URL string in cell {cell.coordinate}: '{path_str[:60]}...'")
+                        cell.value = "잘못된 이미지 경로"
+                        continue
+                else:
+                    logger.warning(f"  Unsupported value type in cell {cell.coordinate}: {type(original_value)}")
+                    cell.value = "지원되지 않는 형식"
+                    continue
+                
+                # --- Embed Image if path is valid ---
+                if image_path_to_embed:
+                    try:
+                        # Verify the image file is valid before embedding
+                        with Image.open(image_path_to_embed) as img_check:
+                            img_size = img_check.size
+                            logger.debug(f"  Verified image {image_path_to_embed}, size: {img_size}")
+                            
+                            # Skip very small images
+                            if img_size[0] < 10 or img_size[1] < 10:
+                                logger.warning(f"  Image too small to embed: {img_size} for {image_path_to_embed}")
+                                cell.value = "이미지 크기 작음"
+                                continue
+                            
+                            # Excel 2021 compatibility: optimize large or problematic images
+                            # Create an optimized version for Excel if needed
+                            try_optimize = False
+                            # Check if image is very large
+                            if img_size[0] > 1000 or img_size[1] > 1000 or os.path.getsize(image_path_to_embed) > 500000:
+                                try_optimize = True
+                            # Check problematic file formats for Excel
+                            img_format = img_check.format
+                            if img_format and img_format.lower() not in ['jpeg', 'png']:
+                                try_optimize = True
+                                
+                            if try_optimize:
+                                logger.info(f"  Optimizing image for Excel compatibility: {image_path_to_embed}")
+                                # Create a temp optimized version
+                                import tempfile
+                                import uuid
+                                
+                                # Create optimized version in temp directory
+                                temp_dir = Path(tempfile.gettempdir()) / 'excel_image_cache'
+                                temp_dir.mkdir(parents=True, exist_ok=True)
+                                
+                                # Generate unique filename
+                                temp_path = temp_dir / f"excel_opt_{uuid.uuid4().hex[:8]}.jpg"
+                                
+                                # Convert to RGB if needed (Excel doesn't handle RGBA/transparency well)
+                                if img_check.mode in ['RGBA', 'LA'] or (img_check.mode == 'P' and 'transparency' in img_check.info):
+                                    img_rgb = img_check.convert('RGB')
+                                else:
+                                    img_rgb = img_check.convert('RGB')
+                                
+                                # Calculate new dimensions (preserve aspect ratio, max 800px)
+                                max_dim = 800
+                                if img_size[0] > max_dim or img_size[1] > max_dim:
+                                    if img_size[0] > img_size[1]:
+                                        new_width = max_dim
+                                        new_height = int(img_size[1] * (max_dim / img_size[0]))
+                                    else:
+                                        new_height = max_dim
+                                        new_width = int(img_size[0] * (max_dim / img_size[1]))
+                                    
+                                    # Resize image
+                                    img_resized = img_rgb.resize((new_width, new_height), RESAMPLING_FILTER)
+                                else:
+                                    img_resized = img_rgb
+                                
+                                # Save optimized image as JPEG with good quality
+                                img_resized.save(temp_path, 'JPEG', quality=85, optimize=True)
+                                
+                                if temp_path.exists() and temp_path.stat().st_size > 0:
+                                    logger.info(f"  Using optimized version for Excel: {temp_path}")
+                                    image_path_to_embed = str(temp_path)
+                        
+                        # Add the image to the worksheet
+                        img = openpyxl.drawing.image.Image(image_path_to_embed)
+                        img.width = img_width
+                        img.height = img_height
+                        
+                        # Set image anchor to the cell
+                        img.anchor = cell.coordinate
+                        worksheet.add_image(img)
+                        
+                        # Clear the cell value since we're showing the image
+                        cell.value = "" # Important: Clear the path string/dict
+                        
+                        logger.info(f"  Successfully added image {os.path.basename(image_path_to_embed)} to cell {cell.coordinate}")
+                        
+                    except FileNotFoundError:
+                        logger.error(f"  Image file not found at path: {image_path_to_embed}")
+                        cell.value = "이미지 파일 없음"
+                    except Exception as img_err:
+                        logger.error(f"  Failed to process/embed image {image_path_to_embed}: {img_err}")
+                        cell.value = "이미지 처리 오류"
             
             except Exception as e:
-                logger.error(f"Error processing image in row {row_idx}, column {col_name}: {e}")
+                logger.error(f"Error processing image cell {cell.coordinate if cell else f'R{row_idx}C{col_idx}'} ({col_name}): {e}", exc_info=True)
                 try:
-                    cell = worksheet.cell(row=row_idx, column=col_idx)
-                    cell.value = "이미지 처리 오류"
-                except:
-                    pass
+                    # Ensure cell exists before setting error message
+                    if cell:
+                        cell.value = "이미지 처리 오류 (전역)"
+                except Exception as final_err:
+                    logger.error(f"Failed to set error message for cell R{row_idx}C{col_idx}: {final_err}")
 
     logger.debug("Finished processing image columns")
 
@@ -791,7 +935,7 @@ def verify_image_data(img_value, img_col_name):
 
 def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame:
     """
-    Prepares the DataFrame for Excel output.
+    Prepares the DataFrame for Excel output: column order, formatting.
     
     Args:
         df (pd.DataFrame): The DataFrame to prepare
@@ -803,29 +947,46 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
     # Make a copy to avoid modifying the original
     df = df.copy()
     
-    # Ensure all required columns exist
+    # Ensure all required columns from FINAL_COLUMN_ORDER exist
     for col in FINAL_COLUMN_ORDER:
         if col not in df.columns:
             df[col] = ""
-    
+            logger.debug(f"Added missing column '{col}' to DataFrame before ordering.")
+
     # Select and reorder columns based on FINAL_COLUMN_ORDER
-    df = df[FINAL_COLUMN_ORDER]
-    
+    # Ensure only columns defined in FINAL_COLUMN_ORDER are kept and ordered correctly
+    existing_cols_in_order = [col for col in FINAL_COLUMN_ORDER if col in df.columns]
+    df = df[existing_cols_in_order]
+    logger.debug(f"Columns after reordering: {df.columns.tolist()}")
+
     # For upload file, remove image data columns
     if skip_images:
         image_columns = [col for col in df.columns if '이미지' in col]
         for col in image_columns:
-            df[col] = df[col].apply(lambda x: '' if isinstance(x, dict) and 'path' in x else x)
+            # Replace image dict/path with empty string for upload file
+            df[col] = df[col].apply(lambda x: '' if isinstance(x, dict) or (isinstance(x, str) and ('/' in x or '\\' in x)) else x)
+        logger.debug(f"Cleared image data for upload file from columns: {image_columns}")
     
-    # Format numeric columns
+    # Format numeric columns (prices, quantities)
+    numeric_keywords = ['단가', '가격', '수량']
     for col in df.columns:
-        if any(keyword in col for keyword in ['단가', '가격']):
+        if any(keyword in col for keyword in numeric_keywords):
             try:
+                # Attempt conversion, handle errors gracefully
+                original_dtype = df[col].dtype
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-                df[col] = df[col].fillna('')
+                # Only fillna if conversion was successful (result is numeric)
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    df[col] = df[col].fillna('') # Fill NaN with empty string for Excel
+                else:
+                     # If coercion failed, maybe revert or log? Keep original if not numeric.
+                     df[col] = df[col].astype(original_dtype) # Revert if conversion failed badly
+                     df[col] = df[col].fillna('') # Still fill NaNs
             except Exception as e:
-                logging.warning(f"Error formatting numeric column {col}: {str(e)}")
+                logging.warning(f"Error formatting numeric column '{col}': {str(e)}")
+                df[col] = df[col].fillna('') # Ensure NaNs are handled even on error
     
+    logger.debug(f"Final columns for Excel output: {df.columns.tolist()}")
     return df
 
 def safe_excel_operation(func):

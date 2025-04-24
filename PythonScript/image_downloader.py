@@ -31,15 +31,17 @@ try:
     VERIFY_IMAGE_URLS = config.getboolean('Matching', 'verify_image_urls', fallback=True)
     PREDOWNLOAD_KOGIFT_IMAGES = config.getboolean('Matching', 'predownload_kogift_images', fallback=True)
 
-    # 이미지 저장 경로 - Use Target/kogift for this downloader
+    # 이미지 저장 경로 - Kogift는 Main/Kogift 사용
     try:
-        image_target_dir = config.get('Paths', 'image_target_dir')
-        KOGIFT_IMAGE_DIR = Path(image_target_dir) / 'kogift'
-        logger.info(f"Using Kogift image directory from config: {KOGIFT_IMAGE_DIR}")
+        # 기본 Main 경로를 사용
+        image_main_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
+        KOGIFT_IMAGE_DIR = Path(image_main_dir) / 'Kogift' # Use Main/Kogift
+        logger.info(f"Using Kogift image directory from config (Main): {KOGIFT_IMAGE_DIR}")
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
-        logger.error(f"Error getting image_target_dir from config: {e}. Using default.")
-        KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift'
-        logger.info(f"Using default Kogift image directory (Target): {KOGIFT_IMAGE_DIR}")
+        logger.error(f"Error getting image_main_dir from config: {e}. Using default.")
+        # Fallback to default Main/Kogift
+        KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Main') / 'Kogift'
+        logger.info(f"Using default Kogift image directory (Main): {KOGIFT_IMAGE_DIR}")
 
 except Exception as e:
     logger.error(f"Error loading config from {config_ini_path}: {e}, using default values")
@@ -48,9 +50,9 @@ except Exception as e:
     VERIFY_SAMPLE_PERCENT = 10
     VERIFY_IMAGE_URLS = True
     PREDOWNLOAD_KOGIFT_IMAGES = True
-    # Default Kogift image directory
-    KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Target') / 'kogift' 
-    logger.info(f"Using default Kogift image directory (Target): {KOGIFT_IMAGE_DIR}")
+    # Default Kogift image directory (Main)
+    KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Main') / 'Kogift' 
+    logger.info(f"Using default Kogift image directory (Main): {KOGIFT_IMAGE_DIR}")
 
 # 이미지 경로 생성 및 권한 확인
 try:
@@ -58,29 +60,29 @@ try:
     KOGIFT_IMAGE_DIR.mkdir(parents=True, exist_ok=True) 
     # 쓰기 권한 확인
     if not os.access(KOGIFT_IMAGE_DIR, os.W_OK):
-        # 대체 경로 사용 - config에서 정의된 경로 사용
+        # 대체 경로 사용 - config에서 정의된 경로 사용 (Main 우선)
         try:
-            image_target_dir = config.get('Paths', 'image_target_dir') # 대체 경로는 Target으로
-            fallback_dir = Path(image_target_dir) / 'kogift'
+            image_main_dir = config.get('Paths', 'image_main_dir') # 대체 경로도 Main으로
+            fallback_dir = Path(image_main_dir) / 'Kogift'
             fallback_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
             KOGIFT_IMAGE_DIR = fallback_dir
         except (configparser.NoSectionError, configparser.NoOptionError) as e:
-            logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA Target path.")
-            fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift' # 기본 대체 경로는 Target
+            logger.error(f"Error getting image_main_dir from config: {e}. Using default RPA Main path.")
+            fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift' # 기본 대체 경로도 Main
             fallback_dir.mkdir(parents=True, exist_ok=True)
             KOGIFT_IMAGE_DIR = fallback_dir
 except Exception as e:
-    # 기본 대체 경로 사용 - config에서 정의된 경로 사용
+    # 기본 대체 경로 사용 - config에서 정의된 경로 사용 (Main 우선)
     try:
-        image_target_dir = config.get('Paths', 'image_target_dir') # 기본 대체 경로는 Target
-        fallback_dir = Path(image_target_dir) / 'kogift'
+        image_main_dir = config.get('Paths', 'image_main_dir') # 기본 대체 경로도 Main
+        fallback_dir = Path(image_main_dir) / 'Kogift'
         fallback_dir.mkdir(parents=True, exist_ok=True)
         logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
         KOGIFT_IMAGE_DIR = fallback_dir
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
-        logger.error(f"Error getting image_target_dir from config: {e}. Using default RPA Target path.")
-        fallback_dir = Path('C:\\RPA\\Image\\Target') / 'kogift' # 기본 대체 경로는 Target
+        logger.error(f"Error getting image_main_dir from config: {e}. Using default RPA Main path.")
+        fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift' # 기본 대체 경로도 Main
         fallback_dir.mkdir(parents=True, exist_ok=True)
         KOGIFT_IMAGE_DIR = fallback_dir
 
@@ -238,19 +240,22 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     
     # Determine the appropriate directory based on URL
     if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
-        save_dir = KOGIFT_IMAGE_DIR
+        save_dir = KOGIFT_IMAGE_DIR # Use the globally defined Main/Kogift directory
     elif "jclgift" in url.lower():
-        # Save jclgift images in a haereum directory
-        haereum_dir = Path(os.path.dirname(KOGIFT_IMAGE_DIR)) / 'Haereum'
+        # Save jclgift images in a haereum directory within Main
+        base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
+        haereum_dir = base_main_dir / 'Haereum'
         haereum_dir.mkdir(parents=True, exist_ok=True)
         save_dir = haereum_dir
     elif "pstatic.net" in url.lower() or "naver" in url.lower():
-        # Save Naver images in a naver directory
-        naver_dir = Path(os.path.dirname(KOGIFT_IMAGE_DIR)) / 'Naver'
+        # Save Naver images in a naver directory within Main
+        base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
+        naver_dir = base_main_dir / 'Naver'
         naver_dir.mkdir(parents=True, exist_ok=True)
         save_dir = naver_dir
     else:
-        # Use generic directory for other URLs
+        # Use generic directory for other URLs (default to Main/Kogift for safety, though unlikely)
+        logger.warning(f"URL source undetermined, saving to Kogift directory: {url}")
         save_dir = KOGIFT_IMAGE_DIR
     
     # Generate a filename based on URL hash
@@ -289,8 +294,8 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     # For jclgift URLs, also save a copy in Main folder without nobg
     create_nobg_version = False
     if "jclgift" in url.lower():
-        main_dir = Path(os.path.dirname(save_dir.parent)) / 'Main' / 'Haereum'
-        main_dir.mkdir(parents=True, exist_ok=True)
+        # save_dir is already C:\RPA\Image\Main\Haereum, so no need to recalculate
+        main_dir = save_dir 
         main_filename = f"{source_prefix}_{url_hash[:10]}{ext}"
         main_path = main_dir / main_filename
         create_nobg_version = True
@@ -395,7 +400,10 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                             await f.write(data)
                             
                         # Also create a _nobg.png version for the background-removed image path
-                        nobg_path = os.path.splitext(main_path)[0] + "_nobg.png"
+                        # Ensure the base path exists before creating the nobg version path
+                        os.makedirs(main_path.parent, exist_ok=True) 
+                        nobg_path = main_path.with_suffix('').with_name(main_path.stem + "_nobg.png")
+                        # Copy the original data to the _nobg path placeholder
                         async with aiofiles.open(nobg_path, 'wb') as f:
                             await f.write(data)
                         
@@ -478,14 +486,18 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     # Log basic info
     logger.info(f"Downloading {len(normalized_urls)} images...")
     
-    # Create directories for each source type if they don't exist
+    # Create directories for each source type if they don't exist (Standardize to Main)
+    try:
+        base_main_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
+    except Exception as e:
+        logger.warning(f"Error getting image_main_dir from config: {e}. Using default C:\\RPA\\Image\\Main")
+        base_main_dir = 'C:\\RPA\\Image\\Main'
+        
     source_dirs = {
-        'haereum': Path('C:\\RPA\\Image\\Main\\Haereum'),
-        'kogift': Path('C:\\RPA\\Image\\Main\\Kogift'),
-        'naver': Path('C:\\RPA\\Image\\Main\\Naver'),
-        'target_haereum': Path('C:\\RPA\\Image\\Target\\Haereum'),
-        'target_kogift': Path('C:\\RPA\\Image\\Target\\Kogift'),
-        'target_naver': Path('C:\\RPA\\Image\\Target\\Naver')
+        'haereum': Path(base_main_dir) / 'Haereum',
+        'kogift': Path(base_main_dir) / 'Kogift',
+        'naver': Path(base_main_dir) / 'Naver',
+        # No need for Target directories here anymore
     }
     
     for d in source_dirs.values():
@@ -518,7 +530,7 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
                     # Store both the image path and additional metadata to aid in Excel embedding
                     if "jclgift" in original_url.lower():
                         source = "haereum"
-                    elif "kogift" in original_url.lower() or "koreagift" in original_url.lower():
+                    elif "kogift" in original_url.lower() or "koreagift" in original_url.lower() or "adpanchok" in url.lower():
                         source = "kogift" 
                     elif "pstatic" in original_url.lower() or "naver" in original_url.lower():
                         source = "naver"

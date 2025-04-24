@@ -406,14 +406,14 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             'img[src*="/upload/product/simg3/"]',  # Main product listing image pattern
                             'td[align="center"] > a > img[src*="/upload/product/"]',  # Product image in center-aligned cell with link
                             'form[name="ListForm"] td img[src*="/upload/"]',  # Any product image in ListForm
-                            'img[src*="/upload/product/"]',  # Any product image as fallback
-                            'img[src*=".jpg"], img[src*=".jpeg"], img[src*=".png"], img[src*=".gif"]'  # Explicit extension patterns
+                            'img[src*="/upload/product/"]'  # Any product image as fallback
                         ])
 
                         # Add exclusion patterns to avoid non-product images
                         exclude_patterns = [
                             '/images/icon',
                             '/images/button',
+                            '/upload/ad_new/', # Exclude ad images
                             'btn_',
                             'pixel.gif',
                             'spacer.gif',
@@ -728,7 +728,13 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     if not image_url or not image_url.strip():
         logger.warning("Empty image URL provided to download_image_to_main")
         return None
-        
+
+    # --- Added Check: Ensure it's a product image URL ---
+    if '/upload/product/' not in image_url or '/upload/ad_new/' in image_url:
+        logger.warning(f"Skipping non-product or ad image URL: {image_url}")
+        return None
+    # --- End Added Check ---
+
     # Get main folder path from config
     try:
         main_dir = config.get('Paths', 'image_main_dir', fallback=None)
@@ -1073,7 +1079,7 @@ async def try_direct_product_code_fallback(page: Page, keyword: str, config: con
             else:
                 img_url = match
                 
-            if not any(p in img_url for p in ['icon', 'button', 'btn_', 'pixel.gif', 'spacer.gif', 'no_image']):
+            if not any(p in img_url for p in ['icon', 'button', 'btn_', 'pixel.gif', 'spacer.gif', 'no_image', '/upload/ad_new/']):
                 product_imgs.append(img_url)
                 
         logger.info(f"After filtering, {len(product_imgs)} valid product images remain")
