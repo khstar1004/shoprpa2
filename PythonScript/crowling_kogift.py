@@ -1190,6 +1190,9 @@ def test_kogift_scraper():
                         help='Quantities to test')
     parser.add_argument('--input-notepad', type=str,
                         help='Path to tab-delimited input file (test2)')
+    parser.add_argument('--search-terms', nargs='+', 
+                        default=["녹색나라 화이트", "헬프맨 어반", "텀블러"],
+                        help='Search terms to use for testing')
     
     args = parser.parse_args()
     if not args.quantity:
@@ -1228,28 +1231,104 @@ def test_kogift_scraper():
     # 2) Product info test (requires browser)
     async def test_product_info(browser):
         logger.info("=== TESTING PRODUCT INFORMATION RETRIEVAL ===")
-        # Use test keywords instead of quantities for product search
-        test_keywords = ["볼펜", "수첩", "달력"]  # Default test keywords
-        if args.quantity:  # If quantities provided, use first few as test keywords
-            test_keywords = [str(qty) for qty in args.quantity[:3]]
+        
+        # Use specified search terms
+        test_keywords = args.search_terms
         
         for keyword in test_keywords:
-            logger.info(f"Searching for '{keyword}'...")
+            logger.info(f"\n--- Searching for '{keyword}' ---")
             df = await scrape_data(browser, keyword, config=config)
-            print(f"Keyword '{keyword}': found {len(df)} items")
+            
+            if df.empty:
+                print(f"No products found for '{keyword}'")
+                continue
+                
+            print(f"Found {len(df)} products for '{keyword}'")
+            
+            # Display image URLs and prices for each product
+            for idx, row in df.iterrows():
+                print(f"\nProduct {idx+1}: {row.get('name', 'Unknown Name')}")
+                print(f"  URL: {row.get('href', 'N/A')}")
+                print(f"  Image URL: {row.get('image_url', 'No image')}")
+                print(f"  Price (excl. VAT): {row.get('price', 'N/A')} KRW")
+                print(f"  Price (incl. VAT): {row.get('price_with_vat', 'N/A')} KRW")
+                
+                # Check if image URL is valid
+                img_url = row.get('image_url')
+                if img_url:
+                    norm_url, valid = normalize_kogift_image_url(img_url)
+                    if valid:
+                        print(f"  Image URL valid: Yes (normalized: {norm_url})")
+                    else:
+                        print(f"  Image URL valid: No")
+                
+                # Check if price data is valid
+                if row.get('price', 0) > 0:
+                    print(f"  Price data valid: Yes")
+                else:
+                    print(f"  Price data valid: No")
+                    
+                print("-" * 50)
+                
+                # Limit display to first 3 products per keyword to avoid too much output
+                if idx >= 2:
+                    print(f"... and {len(df) - 3} more products")
+                    break
 
     # 3) Custom quantities pricing test (requires browser)
     async def test_custom_quantities(browser):
         logger.info("=== TESTING CUSTOM QUANTITIES FUNCTIONALITY ===")
+        
+        # Use the first search term for quantity testing
+        keyword = args.search_terms[0]
+        logger.info(f"Testing quantities for '{keyword}'...")
+        
         for qty in args.quantity:
-            logger.info(f"Testing quantity {qty}...")
-            # Use a generic search term that's likely to find products
-            df = await scrape_data(browser, "판촉물", config=config, custom_quantities=[qty])
-            col = f'price_{qty}_with_vat'
-            if not df.empty and col in df.columns:
-                print(f"Qty {qty}: {df.iloc[0][col]}")
+            print(f"\n--- Testing quantity: {qty} for '{keyword}' ---")
+            # Search for products
+            df = await scrape_data(browser, keyword, config=config)
+            
+            if df.empty:
+                print(f"No products found for '{keyword}'")
+                continue
+                
+            print(f"Found {len(df)} products. Testing first product for quantity {qty}...")
+            
+            # Get the first product URL
+            product_url = df.iloc[0].get('href', None)
+            product_name = df.iloc[0].get('name', 'Unknown Product')
+            
+            if not product_url:
+                print(f"No URL available for the first product")
+                continue
+                
+            # Create a new page for price testing
+            context = await browser.new_context(
+                user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
+                viewport={'width': 1920, 'height': 1080},
+            )
+            page = await context.new_page()
+            
+            # Test pricing for the specific quantity
+            price_result = await get_price_for_specific_quantity(page, product_url, qty)
+            
+            print(f"Product: {product_name}")
+            print(f"URL: {product_url}")
+            print(f"Quantity: {price_result['quantity']}")
+            print(f"Price (excl. VAT): {price_result['price']} KRW")
+            print(f"Price (incl. VAT): {price_result['price_with_vat']} KRW")
+            print(f"Success: {'Yes' if price_result['success'] else 'No'}")
+            
+            # Also check if price table is available
+            price_table = await extract_price_table(page, product_url)
+            if price_table is not None and not price_table.empty:
+                print("\nPrice table found:")
+                print(price_table.to_string())
             else:
-                print(f"Qty {qty}: no data")
+                print("\nNo price table found for this product")
+                
+            await page.close()
+            await context.close()
 
     # 4) Standard test dispatcher
     async def run_standard_tests():
@@ -1265,6 +1344,7 @@ def test_kogift_scraper():
 
     # dispatch
     print(f"Test mode: {args.test_type}")
+    print(f"Search terms: {args.search_terms}")
     if args.test_type == 'test2':
         # TODO: Implement run_test2 or remove this branch if not needed
         # import asyncio; asyncio.run(run_test2())
