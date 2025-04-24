@@ -498,7 +498,7 @@ def verify_image_data(img_value, img_col_name):
                  # Convert file path to dictionary format for consistency
                  source = img_col_name.split()[0].lower()
                  # Try to construct a placeholder URL if none provided (might be inaccurate)
-                 placeholder_url = f"file:///{img_value.replace('\\', '/')}" 
+                 placeholder_url = f"file:///{img_value.replace(os.sep, '/')}"
                  return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
             # Handle relative paths (less ideal, try to resolve)
             elif not os.path.isabs(img_value):
