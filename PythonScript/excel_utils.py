@@ -307,6 +307,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         if col_name in df.columns:
             idx = list(df.columns).index(col_name) + 1  # Excel is 1-indexed
             image_column_indices[col_name] = idx
+            logger.debug(f"Found image column: {col_name} at index {idx}")
 
     if not image_column_indices:
         logger.debug("No image columns found in DataFrame")
@@ -323,23 +324,35 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             try:
                 # Get the cell value (image path)
                 cell = worksheet.cell(row=row_idx, column=col_idx)
-                image_path = str(cell.value).strip()
+                original_path = str(cell.value)
+                image_path = original_path.strip()
+                
+                logger.info(f"Row {row_idx}, Column {col_name}:")
+                logger.info(f"  Original path: '{original_path}'")
+                logger.info(f"  Stripped path: '{image_path}'")
+                logger.info(f"  Path type: {type(image_path)}")
                 
                 # Skip empty cells or error messages
                 if not image_path or image_path == '-' or any(err in image_path for err in ERROR_MESSAGE_VALUES):
+                    logger.info(f"  Skipping path: Empty or error message")
                     continue
                 
-                logger.debug(f"Processing image in row {row_idx}, column {col_name}: {image_path}")
+                # Convert to raw string path
+                raw_path = rf"{image_path}"
+                logger.info(f"  Raw string path: '{raw_path}'")
+                logger.info(f"  Raw path exists: {os.path.isfile(raw_path)}")
                 
                 # Check if image path exists
-                if os.path.isfile(image_path):
+                if os.path.isfile(raw_path):
                     try:
                         # Try to open the image first to verify it's valid
-                        with Image.open(image_path) as img_check:
-                            pass  # Just checking if it can be opened
+                        with Image.open(raw_path) as img_check:
+                            logger.info(f"  Successfully opened image: {raw_path}")
+                            img_size = img_check.size
+                            logger.info(f"  Image size: {img_size}")
                         
                         # Add the image to the worksheet
-                        img = openpyxl.drawing.image.Image(image_path)
+                        img = openpyxl.drawing.image.Image(raw_path)
                         img.width = img_width
                         img.height = img_height
                         
@@ -353,12 +366,12 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         # Clear the cell value since we're showing the image
                         cell.value = ""
                         
-                        logger.debug(f"Successfully added image at {cell_address}: {image_path}")
+                        logger.info(f"  Successfully added image to cell {cell_address}")
                     except Exception as img_err:
-                        logger.error(f"Failed to process image {image_path}: {img_err}")
+                        logger.error(f"  Failed to process image {raw_path}: {img_err}")
                         cell.value = "이미지 처리 오류"
                 else:
-                    logger.warning(f"Image file not found: {image_path}")
+                    logger.warning(f"  Image file not found: {raw_path}")
                     cell.value = "이미지 파일 없음"
             
             except Exception as e:
