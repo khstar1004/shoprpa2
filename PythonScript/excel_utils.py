@@ -275,6 +275,8 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
 
             # Apply alignment based on column type
             col_name_str = str(col_name)
+            is_pct_col = col_name_str in ['가격차이(2)(%)', '가격차이(3)(%)'] # Explicit check for percentage columns
+
             # Check if the cell value is likely numeric (ignoring error messages)
             is_numeric_value = False
             cell_value_str = str(cell.value)
@@ -286,7 +288,8 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
                  except ValueError:
                       is_numeric_value = False
 
-            if (col_name_str in PRICE_COLUMNS or col_name_str in QUANTITY_COLUMNS or col_name_str in PERCENTAGE_COLUMNS) and is_numeric_value:
+            # Apply right alignment to numbers and specifically formatted percentage strings
+            if is_pct_col or ((col_name_str in PRICE_COLUMNS or col_name_str in QUANTITY_COLUMNS) and is_numeric_value):
                 cell.alignment = RIGHT_ALIGNMENT
             elif col_name_str in IMAGE_COLUMNS or 'Code' in col_name_str or '코드' in col_name_str or col_name_str == '구분':
                  cell.alignment = CENTER_ALIGNMENT
@@ -678,34 +681,56 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 img_path = os.path.normpath(img_path)
                 
                 # Skip processing if this image was already processed
-                if img_path in processed_images:
-                    excel_img = processed_images[img_path]['image']
-                    # Calculate cell position for proper image placement
-                    cell_anchor = f"{cell.coordinate}"
-                    excel_img.anchor = cell_anchor
-                    # Add image to worksheet
+                # IMPORTANT: Cache key should be the ORIGINAL path if available, or the primary path used
+                cache_key = img_info.get('original_path', img_path) if isinstance(cell.value, dict) else img_path
+                cache_key = os.path.normpath(cache_key)
+
+                if cache_key in processed_images:
+                    # Use the cached Excel image object
+                    excel_img = processed_images[cache_key]['image']
+
+                    # Recalculate anchor based on current cell
+                    excel_img.anchor = cell.coordinate
+
+                    # Add the cached image object to the worksheet
                     worksheet.add_image(excel_img)
-                    logger.debug(f"Reused cached image: {img_path}")
+                    logger.debug(f"Reused cached image for key: {cache_key} -> {cell.coordinate}")
                     success_count += 1
                     continue
-                
-                # Verify image file exists and is valid
-                if not os.path.exists(img_path):
-                    logger.warning(f"Final image path check failed - file not found: {img_path}")
+
+                # --- Final Path Existence Check and Fallback --- 
+                primary_path_to_use = None
+                # 1. Check if img_path (potentially _nobg version) exists
+                if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
+                    primary_path_to_use = img_path
+                    logger.debug(f"Using primary path (might be _nobg): {primary_path_to_use}")
+                # 2. If not, check original_path from dict if available
+                elif isinstance(cell.value, dict) and 'original_path' in cell.value:
+                    original_path = os.path.normpath(cell.value['original_path'])
+                    if os.path.exists(original_path) and os.path.getsize(original_path) > 0:
+                        primary_path_to_use = original_path
+                        logging.warning(f"Primary path '{img_path}' not found, falling back to original_path: {primary_path_to_use}")
+                    else:
+                        logging.warning(f"Neither primary path '{img_path}' nor original_path '{original_path}' exist or are valid.")
+                else:
+                     logging.warning(f"Primary path '{img_path}' not found and no original_path available.")
+
+                # If no valid path found after checks, handle fallback
+                if not primary_path_to_use:
+                    logger.warning(f"Final image path check failed - no valid file found for data: {original_data}")
                     # Ensure img_url is set to something valid or None
                     if img_url is None and isinstance(cell.value, dict) and 'url' in cell.value:
                         img_url = cell.value['url']
-                        # Fix URL format if needed
+                        # Fix URL format if needed (moved URL fixing logic here)
                         if img_url and '\\' in img_url:
                             img_url = img_url.replace('\\', '/')
                         if img_url and img_url.startswith('https:') and not img_url.startswith('https://'):
                             img_url = 'https://' + img_url[6:]
-                        elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https://')):
-                            # Handle case where URL is like 'https:\www...'
+                        elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https:')):
                             scheme, path = img_url.split(':', 1)
                             path = path.replace('\\', '').lstrip('/')
                             img_url = f"{scheme}://{path}"
-                    
+
                     # If we have a URL, set it as a hyperlink as fallback
                     if img_url:
                         cell.value = img_url
@@ -715,24 +740,29 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         cell.value = ERROR_MESSAGES['file_not_found']
                     failed_count += 1
                     continue
-                    
+                # --- End Fallback Check ---
+
+                # Use the verified existing path for processing
+                img_path_to_process = primary_path_to_use
+
                 try:
                     # Log the file type
-                    file_ext = os.path.splitext(img_path)[1].lower()
-                    logger.debug(f"Processing image: {img_path} (type: {file_ext})")
-                    
+                    file_ext = os.path.splitext(img_path_to_process)[1].lower()
+                    logger.debug(f"Processing image: {img_path_to_process} (type: {file_ext}) -> Cell: {cell.coordinate}")
+
                     # Generate a hash-based filename for the processed image to avoid name conflicts
-                    img_hash = hashlib.md5(img_path.encode()).hexdigest()[:10]
+                    # Use the path being processed for the hash
+                    img_hash = hashlib.md5(img_path_to_process.encode()).hexdigest()[:10]
                     temp_path = os.path.join(temp_dir, f"temp_{img_hash}.jpg")
-                    
+
                     # Check if we've already processed this image in a previous run
-                    if os.path.exists(temp_path) and os.path.getmtime(temp_path) > os.path.getmtime(img_path):
+                    if os.path.exists(temp_path) and os.path.getmtime(temp_path) > os.path.getmtime(img_path_to_process):
                         # Use cached processed image if it exists and is newer than source
-                        img_path = temp_path
-                        logger.debug(f"Using cached processed image: {temp_path}")
+                        processed_img_final_path = temp_path
+                        logger.debug(f"Using cached processed image: {processed_img_final_path}")
                     else:
-                        # Open and validate image
-                        with Image.open(img_path) as img:
+                        # Open and validate image using the verified path
+                        with Image.open(img_path_to_process) as img:
                             # Get dimensions for logging
                             orig_width, orig_height = img.size
                             logger.debug(f"Original image dimensions: {orig_width}x{orig_height}")
@@ -748,35 +778,36 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 
                             # Save as optimized JPG 
                             img.save(temp_path, 'JPEG', quality=IMAGE_QUALITY, optimize=True)
-                            img_path = temp_path
-                            logger.debug(f"Saved optimized image: {temp_path}")
+                            processed_img_final_path = temp_path
+                            logger.debug(f"Saved optimized image: {processed_img_final_path}")
                     
                     # Add to worksheet with proper positioning
-                    excel_img = openpyxl.drawing.image.Image(img_path)
-                    
+                    excel_img = openpyxl.drawing.image.Image(processed_img_final_path)
+
                     # Adjust size proportionally based on standard size
-                    with Image.open(img_path) as img:
-                        width, height = img.size
+                    # Re-open the *processed* image to get its final dimensions
+                    with Image.open(processed_img_final_path) as final_img:
+                        width, height = final_img.size
                         ratio = min(IMAGE_STANDARD_SIZE[0] / width, IMAGE_STANDARD_SIZE[1] / height)
                         excel_img.width = int(width * ratio)
                         excel_img.height = int(height * ratio)
-                    
+
                     # Calculate cell position for proper image placement
                     excel_img.anchor = cell.coordinate
-                    
-                    # Store processed image info
-                    processed_images[img_path] = {
-                        'image': excel_img,
-                        'temp_path': temp_path if temp_path != img_path else None
+
+                    # Store processed image info in cache using the original key
+                    processed_images[cache_key] = {
+                        'image': excel_img, # Store the Excel Image object itself
+                        'temp_path': processed_img_final_path if processed_img_final_path != img_path_to_process else None
                     }
-                    
+
                     # Add image to worksheet
                     worksheet.add_image(excel_img)
-                    logger.debug(f"Successfully added image {img_path} to cell {cell.coordinate}")
+                    logger.debug(f"Successfully added image {processed_img_final_path} to cell {cell.coordinate}")
                     success_count += 1
                             
                 except Exception as img_e:
-                    logger.error(f"Error processing image {img_path}: {img_e}", exc_info=True)
+                    logger.error(f"Error processing image {img_path_to_process}: {img_e}", exc_info=True)
                     # Ensure img_url is set to something valid or None
                     if img_url is None and isinstance(cell.value, dict) and 'url' in cell.value:
                         img_url = cell.value['url']
@@ -1012,28 +1043,32 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                 value = df_prepared.at[idx, col_name]
                 
                 # Skip processing for error messages and placeholders
-                if value.strip() == '-' or any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
+                if pd.isna(value) or value.strip() == '-' or any(err_msg in str(value) for err_msg in ERROR_MESSAGE_VALUES):
                     continue
                 
+                # Ensure value is string before checks
+                value_str = str(value)
+
                 # Format numeric values
                 try:
                     # Skip empty values and placeholders
-                    if value.lower().strip() in ['-', '', 'none', 'nan']:
+                    if value_str.lower().strip() in ['.', '-', '', 'none', 'nan']:
                         df_prepared.at[idx, col_name] = '-'
                         continue
-                    
+
                     # Clean numeric string and convert
-                    clean_value = value.replace(',', '').replace('%', '')
+                    clean_value = value_str.replace(',', '').replace('%', '')
                     numeric_value = float(clean_value)
-                    
+
                     # Format based on column type
                     if is_price_col:
                         formatted_value = '-' if numeric_value == 0 else f"{numeric_value:,.0f}"
                     elif is_qty_col:
                         formatted_value = '-' if numeric_value == 0 else f"{int(numeric_value):,}"
                     elif is_pct_col:
-                        formatted_value = f"{int(numeric_value)}%"
-                    
+                        # Ensure integer formatting for percentage
+                        formatted_value = f"{int(round(numeric_value))}%"
+
                     # Update the cell with formatted value (always as string)
                     # This avoids the dtype incompatibility warning
                     df_prepared.at[idx, col_name] = formatted_value

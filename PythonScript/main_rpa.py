@@ -297,8 +297,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     logging.debug(f"Missing paths: {added_url_count - final_path_count} images failed to download/process")
             else:
                 logging.warning("No Haereum image URLs to process")
-                haoreum_df['해오름이미지경로'] = ''
-            
+                # Ensure the column exists even if no images were processed
+                if '해오름이미지경로' not in haoreum_df.columns:
+                    haoreum_df['해오름이미지경로'] = None # Use None or pd.NA instead of ''
+
             process_duration = time.time() - merge_dl_start_time
             logging.info(f"Haereum image processing completed in {process_duration:.2f} seconds")
             
@@ -306,8 +308,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             logging.error(f"Error processing Haereum images: {e}")
             if debug_mode:
                 logging.debug(traceback.format_exc())
-            haoreum_df['해오름이미지URL'] = ''
-            haoreum_df['해오름이미지경로'] = ''
+            if '해오름이미지URL' not in haoreum_df.columns:
+                haoreum_df['해오름이미지URL'] = None # Use None or pd.NA
+            if '해오름이미지경로' not in haoreum_df.columns:
+                haoreum_df['해오름이미지경로'] = None # Use None or pd.NA
 
         # --- Prepare Data for Matching ---
         map_prep_start_time = time.time()
@@ -435,7 +439,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 # Update the item's image data to dictionary format for excel_utils.py
                                 image_data = {
                                     'url': img_url,
-                                    'local_path': img_path,
+                                    'local_path': item['image_path'], # Use corrected path
+                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
                                     'source': 'naver'
                                 }
                                 item['image_data'] = image_data
@@ -608,19 +613,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     kogift_results=kogift_map, 
                     naver_results=naver_map
                 )
-                
-                # Add additional logic to ensure Haereum images are included
-                if '본사 이미지' in formatted_df.columns and '해오름이미지URL' in formatted_df.columns:
-                    # Use the Haereum image URL if the original image is missing
-                    haoreum_img_missing = (formatted_df['본사 이미지'].isnull()) | (formatted_df['본사 이미지'] == '') | (formatted_df['본사 이미지'] == '-')
-                    haoreum_url_present = ~(formatted_df['해오름이미지URL'].isnull() | (formatted_df['해오름이미지URL'] == ''))
-                    
-                    # Only update cells that need it
-                    update_mask = haoreum_img_missing & haoreum_url_present
-                    if update_mask.any():
-                        # Convert image URLs to string type before assignment
-                        formatted_df.loc[update_mask, '본사 이미지'] = formatted_df.loc[update_mask, '해오름이미지URL'].astype(str)
-                        logging.info(f"Updated {update_mask.sum()} missing Haereum images with crawled URLs")
                 
                 # Create output directory if it doesn't exist
                 output_dir = config.get('Paths', 'output_dir')

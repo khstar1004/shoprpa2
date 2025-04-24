@@ -9,6 +9,7 @@ import re
 import time
 from typing import Optional, Tuple, Dict, List
 import numpy as np
+from pathlib import Path
 
 def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Processes the main input Excel file, reading config with ConfigParser."""
@@ -123,7 +124,7 @@ def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.Da
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
                              naver_results: Dict[str, List[Dict]] = None) -> pd.DataFrame:
-    """Format matched data for final output, ensuring all required columns and image URLs."""
+    """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
     # Deep copy to avoid modifying original
     df = input_df.copy()
@@ -263,9 +264,18 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # --- Process and add images ---
     # Ensure image columns exist and add from crawl results if missing
     if '본사 이미지' not in df.columns:
-        df['본사 이미지'] = df.get('해오름이미지경로', None)
-        logging.info("Added '본사 이미지' column from downloaded Haeoreum image paths")
-    
+        # If 해오름이미지경로 exists and contains dictionaries, use it.
+        # Otherwise, fall back to 해오름이미지URL if it exists.
+        if '해오름이미지경로' in df.columns and df['해오름이미지경로'].apply(lambda x: isinstance(x, dict)).any():
+            df['본사 이미지'] = df['해오름이미지경로']
+            logging.info("Added '본사 이미지' column from '해오름이미지경로' (containing image dictionaries)")
+        elif '해오름이미지URL' in df.columns:
+            df['본사 이미지'] = df['해오름이미지URL']
+            logging.warning("'해오름이미지경로' not found or empty, using '해오름이미지URL' for '본사 이미지'. Path info might be missing.")
+        else:
+            df['본사 이미지'] = None # Set to None if neither is available
+            logging.warning("Neither '해오름이미지경로' nor '해오름이미지URL' found. '본사 이미지' column added as None.")
+
     # Add Kogift data from crawl results if available
     if kogift_results:
         kogift_update_count = 0
@@ -379,24 +389,25 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 'source': 'naver'
                             }
                             df.at[idx, '네이버 이미지'] = image_data
+                        else:
+                             df.at[idx, '네이버 이미지'] = '-' # Ensure default if no image info
                     
                     naver_update_count += 1
         
         logging.info(f"Updated {naver_update_count} rows with Naver data")
     
-    # Add additional logic to ensure Haereum images are included
+    # Add additional logic to ensure Haereum images are included correctly
+    # This focuses on filling gaps if '본사 이미지' is missing but path data exists
     if '본사 이미지' in df.columns and '해오름이미지경로' in df.columns:
-        # Use the Haereum image URL if the original image is missing
-        haoreum_img_missing = (df['본사 이미지'].isnull()) | (df['본사 이미지'] == '') | (df['본사 이미지'] == '-')
-        # 해오름이미지경로가 존재하는 경우를 체크
-        haoreum_path_present = ~(df['해오름이미지경로'].isnull() | (df['해오름이미지경로'] == ''))
+        # Find rows where '본사 이미지' is missing (None, pd.NA, '-')
+        # but '해오름이미지경로' has data (and is preferably a dictionary)
+        본사_이미지_missing = df['본사 이미지'].apply(lambda x: pd.isna(x) or x == '-' or x == '')
+        해오름_경로_valid = df['해오름이미지경로'].apply(lambda x: isinstance(x, dict) or (isinstance(x, str) and x != '-' and x != ''))
 
-        # 본사 이미지가 비어있고 해오름이미지경로가 존재하는 경우 업데이트 마스크
-        update_mask = haoreum_img_missing & haoreum_path_present
+        update_mask = 본사_이미지_missing & 해오름_경로_valid
         if update_mask.any():
-            # '본사 이미지' 컬럼에 '해오름이미지경로' 컬럼의 값을 할당
-            df.loc[update_mask, '본사 이미지'] = df.loc[update_mask, '해오름이미지경로'].astype(str)
-            logging.info(f"Updated {update_mask.sum()} missing '본사 이미지' with downloaded paths from '해오름이미지경로'")
+            df.loc[update_mask, '본사 이미지'] = df.loc[update_mask, '해오름이미지경로']
+            logging.info(f"Updated {update_mask.sum()} missing '본사 이미지' with data from '해오름이미지경로'")
     
     # --- Calculate additional fields ---
     # Calculate price differences if base price exists
@@ -473,22 +484,41 @@ def verify_image_data(img_value, img_col_name):
             
             return '-'  # No valid path or URL
             
-        # Handle string path
+        # Handle string path/URL
         elif isinstance(img_value, str) and img_value and img_value != '-':
+            img_value = img_value.strip()
             # For URL strings (not file paths)
-            if img_value.startswith(('http://', 'https://')):
+            if img_value.startswith(('http:', 'https:')):
                 # Return a dictionary format for consistency
-                return {'url': img_value, 'source': img_col_name.split()[0].lower()}
-            
-            # For file path strings
-            elif os.path.exists(img_value) and os.path.getsize(img_value) > 0:
-                return img_value  # Return valid file path as is
-            
-            return '-'  # Invalid path
-        
+                source = img_col_name.split()[0].lower()
+                return {'url': img_value, 'source': source}
+
+            # For file path strings (absolute paths preferred)
+            elif os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
+                 # Convert file path to dictionary format for consistency
+                 source = img_col_name.split()[0].lower()
+                 # Try to construct a placeholder URL if none provided (might be inaccurate)
+                 placeholder_url = f"file:///{img_value.replace('\\', '/')}" 
+                 return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
+            # Handle relative paths (less ideal, try to resolve)
+            elif not os.path.isabs(img_value):
+                 try:
+                     # Attempt to resolve relative to a base path (e.g., project root or specific image dir)
+                     # This is a guess - adjust base_path as needed
+                     base_path = Path('C:/RPA/Image/Main') # Example base path
+                     abs_path = (base_path / img_value).resolve()
+                     if abs_path.exists() and abs_path.stat().st_size > 0:
+                         source = img_col_name.split()[0].lower()
+                         placeholder_url = f"file:///{str(abs_path).replace('\\', '/')}"
+                         return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
+                 except Exception:
+                     pass # Path resolution failed
+
+            return '-'  # Invalid path or URL string
+
         return '-'  # None, NaN, empty string, etc.
     except Exception as e:
-        logging.warning(f"Error verifying image data '{img_value}' for column {img_col_name}: {e}")
+        logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
         return '-'  # Return placeholder on error
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
