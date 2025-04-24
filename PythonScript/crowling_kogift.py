@@ -898,20 +898,20 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     
     # Try each URL in sequence
     for base_url in kogift_urls:
-        # --- Add check for browser connection --- 
-        if not browser or not browser.is_connected():
-            logger.error(f"🔴 Browser is not connected before processing URL: {base_url}. Skipping this URL.")
-            continue
-        # --- End check ---
-        
-        context = None # Initialize context to None
+        context = None
+        page = None
         try:
+            # --- Add check for browser connection --- 
+            if not browser or not browser.is_connected():
+                logger.error(f"🔴 Browser is not connected before processing URL: {base_url}. Skipping this URL.")
+                continue
+            # --- End check ---
+            
             # Create a new context for each URL
             logger.debug(f"Attempting to create new browser context for {base_url}")
             context = await browser.new_context(
                 user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
                 viewport={'width': 1920, 'height': 1080},
-                # Add other context options if needed
             )
             logger.debug(f"Successfully created context for {base_url}")
             
@@ -938,7 +938,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         await page.wait_for_timeout(2000)  # Short wait after initial load
 
                         # --- Perform Search --- 
-                        search_input_locator = page.locator('input#main_keyword[name="keyword"]') # More specific selector
+                        search_input_locator = page.locator('input#main_keyword[name="keyword"]')
                         search_button_locator = page.locator('img#search_submit')
                         
                         await search_input_locator.wait_for(state="visible", timeout=PAGE_TIMEOUT)
@@ -957,9 +957,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         logger.info(f"🔍 Search submitted for: '{keyword}' on {base_url}")
 
                         # --- Wait for results OR "no results" message --- 
-                        results_container_selector = 'div.product_lists' # Selector for the container holding results
-                        # Refined selector for "no results" message
-                        no_results_selector = 'div.not_result span.icon_dot2:has-text("검색 결과가 없습니다")' 
+                        results_container_selector = 'div.product_lists'
+                        no_results_selector = 'div.not_result span.icon_dot2:has-text("검색 결과가 없습니다")'
                         combined_selector = f"{results_container_selector}, {no_results_selector}"
                         
                         logger.debug(f"⏳ Waiting for search results or 'no results' message (timeout: {NAVIGATION_TIMEOUT}ms)...")
@@ -983,204 +982,147 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                             logger.warning(f"⚠️ Timeout or error waiting for results/no_results for keyword '{keyword}' on {base_url}: {wait_error}")
                             continue # Skip to the next keyword variation
 
-                        # --- Check product count (Optional Re-search) --- 
-                        productCont = 0
-                        try:
-                            product_count_element = page.locator('div.list_info span').first # Simpler selector
-                            productContText = await product_count_element.text_content(timeout=5000) 
-                            productContDigits = re.findall(r'\d+', productContText.replace(',', ''))
-                            if productContDigits:
-                                productCont = int("".join(productContDigits))
-                            logger.info(f"📊 Reported product count for '{keyword}': {productCont}")
-                        except (PlaywrightError, Exception) as e:
-                            logger.warning(f"⚠️ Could not find/parse product count: {e}")
-
-                        # Re-search logic (only if initial search had results)
-                        if original_keyword2 and original_keyword2.strip() != "" and productCont >= 100:
-                            logger.info(f"🔍 Count >= 100. Performing re-search with: '{original_keyword2}'")
-                            try:
-                                re_search_input = page.locator('input#re_keyword')
-                                re_search_button = page.locator('button[onclick^="re_search"]')
-                                await re_search_input.fill(original_keyword2)
-                                
-                                logger.debug("🔍 Clicking re-search...")
-                                await re_search_button.click()
-                                
-                                # Wait again after re-search, checking for no results again
-                                logger.debug(f"⏳ Waiting after re-search (timeout: {NAVIGATION_TIMEOUT}ms)...")
-                                try:
-                                    await page.wait_for_selector(
-                                        combined_selector, 
-                                        state='visible', 
-                                        timeout=NAVIGATION_TIMEOUT
-                                    )
-                                    if await page.locator(no_results_selector).is_visible():
-                                         logger.info(f"⚠️ 'No results' found after re-searching with '{original_keyword2}'.")
-                                         # Continue with current URL, using initial search results
-                                    else:
-                                         logger.info(f"✅ Re-search completed for: '{original_keyword2}'. Proceeding with scraping new results.")
-                                except PlaywrightError as re_wait_error:
-                                    logger.warning(f"⚠️ Timeout/error waiting for results after re-search with '{original_keyword2}': {re_wait_error}")
-                                    # Continue with current URL, using initial search results
-                                    
-                            except (PlaywrightError, Exception) as e:
-                                logger.warning(f"⚠️ Failed during re-search attempt: {e}")
-                                # Continue with initial results if re-search fails here
-
                         # --- Scrape Results Pages --- 
                         page_number = 1
                         processed_items = 0
-                        product_item_selector = 'div.product' # Selector for individual product blocks
+                        product_item_selector = 'div.product'
                         data = []
 
                         while processed_items < max_items_per_variation and page_number <= 10:
-                            logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
                             try:
-                                 # Wait for at least one product item to be potentially visible
-                                 await page.locator(product_item_selector).first.wait_for(state="attached", timeout=PAGE_TIMEOUT)
-                            except PlaywrightError:
-                                 logger.warning(f"⚠️ Product items selector ('{product_item_selector}') not found/attached on page {page_number}. Stopping scrape for this keyword.")
-                                 break
-                             
-                            rows = page.locator(product_item_selector)
-                            count = await rows.count()
-                            logger.debug(f"📊 Found {count} product elements on page {page_number}.")
+                                logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
+                                
+                                # Wait for at least one product item to be potentially visible
+                                await page.locator(product_item_selector).first.wait_for(state="attached", timeout=PAGE_TIMEOUT)
+                                
+                                rows = page.locator(product_item_selector)
+                                count = await rows.count()
+                                logger.debug(f"📊 Found {count} product elements on page {page_number}.")
 
-                            if count == 0 and page_number > 1: # Allow page 1 to have 0 if count check failed earlier
-                                 logger.info(f"⚠️ No product elements found on page {page_number}. Stopping pagination.")
-                                 break
-                            elif count == 0 and page_number == 1:
-                                 logger.info(f"⚠️ No product elements found on first page (page {page_number}). Stopping scrape for this keyword.")
-                                 break
-
-                            items_on_page = []
-                            for i in range(count):
-                                if processed_items >= max_items_per_variation:
+                                if count == 0 and page_number > 1:
+                                    logger.info(f"⚠️ No product elements found on page {page_number}. Stopping pagination.")
                                     break
-                                row = rows.nth(i)
-                                item_data = {}
-                                try:
-                                    # Extract data using locators with short timeouts
-                                    img_locator = row.locator('div.pic > a > img')
-                                    img_src = await img_locator.get_attribute('src', timeout=PAGE_TIMEOUT)
-                                    
-                                    link_locator = row.locator('div.pic > a')
-                                    a_href = await link_locator.get_attribute('href', timeout=PAGE_TIMEOUT)
-                                    
-                                    name_locator = row.locator('div.name > a')
-                                    name = await name_locator.text_content(timeout=PAGE_TIMEOUT)
-                                    
-                                    price_locator = row.locator('div.price')
-                                    price_text = await price_locator.text_content(timeout=PAGE_TIMEOUT)
+                                elif count == 0 and page_number == 1:
+                                    logger.info(f"⚠️ No product elements found on first page (page {page_number}). Stopping scrape for this keyword.")
+                                    break
 
-                                    # Process extracted data
-                                    base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
-                                    
-                                    # 디버깅: 원본 URL 및 변환 과정 로깅
-                                    logger.debug(f"🔗 Raw image src: {img_src}")
-                                    logger.debug(f"🔗 Raw product href: {a_href}")
-                                    logger.debug(f"🌐 Base domain URL: {base_domain_url}")
-                                    
-                                    # 이미지 URL 정규화 (normalize_kogift_image_url 함수 사용)
-                                    final_img_url, valid_img_url = normalize_kogift_image_url(img_src, base_domain_url)
-                                    if not valid_img_url:
-                                        logger.warning(f"⚠️ Invalid or unnormalizable image URL skipped: {img_src}")
-                                    
-                                    # 상품 URL 처리
-                                    if a_href:
-                                        if a_href.startswith('http'):
-                                            # 이미 완전한 URL
-                                            final_href_url = a_href
-                                        elif a_href.startswith('./'):
-                                            # 상대 경로
-                                            processed_href = '/' + a_href[2:]  # './' 제거
-                                            final_href_url = urljoin(base_domain_url, processed_href)
-                                        elif a_href.startswith('/'):
-                                            # 절대 경로
-                                            final_href_url = urljoin(base_domain_url, a_href)
-                                        else:
-                                            # 기타 상대 경로
-                                            final_href_url = urljoin(base_domain_url, '/' + a_href)
-                                    else:
-                                        final_href_url = ""
-
-                                    # Check if we already processed this product URL to avoid duplicates
-                                    if final_href_url and final_href_url in seen_product_urls:
-                                        logger.debug(f"Skipping duplicate product URL: {final_href_url}")
-                                        continue
-
-                                    # Add to seen URLs only if it's valid
-                                    if final_href_url:
-                                        seen_product_urls.add(final_href_url)
-
-                                    # 도메인에서 공급사 정보 추출
-                                    supplier = urlparse(base_url).netloc.split('.')[0]
-                                    if supplier == 'koreagift':
-                                        supplier = '고려기프트'
-                                    elif supplier == 'adpanchok':
-                                        supplier = '애드판촉'
-                                    
-                                    # 가격 정보 처리
-                                    price_cleaned = re.sub(r'[^\d.]', '', price_text) if price_text else ""
+                                items_on_page = []
+                                for i in range(count):
+                                    if processed_items >= max_items_per_variation:
+                                        break
                                     try:
-                                        price_value = float(price_cleaned) if price_cleaned else 0.0
-                                    except ValueError:
-                                        price_value = 0.0
-                                    
-                                    # 유효한 이미지 URL만 저장
-                                    if valid_img_url:
-                                        item_data['image_path'] = final_img_url
-                                        item_data['image_url'] = final_img_url
-                                        item_data['src'] = final_img_url
+                                        row = rows.nth(i)
+                                        item_data = {}
+                                        
+                                        # Extract data using locators with short timeouts
+                                        img_locator = row.locator('div.pic > a > img')
+                                        img_src = await img_locator.get_attribute('src', timeout=PAGE_TIMEOUT)
+                                        
+                                        link_locator = row.locator('div.pic > a')
+                                        a_href = await link_locator.get_attribute('href', timeout=PAGE_TIMEOUT)
+                                        
+                                        name_locator = row.locator('div.name > a')
+                                        name = await name_locator.text_content(timeout=PAGE_TIMEOUT)
+                                        
+                                        price_locator = row.locator('div.price')
+                                        price_text = await price_locator.text_content(timeout=PAGE_TIMEOUT)
+
+                                        # Process extracted data
+                                        base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
+                                        
+                                        # 이미지 URL 정규화
+                                        final_img_url, valid_img_url = normalize_kogift_image_url(img_src, base_domain_url)
+                                        if not valid_img_url:
+                                            logger.warning(f"⚠️ Invalid or unnormalizable image URL skipped: {img_src}")
+                                        
+                                        # 상품 URL 처리
+                                        if a_href:
+                                            if a_href.startswith('http'):
+                                                final_href_url = a_href
+                                            elif a_href.startswith('./'):
+                                                processed_href = '/' + a_href[2:]
+                                                final_href_url = urljoin(base_domain_url, processed_href)
+                                            elif a_href.startswith('/'):
+                                                final_href_url = urljoin(base_domain_url, a_href)
+                                            else:
+                                                final_href_url = urljoin(base_domain_url, '/' + a_href)
+                                        else:
+                                            final_href_url = ""
+
+                                        # Check for duplicates
+                                        if final_href_url and final_href_url in seen_product_urls:
+                                            logger.debug(f"Skipping duplicate product URL: {final_href_url}")
+                                            continue
+
+                                        if final_href_url:
+                                            seen_product_urls.add(final_href_url)
+
+                                        # 도메인에서 공급사 정보 추출
+                                        supplier = urlparse(base_url).netloc.split('.')[0]
+                                        if supplier == 'koreagift':
+                                            supplier = '고려기프트'
+                                        elif supplier == 'adpanchok':
+                                            supplier = '애드판촉'
+                                        
+                                        # 가격 정보 처리
+                                        price_cleaned = re.sub(r'[^\d.]', '', price_text) if price_text else ""
+                                        try:
+                                            price_value = float(price_cleaned) if price_cleaned else 0.0
+                                        except ValueError:
+                                            price_value = 0.0
+                                        
+                                        # 유효한 이미지 URL만 저장
+                                        if valid_img_url:
+                                            item_data['image_path'] = final_img_url
+                                            item_data['image_url'] = final_img_url
+                                            item_data['src'] = final_img_url
+                                        else:
+                                            item_data['image_path'] = None
+                                            item_data['image_url'] = None
+                                            item_data['src'] = None
+                                        
+                                        item_data['href'] = final_href_url
+                                        item_data['link'] = final_href_url
+                                        item_data['name'] = name.strip() if name else ""
+                                        item_data['price'] = price_value
+                                        item_data['price_with_vat'] = round(price_value * 1.1)
+                                        item_data['supplier'] = supplier
+                                        item_data['search_keyword'] = keyword
+                                        
+                                        items_on_page.append(item_data)
+                                        processed_items += 1
+                                        
+                                    except Exception as item_error:
+                                        logger.warning(f"⚠️ Error processing item {i} on page {page_number}: {item_error}")
+                                        continue
+                                
+                                data.extend(items_on_page)
+                                logger.debug(f"📊 Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
+
+                                if processed_items >= max_items_per_variation:
+                                    logger.info(f"✅ Reached scrape limit ({max_items_per_variation}) for keyword '{keyword}'.")
+                                    break
+
+                                # --- Pagination --- 
+                                next_page_locator_str = f'div.custom_paging > div[onclick*="getPageGo1({page_number + 1})"]'
+                                next_page_locator = page.locator(next_page_locator_str)
+                                
+                                try:
+                                    if await next_page_locator.is_visible(timeout=5000):
+                                        logger.debug(f"📄 Clicking next page ({page_number + 1})")
+                                        await next_page_locator.click(timeout=PAGE_TIMEOUT)
+                                        await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT)
+                                        page_number += 1
                                     else:
-                                        # 경고는 normalize_kogift_image_url 내부 또는 위에서 이미 발생
-                                        item_data['image_path'] = None
-                                        item_data['image_url'] = None
-                                        item_data['src'] = None
+                                        logger.info("⚠️ Next page element not found or not visible. Ending pagination.")
+                                        break
+                                except Exception as pagination_error:
+                                    logger.warning(f"⚠️ Error during pagination: {pagination_error}")
+                                    break
                                     
-                                    item_data['href'] = final_href_url
-                                    item_data['link'] = final_href_url  # 매칭 로직 호환성
-                                    item_data['name'] = name.strip() if name else ""
-                                    item_data['price'] = price_value
-                                    # Calculate price with VAT (부가세포함 가격)
-                                    item_data['price_with_vat'] = round(price_value * 1.1)  # 부가세 10% 추가
-                                    item_data['supplier'] = supplier  # 공급사 정보 추가
-                                    # Add which keyword found this item
-                                    item_data['search_keyword'] = keyword
-                                    
-                                    logger.debug(f"📦 Extracted item: {item_data}")
-
-                                    items_on_page.append(item_data)
-                                    processed_items += 1
-                                except (PlaywrightError, Exception) as e:
-                                    logger.warning(f"⚠️ Could not extract data for item index {i} on page {page_number}: {e}")
-                                    continue # Skip this item
-                            
-                            data.extend(items_on_page)
-                            logger.debug(f"📊 Scraped {len(items_on_page)} items from page {page_number}. Total processed: {processed_items}")
-
-                            if processed_items >= max_items_per_variation:
-                                logger.info(f"✅ Reached scrape limit ({max_items_per_variation}) for keyword '{keyword}'.")
+                            except Exception as page_error:
+                                logger.error(f"⚠️ Error processing page {page_number}: {page_error}")
                                 break
-
-                            # --- Pagination --- 
-                            next_page_locator_str = f'div.custom_paging > div[onclick*="getPageGo1({page_number + 1})"]' # CSS selector
-                            next_page_locator = page.locator(next_page_locator_str)
-                            
-                            try:
-                                 if await next_page_locator.is_visible(timeout=5000):
-                                     logger.debug(f"📄 Clicking next page ({page_number + 1})")
-                                     # Click and wait for navigation/load state
-                                     await next_page_locator.click(timeout=PAGE_TIMEOUT)
-                                     # Wait for content to likely reload after click
-                                     await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT) 
-                                     page_number += 1
-                                 else:
-                                     logger.info("⚠️ Next page element not found or not visible. Ending pagination.")
-                                     break 
-                            except (PlaywrightError, Exception) as e:
-                                 logger.warning(f"⚠️ Failed to click or load next page ({page_number + 1}): {e}")
-                                 break
                         
                         # Add scraped data to results if we found anything
                         if data:
@@ -1190,119 +1132,34 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         else:
                             logger.warning(f"⚠️ No data could be scraped for keyword '{keyword}' from {base_url}")
 
-                    except PlaywrightError as pe:
-                        logger.warning(f"Failed to search with keyword '{keyword}' on {base_url}: {pe}")
-                        continue  # Try next keyword
-                    except Exception as e:
-                        logger.warning(f"Error scraping with keyword '{keyword}' from {base_url}: {e}")
-                        continue  # Try next keyword
+                    except Exception as search_error:
+                        logger.error(f"⚠️ Error during search for keyword '{keyword}': {search_error}")
+                        continue
+                        
+                except Exception as keyword_error:
+                    logger.error(f"⚠️ Error processing keyword '{keyword}': {keyword_error}")
+                    continue
 
-                except Exception as e:
-                    logger.error(f"Error during Kogift scraping with keyword '{keyword}' from {base_url}: {e}")
-                    continue  # Try next keyword
-
-            # Close context and page cleanly after processing this URL
+        except Exception as url_error:
+            logger.error(f"⚠️ Error processing URL {base_url}: {url_error}")
+        finally:
+            # Clean up resources
             if page:
                 try:
                     await page.close()
-                except Exception as page_close_err:
-                    logger.warning(f"Error closing page for {base_url}: {page_close_err}")
+                except Exception as page_close_error:
+                    logger.warning(f"⚠️ Error closing page: {page_close_error}")
             if context:
                 try:
                     await context.close()
-                except Exception as context_close_err:
-                    logger.warning(f"Error closing context for {base_url}: {context_close_err}")
-        
-        except PlaywrightError as pe:
-            # Catch TargetClosedError specifically if it occurs despite the check
-            if "Target page, context or browser has been closed" in str(pe):
-                 logger.error(f"🔴 TargetClosedError caught while creating/using context for {base_url}. Browser likely closed prematurely. Skipping.")
-            else:
-                 logger.error(f"🔴 Playwright Error processing URL {base_url}: {pe}")
-            # Ensure context is closed if it was partially created
-            if context:
-                try: await context.close()
-                except: pass
-            continue # Skip to the next URL
-        except Exception as url_proc_err:
-            logger.error(f"🔴 Unexpected Error processing URL {base_url}: {url_proc_err}", exc_info=True)
-            # Ensure context is closed if it was partially created
-            if context:
-                try: await context.close()
-                except: pass
-            continue # Skip to the next URL
+                except Exception as context_close_error:
+                    logger.warning(f"⚠️ Error closing context: {context_close_error}")
 
-    # --- 검색 및 기본 상품 정보 수집 후 ---
-    
     # Combine all results
     if all_results:
         final_df = pd.concat(all_results, ignore_index=True)
-        # If we have duplicates based on URL (from different keyword variations), keep only the first occurrence
         if 'href' in final_df.columns:
             final_df = final_df.drop_duplicates(subset=['href'], keep='first')
-        
-        # --- 상세 페이지에서 수량별 가격 정보 가져오기 ---
-        if custom_quantities and len(final_df) > 0:
-            logger.info(f"지정된 수량 {custom_quantities}에 대한 가격 정보 수집 시작")
-            
-            # 새로운 컨텍스트 생성
-            try:
-                browser_context = await browser.new_context(
-                    user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
-                    viewport={'width': 1920, 'height': 1080}
-                )
-                detail_page = await browser_context.new_page()
-                detail_page.set_default_timeout(PAGE_TIMEOUT)
-                
-                # 결과를 저장할 새로운 컬럼 생성
-                for qty in custom_quantities:
-                    final_df[f'price_{qty}'] = None
-                    final_df[f'price_{qty}_with_vat'] = None
-                
-                # 각 상품별로 상세 페이지 방문하여 수량별 가격 확인
-                for idx, row in final_df.iterrows():
-                    product_url = row['href']
-                    if not product_url:
-                        continue
-                    
-                    logger.info(f"상품 '{row['name'][:30]}...' 수량별 가격 정보 수집 중")
-                    
-                    for qty in custom_quantities:
-                        try:
-                            price_result = await get_price_for_specific_quantity(
-                                detail_page, product_url, qty
-                            )
-                            
-                            if price_result['success']:
-                                # 결과 저장
-                                final_df.at[idx, f'price_{qty}'] = price_result['price']
-                                final_df.at[idx, f'price_{qty}_with_vat'] = price_result['price_with_vat']
-                                logger.info(f"수량 {qty}개: {price_result['price']:,}원 (부가세포함: {price_result['price_with_vat']:,}원)")
-                            else:
-                                logger.warning(f"수량 {qty}개에 대한 가격 정보 수집 실패")
-                            
-                        except Exception as e:
-                            logger.error(f"수량 {qty}개 가격 조회 중 오류: {e}")
-                    
-                    # 브라우저 부하 방지를 위한 짧은 대기
-                    await detail_page.wait_for_timeout(1000)
-                
-                # 브라우저 컨텍스트 정리
-                await detail_page.close()
-                await browser_context.close()
-                
-                logger.info("수량별 가격 정보 수집 완료")
-            except Exception as e:
-                logger.error(f"수량별 가격 정보 수집 중 오류 발생: {e}")
-                # Context cleanup in case of error
-                try:
-                    if 'detail_page' in locals() and detail_page: 
-                        await detail_page.close()
-                    if 'browser_context' in locals() and browser_context:
-                        await browser_context.close()
-                except:
-                    pass
-        
         logger.info(f"Total unique results from all keyword variations: {len(final_df)}")
         return final_df
     else:
