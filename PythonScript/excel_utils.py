@@ -376,93 +376,141 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
 
                 # --- Process Dictionary if found ---
                 if img_dict:
+                    # First, try to use local_path if available
                     local_path = img_dict.get('local_path')
                     if local_path and isinstance(local_path, str) and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                         image_path_to_embed = local_path
                         logger.info(f"  Using local_path from dictionary for cell {cell.coordinate}: {image_path_to_embed}")
                     else:
                         logger.warning(f"  Dictionary in cell {cell.coordinate} missing valid local_path: {local_path}")
-                        # Implement fallback to URL download if local_path is missing/invalid
-                        url = img_dict.get('url')
-                        source = img_dict.get('source', 'other').lower()
+                        # Get source to determine image directory path
+                        source = img_dict.get('source', '').lower()
                         
-                        if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
-                            logger.info(f"  Attempting download from URL in dictionary: {url}")
-                            try:
-                                # Create proper download directory based on source
-                                if source == 'haereum' or 'jclgift' in url.lower():
-                                    save_dir = IMAGE_MAIN_DIR / 'Haereum'
-                                elif source == 'kogift' or any(kw in url.lower() for kw in ['kogift', 'koreagift', 'adpanchok']):
-                                    save_dir = IMAGE_MAIN_DIR / 'Kogift'
-                                elif source == 'naver' or 'pstatic' in url.lower():
-                                    save_dir = IMAGE_MAIN_DIR / 'Naver'
-                                else:
-                                    save_dir = IMAGE_MAIN_DIR / 'Other'
-                                
-                                # Ensure directory exists
-                                save_dir.mkdir(parents=True, exist_ok=True)
-                                
-                                # Generate filename from URL
-                                url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:10]
-                                ext = os.path.splitext(urlparse(url).path)[1].lower()
-                                if not ext or ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-                                    ext = '.jpg'  # Default extension
-                                
-                                # Create filename with source prefix
-                                filename = f"{source}_{url_hash}{ext}"
-                                output_path = save_dir / filename
-                                
-                                # Only download if file doesn't exist or is empty
-                                if not output_path.exists() or output_path.stat().st_size < 100:
-                                    import requests
-                                    # Use session with proper headers
-                                    session = requests.Session()
-                                    session.headers.update({
-                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                                        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-                                    })
-                                    
-                                    # Try to download with timeout
-                                    timeout = int(CONFIG.get('Matching', 'download_image_timeout', fallback=30))
-                                    response = session.get(url, timeout=timeout, stream=True)
-                                    response.raise_for_status()
-                                    
-                                    # Check content type
-                                    content_type = response.headers.get('Content-Type', '')
-                                    if not content_type.startswith('image/') and not ('jclgift' in url or 'kogift' in url or 'pstatic' in url):
-                                        logger.warning(f"  URL doesn't return an image: {content_type}")
-                                        cell.value = "이미지 아님 (URL)"
-                                        continue
-                                    
-                                    # Save file
-                                    with open(output_path, 'wb') as f:
-                                        for chunk in response.iter_content(chunk_size=8192):
-                                            if chunk:
-                                                f.write(chunk)
-                                    
-                                    # Verify download was successful
-                                    if output_path.exists() and output_path.stat().st_size > 100:
-                                        logger.info(f"  Successfully downloaded image to {output_path}")
-                                        image_path_to_embed = str(output_path)
-                                    else:
-                                        logger.warning(f"  Downloaded file is too small or invalid: {output_path}")
-                                        cell.value = "다운로드 실패 (파일 크기)"
-                                        continue
-                                else:
-                                    logger.info(f"  Using existing downloaded file: {output_path}")
-                                    image_path_to_embed = str(output_path)
-                            except requests.RequestException as e:
-                                logger.warning(f"  Network error downloading image: {e}")
-                                cell.value = "다운로드 실패 (네트워크)"
-                                continue
-                            except Exception as e:
-                                logger.error(f"  Error downloading image: {e}")
-                                cell.value = "다운로드 실패 (기타 오류)"
-                                continue
+                        # Try to find the image by searching in the correct directory
+                        if source in ['haereum', 'haoreum']:
+                            search_dir = IMAGE_MAIN_DIR / 'Haereum'
+                        elif source in ['kogift', 'koreagift']:
+                            search_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
+                        elif source == 'naver':
+                            search_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
                         else:
-                            cell.value = "이미지 경로 없음 (URL 없음)" 
-                            continue
+                            search_dir = IMAGE_MAIN_DIR
+                            
+                        # Try to find an existing image file that matches our pattern
+                        if search_dir.exists():
+                            # Extract filename from original_path if available
+                            original_path = img_dict.get('original_path', '')
+                            if original_path and isinstance(original_path, str):
+                                original_filename = os.path.basename(original_path)
+                                # Try direct filename match
+                                potential_file = search_dir / original_filename
+                                if potential_file.exists() and potential_file.stat().st_size > 0:
+                                    image_path_to_embed = str(potential_file)
+                                    logger.info(f"  Found image using original_path filename: {image_path_to_embed}")
+                            
+                            # If still not found, try URL-based naming pattern
+                            if not image_path_to_embed:
+                                url = img_dict.get('url', '')
+                                if url and isinstance(url, str):
+                                    # Get URL hash for filename pattern matching
+                                    url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:10]
+                                    
+                                    # For each file in directory, check if it matches the pattern with hash
+                                    pattern_prefix = f"{source}_" if source else ""
+                                    
+                                    # Try to find file by pattern matching (looser match)
+                                    matching_files = []
+                                    for file in search_dir.glob(f"{pattern_prefix}*{url_hash}*"):
+                                        if file.is_file() and file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+                                            matching_files.append(file)
+                                    
+                                    # If multiple matches, prefer non-nobg version
+                                    if matching_files:
+                                        # Sort by whether 'nobg' is in the filename (non-nobg first)
+                                        matching_files.sort(key=lambda f: 'nobg' in f.name.lower())
+                                        image_path_to_embed = str(matching_files[0])
+                                        logger.info(f"  Found image by URL hash pattern matching: {image_path_to_embed}")
+                        
+                        # If we still haven't found a local file, attempt download from URL if available
+                        if not image_path_to_embed:
+                            url = img_dict.get('url')
+                            if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                                logger.info(f"  Attempting download from URL in dictionary: {url}")
+                                try:
+                                    # Create proper download directory based on source
+                                    if source in ['haereum', 'haoreum'] or 'jclgift' in url.lower():
+                                        save_dir = IMAGE_MAIN_DIR / 'Haereum'
+                                    elif source in ['kogift', 'koreagift'] or any(kw in url.lower() for kw in ['kogift', 'koreagift', 'adpanchok']):
+                                        save_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
+                                    elif source == 'naver' or 'pstatic' in url.lower():
+                                        save_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
+                                    else:
+                                        save_dir = IMAGE_MAIN_DIR / 'Other'
+                                    
+                                    # Ensure directory exists
+                                    save_dir.mkdir(parents=True, exist_ok=True)
+                                    
+                                    # Generate filename from URL
+                                    url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:10]
+                                    ext = os.path.splitext(urlparse(url).path)[1].lower()
+                                    if not ext or ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                                        ext = '.jpg'  # Default extension
+                                    
+                                    # Create filename with source prefix
+                                    filename = f"{source}_{url_hash}{ext}"
+                                    output_path = save_dir / filename
+                                    
+                                    # Only download if file doesn't exist or is empty
+                                    if not output_path.exists() or output_path.stat().st_size < 100:
+                                        import requests
+                                        # Use session with proper headers
+                                        session = requests.Session()
+                                        session.headers.update({
+                                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                                            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                                        })
+                                        
+                                        # Try to download with timeout
+                                        timeout = int(CONFIG.get('Matching', 'download_image_timeout', fallback=30))
+                                        response = session.get(url, timeout=timeout, stream=True)
+                                        response.raise_for_status()
+                                        
+                                        # Check content type
+                                        content_type = response.headers.get('Content-Type', '')
+                                        if not content_type.startswith('image/') and not ('jclgift' in url or 'kogift' in url or 'pstatic' in url):
+                                            logger.warning(f"  URL doesn't return an image: {content_type}")
+                                            cell.value = "이미지 아님 (URL)"
+                                            continue
+                                        
+                                        # Save file
+                                        with open(output_path, 'wb') as f:
+                                            for chunk in response.iter_content(chunk_size=8192):
+                                                if chunk:
+                                                    f.write(chunk)
+                                        
+                                        # Verify download was successful
+                                        if output_path.exists() and output_path.stat().st_size > 100:
+                                            logger.info(f"  Successfully downloaded image to {output_path}")
+                                            image_path_to_embed = str(output_path)
+                                        else:
+                                            logger.warning(f"  Downloaded file is too small or invalid: {output_path}")
+                                            cell.value = "다운로드 실패 (파일 크기)"
+                                            continue
+                                    else:
+                                        logger.info(f"  Using existing downloaded file: {output_path}")
+                                        image_path_to_embed = str(output_path)
+                                except requests.RequestException as e:
+                                    logger.warning(f"  Network error downloading image: {e}")
+                                    cell.value = "다운로드 실패 (네트워크)"
+                                    continue
+                                except Exception as e:
+                                    logger.error(f"  Error downloading image: {e}")
+                                    cell.value = "다운로드 실패 (기타 오류)"
+                                    continue
+                            else:
+                                cell.value = "이미지 경로 없음 (URL 없음)" 
+                                continue
                 # --- Priority 2: Handle String Path/URL --- 
                 elif isinstance(original_value, str):
                     path_str = original_value.strip()
@@ -482,10 +530,10 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 save_dir = IMAGE_MAIN_DIR / 'Haereum'
                             elif '고려' in col_name or any(kw in path_str.lower() for kw in ['kogift', 'koreagift', 'adpanchok']): 
                                 source = 'kogift'
-                                save_dir = IMAGE_MAIN_DIR / 'Kogift'
+                                save_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
                             elif '네이버' in col_name or 'naver' in path_str or 'pstatic' in path_str: 
                                 source = 'naver'
-                                save_dir = IMAGE_MAIN_DIR / 'Naver'
+                                save_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
                             else:
                                 save_dir = IMAGE_MAIN_DIR / 'Other'
                             
@@ -549,9 +597,60 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             cell.value = "URL 처리 오류"
                             continue
                     else:
-                        logger.warning(f"  Invalid path/URL string in cell {cell.coordinate}: '{path_str[:60]}...'")
-                        cell.value = "잘못된 이미지 경로"
-                        continue
+                        # Try to find the image in one of the standard directories based on column name
+                        image_found = False
+                        
+                        # Determine source folders to search based on column name
+                        search_dirs = []
+                        if '본사' in col_name:
+                            search_dirs = [IMAGE_MAIN_DIR / 'Haereum']
+                        elif '고려' in col_name:
+                            search_dirs = [IMAGE_MAIN_DIR / 'kogift']  # Changed from kogift_pre to kogift
+                        elif '네이버' in col_name:
+                            search_dirs = [IMAGE_MAIN_DIR / 'naver']  # Changed to lowercase 'naver'
+                        else:
+                            search_dirs = [
+                                IMAGE_MAIN_DIR / 'Haereum',
+                                IMAGE_MAIN_DIR / 'kogift',  # Changed from kogift_pre to kogift
+                                IMAGE_MAIN_DIR / 'naver',  # Changed to lowercase 'naver'
+                                IMAGE_MAIN_DIR
+                            ]
+                            
+                        # First try direct filename match
+                        for search_dir in search_dirs:
+                            if search_dir.exists():
+                                # Try exact filename
+                                exact_match = search_dir / os.path.basename(path_str)
+                                if exact_match.exists() and exact_match.stat().st_size > 0:
+                                    image_path_to_embed = str(exact_match)
+                                    image_found = True
+                                    logger.info(f"  Found image by exact filename in {search_dir}: {image_path_to_embed}")
+                                    break
+                                
+                                # If not found, try pattern matching (for product name encoded in filename)
+                                # First clean up the product name to use for pattern matching
+                                clean_name = re.sub(r'[^\w가-힣]', '_', path_str)[:20]  # Use first 20 chars of cleaned name
+                                if clean_name:
+                                    for file in search_dir.glob(f"*{clean_name}*"):
+                                        if file.is_file() and file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+                                            image_path_to_embed = str(file)
+                                            image_found = True
+                                            logger.info(f"  Found image by pattern matching in {search_dir}: {image_path_to_embed}")
+                                            break
+                                
+                                # If still not found, try to scan the directory for any .jpg files (excluding _nobg files)
+                                if not image_found:
+                                    jpg_files = [f for f in search_dir.glob("*.jpg") if "_nobg" not in f.name]
+                                    if jpg_files:
+                                        image_path_to_embed = str(jpg_files[0])  # Use the first jpg file
+                                        image_found = True
+                                        logger.info(f"  Found image by scanning directory {search_dir}: {image_path_to_embed}")
+                                        break
+                                
+                        if not image_found:
+                            logger.warning(f"  Invalid path/URL string in cell {cell.coordinate}: '{path_str[:60]}...'")
+                            cell.value = "잘못된 이미지 경로"
+                            continue
                 else:
                     logger.warning(f"  Unsupported value type in cell {cell.coordinate}: {type(original_value)}")
                     cell.value = "지원되지 않는 형식"

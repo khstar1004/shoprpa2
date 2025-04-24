@@ -844,87 +844,89 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         return i, None
 
 def _find_best_match(haoreum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
-    """Finds the best matching product from candidates using the matcher."""
-    if not haoreum_product or not candidates or not matcher:
-        logging.error(f"Invalid input parameters for _find_best_match: haoreum_product={haoreum_product}, candidates={candidates}, matcher={matcher}")
+    """
+    Find the best matching product from a list of candidates.
+    Returns the best match with additional info or None if no match found.
+    """
+    if not candidates or not haoreum_product:
         return None
-
-    try:
-        # Validate haoreum_product
-        if not isinstance(haoreum_product, dict):
-            logging.error(f"Invalid haoreum_product type: {type(haoreum_product)}")
-            return None
+        
+    best_match = None
+    best_score = 0
+    best_text_similarity = 0
+    best_image_similarity = 0
+    
+    # Get product details
+    haoreum_name = haoreum_product.get('상품명', '')
+    haoreum_image = haoreum_product.get('해오름이미지경로', None)
+    
+    # Apply text pre-filtering to reduce candidates (if many)
+    if len(candidates) > 10:
+        candidates = _filter_candidates_by_text(haoreum_name, candidates, matcher)
+    
+    # Process each candidate
+    for candidate in candidates:
+        # Get candidate details
+        candidate_name = candidate.get('상품명', candidate.get('name', ''))
+        
+        # Check for exact name match (optional boost)
+        exact_match = haoreum_name == candidate_name
+        
+        # Calculate text similarity
+        text_similarity = matcher.calculate_text_similarity(haoreum_name, candidate_name)
+        
+        # Calculate image similarity if both images available
+        image_similarity = 0.0
+        if haoreum_image and 'image_path' in candidate and candidate['image_path']:
+            image_similarity = matcher.calculate_image_similarity(haoreum_image, candidate['image_path'])
+        
+        # Combine similarities (with tunable weights)
+        combined_score = (matcher.text_weight * text_similarity) + (matcher.image_weight * image_similarity)
+        
+        # Apply exact match bonus if applicable
+        if exact_match:
+            combined_score = min(1.0, combined_score + matcher.exact_match_bonus)
+        
+        # Get category-specific thresholds if applicable
+        category = haoreum_product.get('중분류카테고리', None)
+        text_threshold, image_threshold = matcher.get_thresholds_for_category(category)
+        
+        # Update best match if score is higher
+        if combined_score > best_score:
+            best_score = combined_score
+            best_text_similarity = text_similarity
+            best_image_similarity = image_similarity
             
-        if 'name' not in haoreum_product or not haoreum_product['name']:
-            logging.error("Missing or empty product name in haoreum_product")
-            return None
-
-        # Validate candidates
-        if not isinstance(candidates, list):
-            logging.error(f"Invalid candidates type: {type(candidates)}")
-            return None
-            
-        if not candidates:
-            logging.debug(f"No candidates provided for product {haoreum_product['name']}")
-            return None
-
-        best_match = None
-        best_score = 0.0
-
-        for candidate in candidates:
-            try:
-                # Validate candidate
-                if not isinstance(candidate, dict):
-                    logging.warning(f"Invalid candidate type: {type(candidate)}")
-                    continue
-                    
-                if 'name' not in candidate or not candidate['name']:
-                    logging.warning(f"Missing or empty product name in candidate: {candidate}")
-                    continue
-
-                # Calculate similarities
-                text_sim = matcher.calculate_text_similarity(haoreum_product['name'], candidate['name'])
-                if text_sim < 0.3:  # Skip if text similarity is too low
-                    continue
-
-                image_sim = 0.0
-                if haoreum_product.get('image_path') and candidate.get('image_path'):
-                    try:
-                        image_sim = matcher.calculate_image_similarity(
-                            haoreum_product['image_path'],
-                            candidate['image_path']
-                        )
-                    except Exception as e:
-                        logging.warning(f"Error calculating image similarity: {e}")
-                        image_sim = 0.0
-
-                # Calculate combined score
-                combined_score = (text_sim * 0.7) + (image_sim * 0.3)
-
-                # Update best match if score is higher
-                if combined_score > best_score:
-                    best_score = combined_score
-                    best_match = {
-                        'match_data': candidate,
-                        'text_similarity': text_sim,
-                        'image_similarity': image_sim,
-                        'combined_score': combined_score
-                    }
-
-            except Exception as e:
-                logging.error(f"Error processing candidate for product {haoreum_product['name']}: {e}")
-                continue
-
-        if best_match:
-            logging.debug(f"Found best match for {haoreum_product['name']} with score {best_score}")
-        else:
-            logging.debug(f"No suitable match found for {haoreum_product['name']}")
-
-        return best_match
-
-    except Exception as e:
-        logging.error(f"Error in _find_best_match for product {haoreum_product['name']}: {e}", exc_info=True)
-        return None
+            # Create match result with additional info
+            best_match = candidate.copy()
+            best_match.update({
+                'source': source,  # Ensure source is properly set
+                'combined_score': combined_score,
+                'text_similarity': text_similarity,
+                'image_similarity': image_similarity
+            })
+    
+    # Apply final filtering based on category-specific thresholds
+    if best_match:
+        # Default thresholds
+        default_text_threshold = matcher.text_similarity_threshold
+        default_combined_threshold = matcher.combined_threshold
+        
+        # Apply category-specific thresholds if available
+        category = haoreum_product.get('중분류카테고리', None)
+        category_text_threshold, _ = matcher.get_thresholds_for_category(category)
+        
+        # Final threshold determination 
+        final_text_threshold = category_text_threshold if matcher.use_category_thresholds else default_text_threshold
+        
+        # Only return match if it meets the thresholds
+        if (best_text_similarity >= final_text_threshold and best_score >= default_combined_threshold):
+            # Check that source is never None
+            if best_match.get('source') is None:
+                best_match['source'] = source
+            return best_match
+    
+    return None
 
 # Wrapper for ProcessPoolExecutor compatibility
 def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: Optional[List[Dict]], naver_data: Optional[List[Dict]], product_type: str, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:

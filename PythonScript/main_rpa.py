@@ -504,7 +504,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     df=temp_df,
                     url_column_name='url',
                     id_column_name='id',
-                    prefix='kogift_pre',
+                    prefix='kogift',
                     config=config,
                     max_workers=download_workers
                 )

@@ -395,7 +395,7 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
         
     # Normalize the URL 
     if not url.startswith(('http://', 'https://')):
-        if any(domain in url.lower() for domain in ['kogift', 'koreagift', 'naver', 'pstatic', 'jclgift']):
+        if any(domain in url.lower() for domain in ['kogift', 'koreagift', 'adpanchok', 'naver', 'pstatic', 'jclgift']):
             url = f"https:{url}" if url.startswith('//') else f"https://{url}"
             logging.debug(f"Normalized URL for download: {url}")
         else:
@@ -422,23 +422,51 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
         max_retries = 2
         retry_delay = 1.0
     
+    # 사이트별 특수 헤더 설정
+    is_kogift = 'koreagift' in url.lower() or 'adpanchok' in url.lower() or 'kogift' in url.lower()
+    headers = {}
+    
+    # 고려기프트/adpanchok의 경우 특별한 헤더 설정
+    if is_kogift:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://koreagift.com/',
+            'sec-ch-ua': '"Google Chrome";v="93", " Not;A Brand";v="99", "Chromium";v="93"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0'
+        }
+    
     for attempt in range(max_retries):
         try:
-            # Perform the download
+            # Perform the download with custom headers if needed
             logging.debug(f"Download attempt {attempt+1}/{max_retries} for {url}")
             
-            response = await client.get(url, follow_redirects=True)
+            response = await client.get(url, follow_redirects=True, headers=headers if headers else None)
             
             if response.status_code == 200:
                 # Verify content type
                 content_type = response.headers.get('content-type', '')
-                if not content_type.startswith('image/') and 'pstatic.net' not in url and 'kogift' not in url.lower():
+                
+                # koreagift.com의 경우 text/plain으로 응답하지만 실제로는 이미지인 경우가 있음
+                # 이 경우 content-type을 검사하지 않고 바로 이미지로 처리
+                is_kogift_url = 'koreagift' in url.lower() or 'adpanchok' in url.lower()
+                if (not content_type.startswith('image/') and 
+                    not is_kogift_url and 
+                    'pstatic.net' not in url and 
+                    'jclgift' not in url.lower()):
                     logging.warning(f"Non-image content type: {content_type} for URL: {url}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
                         continue
                 
-                # Verify we can open it as an image before saving to disk
+                # 항상 이미지로 열어보려고 시도
                 try:
                     img = Image.open(BytesIO(response.content))
                     # Save in original format, but ensure we use a proper image extension
@@ -455,8 +483,19 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
                     logging.info(f"Successfully downloaded image to {save_path}")
                     return True
                 except Exception as img_err:
-                    logging.error(f"Error processing downloaded image from {url}: {img_err}")
-                    # Try to save the raw bytes as a fallback
+                    # 고려기프트/adpanchok의 경우 이미지가 아니더라도 저장 시도
+                    if is_kogift_url:
+                        try:
+                            with open(save_path, 'wb') as f:
+                                f.write(response.content)
+                            logging.warning(f"Saved content from {url} as image despite processing error: {img_err}")
+                            return True
+                        except Exception as write_err:
+                            logging.error(f"Failed to save content from {url}: {write_err}")
+                    else:
+                        logging.error(f"Error processing downloaded image from {url}: {img_err}")
+                    
+                    # 일반적인 경우 raw 바이트 저장 시도
                     try:
                         with open(save_path, 'wb') as f:
                             f.write(response.content)
@@ -797,6 +836,11 @@ async def preprocess_and_download_images(
     if url_column_name not in df.columns or id_column_name not in df.columns:
         logging.error(f"Missing required columns '{url_column_name}' or '{id_column_name}'. Cannot preprocess (prefix: '{prefix}').")
         return {}
+        
+    # Fix incorrect prefix (kogift_pre -> kogift)
+    if prefix == 'kogift_pre':
+        logging.warning(f"Replacing 'kogift_pre' prefix with 'kogift' for better compatibility")
+        prefix = 'kogift'
 
     # Determine the correct save directory (image_main_dir / prefix)
     try:
@@ -816,7 +860,7 @@ async def preprocess_and_download_images(
          except (configparser.Error, ValueError):
              max_workers = default_workers
 
-    logging.info(f"Starting image download/processing for prefix '{prefix}' with {max_workers} workers...")
+    logging.info(f"Starting image download/processing for {len(df)} rows (Prefix: '{prefix}')...")
     start_time = time.monotonic()
 
     tasks = []
@@ -832,29 +876,31 @@ async def preprocess_and_download_images(
             args = (idx, row_id, image_url, save_dir, prefix, config, client)
             tasks.append(_process_single_image_wrapper(args))
 
+        logging.info(f"Submitting {len(tasks)} image processing tasks for prefix '{prefix}'.")
+            
         # Run tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     image_path_map = {}
     success_count = 0
-    fail_count = 0
+    error_count = 0
     for result in results:
         if isinstance(result, Exception):
             logging.error(f"Error during image processing task: {result}", exc_info=result)
-            fail_count += 1
+            error_count += 1
         elif isinstance(result, tuple) and len(result) == 2:
             row_id, image_info = result
-            image_path_map[row_id] = image_info
+            image_path_map[row_id] = image_info['local_path'] if isinstance(image_info, dict) and 'local_path' in image_info else image_info
             if image_info:
                 success_count += 1
             else:
-                fail_count += 1
+                error_count += 1
         else:
              logging.error(f"Unexpected result format from image processing task: {result}")
-             fail_count += 1 # Count unexpected formats as failures
+             error_count += 1 # Count unexpected formats as failures
 
     elapsed_time = time.monotonic() - start_time
-    logging.info(f"Finished image download/processing for prefix '{prefix}'. Success: {success_count}, Failures: {fail_count}. Duration: {elapsed_time:.2f} sec")
+    logging.info(f"Finished image processing for prefix '{prefix}'. Processed: {len(tasks)}, Success: {success_count}, Errors: {error_count}. Duration: {elapsed_time:.2f} sec")
 
     return image_path_map
 
