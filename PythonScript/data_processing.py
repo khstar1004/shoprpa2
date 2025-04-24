@@ -325,8 +325,60 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         df.at[idx, '공급사 상품링크'] = item['seller_link']
                     if '공급사명' in df.columns and 'seller_name' in item:
                         df.at[idx, '공급사명'] = item['seller_name']
-                    if '네이버 이미지' in df.columns and 'image_path' in item:
-                        df.at[idx, '네이버 이미지'] = item['image_path']
+                    
+                    # Handle Naver image data properly
+                    if '네이버 이미지' in df.columns:
+                        # Check for various image data formats
+                        if 'image_data' in item and isinstance(item['image_data'], dict):
+                            # Already in the proper dictionary format for excel_utils.py
+                            df.at[idx, '네이버 이미지'] = item['image_data']
+                        elif 'image_path' in item and 'image_url' in item:
+                            # We have both path and URL, create a dictionary
+                            image_data = {
+                                'url': item['image_url'],
+                                'local_path': item['image_path'],
+                                'source': 'naver'
+                            }
+                            df.at[idx, '네이버 이미지'] = image_data
+                        elif 'image_path' in item:
+                            # We only have the path, might be a URL or a local path
+                            image_path = item['image_path']
+                            if isinstance(image_path, str):
+                                if image_path.startswith('http'):
+                                    # It's a URL
+                                    image_data = {
+                                        'url': image_path,
+                                        'source': 'naver'
+                                    }
+                                    df.at[idx, '네이버 이미지'] = image_data
+                                elif os.path.exists(image_path):
+                                    # It's a local file path
+                                    # Try to reconstruct a URL from the local path
+                                    if 'link' in item:
+                                        image_data = {
+                                            'url': item['link'],
+                                            'local_path': image_path,
+                                            'source': 'naver'
+                                        }
+                                    else:
+                                        image_data = {
+                                            'local_path': image_path,
+                                            'source': 'naver'
+                                        }
+                                    df.at[idx, '네이버 이미지'] = image_data
+                                else:
+                                    # Not a URL and not a valid path
+                                    df.at[idx, '네이버 이미지'] = '-'
+                            else:
+                                # Not a string
+                                df.at[idx, '네이버 이미지'] = '-'
+                        elif 'image_url' in item:
+                            # We only have the URL
+                            image_data = {
+                                'url': item['image_url'],
+                                'source': 'naver'
+                            }
+                            df.at[idx, '네이버 이미지'] = image_data
                     
                     naver_update_count += 1
         
@@ -387,16 +439,57 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     for img_col in ['네이버 이미지', '고려기프트 이미지', '본사 이미지']:
         if img_col in df.columns:
             df[img_col] = df[img_col].apply(
-                lambda x: str(x) if pd.notna(x) and os.path.exists(str(x)) 
-                and os.path.getsize(str(x)) > 0 else '-'
+                lambda x: verify_image_data(x, img_col)
             )
     
     # --- Final formatting and cleanup ---
     # Convert NaN values to None/empty for cleaner Excel output
     df = df.replace({pd.NA: None, np.nan: None})
     
-    logging.info(f"Data formatting complete. Output rows: {len(df)}")
+    # Count image URLs per column for logging
+    img_url_counts = {
+        col: (df[col].map(lambda x: 0 if x == '-' or pd.isna(x) else 1).sum()) 
+        for col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지'] 
+        if col in df.columns
+    }
+    
+    logging.info(f"Formatted data for output: {len(df)} rows with image URLs: {img_url_counts}")
     return df
+
+def verify_image_data(img_value, img_col_name):
+    """Helper function to verify and format image data for the Excel output."""
+    try:
+        # Handle dictionary format (expected for Naver images)
+        if isinstance(img_value, dict):
+            # If there's a local_path, verify it exists
+            if 'local_path' in img_value and img_value['local_path']:
+                local_path = img_value['local_path']
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    return img_value  # Return the valid dictionary
+            
+            # If no valid local_path but URL exists, keep the dictionary for the URL
+            if 'url' in img_value and img_value['url']:
+                return img_value  # Return dictionary with just URL
+            
+            return '-'  # No valid path or URL
+            
+        # Handle string path
+        elif isinstance(img_value, str) and img_value and img_value != '-':
+            # For URL strings (not file paths)
+            if img_value.startswith(('http://', 'https://')):
+                # Return a dictionary format for consistency
+                return {'url': img_value, 'source': img_col_name.split()[0].lower()}
+            
+            # For file path strings
+            elif os.path.exists(img_value) and os.path.getsize(img_value) > 0:
+                return img_value  # Return valid file path as is
+            
+            return '-'  # Invalid path
+        
+        return '-'  # None, NaN, empty string, etc.
+    except Exception as e:
+        logging.warning(f"Error verifying image data '{img_value}' for column {img_col_name}: {e}")
+        return '-'  # Return placeholder on error
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
                     kogift_results: Optional[Dict[str, List[Dict]]] = None,

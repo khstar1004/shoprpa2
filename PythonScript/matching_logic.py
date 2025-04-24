@@ -763,17 +763,55 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
 
                 # Add Naver data if available
                 if best_naver_match:
+                    # Extract image data from best match
+                    naver_image_data = None
+                    naver_match_data = best_naver_match['match_data']
+                    
+                    # Create proper dictionary format for image data
+                    if 'image_path' in naver_match_data:
+                        img_path = naver_match_data.get('image_path')
+                        img_url = naver_match_data.get('image_url') or naver_match_data.get('link')
+                        
+                        if img_path and img_url:
+                            # Create dictionary with both URL and local path
+                            naver_image_data = {
+                                'url': img_url,
+                                'local_path': img_path,
+                                'source': 'naver'
+                            }
+                        elif img_path:
+                            # Only have local path
+                            if isinstance(img_path, str) and img_path.startswith('http'):
+                                # It's actually a URL
+                                naver_image_data = {
+                                    'url': img_path,
+                                    'source': 'naver'
+                                }
+                            else:
+                                # It's a local path
+                                naver_image_data = {
+                                    'local_path': img_path,
+                                    'source': 'naver'
+                                }
+                        elif img_url:
+                            # Only have URL
+                            naver_image_data = {
+                                'url': img_url,
+                                'source': 'naver'
+                            }
+                    
+                    # Update result with Naver data
                     result.update({
                         '매칭_사이트': 'Naver',
-                        '공급사명': best_naver_match['match_data'].get('mallName', best_naver_match['match_data'].get('seller', '')),
-                        '네이버 쇼핑 링크': best_naver_match['match_data'].get('link'),
-                        '공급사 상품링크': best_naver_match['match_data'].get('mallProductUrl', best_naver_match['match_data'].get('originallink')),
-                        '네이버 이미지': best_naver_match['match_data'].get('image_path'),
-                        '판매단가(V포함)(3)': best_naver_match['match_data'].get('price'),
+                        '공급사명': naver_match_data.get('mallName', naver_match_data.get('seller', '')),
+                        '네이버 쇼핑 링크': naver_match_data.get('link'),
+                        '공급사 상품링크': naver_match_data.get('mallProductUrl', naver_match_data.get('originallink')),
+                        '네이버 이미지': naver_image_data, # Use the dictionary format
+                        '판매단가(V포함)(3)': naver_match_data.get('price'),
                         '텍스트_유사도': best_naver_match['text_similarity'],
                         '이미지_유사도': best_naver_match['image_similarity'],
                         '매칭_정확도': best_naver_match['combined_score'],
-                        '기본수량(3)': best_naver_match['match_data'].get('quantity', '1'),
+                        '기본수량(3)': naver_match_data.get('quantity', '1'),
                         '매칭_여부': 'Y',
                         '매칭_품질': '상' if best_naver_match['combined_score'] > 0.8 else '중' if best_naver_match['combined_score'] > 0.6 else '하'
                     })
@@ -1190,13 +1228,52 @@ def process_matching(
                         result_df.at[idx, '공급사명'] = result.get('mallName') # Assuming 'mallName' is the key
                         result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Assuming 'link' is the key
                         result_df.at[idx, '공급사 상품링크'] = result.get('originallink') # Check actual key
-                        result_df.at[idx, '네이버 이미지'] = result.get('image_path')
+                        
+                        # Handle Naver image data - ensure it's in dictionary format
+                        image_data = result.get('image_path')
+                        if isinstance(image_data, dict):
+                            # Already in dictionary format, use as is
+                            result_df.at[idx, '네이버 이미지'] = image_data
+                        elif isinstance(image_data, str):
+                            # Convert string path to dictionary format
+                            if image_data.startswith('http'):
+                                # It's a URL
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'url': image_data,
+                                    'source': 'naver'
+                                }
+                            else:
+                                # It's a local path
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'local_path': image_data,
+                                    'source': 'naver'
+                                }
+                        else:
+                            # No valid image data
+                            result_df.at[idx, '네이버 이미지'] = None
                     else:
                          # Store error message
                         result_df.at[idx, '매칭_오류메시지'] = result.get('price')
                         # Optionally clear other Naver fields or leave as None
                         result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Keep link if available
-                        result_df.at[idx, '네이버 이미지'] = result.get('image_path') # Keep image if available
+                        
+                        # Handle Naver image data even in error case
+                        image_data = result.get('image_path')
+                        if isinstance(image_data, dict):
+                            result_df.at[idx, '네이버 이미지'] = image_data
+                        elif isinstance(image_data, str):
+                            if image_data.startswith('http'):
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'url': image_data,
+                                    'source': 'naver'
+                                }
+                            else:
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'local_path': image_data,
+                                    'source': 'naver'
+                                }
+                        else:
+                            result_df.at[idx, '네이버 이미지'] = None
                 else:
                     # Handle cases where source is missing or different
                     logging.warning(f"Row {idx}: Match found but source ('{match_source}') is unknown or missing.")

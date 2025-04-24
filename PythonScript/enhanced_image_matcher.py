@@ -1040,13 +1040,31 @@ def match_naver_product_images(haoreum_paths: List[str],
                     missing_images += 1
                     continue
                 
+                # Handle image path which could be a dictionary or string
+                if isinstance(image_path, dict):
+                    # If it's a dictionary (as used by excel_utils.py), extract the local path
+                    if 'local_path' in image_path and image_path['local_path']:
+                        actual_path = image_path['local_path']
+                    elif 'url' in image_path:
+                        # No local path but has URL - log but skip
+                        logger.warning(f"Image dictionary has URL but no local path: {image_path['url']} for product: {product_name}")
+                        missing_images += 1
+                        continue
+                    else:
+                        logger.warning(f"Invalid image dictionary format for product: {product_name}")
+                        missing_images += 1
+                        continue
+                else:
+                    # It's a regular string path
+                    actual_path = image_path
+                
                 # Check if the image file exists
-                if os.path.exists(image_path):
-                    naver_images.append(image_path)
+                if os.path.exists(actual_path):
+                    naver_images.append(actual_path)
                     product_names.append(product_name)
                     valid_images += 1
                 else:
-                    logger.warning(f"Image file does not exist: {image_path} for product: {product_name}")
+                    logger.warning(f"Image file does not exist: {actual_path} for product: {product_name}")
                     missing_images += 1
         except Exception as e:
             logger.error(f"Error processing row in naver_results: {e}")

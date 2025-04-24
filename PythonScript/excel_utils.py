@@ -727,6 +727,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                 except Exception as img_e:
                     logger.error(f"Error processing image {img_path}: {img_e}")
+                    # Initialize img_url to None before checking if it exists in the cell value
+                    img_url = None
                     # Try to save a basic error message and URL as fallback
                     if isinstance(cell.value, dict) and 'url' in cell.value:
                         img_url = cell.value['url']
@@ -743,6 +745,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
+                # Initialize img_url to None before checking if it exists in the cell value
+                img_url = None
                 # Try to save URL as fallback
                 if isinstance(cell.value, dict) and 'url' in cell.value:
                     img_url = cell.value['url']

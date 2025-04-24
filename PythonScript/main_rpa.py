@@ -408,7 +408,15 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 for name, items in naver_map.items():
                     for item in items:
                         img_path = item.get('image_path')
-                        if img_path and isinstance(img_path, str) and os.path.exists(img_path):
+                        img_url = item.get('image_url')
+                        
+                        # Make sure we have a URL for each item (needed for excel_utils.py)
+                        if not img_url and img_path and img_path.startswith('http'):
+                            item['image_url'] = img_path
+                            img_url = img_path
+                        
+                        # Process local image paths
+                        if img_path and isinstance(img_path, str) and not img_path.startswith('http') and os.path.exists(img_path):
                             # Check if the image is in the wrong directory
                             if 'Naver' not in img_path.replace('\\', '/').split('/'):
                                 # Move to correct directory
@@ -421,6 +429,16 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
                                 except Exception as e:
                                     logging.error(f"Error fixing Naver image path: {e}")
+                            
+                            # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
+                            if img_url:
+                                # Update the item's image data to dictionary format for excel_utils.py
+                                image_data = {
+                                    'url': img_url,
+                                    'local_path': img_path,
+                                    'source': 'naver'
+                                }
+                                item['image_data'] = image_data
                 
                 if img_fix_count > 0:
                     logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")

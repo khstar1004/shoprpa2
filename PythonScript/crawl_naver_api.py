@@ -577,19 +577,27 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
             '판매단가(V포함)(3)': first_item.get('price'),
             '공급사명': first_item.get('mallName'),
             '네이버 쇼핑 링크': first_item.get('link'),
-            '공급사 상품링크': first_item.get('mallProductUrl'),
-            # '네이버 이미지': first_item.get('image_url') # Store URL initially, path after download
+            '공급사 상품링크': first_item.get('mallProductUrl')
         })
 
         # Download image if URL exists
         image_url = first_item.get('image_url')
         if image_url:
+            # Store the image information in a dictionary format for proper handling in excel_utils.py
+            result_data['네이버 이미지'] = {
+                'url': image_url,
+                'source': 'naver'
+            }
+            
             # Pass the specific Naver image directory and config for background removal
             local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
             if local_path:
-                result_data['네이버 이미지'] = local_path # Update with local path
-            else:
-                 result_data['네이버 이미지'] = image_url # Keep URL if download failed
+                # Include both URL and local path in the dictionary
+                result_data['네이버 이미지'] = {
+                    'url': image_url,
+                    'local_path': local_path,
+                    'source': 'naver'
+                }
     
     return result_data
 
