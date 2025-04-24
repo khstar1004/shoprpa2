@@ -363,7 +363,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https:')):
                             # Handle case where URL is like 'https:\www...'
                             scheme, path = img_url.split(':', 1)
-                            img_url = f"{scheme}://{path.lstrip('\\').lstrip('/')}"
+                            path = path.replace('\\', '').lstrip('/')
+                            img_url = f"{scheme}://{path}"
                 else:
                     # Handle plain string path
                     img_path = str(cell.value)
@@ -662,7 +663,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         elif ':' in img_url and not img_url.startswith(('http:', 'https://')):
                             # Handle case where URL is like 'https:\www...'
                             scheme, path = img_url.split(':', 1)
-                            img_url = f"{scheme}://{path.lstrip('\\').lstrip('/')}"
+                            path = path.replace('\\', '').lstrip('/')
+                            img_url = f"{scheme}://{path}"
                         
                         cell.value = img_url
                         cell.hyperlink = img_url
@@ -701,7 +703,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https://')):
                             # Handle case where URL is like 'https:\www...'
                             scheme, path = img_url.split(':', 1)
-                            img_url = f"{scheme}://{path.lstrip('\\').lstrip('/')}"
+                            path = path.replace('\\', '').lstrip('/')
+                            img_url = f"{scheme}://{path}"
                     
                     # If we have a URL, set it as a hyperlink as fallback
                     if img_url:
@@ -785,7 +788,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https://')):
                             # Handle case where URL is like 'https:\www...'
                             scheme, path = img_url.split(':', 1)
-                            img_url = f"{scheme}://{path.lstrip('\\').lstrip('/')}"
+                            path = path.replace('\\', '').lstrip('/')
+                            img_url = f"{scheme}://{path}"
                     
                     # Try to save a basic error message and URL as fallback
                     if img_url:
@@ -815,7 +819,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         elif ':' in img_url and not img_url.startswith(('http:', 'https://')):
                             # Handle case where URL is like 'https:\www...'
                             scheme, path = img_url.split(':', 1)
-                            img_url = f"{scheme}://{path.lstrip('\\').lstrip('/')}"
+                            path = path.replace('\\', '').lstrip('/')
+                            img_url = f"{scheme}://{path}"
                         
                         cell.value = img_url
                         try:
@@ -1027,7 +1032,7 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                     elif is_qty_col:
                         formatted_value = '-' if numeric_value == 0 else f"{int(numeric_value):,}"
                     elif is_pct_col:
-                        formatted_value = f"{numeric_value:.1f}%"
+                        formatted_value = f"{int(numeric_value)}%"
                     
                     # Update the cell with formatted value (always as string)
                     # This avoids the dtype incompatibility warning
