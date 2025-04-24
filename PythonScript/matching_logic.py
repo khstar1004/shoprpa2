@@ -266,6 +266,15 @@ class ProductMatcher:
         self.use_tfidf = False
         self.use_ensemble_models = True
         
+        # Initialize missing attributes that were causing errors
+        self.token_match_weight = 0.35
+        self.ensemble_models = True
+        self.image_ensemble = False
+        self.fuzzy_match_threshold = 0.8
+        self.use_gpu = False
+        self.text_model_path = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+        self.image_resize_dimension = 256
+        
         # Initialize category thresholds
         self.use_category_thresholds = False
         self.category_thresholds = {}
@@ -285,6 +294,21 @@ class ProductMatcher:
             self.text_model_name = config.get('Matching', 'text_model_name', fallback=self.text_model_name)
             self.use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=self.use_tfidf)
             self.use_ensemble_models = config.getboolean('Matching', 'use_ensemble_models', fallback=self.use_ensemble_models)
+            
+            # Load additional configuration parameters
+            self.token_match_weight = config.getfloat('Matching', 'token_match_weight', fallback=self.token_match_weight)
+            self.ensemble_models = config.getboolean('Matching', 'use_ensemble_models', fallback=self.ensemble_models)
+            self.fuzzy_match_threshold = config.getfloat('Matching', 'fuzzy_match_threshold', fallback=self.fuzzy_match_threshold)
+            self.use_gpu = config.getboolean('Matching', 'use_gpu', fallback=self.use_gpu)
+            self.image_resize_dimension = config.getint('Matching', 'image_resize_dimension', fallback=self.image_resize_dimension)
+            self.image_ensemble = config.getboolean('ImageMatching', 'use_multiple_models', fallback=self.image_ensemble)
+            
+            # Load text model path from Paths section if available
+            if config.has_option('Paths', 'text_model_path'):
+                self.text_model_path = config.get('Paths', 'text_model_path')
+            else:
+                # Fall back to the text_model_name if text_model_path not defined
+                self.text_model_path = self.text_model_name
             
             # Load category thresholds if enabled
             if self.use_category_thresholds:
