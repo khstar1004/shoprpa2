@@ -408,10 +408,11 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert .asp extension to .jpg for better compatibility
-    if save_path.suffix.lower() == '.asp':
+    # Check for problematic file extensions and convert to .jpg
+    problematic_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+    if save_path.suffix.lower() in problematic_extensions:
         save_path = save_path.with_suffix('.jpg')
-        logging.debug(f"Changed file extension from .asp to .jpg: {save_path}")
+        logging.info(f"Changed file extension from {save_path.suffix} to .jpg: {save_path}")
     
     # Get retry settings from config
     try:
@@ -420,28 +421,22 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
     except (configparser.Error, ValueError):
         max_retries = 2
         retry_delay = 1.0
-        
-    # Set custom headers for image download
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-    }
     
-    # Try to download with retries
-    for attempt in range(max_retries + 1):
+    for attempt in range(max_retries):
         try:
-            response = await client.get(url, headers=headers, follow_redirects=True, timeout=20.0)
+            # Perform the download
+            logging.debug(f"Download attempt {attempt+1}/{max_retries} for {url}")
+            
+            response = await client.get(url, follow_redirects=True)
             
             if response.status_code == 200:
-                # Check content type to ensure it's an image
-                content_type = response.headers.get('Content-Type', '')
-                if not content_type.startswith(('image/', 'application/octet-stream')):
-                    logging.warning(f"Downloaded content is not an image: {url}, Content-Type: {content_type}")
-                    # If it's not an image but we got a 200 response, try to save it anyway
-                    # but only if content was received
-                    if not response.content:
-                        return False
+                # Verify content type
+                content_type = response.headers.get('content-type', '')
+                if not content_type.startswith('image/') and 'pstatic.net' not in url and 'kogift' not in url.lower():
+                    logging.warning(f"Non-image content type: {content_type} for URL: {url}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
                 
                 # Verify we can open it as an image before saving to disk
                 try:
@@ -469,40 +464,48 @@ async def download_image_async(url: str, save_path: Union[str, Path], client: ht
                         return True
                     except Exception as write_err:
                         logging.error(f"Error saving raw download content: {write_err}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay * (2 ** attempt))
+                            continue
                         return False
             
             # Handle error status codes
             elif response.status_code == 404:
                 logging.error(f"Image not found (404): {url}")
                 return False
-            else:
-                logging.warning(f"Failed to download image from {url}. Status: {response.status_code}. Attempt {attempt+1}/{max_retries+1}")
-                
-                # Only retry on server errors (5xx) or certain client errors
-                if not (response.status_code >= 500 or response.status_code in [429, 408, 425]):
-                    logging.error(f"Not retrying due to status code {response.status_code}")
-                    return False
-                    
-                if attempt < max_retries:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
+            elif response.status_code in [500, 502, 503, 504]:
+                logging.warning(f"Server error ({response.status_code}) for {url}, retrying...")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt))
                     continue
                 else:
-                    logging.error(f"Max retries ({max_retries}) reached for {url}")
+                    logging.error(f"Failed to download {url} after {max_retries} attempts")
                     return False
-                    
-        except (httpx.RequestError, httpx.TimeoutException) as e:
-            logging.warning(f"Network error downloading {url}: {e}. Attempt {attempt+1}/{max_retries+1}")
-            if attempt < max_retries:
-                await asyncio.sleep(retry_delay * (attempt + 1))
-                continue
             else:
-                logging.error(f"Max retries ({max_retries}) reached for {url} due to network errors")
-                return False
+                logging.warning(f"Unexpected status code {response.status_code} for {url}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt))
+                    continue
+                else:
+                    logging.error(f"Failed to download {url} after {max_retries} attempts")
+                    return False
+                
+        except httpx.RequestError as e:
+            logging.warning(f"Request error downloading {url} (attempt {attempt+1}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (2 ** attempt))
+                continue
+        except httpx.TimeoutException as e:
+            logging.warning(f"Timeout downloading {url} (attempt {attempt+1}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (2 ** attempt))
+                continue
         except Exception as e:
-            logging.error(f"Unexpected error downloading {url}: {e}")
-            return False
+            logging.error(f"Unexpected error downloading {url} (attempt {attempt+1}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (2 ** attempt))
+                continue
     
-    # Should not reach here, but just in case
     return False
 
 # --- Text Processing Utilities ---
@@ -655,60 +658,112 @@ async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]
     try:
         # Generate filename
         url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
+        
         # Basic file extension extraction and sanitization
         file_ext = os.path.splitext(urlparse(image_url).path)[1]
         file_ext = ''.join(c for c in file_ext if c.isalnum() or c == '.')[:5].lower()
-        if not file_ext.startswith('.') or len(file_ext) < 2: file_ext = '.jpg'
         
-        row_id_str = str(row_id).replace(os.path.sep, '_')
+        # Handle problematic or missing extensions
+        problematic_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+        if file_ext in problematic_extensions or not file_ext.startswith('.') or len(file_ext) < 2:
+            file_ext = '.jpg'
+            logging.debug(f"Using default .jpg extension for URL: {image_url}")
+        
+        # Clean row_id to ensure it's valid for filenames
+        if isinstance(row_id, (int, float)):
+            row_id_str = str(int(row_id))
+        else:
+            row_id_str = str(row_id).replace(os.path.sep, '_').replace(' ', '_')[:30]
+        
+        # Create a properly formatted filename
         target_filename = f"{prefix}_{row_id_str}_{url_hash}{file_ext}"
         target_path = Path(save_dir) / target_filename
         
         logging.debug(f"Processing image for ID {row_id_str}: {image_url} -> {target_path}")
         
+        # Download the image
         download_success = await download_image_async(image_url, target_path, client, config)
         
         if not download_success:
             logging.warning(f"Failed download for ID {row_id_str} from {image_url}")
             return row_id, None
-            
-        final_path = str(target_path) # Default to original path
         
-        try:
-             use_bg_removal = config.getboolean('Matching', 'use_background_removal')
-        except (configparser.Error, ValueError):
-             logging.warning("Error reading use_background_removal setting, defaulting to False for this image.")
-             use_bg_removal = False
-             
-        if use_bg_removal:
-            # Lazily import to avoid circular dependency if image_utils imports utils
+        # Save both the original path and the potentially background-removed path    
+        original_path = str(target_path)
+        final_path = original_path  # Default to original path
+        
+        # If the file exists but has 0 bytes, report failure
+        if not os.path.exists(original_path) or os.path.getsize(original_path) == 0:
+            logging.error(f"Downloaded file has 0 bytes or does not exist: {original_path}")
             try:
-                 from image_utils import remove_background_async
-                 # Generate background removed path
-                 bg_removed_path = target_path.with_name(f"{target_path.stem}_no_bg{target_path.suffix}")
-                 
-                 bg_success = await remove_background_async(target_path, bg_removed_path)
-                 if bg_success:
-                     final_path = str(bg_removed_path)
-                     logging.debug(f"Background removed for ID {row_id_str}: {final_path}")
-                     # Optional: Delete original?
-                     # if target_path.exists() and target_path != bg_removed_path:
-                     #    try: os.remove(target_path); logging.debug(f"Deleted original: {target_path}")
-                     #    except OSError as e: logging.warning(f"Could not delete original {target_path}: {e}")
-                 else:
-                     logging.warning(f"BG removal failed for ID {row_id_str} ({target_path}), using original.")
-                     final_path = str(target_path) # Ensure fallback
-            except ImportError:
-                 logging.error("Could not import remove_background_async from image_utils. Skipping background removal.")
-                 final_path = str(target_path)
-            except Exception as bg_err:
-                logging.error(f"Error during background removal for ID {row_id_str} ({target_path}): {bg_err}", exc_info=True)
-                final_path = str(target_path) # Fallback
+                if os.path.exists(original_path):
+                    os.remove(original_path)  # Remove empty file
+            except:
+                pass
+            return row_id, None
+        
+        # Verify the file is a valid image
+        try:
+            # Attempt to open the file as an image to verify it
+            with Image.open(original_path) as img:
+                # Get actual format and dimensions for logging
+                img_format = img.format
+                width, height = img.size
+                logging.debug(f"Verified image: {original_path} ({img_format}, {width}x{height})")
                 
-        return row_id, final_path
+                # If very small image, log a warning but keep it
+                if width < 50 or height < 50:
+                    logging.warning(f"Very small image detected: {width}x{height} for {original_path}")
+        except Exception as img_err:
+            logging.error(f"Invalid image file: {original_path} - {img_err}")
+            try:
+                if os.path.exists(original_path):
+                    os.remove(original_path)  # Remove invalid file
+            except:
+                pass
+            return row_id, None
+            
+        # Check if we should do background removal
+        try:
+            use_bg_removal = config.getboolean('Matching', 'use_background_removal')
+        except (configparser.Error, ValueError):
+            logging.warning("Error reading use_background_removal setting, defaulting to False for this image.")
+            use_bg_removal = False
+            
+        # Perform background removal if needed
+        if use_bg_removal:
+            try:
+                # Generate the path for the background-removed version
+                no_bg_path = os.path.splitext(original_path)[0] + '_nobg.png'
+                
+                # Import utility lazily to avoid circular imports
+                from image_utils import remove_background_async
+                
+                # Remove background
+                bg_success = await remove_background_async(original_path, no_bg_path)
+                
+                if bg_success and os.path.exists(no_bg_path) and os.path.getsize(no_bg_path) > 0:
+                    logging.info(f"Background removed successfully for {original_path}")
+                    final_path = no_bg_path
+                else:
+                    logging.warning(f"Background removal failed or resulted in empty file for {original_path}")
+                    final_path = original_path  # Fallback to original
+            except Exception as bg_err:
+                logging.error(f"Error during background removal for {original_path}: {bg_err}")
+                final_path = original_path  # Fallback to original
+        
+        # Return both paths as a dictionary for better context in downstream processing
+        image_info = {
+            'url': image_url,
+            'local_path': final_path,  # The path with background removed (if applied)
+            'original_path': original_path,  # Always keep the original path
+            'source': prefix  # The source prefix (haereum, kogift, etc.)
+        }
+        
+        return row_id, image_info
         
     except Exception as e:
-        logging.error(f"Error in _process_single_image_wrapper for ID {row_id} ({image_url}): {e}", exc_info=True)
+        logging.error(f"Error processing image {image_url} for ID {row_id}: {e}")
         return row_id, None
 
 async def preprocess_and_download_images(
@@ -788,9 +843,9 @@ async def preprocess_and_download_images(
             logging.error(f"Error during image processing task: {result}", exc_info=result)
             fail_count += 1
         elif isinstance(result, tuple) and len(result) == 2:
-            row_id, final_path = result
-            image_path_map[row_id] = final_path
-            if final_path:
+            row_id, image_info = result
+            image_path_map[row_id] = image_info
+            if image_info:
                 success_count += 1
             else:
                 fail_count += 1

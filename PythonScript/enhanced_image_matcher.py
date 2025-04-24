@@ -248,12 +248,14 @@ class EnhancedImageMatcher:
         
         # Load configuration values
         if config:
-            settings = _get_config_values(config)
-            if settings:
-                global SETTINGS
-                SETTINGS.update(settings)
+            global SETTINGS
+            new_settings = _get_config_values(config)
+            if new_settings:
+                SETTINGS = new_settings
+                logger.debug("Updated settings from config")
                 
-        # Update global settings for feature extraction parameters
+        # Set up properties
+        self.use_gpu = use_gpu
         self.sift_features = SETTINGS['SIFT_FEATURES']
         self.akaze_features = SETTINGS['AKAZE_FEATURES']
         self.orb_features = SETTINGS['ORB_FEATURES']
@@ -262,33 +264,79 @@ class EnhancedImageMatcher:
         self.apply_clahe = SETTINGS['APPLY_CLAHE']
         self.use_multiple_models = SETTINGS['USE_MULTIPLE_MODELS']
         
-        # Initialize cache
+        # Initialize feature cache
         self.feature_cache = FeatureCache()
         
-        # Initialize models
-        self.use_gpu = use_gpu
-        self._initialize_deep_models()
+        # Initialize OpenCV feature detectors
+        self.sift = cv2.SIFT_create(nfeatures=self.sift_features)
+        self.akaze = cv2.AKAZE_create()
+        self.orb = cv2.ORB_create(nfeatures=self.orb_features)
         
-        # Initialize feature extractors with improved parameters
-        self.sift = cv2.SIFT_create(nfeatures=self.sift_features, nOctaveLayers=5, contrastThreshold=0.03, edgeThreshold=10, sigma=1.6)
-        self.akaze = cv2.AKAZE_create(descriptor_type=cv2.AKAZE_DESCRIPTOR_MLDB, descriptor_size=0, descriptor_channels=3, threshold=0.001)
-        self.orb = cv2.ORB_create(nfeatures=self.orb_features, scaleFactor=1.2, nlevels=8, edgeThreshold=31, firstLevel=0, WTA_K=2, patchSize=31)
-        
-        # Initialize FLANN matcher for SIFT
-        FLANN_INDEX_KDTREE = 1
-        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-        search_params = dict(checks=50)  # Increased from typical 32 for more accuracy
-        self.flann = cv2.FlannBasedMatcher(index_params, search_params)
-        
-        # Initialize Brute Force matchers for AKAZE and ORB
+        # Initialize matchers
+        self.flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
         self.bf_akaze = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.bf_orb = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         
-        # Add CLAHE for contrast enhancement
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        # Set up CLAHE
+        if self.apply_clahe:
+            self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         
-        logger.info(f"Initialized EnhancedImageMatcher (GPU: {use_gpu}, SIFT features: {self.sift_features}, AKAZE features: {self.akaze_features}, ORB features: {self.orb_features})")
-
+        # Initialize deep learning models
+        try:
+            # Set TF GPU settings
+            if use_gpu:
+                # Set up GPU memory allocation
+                physical_devices = tf.config.list_physical_devices('GPU')
+                if len(physical_devices) > 0:
+                    logger.info(f"Found {len(physical_devices)} GPUs")
+                    for device in physical_devices:
+                        try:
+                            tf.config.experimental.set_memory_growth(device, True)
+                            logger.info(f"Enabled memory growth for {device}")
+                        except Exception as e:
+                            logger.warning(f"Could not enable memory growth for {device}: {e}")
+                else:
+                    logger.warning("No GPUs found, falling back to CPU")
+                    self.use_gpu = False
+            else:
+                logger.info("GPU disabled for TensorFlow")
+                os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+                
+            self._initialize_deep_models()
+            
+        except Exception as e:
+            logger.error(f"Error initializing EnhancedImageMatcher: {e}")
+            # Set minimal defaults to avoid method not found errors
+            self.model = None
+            self.models = []
+            
+        # Log initialization
+        logger.info(f"Initialized EnhancedImageMatcher (GPU: {self.use_gpu}, SIFT features: {self.sift_features}, AKAZE features: {self.akaze_features}, ORB features: {self.orb_features})")
+        
+        # Verify that critical methods exist and are callable
+        try:
+            if not hasattr(self, 'calculate_similarity'):
+                logger.error("calculate_similarity method missing, restoring default implementation")
+                # Add default implementation if missing
+                setattr(self, 'calculate_similarity', self._default_calculate_similarity)
+        except Exception as attr_error:
+            logger.error(f"Error verifying methods: {attr_error}")
+            
+    def _default_calculate_similarity(self, img_path1: str, img_path2: str, 
+                                      weights: Optional[Dict[str, float]] = None) -> float:
+        """Default implementation of calculate_similarity if missing"""
+        logger.warning("Using default calculate_similarity implementation")
+        try:
+            # Calculate individual similarities
+            sift_score = self.calculate_sift_similarity(img_path1, img_path2)
+            akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
+            
+            # Simple average
+            return (sift_score + akaze_score) / 2.0
+        except Exception as e:
+            logger.error(f"Error in default_calculate_similarity: {e}")
+            return 0.0
+    
     def _initialize_deep_models(self):
         """Initialize deep learning models for feature extraction with GPU if available"""
         try:
@@ -362,6 +410,20 @@ class EnhancedImageMatcher:
             if not os.path.exists(image_path):
                 logger.warning(f"Image does not exist: {image_path}")
                 return None, None
+            
+            # Handle problematic file extensions
+            _, file_ext = os.path.splitext(image_path)
+            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
+                # Create a copy with .jpg extension
+                new_path = os.path.splitext(image_path)[0] + '.jpg'
+                try:
+                    if not os.path.exists(new_path):
+                        import shutil
+                        shutil.copy2(image_path, new_path)
+                    logger.info(f"Copied {file_ext} file to .jpg for processing: {new_path}")
+                    image_path = new_path
+                except Exception as copy_err:
+                    logger.error(f"Error copying {image_path} to {new_path}: {copy_err}")
                 
             # Load image
             img = cv2.imread(image_path)
@@ -665,11 +727,29 @@ class EnhancedImageMatcher:
                 logger.warning(f"Image does not exist: {img_path}")
                 return None
                 
+            # Handle problematic file extensions
+            _, file_ext = os.path.splitext(img_path)
+            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
+                # Create a copy with .jpg extension
+                new_path = os.path.splitext(img_path)[0] + '.jpg'
+                try:
+                    if not os.path.exists(new_path):
+                        import shutil
+                        shutil.copy2(img_path, new_path)
+                    logger.info(f"Copied {file_ext} file to .jpg for deep feature extraction: {new_path}")
+                    img_path = new_path
+                except Exception as copy_err:
+                    logger.error(f"Error copying {img_path} to {new_path}: {copy_err}")
+                
             # Load and preprocess image for EfficientNet
-            img = tf.keras.preprocessing.image.load_img(img_path, target_size=DEFAULT_IMG_SIZE)
-            x = tf.keras.preprocessing.image.img_to_array(img)
-            x = np.expand_dims(x, axis=0)
-            x = self.efficient_preprocess(x)
+            try:
+                img = tf.keras.preprocessing.image.load_img(img_path, target_size=DEFAULT_IMG_SIZE)
+                x = tf.keras.preprocessing.image.img_to_array(img)
+                x = np.expand_dims(x, axis=0)
+                x = self.efficient_preprocess(x)
+            except Exception as img_err:
+                logger.error(f"Error loading/preprocessing image {img_path}: {img_err}")
+                return None
             
             # Extract primary features using EfficientNet
             features = self.model.predict(x, verbose=0)
@@ -758,6 +838,64 @@ class EnhancedImageMatcher:
         logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
         
         return combined_score, scores
+        
+    def calculate_similarity(self, img_path1: str, img_path2: str, 
+                           weights: Optional[Dict[str, float]] = None) -> float:
+        """
+        Calculate combined similarity between two images
+        This is a wrapper around calculate_combined_similarity that returns just the score
+        """
+        try:
+            # Try to get from cache first
+            cache_key = f"{img_path1}|{img_path2}"
+            cached_result = self.feature_cache.get(cache_key, "combined_similarity")
+            if cached_result is not None:
+                return float(cached_result)
+                
+            # Calculate similarity
+            combined_score, _ = self.calculate_combined_similarity(img_path1, img_path2, weights)
+            
+            # Cache the result
+            self.feature_cache.put(cache_key, "combined_similarity", combined_score)
+            
+            return combined_score
+        except Exception as e:
+            logger.error(f"Error calculating similarity between {img_path1} and {img_path2}: {e}")
+            return 0.0
+            
+    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
+        """
+        Determine if two images match based on similarity score
+        
+        Args:
+            img_path1: Path to first image
+            img_path2: Path to second image
+            threshold: Similarity threshold (default: from config)
+            
+        Returns:
+            Tuple of (is_match, similarity_score, individual_scores)
+        """
+        if threshold is None:
+            threshold = SETTINGS['COMBINED_THRESHOLD']
+            
+        try:
+            # Calculate combined similarity
+            similarity, scores = self.calculate_combined_similarity(img_path1, img_path2)
+            
+            # Determine if it's a match
+            is_match = similarity >= threshold
+            
+            return is_match, similarity, scores
+        except Exception as e:
+            logger.error(f"Error determining match between {img_path1} and {img_path2}: {e}")
+            return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+            
+    def clear_cache(self):
+        """Clear the feature cache"""
+        if hasattr(self, 'feature_cache'):
+            logger.debug("Clearing feature cache")
+            # This is a no-op if cache is disabled
+            # Actual cache files will be cleaned up based on cache settings
 
 
 # Helper function to get the common file extension

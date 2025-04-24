@@ -320,14 +320,80 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 # Handle both string paths and dictionary image info
                 if isinstance(cell.value, dict):
                     img_info = cell.value
-                    img_path = img_info.get('local_path', None)
-                    if not img_path:
-                        img_path = img_info.get('url', None)
+                    # Use original image instead of background-removed
+                    img_path = None
+                    
+                    # First check for local_path (as specified in the dictionary)
+                    if 'local_path' in img_info:
+                        # Convert background-removed path (_nobg.png) to original image path
+                        orig_path = img_info['local_path']
+                        if '_nobg.png' in orig_path:
+                            orig_path = orig_path.replace('_nobg.png', '.jpg')
+                        
+                        # Check if original path exists
+                        if os.path.exists(orig_path):
+                            img_path = orig_path
+                        else:
+                            # Try different extensions if original not found
+                            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                                test_path = orig_path.replace(os.path.splitext(orig_path)[1], ext)
+                                if os.path.exists(test_path):
+                                    img_path = test_path
+                                    break
+                    
+                    # If local path not found, try using URL directly
+                    if not img_path and 'url' in img_info:
+                        url = img_info['url']
+                        # Properly format URL (fixing the backslash issue)
+                        if '\\' in url:
+                            url = url.replace('\\', '/')
+                        if url.startswith('https:') and not url.startswith('https://'):
+                            url = 'https://' + url[6:]
+                        
+                        # Check if there's a pre-downloaded version in the correct directory
+                        source = img_info.get('source', '')
+                        if source == 'haereum':
+                            prefixed_dir = 'Haereum'
+                        elif source == 'kogift' or source == 'kogift_pre':
+                            prefixed_dir = 'kogift_pre'
+                        elif source == 'naver':
+                            prefixed_dir = 'Naver'
+                        else:
+                            prefixed_dir = ''
+                        
+                        # Try to find a downloaded version based on URL hash
+                        if prefixed_dir:
+                            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                            base_img_dir = os.path.join('C:\\RPA\\Image\\Main', prefixed_dir)
+                            
+                            # Search for files with matching hash pattern
+                            if os.path.exists(base_img_dir):
+                                for filename in os.listdir(base_img_dir):
+                                    if url_hash in filename and os.path.isfile(os.path.join(base_img_dir, filename)):
+                                        img_path = os.path.join(base_img_dir, filename)
+                                        # Prefer non-background-removed version
+                                        if not '_nobg' in filename:
+                                            break
+                        
+                        # If still no image found, use the URL value for display
+                        if not img_path:
+                            cell.value = url
+                            continue
                 else:
                     img_path = str(cell.value)
 
-                # Normalize path and handle backslashes
-                img_path = os.path.normpath(img_path.replace('\\', '/')) if img_path else None
+                # Check for common path issues and fix them
+                if img_path and '\\' in img_path:
+                    img_path = img_path.replace('\\', '/')
+                
+                # Handle _nobg suffix in paths - prefer original images
+                if img_path and '_nobg.png' in img_path:
+                    orig_path = img_path.replace('_nobg.png', '.jpg')
+                    if os.path.exists(orig_path):
+                        img_path = orig_path
+                
+                # Normalize path
+                img_path = os.path.normpath(img_path) if img_path else None
                 
                 # Skip processing if this image was already processed
                 if img_path in processed_images:
@@ -341,12 +407,11 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 
                 # Verify image file exists and is valid
                 if not img_path or not os.path.exists(img_path):
-                    # Try URL if local path doesn't exist
+                    # Log the issue
+                    logger.warning(f"Image file not found: {cell.value}")
                     if isinstance(cell.value, dict) and cell.value.get('url'):
-                        logger.warning(f"Image file not found: {cell.value}")
                         cell.value = cell.value.get('url')
                     else:
-                        logger.warning(f"Image file not found: {img_path}")
                         cell.value = ERROR_MESSAGES['file_not_found']
                     continue
                     
@@ -396,6 +461,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     
                     # Add image to worksheet
                     worksheet.add_image(excel_img)
+                    logger.debug(f"Successfully added image {img_path} to cell {cell.coordinate}")
                             
                 except Exception as img_e:
                     logger.error(f"Error processing image {img_path}: {img_e}")
@@ -406,17 +472,6 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 cell.value = ERROR_MESSAGES['processing_error']
     
     logger.debug(f"Finished processing {len(processed_images)} unique images in {len(image_cols)} columns")
-    
-    # Clean up temp files (optional, can keep them for caching)
-    # Uncomment if you want to clean up temp files immediately
-    """
-    for img_info in processed_images.values():
-        if img_info['temp_path'] and os.path.exists(img_info['temp_path']):
-            try:
-                os.remove(img_info['temp_path'])
-            except:
-                pass
-    """
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
@@ -579,7 +634,7 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     # 3. Fill NaN values with '-' for consistency
     df_prepared.fillna('-', inplace=True)
     
-    # 4. Format data by column type using vectorized operations where possible
+    # 4. Format data by column type using safer approach
     
     # --- Format text columns ---
     text_cols = [col for col in TEXT_COLUMNS if col in df_prepared.columns]
@@ -593,94 +648,57 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                                .str.strip()
                                .replace('', '-'))
     
-    # --- Format price columns with clean handling of error messages ---
+    # --- Format price, quantity and percentage columns ---
     for col_name in df_prepared.columns:
         is_price_col = col_name in PRICE_COLUMNS
         is_qty_col = col_name in QUANTITY_COLUMNS
         is_pct_col = col_name in PERCENTAGE_COLUMNS
 
         if is_price_col or is_qty_col or is_pct_col:
-            # Create a mask for error message rows that should not be converted
-            error_mask = df_prepared[col_name].astype(str).apply(
-                lambda x: any(err_msg in x for err_msg in ERROR_MESSAGE_VALUES)
-            )
-            
-            # Create a mask for empty or placeholder values
-            empty_mask = df_prepared[col_name].astype(str).apply(
-                lambda x: x.strip().lower() in ['-', '', 'none', 'nan'] or pd.isna(x)
-            )
-            
-            # Extract values for non-error, non-empty cells
-            valid_values = df_prepared.loc[~(error_mask | empty_mask), col_name]
-            
-            if len(valid_values) > 0:
-                # Clean the numeric strings and convert
+            # Handle each row individually to avoid dtype issues
+            for idx in df_prepared.index:
+                value = df_prepared.at[idx, col_name]
+                
+                # Skip processing for error messages and placeholders
+                if isinstance(value, str) and (
+                   value.strip() == '-' or 
+                   any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES)):
+                    continue
+                
+                # Format numeric values
                 try:
-                    # Remove commas and percent signs from numeric strings
-                    numeric_values = valid_values.astype(str).str.replace(',', '').str.replace('%', '').astype(float)
+                    # Convert to string first to handle any type
+                    value_str = str(value).strip()
+                    
+                    # Skip empty values and placeholders
+                    if value_str.lower() in ['-', '', 'none', 'nan'] or pd.isna(value):
+                        df_prepared.at[idx, col_name] = '-'
+                        continue
+                    
+                    # Clean numeric string and convert
+                    clean_value = value_str.replace(',', '').replace('%', '')
+                    numeric_value = float(clean_value)
                     
                     # Format based on column type
                     if is_price_col:
-                        # Format as integers with commas
-                        formatted_values = numeric_values.apply(lambda x: '-' if x == 0 else f"{x:,.0f}")
+                        formatted_value = '-' if numeric_value == 0 else f"{numeric_value:,.0f}"
                     elif is_qty_col:
-                        # Format as integers with commas
-                        formatted_values = numeric_values.apply(lambda x: '-' if x == 0 else f"{int(x):,}")
+                        formatted_value = '-' if numeric_value == 0 else f"{int(numeric_value):,}"
                     elif is_pct_col:
-                        # Format as percentages with one decimal
-                        formatted_values = numeric_values.apply(lambda x: f"{x:.1f}%")
-                        
-                    # Update only the valid cells, preserving errors and empties
-                    df_prepared.loc[~(error_mask | empty_mask), col_name] = formatted_values.values
+                        formatted_value = f"{numeric_value:.1f}%"
+                    
+                    # Update the cell with formatted value
+                    df_prepared.at[idx, col_name] = formatted_value
+                    
+                except (ValueError, TypeError):
+                    # If conversion fails, ensure clean string representation
+                    if not isinstance(value, str):
+                        df_prepared.at[idx, col_name] = str(value).strip()
                 except Exception as e:
-                    logger.warning(f"Error formatting numeric column {col_name}: {e}")
-                    # Fall back to using apply for this column
-                    df_prepared[col_name] = df_prepared[col_name].apply(_format_numeric_value, 
-                                                                       args=(is_price_col, is_qty_col, is_pct_col))
-            
-            # Set all empty values to '-'
-            df_prepared.loc[empty_mask, col_name] = '-'
+                    logger.warning(f"Error formatting value '{value}' in column {col_name}: {e}")
     
     logger.info(f"Data preparation finished. Final rows: {len(df_prepared)}")
     return df_prepared
-
-def _format_numeric_value(value, is_price_col, is_qty_col, is_pct_col):
-    """Helper function to format individual numeric values with error handling."""
-    if pd.isna(value) or str(value).strip().lower() in ['-', '', 'none', 'nan']:
-        return '-'
-    elif isinstance(value, str) and any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
-        return value  # Preserve error messages
-
-    try:
-        # Remove commas and % for numeric conversion
-        cleaned_value_str = str(value).replace(',', '').replace('%', '').strip()
-        
-        # Skip conversion if it's an error message or placeholder
-        if cleaned_value_str == '-' or any(err_msg in cleaned_value_str for err_msg in ERROR_MESSAGE_VALUES):
-            return cleaned_value_str
-
-        numeric_value = float(cleaned_value_str)
-
-        # Format based on column type
-        if is_price_col:
-            if numeric_value == 0:
-                return '-'
-            return f"{numeric_value:,.0f}"  # Comma separated integer
-        elif is_qty_col:
-            if numeric_value == 0:
-                return '-'
-            return f"{int(numeric_value):,}"  # Comma separated integer
-        elif is_pct_col:
-            return f"{numeric_value:.1f}%"  # One decimal place percentage
-        else:
-            return str(value).strip()
-
-    except (ValueError, TypeError):
-        # If conversion fails, return clean string
-        cleaned_str = str(value).strip()
-        if cleaned_str in ['', '-', 'nan', 'None', 'none']:
-            return '-'
-        return cleaned_str
 
 def safe_excel_operation(func):
     """

@@ -136,82 +136,110 @@ def remove_background(input_path: Union[str, Path, Image.Image, bytes], output_p
             logging.error("Failed to remove background: rembg session could not be initialized.")
             return False
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
+    # Convert Path to string if needed
+    if isinstance(output_path, Path):
+        output_path = str(output_path)
+    
+    # Ensure output directory exists
+    output_dir = os.path.dirname(output_path)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save original input_path for logging and tracking
+    original_input_path = input_path if isinstance(input_path, (str, Path)) else "PIL_Image_or_bytes"
+    original_output_path = output_path
 
     input_data = None
-    if isinstance(input_path, (str, Path)):
-        input_path = Path(input_path)
-        if not input_path.exists():
-            logging.error(f"Input file not found: {input_path}")
-            return False
-        
-        # Handle .asp file extension (fix for current issue)
-        if input_path.suffix.lower() == '.asp':
-            try:
-                # Try to open the file with PIL and convert to a standard image format
-                temp_img = Image.open(input_path)
-                # Save to a temporary file with a valid image extension
-                temp_path = input_path.with_suffix('.png')
-                temp_img.save(temp_path)
-                # Update input_path to use the converted image
-                input_path = temp_path
-                logging.info(f"Converted .asp file to PNG format: {temp_path}")
-            except Exception as e:
-                logging.error(f"Error converting .asp file to valid image format: {e}")
-                return False
-        
-        try:
-            with open(input_path, 'rb') as i:
-                input_data = i.read()
-        except IOError as e:
-            logging.error(f"Error reading input file {input_path}: {e}")
-            return False
-    elif isinstance(input_path, Image.Image):
-        try:
-            buffer = BytesIO()
-            input_path.save(buffer, format="PNG") # Save PIL image to buffer
-            buffer.seek(0)
-            input_data = buffer.read()
-        except Exception as e:
-            logging.error(f"Error processing PIL Image object: {e}")
-            return False
-    elif isinstance(input_path, bytes):
-        # When dealing with raw bytes, try to open as an image first to validate
-        try:
-            img = Image.open(BytesIO(input_path))
-            # If successful, convert to PNG format for better compatibility
-            buffer = BytesIO()
-            img.save(buffer, format="PNG")
-            buffer.seek(0)
-            input_data = buffer.read()
-        except Exception as e:
-            logging.error(f"Error processing image bytes: {e}")
-            return False
-    else:
-        logging.error(f"Unsupported input type: {type(input_path)}")
-        return False
-
-    if input_data is None:
-        logging.error("Input data could not be processed.")
-        return False
-
     try:
+        if isinstance(input_path, (str, Path)):
+            # Convert to string if Path object
+            if isinstance(input_path, Path):
+                input_path = str(input_path)
+                
+            if not os.path.exists(input_path):
+                logging.error(f"Input file not found: {input_path}")
+                return False
+            
+            # Handle problematic file extensions
+            _, file_ext = os.path.splitext(input_path)
+            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']:
+                try:
+                    # Try to open the file with PIL and save to a temporary file with a valid image extension
+                    temp_img = Image.open(input_path)
+                    temp_path = input_path + '.png'  # Keep original path for tracking but add valid extension
+                    temp_img.save(temp_path)
+                    # Update input_path to use the converted image
+                    input_path = temp_path
+                    logging.info(f"Converted {file_ext} file to PNG format: {temp_path}")
+                except Exception as e:
+                    logging.error(f"Error converting {file_ext} file to valid image format: {e}")
+                    return False
+            
+            # Read input file
+            try:
+                with open(input_path, 'rb') as i:
+                    input_data = i.read()
+            except IOError as e:
+                logging.error(f"Error reading input file {input_path}: {e}")
+                return False
+                
+        elif isinstance(input_path, Image.Image):
+            # Handle PIL Image object
+            try:
+                buffer = BytesIO()
+                input_path.save(buffer, format="PNG") # Save PIL image to buffer
+                buffer.seek(0)
+                input_data = buffer.read()
+            except Exception as e:
+                logging.error(f"Error processing PIL Image object: {e}")
+                return False
+                
+        elif isinstance(input_path, bytes):
+            # Handle raw bytes
+            try:
+                img = Image.open(BytesIO(input_path))
+                # Convert to PNG format for better compatibility
+                buffer = BytesIO()
+                img.save(buffer, format="PNG")
+                buffer.seek(0)
+                input_data = buffer.read()
+            except Exception as e:
+                logging.error(f"Error processing image bytes: {e}")
+                return False
+                
+        else:
+            logging.error(f"Unsupported input type: {type(input_path)}")
+            return False
+
+        if input_data is None:
+            logging.error("Input data could not be processed.")
+            return False
+
         # Use the global session for removal
         result_bytes = remove(input_data, session=rembg_session)
 
         # Ensure the output is saved as PNG
-        output_path = output_path.with_suffix('.png')
+        if not output_path.lower().endswith('.png'):
+            output_path = os.path.splitext(output_path)[0] + '.png'
+            
+        # Always add _nobg suffix if not already present
+        if not output_path.lower().endswith('_nobg.png'):
+            output_path = os.path.splitext(output_path)[0] + '_nobg.png'
 
         with open(output_path, 'wb') as o:
             o.write(result_bytes)
-        logging.info(f"Background removed successfully. Output saved to: {output_path}")
-        return True
+            
+        # Verify the output file exists and has content
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            logging.info(f"Background removed successfully. Input: {original_input_path}, Output: {output_path}")
+            return True
+        else:
+            logging.error(f"Background removal failed: Output file is empty or missing: {output_path}")
+            return False
 
     except Exception as e:
         logging.error(f"Error during background removal process: {e}")
         # Attempt to remove potentially corrupted output file
-        if output_path.exists():
+        if output_path and os.path.exists(output_path):
             try:
                 os.remove(output_path)
                 logging.info(f"Removed potentially corrupted output file: {output_path}")

@@ -98,6 +98,17 @@ async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: in
         else:
             return url, False, "Invalid URL scheme"
 
+    # Check if URL ends with .asp, .aspx, or other non-image extensions to avoid processing
+    parsed_url = urlparse(url)
+    path = unquote(parsed_url.path)
+    _, ext = os.path.splitext(path)
+    ext = ext.lower()
+    non_image_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+    
+    if ext in non_image_extensions:
+        logger.warning(f"Skipping non-image file with extension {ext}: {url}")
+        return url, False, f"Non-image file extension: {ext}"
+
     try:
         # GET 요청으로 이미지 확인
         try:
@@ -167,8 +178,15 @@ def get_image_path(url: str) -> str:
     _, ext = os.path.splitext(path)
     ext = ext.lower() or '.jpg'  # 확장자가 없으면 .jpg로 기본 설정
     
-    # 허용된 확장자 목록
+    # 허용된 확장자 목록 (확장)
     allowed_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+    non_image_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+    
+    # Filter out non-image extensions
+    if ext in non_image_extensions:
+        logger.warning(f"Skipping non-image file with extension {ext}: {url}")
+        return None
+        
     if ext not in allowed_exts or is_kogift:
         ext = '.jpg'  # 허용되지 않은 확장자 또는 kogift 이미지는 .jpg로 변환
     
@@ -196,6 +214,17 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
             else:
                 logger.warning(f"Invalid URL format: {url}")
                 return url, False, ""
+                
+        # Check for non-image extensions
+        parsed_url = urlparse(url)
+        path = unquote(parsed_url.path)
+        _, ext = os.path.splitext(path)
+        ext = ext.lower()
+        non_image_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+        
+        if ext in non_image_extensions:
+            logger.warning(f"Skipping download of non-image file with extension {ext}: {url}")
+            return url, False, ""
         
         # URL 검증
         if VERIFY_IMAGE_URLS:
