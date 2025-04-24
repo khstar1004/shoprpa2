@@ -1046,10 +1046,53 @@ def match_naver_product_images(haoreum_paths: List[str],
                     if 'local_path' in image_path and image_path['local_path']:
                         actual_path = image_path['local_path']
                     elif 'url' in image_path:
-                        # No local path but has URL - log but skip
-                        logger.warning(f"Image dictionary has URL but no local path: {image_path['url']} for product: {product_name}")
-                        missing_images += 1
-                        continue
+                        # No local path but has URL - try to see if we can find the local file
+                        img_url = image_path['url']
+                        source = image_path.get('source', 'naver')
+                        # Try to find the file by URL hash
+                        try:
+                            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                            naver_dir = 'C:\\RPA\\Image\\Main\\Naver'
+                            matching_files = []
+                            
+                            if os.path.exists(naver_dir):
+                                for f in os.listdir(naver_dir):
+                                    if url_hash in f and os.path.isfile(os.path.join(naver_dir, f)):
+                                        matching_files.append(f)
+                            
+                            if matching_files:
+                                # Prefer original jpg over _nobg version
+                                matching_files.sort(key=lambda x: '_nobg' in x)
+                                actual_path = os.path.join(naver_dir, matching_files[0])
+                                logger.debug(f"Found local file for URL by hash: {actual_path}")
+                            else:
+                                # Try both Main and Target directories
+                                alt_dirs = ['C:\\RPA\\Image\\Main\\Naver', 'C:\\RPA\\Image\\Target\\Naver']
+                                found = False
+                                
+                                for alt_dir in alt_dirs:
+                                    if os.path.exists(alt_dir):
+                                        # Try to find by product name in filename
+                                        product_words = product_name.split()
+                                        if product_words:
+                                            for f in os.listdir(alt_dir):
+                                                # Use first word of product in filename (more unique)
+                                                if product_words[0] in f and os.path.isfile(os.path.join(alt_dir, f)):
+                                                    actual_path = os.path.join(alt_dir, f)
+                                                    found = True
+                                                    logger.debug(f"Found local file for URL by product name: {actual_path}")
+                                                    break
+                                    if found:
+                                        break
+                                
+                                if not found:
+                                    logger.warning(f"Image dictionary has URL but no local path: {img_url} for product: {product_name}")
+                                    missing_images += 1
+                                    continue
+                        except Exception as e:
+                            logger.error(f"Error finding local file for URL: {e}")
+                            missing_images += 1
+                            continue
                     else:
                         logger.warning(f"Invalid image dictionary format for product: {product_name}")
                         missing_images += 1
@@ -1064,8 +1107,17 @@ def match_naver_product_images(haoreum_paths: List[str],
                     product_names.append(product_name)
                     valid_images += 1
                 else:
-                    logger.warning(f"Image file does not exist: {actual_path} for product: {product_name}")
-                    missing_images += 1
+                    # Try to find _nobg version
+                    base_path, ext = os.path.splitext(actual_path)
+                    nobg_path = f"{base_path}_nobg.png"
+                    if os.path.exists(nobg_path):
+                        naver_images.append(nobg_path)
+                        product_names.append(product_name)
+                        valid_images += 1
+                        logger.debug(f"Using _nobg version instead: {nobg_path}")
+                    else:
+                        logger.warning(f"Image file does not exist (both original and _nobg): {actual_path} for product: {product_name}")
+                        missing_images += 1
         except Exception as e:
             logger.error(f"Error processing row in naver_results: {e}")
             continue
