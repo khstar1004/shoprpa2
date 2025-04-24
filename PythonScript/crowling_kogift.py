@@ -896,19 +896,59 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     max_items_per_variation = max(5, max_items_per_keyword // len(keyword_variations)) if keyword_variations else max_items_per_keyword
     logger.info(f"Will scrape up to {max_items_per_variation} items per keyword variation")
     
+    # Check if we need to recreate the browser
+    need_new_browser = not browser or not browser.is_connected()
+    
     # Try each URL in sequence
     for base_url in kogift_urls:
         context = None
         page = None
         try:
-            # --- Add check for browser connection --- 
+            # --- Add check for browser connection and reconnect if needed --- 
             if not browser or not browser.is_connected():
-                logger.error(f"🔴 Browser is not connected before processing URL: {base_url}. Skipping this URL.")
-                continue
+                logger.warning(f"🔶 Browser is not connected before processing URL: {base_url}. Attempting to reconnect.")
+                
+                # If the caller provided a disconnected browser, we'll try to create a new one
+                if need_new_browser:
+                    from playwright.async_api import async_playwright
+                    playwright = await async_playwright().start()
+                    
+                    # Get browser launch arguments from config
+                    browser_args = []
+                    try:
+                        browser_args_str = config.get('Playwright', 'playwright_browser_args', fallback='[]')
+                        import json
+                        browser_args = json.loads(browser_args_str)
+                    except Exception as arg_err:
+                        logger.warning(f"Could not parse browser arguments: {arg_err}. Using defaults.")
+                        browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
+                    
+                    # Launch a new browser
+                    try:
+                        headless = config.getboolean('Playwright', 'playwright_headless', fallback=True)
+                        browser = await playwright.chromium.launch(
+                            headless=headless,
+                            args=browser_args,
+                            timeout=60000  # 1 minute timeout for browser launch
+                        )
+                        logger.info("🟢 Successfully launched a new browser instance")
+                    except Exception as launch_err:
+                        logger.error(f"Failed to launch new browser: {launch_err}")
+                        return pd.DataFrame()
+                else:
+                    # Skip this URL if we couldn't reconnect
+                    logger.error(f"🔴 Browser is not connected and cannot be recreated for {base_url}. Skipping this URL.")
+                    continue
             # --- End check ---
             
             # Create a new context for each URL
             logger.debug(f"Attempting to create new browser context for {base_url}")
+            
+            # Apply delay before creating a new context if configured
+            context_delay = config.getint('Playwright', 'playwright_new_context_delay_ms', fallback=0)
+            if context_delay > 0:
+                await asyncio.sleep(context_delay / 1000)  # Convert ms to seconds
+                
             context = await browser.new_context(
                 user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
                 viewport={'width': 1920, 'height': 1080},
@@ -917,8 +957,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
             
             # Create a new page
             page = await context.new_page()
-            page.set_default_timeout(PAGE_TIMEOUT)
-            page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
+            page.set_default_timeout(config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000))
+            page.set_default_navigation_timeout(config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000))
 
             # Setup resource blocking if enabled
             if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
@@ -933,15 +973,27 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                     search_url = f"{base_url.strip()}/goods/goods_search.php"
 
                     try:
-                        # Navigate to the search page
-                        await page.goto(search_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT)
-                        await page.wait_for_timeout(2000)  # Short wait after initial load
+                        # Navigate to the search page with increased timeout and retry logic
+                        for nav_attempt in range(3):  # Add retry logic
+                            try:
+                                await page.goto(search_url, wait_until="domcontentloaded", 
+                                               timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=90000))
+                                # Short pause after navigation to allow page to stabilize
+                                await page.wait_for_timeout(3000)
+                                break  # Break out of retry loop if successful
+                            except PlaywrightError as nav_err:
+                                if nav_attempt < 2:  # Try again if we haven't reached max retries
+                                    logger.warning(f"Navigation error (attempt {nav_attempt+1}/3): {nav_err}")
+                                    await asyncio.sleep(2)  # Wait before retry
+                                else:
+                                    raise  # Re-raise on final attempt
 
                         # --- Perform Search --- 
                         search_input_locator = page.locator('input#main_keyword[name="keyword"]')
                         search_button_locator = page.locator('img#search_submit')
                         
-                        await search_input_locator.wait_for(state="visible", timeout=PAGE_TIMEOUT)
+                        await search_input_locator.wait_for(state="visible", 
+                                                           timeout=config.getint('ScraperSettings', 'action_timeout', fallback=15000))
                         
                         # Clear any default value in the search input
                         await search_input_locator.click()
@@ -950,7 +1002,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         
                         # Fill the search input with the current keyword variation
                         await search_input_locator.fill(keyword)
-                        await search_button_locator.wait_for(state="visible", timeout=PAGE_TIMEOUT)
+                        await search_button_locator.wait_for(state="visible", 
+                                                           timeout=config.getint('ScraperSettings', 'action_timeout', fallback=15000))
                         
                         logger.debug(f"🔍 Clicking search for variation '{keyword}'...")
                         await search_button_locator.click()
@@ -961,12 +1014,12 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         no_results_selector = 'div.not_result span.icon_dot2:has-text("검색 결과가 없습니다")'
                         combined_selector = f"{results_container_selector}, {no_results_selector}"
                         
-                        logger.debug(f"⏳ Waiting for search results or 'no results' message (timeout: {NAVIGATION_TIMEOUT}ms)...")
+                        logger.debug(f"⏳ Waiting for search results or 'no results' message...")
                         try:
                             found_element = await page.wait_for_selector(
                                 combined_selector, 
                                 state='visible', 
-                                timeout=NAVIGATION_TIMEOUT
+                                timeout=config.getint('ScraperSettings', 'action_timeout', fallback=15000)
                             )
                             
                             # Check if the 'no results' text is visible
@@ -988,12 +1041,19 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                         product_item_selector = 'div.product'
                         data = []
 
-                        while processed_items < max_items_per_variation and page_number <= 10:
+                        # Limit pages to scrape from config
+                        max_pages = config.getint('ScraperSettings', 'kogift_max_pages', fallback=5)
+
+                        while processed_items < max_items_per_variation and page_number <= max_pages:
                             try:
                                 logger.info(f"📄 Scraping page {page_number} (Keyword: '{keyword}', URL: {base_url})... Items processed: {processed_items}")
                                 
                                 # Wait for at least one product item to be potentially visible
-                                await page.locator(product_item_selector).first.wait_for(state="attached", timeout=PAGE_TIMEOUT)
+                                await page.locator(product_item_selector).first.wait_for(state="attached", 
+                                                 timeout=config.getint('ScraperSettings', 'action_timeout', fallback=15000))
+                                
+                                # Short pause to ensure page is fully loaded
+                                await page.wait_for_timeout(1000)
                                 
                                 rows = page.locator(product_item_selector)
                                 count = await rows.count()
@@ -1015,23 +1075,44 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         item_data = {}
                                         
                                         # Extract data using locators with short timeouts
-                                        img_locator = row.locator('div.pic > a > img')
-                                        img_src = await img_locator.get_attribute('src', timeout=PAGE_TIMEOUT)
+                                        try:
+                                            img_locator = row.locator('div.pic > a > img')
+                                            img_src = await img_locator.get_attribute('src', timeout=5000)
+                                        except Exception as e:
+                                            logger.debug(f"Error getting image source: {e}")
+                                            img_src = None
                                         
-                                        link_locator = row.locator('div.pic > a')
-                                        a_href = await link_locator.get_attribute('href', timeout=PAGE_TIMEOUT)
+                                        try:
+                                            link_locator = row.locator('div.pic > a')
+                                            a_href = await link_locator.get_attribute('href', timeout=5000)
+                                        except Exception as e:
+                                            logger.debug(f"Error getting link: {e}")
+                                            a_href = None
                                         
-                                        name_locator = row.locator('div.name > a')
-                                        name = await name_locator.text_content(timeout=PAGE_TIMEOUT)
+                                        try:
+                                            name_locator = row.locator('div.name > a')
+                                            name = await name_locator.text_content(timeout=5000)
+                                        except Exception as e:
+                                            logger.debug(f"Error getting name: {e}")
+                                            name = None
                                         
-                                        price_locator = row.locator('div.price')
-                                        price_text = await price_locator.text_content(timeout=PAGE_TIMEOUT)
+                                        try:
+                                            price_locator = row.locator('div.price')
+                                            price_text = await price_locator.text_content(timeout=5000)
+                                        except Exception as e:
+                                            logger.debug(f"Error getting price: {e}")
+                                            price_text = None
+
+                                        # Skip item if we couldn't get essential data
+                                        if not a_href or not name:
+                                            logger.debug(f"Skipping item due to missing essential data")
+                                            continue
 
                                         # Process extracted data
                                         base_domain_url = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
                                         
                                         # 이미지 URL 정규화
-                                        final_img_url, valid_img_url = normalize_kogift_image_url(img_src, base_domain_url)
+                                        final_img_url, valid_img_url = normalize_kogift_image_url(img_src, base_domain_url) if img_src else ("", False)
                                         if not valid_img_url:
                                             logger.warning(f"⚠️ Invalid or unnormalizable image URL skipped: {img_src}")
                                         
@@ -1110,8 +1191,11 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                 try:
                                     if await next_page_locator.is_visible(timeout=5000):
                                         logger.debug(f"📄 Clicking next page ({page_number + 1})")
-                                        await next_page_locator.click(timeout=PAGE_TIMEOUT)
-                                        await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT)
+                                        await next_page_locator.click(timeout=5000)
+                                        await page.wait_for_load_state('domcontentloaded', 
+                                                                     timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=90000))
+                                        # Extra delay after pagination to ensure page stability
+                                        await page.wait_for_timeout(2000)
                                         page_number += 1
                                     else:
                                         logger.info("⚠️ Next page element not found or not visible. Ending pagination.")
@@ -1191,8 +1275,12 @@ def test_kogift_scraper():
     parser.add_argument('--input-notepad', type=str,
                         help='Path to tab-delimited input file (test2)')
     parser.add_argument('--search-terms', nargs='+', 
-                        default=["녹색나라 화이트", "헬프맨 어반", "텀블러"],
-                        help='Search terms to use for testing')
+                        default=["텀블러", "보온병", "머그"],
+                        help='Search terms to use for testing. Can include multiple terms separated by spaces.')
+    parser.add_argument('--max-variations', type=int, default=2,
+                        help='Maximum number of keyword variations to generate (default: 2)')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run browser in headless mode')
     
     args = parser.parse_args()
     if not args.quantity:
@@ -1333,7 +1421,16 @@ def test_kogift_scraper():
     # 4) Standard test dispatcher
     async def run_standard_tests():
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=config.getboolean('Playwright','playwright_headless',fallback=False))
+            # Use headless mode from args
+            headless = True
+            if hasattr(args, 'headless'):
+                headless = args.headless
+            else:
+                headless = config.getboolean('Playwright','playwright_headless',fallback=True)
+                
+            logger.info(f"Launching browser (headless: {headless})")
+            browser = await p.chromium.launch(headless=headless)
+            
             if args.test_type in ['all','images']:
                 test_image_download()
             if args.test_type in ['all','products']:

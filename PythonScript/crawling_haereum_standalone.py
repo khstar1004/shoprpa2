@@ -58,10 +58,10 @@ file_semaphore = asyncio.Semaphore(1)
 # PATTERNS = ...
 
 # Add browser context timeout settings
-BROWSER_CONTEXT_TIMEOUT = 600000  # 10 minutes
-PAGE_TIMEOUT = 300000  # 5 minutes
-NAVIGATION_TIMEOUT = 120000  # 2 minutes
-WAIT_TIMEOUT = 30000  # 30 seconds
+BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes (reduced from 10)
+PAGE_TIMEOUT = 180000  # 3 minutes (reduced from 5)
+NAVIGATION_TIMEOUT = 90000  # 1.5 minutes (reduced from 2)
+WAIT_TIMEOUT = 20000  # 20 seconds (reduced from 30)
 
 # Add retry settings
 MAX_RETRIES = 3
@@ -82,7 +82,7 @@ def _normalize_text(text: str) -> str:
 async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
     """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
     # Create a new semaphore for this function call
-    max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
+    max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=2)
     scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows
     
     retry_count = 0
@@ -92,6 +92,9 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
     use_default_image = config.getboolean('Matching', 'use_default_image_when_not_found', fallback=True)
     default_image_path = config.get('Paths', 'default_image_path', fallback=None)
     
+    # Check if we need to reconnect the browser
+    need_new_browser = not browser or not browser.is_connected()
+    
     while retry_count < MAX_RETRIES:
         try:
             async with scraping_semaphore:  # Acquire semaphore before starting
@@ -100,9 +103,53 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     return None
 
                 try:
+                    # Check if browser is connected and reconnect if needed
+                    if not browser or not browser.is_connected():
+                        logger.warning(f"🔶 Browser is not connected for Haereum scrape. Attempting to reconnect.")
+                        
+                        # If the caller provided a disconnected browser, we'll try to create a new one
+                        if need_new_browser:
+                            from playwright.async_api import async_playwright
+                            playwright = await async_playwright().start()
+                            
+                            # Get browser launch arguments from config
+                            browser_args = []
+                            try:
+                                browser_args_str = config.get('Playwright', 'playwright_browser_args', fallback='[]')
+                                browser_args = json.loads(browser_args_str)
+                            except Exception as arg_err:
+                                logger.warning(f"Could not parse browser arguments: {arg_err}. Using defaults.")
+                                browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
+                            
+                            # Launch a new browser
+                            try:
+                                headless = config.getboolean('Playwright', 'playwright_headless', fallback=True)
+                                browser = await playwright.chromium.launch(
+                                    headless=headless,
+                                    args=browser_args,
+                                    timeout=60000  # 1 minute timeout for browser launch
+                                )
+                                logger.info("🟢 Successfully launched a new browser instance for Haereum")
+                            except Exception as launch_err:
+                                logger.error(f"Failed to launch new browser for Haereum: {launch_err}")
+                                # Use default image if configured
+                                if use_default_image and default_image_path and os.path.exists(default_image_path):
+                                    logger.info(f"Using default image after browser launch failure: {default_image_path}")
+                                    return {"url": "default", "local_path": default_image_path, "source": "haereum_default"}
+                                return None
+                        else:
+                            # Skip this attempt if we couldn't reconnect
+                            logger.error(f"🔴 Browser is not connected and cannot be recreated for Haereum scrape.")
+                            raise PlaywrightError("Browser disconnected and can't be recreated")
+
                     haereum_main_url = config.get('ScraperSettings', 'haereum_main_url', fallback="https://www.jclgift.com/")
                     haereum_image_base_url = config.get('ScraperSettings', 'haereum_image_base_url', fallback="http://i.jclgift.com/")
-                    user_agent = config.get('ScraperSettings', 'user_agent', fallback="Mozilla/5.0 ...")
+                    user_agent = config.get('Network', 'user_agent', fallback="Mozilla/5.0 ...")
+                    
+                    # Apply delay before creating a new context if configured
+                    context_delay = config.getint('Playwright', 'playwright_new_context_delay_ms', fallback=0)
+                    if context_delay > 0:
+                        await asyncio.sleep(context_delay / 1000)  # Convert ms to seconds
                     
                     # Create a new context with proper settings
                     context = await browser.new_context(
@@ -112,15 +159,28 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     
                     # Create a new page with increased timeouts
                     page = await context.new_page()
-                    page.set_default_timeout(PAGE_TIMEOUT)
-                    page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
+                    page.set_default_timeout(config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000))
+                    page.set_default_navigation_timeout(config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000))
 
                     if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                         await setup_page_optimizations(page)
 
                     logger.debug(f"🌐 Navigating to {haereum_main_url}")
-                    await page.goto(haereum_main_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT)
-                    await page.wait_for_timeout(5000)
+                    # Add retry logic for the initial navigation
+                    for nav_attempt in range(3):
+                        try:
+                            await page.goto(haereum_main_url, wait_until="domcontentloaded", 
+                                          timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=90000))
+                            # Short pause after navigation to allow page to stabilize
+                            await page.wait_for_timeout(5000)
+                            break  # Break out of retry loop if successful
+                        except PlaywrightError as nav_err:
+                            if nav_attempt < 2:  # Try again if we haven't reached max retries
+                                logger.warning(f"Navigation error (attempt {nav_attempt+1}/3): {nav_err}")
+                                await asyncio.sleep(2)  # Wait before retry
+                            else:
+                                raise  # Re-raise on final attempt
+                    
                     logger.debug("⏳ Initial page load wait finished.")
 
                     # --- Search interaction ---
@@ -132,7 +192,8 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     while retry_count < max_retries:
                         try:
                             search_input = page.locator('input[name="keyword"]')
-                            await search_input.wait_for(state="visible", timeout=WAIT_TIMEOUT)
+                            await search_input.wait_for(state="visible", 
+                                                      timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
                             break
                         except Exception as e:
                             retry_count += 1
@@ -145,32 +206,35 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     
                     # Wait for the input to be enabled with timeout
                     start_time = time.time()
-                    while time.time() - start_time < WAIT_TIMEOUT / 1000:  # Convert ms to seconds
+                    wait_timeout = config.getint('ScraperSettings', 'action_timeout', fallback=30000)
+                    while time.time() - start_time < wait_timeout / 1000:  # Convert ms to seconds
                         if await search_input.is_enabled():
                             break
                         await page.wait_for_timeout(100)  # Check every 100ms
                     
                     # Fill the search input with timeout
-                    await search_input.fill(keyword, timeout=WAIT_TIMEOUT)
+                    await search_input.fill(keyword, 
+                                          timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
                     logger.debug(f"⌨️ Filled search input with keyword: {keyword}")
 
                     # Wait for the search button to be present and visible
                     search_button = page.locator('input[type="image"][src*="b_search.gif"]')
-                    await search_button.wait_for(state="visible", timeout=WAIT_TIMEOUT)
+                    await search_button.wait_for(state="visible", 
+                                               timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
                     
                     # Wait for the button to be enabled with timeout
                     start_time = time.time()
-                    while time.time() - start_time < WAIT_TIMEOUT / 1000:  # Convert ms to seconds
+                    while time.time() - start_time < wait_timeout / 1000:  # Convert ms to seconds
                         if await search_button.is_enabled():
                             break
                         await page.wait_for_timeout(100)  # Check every 100ms
                     
                     # Click the search button and wait for navigation
-                    await search_button.click(timeout=WAIT_TIMEOUT)
+                    await search_button.click(timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
                     # Reduced wait time (1 second) before checking for errors or results
                     await page.wait_for_timeout(1000)
                     logger.info("🔍 Search button clicked, checking for server errors or results")
-
+                    
                     # --- Check for specific ADODB server error --- (Added)
                     try:
                         page_content = await page.content()
@@ -1128,6 +1192,18 @@ async def _test_main():
     if not config.has_section('Matching'):
         config.add_section('Matching')
     config.set('Matching', 'use_default_image_when_not_found', 'True')
+    
+    # Make sure we use the current config.ini settings for browser launching
+    if not config.has_section('Playwright'):
+        config.add_section('Playwright')
+    
+    # Set headless mode for testing - use value from config if exists
+    if not config.has_option('Playwright', 'playwright_headless'):
+        config.set('Playwright', 'playwright_headless', 'true')  # Default to headless for tests
+        
+    # Set conservative browser limits to avoid resource issues
+    if not config.has_option('Playwright', 'playwright_max_concurrent_windows'):
+        config.set('Playwright', 'playwright_max_concurrent_windows', '2')  # Limit concurrent windows
         
     # Updated test keywords based on user's request
     test_keywords = [
@@ -1141,46 +1217,100 @@ async def _test_main():
     logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_keywords)} keywords ---")
     
     async with async_playwright() as p:
+        browser = None
         try:
-            headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=False)
-            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=3)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-             headless_mode = False
-             max_windows = 3
+            # Get browser arguments from config if available
+            browser_args = []
+            try:
+                browser_args_str = config.get('Playwright', 'playwright_browser_args', fallback='[]')
+                import json
+                browser_args = json.loads(browser_args_str)
+            except Exception:
+                browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
+                
+            headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=True)
+            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=2)
+            
+            logger.info(f"Launching browser (headless: {headless_mode}, max_windows: {max_windows})")
+            browser = await p.chromium.launch(
+                headless=headless_mode,
+                args=browser_args,
+                timeout=60000  # 1 minute timeout for browser launch
+            )
+        except Exception as browser_err:
+            logger.error(f"Failed to launch browser: {browser_err}")
+            return
              
-        browser = await p.chromium.launch(headless=headless_mode)
         start_time = time.time()
         
         try:
-            # Create tasks for parallel execution with semaphore
+            # Create tasks for parallel execution with semaphore and chunking
             scraping_semaphore = asyncio.Semaphore(max_windows)
-            tasks = []
-            for keyword in test_keywords:
-                async def scrape_with_semaphore(keyword):
-                    async with scraping_semaphore:
-                        return await scrape_haereum_data(browser, keyword, config)
-                task = asyncio.create_task(scrape_with_semaphore(keyword))
-                tasks.append(task)
             
-            # Wait for all tasks to complete
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Split keywords into smaller batches to avoid overloading the browser
+            batch_size = 2  # Process 2 keywords at a time maximum
+            results = []
+            
+            for batch_start in range(0, len(test_keywords), batch_size):
+                batch_end = min(batch_start + batch_size, len(test_keywords))
+                batch = test_keywords[batch_start:batch_end]
+                
+                logger.info(f"Processing batch of {len(batch)} keywords ({batch_start+1}-{batch_end} of {len(test_keywords)})")
+                
+                # Create tasks for this batch
+                batch_tasks = []
+                for keyword in batch:
+                    async def scrape_with_semaphore(kw):
+                        async with scraping_semaphore:
+                            return (kw, await scrape_haereum_data(browser, kw, config))
+                    task = asyncio.create_task(scrape_with_semaphore(keyword))
+                    batch_tasks.append(task)
+                
+                # Wait for this batch to complete
+                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                results.extend(batch_results)
+                
+                # Add a small delay between batches to avoid resource spikes
+                if batch_end < len(test_keywords):
+                    logger.info(f"Batch complete. Waiting before starting next batch...")
+                    await asyncio.sleep(3)
             
             # Process and display results
             print("\n--- Parallel Scraping Test Results ---")
-            for keyword, result in zip(test_keywords, results):
+            success_count = 0
+            error_count = 0
+            
+            for result in results:
                 if isinstance(result, Exception):
-                    print(f"❌ Error for '{keyword}': {str(result)}")
-                elif result and result.get("url"):
-                    print(f"✅ Success for '{keyword}':")
-                    print(f"  - Image URL: {result.get('url')}")
-                    print(f"  - Local path: {result.get('local_path')}")
-                    print(f"  - Source: {result.get('source')}")
+                    error_count += 1
+                    print(f"❌ Error: {str(result)}")
+                elif isinstance(result, tuple) and len(result) == 2:
+                    keyword, data = result
+                    if isinstance(data, Exception):
+                        error_count += 1
+                        print(f"❌ Error for '{keyword}': {str(data)}")
+                    elif data and data.get("url"):
+                        success_count += 1
+                        print(f"✅ Success for '{keyword}':")
+                        print(f"  - Image URL: {data.get('url')}")
+                        print(f"  - Local path: {data.get('local_path')}")
+                        print(f"  - Source: {data.get('source')}")
+                    else:
+                        print(f"❌ No results found for '{keyword}'")
                 else:
-                    print(f"❌ No results found for '{keyword}'")
+                    print(f"❌ Unexpected result format: {result}")
                 print("---------------------------")
+            
+            print(f"Summary: {success_count} successes, {error_count} errors out of {len(test_keywords)} keywords")
                 
+        except Exception as e:
+            logger.error(f"Error during test: {e}")
         finally:
-            await browser.close()
+            if browser:
+                try:
+                    await browser.close()
+                except Exception as close_err:
+                    logger.warning(f"Error closing browser: {close_err}")
             
         end_time = time.time()
         logger.info(f"Parallel scraping took {end_time - start_time:.2f} seconds.")
