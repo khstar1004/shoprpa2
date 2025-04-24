@@ -23,6 +23,7 @@ import requests
 from functools import wraps
 import functools
 import os.path
+from pathlib import Path
 
 # --- Setup Logger ---
 logger = logging.getLogger(__name__)
@@ -337,12 +338,95 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     logger.info(f"  Skipping path: Empty or error message")
                     continue
                 
-                # Convert to raw string path
+                # Check if the path is actually a dictionary represented as a string
+                # Common scenario with image data stored as JSON-like dictionaries
+                url = None
+                if image_path.startswith('{') and image_path.endswith('}'):
+                    try:
+                        # Convert string representation to actual dictionary
+                        # This handles cases where dictionaries are stored as strings
+                        import ast
+                        img_dict = ast.literal_eval(image_path)
+                        if isinstance(img_dict, dict) and 'url' in img_dict:
+                            url = img_dict['url']
+                            logger.info(f"  Found URL in dictionary string: {url}")
+                    except (SyntaxError, ValueError) as e:
+                        logger.warning(f"  Failed to parse dictionary-like string: {e}")
+                
+                # If we got a URL from the dictionary, try to download the image
+                if url:
+                    try:
+                        # Create a temporary directory for downloaded images if not exists
+                        import tempfile
+                        import os
+                        temp_dir = os.path.join(tempfile.gettempdir(), "rpa_image_cache")
+                        os.makedirs(temp_dir, exist_ok=True)
+                        
+                        # Create a unique filename for the downloaded image
+                        # Get just the filename from the URL
+                        from urllib.parse import urlparse
+                        import hashlib
+                        parsed_url = urlparse(url)
+                        url_path = parsed_url.path
+                        file_name = os.path.basename(url_path)
+                        
+                        # If filename is empty or too short, create a hash-based name
+                        if not file_name or len(file_name) < 5:
+                            file_name = hashlib.md5(url.encode()).hexdigest() + ".jpg"
+                        
+                        temp_file_path = os.path.join(temp_dir, file_name)
+                        
+                        # Only download if the file doesn't already exist
+                        if not os.path.exists(temp_file_path):
+                            logger.info(f"  Downloading image from URL: {url}")
+                            import requests
+                            response = requests.get(url, timeout=10)
+                            response.raise_for_status()  # Raise exception for bad responses
+                            
+                            # Save the image
+                            with open(temp_file_path, "wb") as f:
+                                f.write(response.content)
+                            logger.info(f"  Downloaded image to: {temp_file_path}")
+                        else:
+                            logger.info(f"  Using cached image at: {temp_file_path}")
+                        
+                        # Add image to worksheet if download succeeded
+                        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
+                            try:
+                                # Verify the image is valid
+                                with Image.open(temp_file_path) as img_check:
+                                    img_size = img_check.size
+                                    logger.info(f"  Downloaded image size: {img_size}")
+                                
+                                # Add the image to the worksheet
+                                img = openpyxl.drawing.image.Image(temp_file_path)
+                                img.width = img_width
+                                img.height = img_height
+                                cell_address = f"{get_column_letter(col_idx)}{row_idx}"
+                                img.anchor = cell_address
+                                worksheet.add_image(img)
+                                
+                                # Clear the cell value since we're showing the image
+                                cell.value = ""
+                                logger.info(f"  Successfully added image to cell {cell_address}")
+                                continue  # Skip the remaining processing for this cell
+                            except Exception as img_err:
+                                logger.error(f"  Failed to process downloaded image: {img_err}")
+                                # Fall back to setting a message in the cell
+                                cell.value = "이미지 처리 오류"
+                    except Exception as download_err:
+                        logger.error(f"  Failed to download image from URL: {download_err}")
+                        cell.value = "이미지 다운로드 실패"
+                        continue
+                
+                # If we get here, either there was no URL or download failed
+                # Try to handle raw file path if that's what we have
+                # Convert to raw string path for local file checks
                 raw_path = rf"{image_path}"
                 logger.info(f"  Raw string path: '{raw_path}'")
                 logger.info(f"  Raw path exists: {os.path.isfile(raw_path)}")
                 
-                # Check if image path exists
+                # Check if image path exists as a file
                 if os.path.isfile(raw_path):
                     try:
                         # Try to open the image first to verify it's valid
@@ -494,12 +578,16 @@ def _add_hyperlinks_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Workshe
 def _add_header_footer(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Adds standard header and footer."""
     try:
-        current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        worksheet.header_footer.center_header.text = "가격 비교 결과"
-        worksheet.header_footer.right_header.text = f"생성일: {current_date}"
-        worksheet.header_footer.left_footer.text = "해오름 RPA 가격 비교"
-        worksheet.header_footer.right_footer.text = "페이지 &P / &N"
-        logger.debug("Added header and footer to worksheet")
+        # Check if header_footer attribute exists (some versions don't support it)
+        if hasattr(worksheet, 'header_footer'):
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            worksheet.header_footer.center_header.text = "가격 비교 결과"
+            worksheet.header_footer.right_header.text = f"생성일: {current_date}"
+            worksheet.header_footer.left_footer.text = "해오름 RPA 가격 비교"
+            worksheet.header_footer.right_footer.text = "페이지 &P / &N"
+            logger.debug("Added header and footer to worksheet")
+        else:
+            logger.warning("Header/footer not supported in this Excel version - skipping")
     except Exception as e:
         logger.warning(f"Could not set header/footer: {e}")
 
@@ -508,6 +596,75 @@ def _apply_table_format(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     # 테이블 서식 적용 함수 비우기 - 필터 적용 방지
     logger.debug("Table formatting skipped as requested.")
     return
+
+def verify_image_data(img_value, img_col_name):
+    """Helper function to verify and format image data for the Excel output."""
+    try:
+        # If the value is a string that looks like a dictionary (from JSON)
+        if isinstance(img_value, str) and img_value.startswith('{') and img_value.endswith('}'):
+            try:
+                # Convert string representation to actual dictionary
+                import ast
+                img_dict = ast.literal_eval(img_value)
+                if isinstance(img_dict, dict):
+                    # Return the parsed dictionary for further processing
+                    return img_dict
+            except (SyntaxError, ValueError):
+                # If parsing fails, treat as a regular string
+                pass
+                
+        # Handle dictionary format (expected for Naver images)
+        if isinstance(img_value, dict):
+            # If there's a local_path, verify it exists
+            if 'local_path' in img_value and img_value['local_path']:
+                local_path = img_value['local_path']
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    return img_value  # Return the valid dictionary
+            
+            # If no valid local_path but URL exists, keep the dictionary for the URL
+            if 'url' in img_value and img_value['url']:
+                return img_value  # Return dictionary with just URL
+            
+            return '-'  # No valid path or URL
+            
+        # Handle string path/URL
+        elif isinstance(img_value, str) and img_value and img_value != '-':
+            img_value = img_value.strip()
+            # For URL strings (not file paths)
+            if img_value.startswith(('http:', 'https:')):
+                # Return a dictionary format for consistency
+                source = img_col_name.split()[0].lower()
+                return {'url': img_value, 'source': source}
+
+            # For file path strings (absolute paths preferred)
+            elif os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
+                 # Convert file path to dictionary format for consistency
+                 source = img_col_name.split()[0].lower()
+                 # Try to construct a placeholder URL if none provided (might be inaccurate)
+                 img_value_str = img_value.replace(os.sep, '/')
+                 placeholder_url = f"file:///{img_value_str}"
+                 return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
+            # Handle relative paths (less ideal, try to resolve)
+            elif not os.path.isabs(img_value):
+                 try:
+                     # Attempt to resolve relative to a base path (e.g., project root or specific image dir)
+                     # This is a guess - adjust base_path as needed
+                     base_path = Path('C:/RPA/Image/Main') # Example base path
+                     abs_path = (base_path / img_value).resolve()
+                     if abs_path.exists() and abs_path.stat().st_size > 0:
+                         source = img_col_name.split()[0].lower()
+                         abs_path_str = str(abs_path).replace('\\', '/')
+                         placeholder_url = f"file:///{abs_path_str}"
+                         return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
+                 except Exception:
+                     pass # Path resolution failed
+
+            return '-'  # Invalid path or URL string
+
+        return '-'  # None, NaN, empty string, etc.
+    except Exception as e:
+        logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
+        return '-'  # Return placeholder on error
 
 def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Prepares the DataFrame for Excel export: ensures columns, formats data.
@@ -542,15 +699,24 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                 df_prepared[col] = '-'
         df_prepared = df_prepared[FINAL_COLUMN_ORDER]  # Try reordering again
 
-    # 3. Fill NaN values with '-' for consistency
-    df_prepared.fillna('-', inplace=True)
+    # 3. Process image columns before conversion to string
+    # Convert dictionary-like strings to actual dictionaries for image columns
+    for col in IMAGE_COLUMNS:
+        if col in df_prepared.columns:
+            df_prepared[col] = df_prepared[col].apply(
+                lambda x: verify_image_data(x, col)
+            )
     
-    # 4. Convert all columns to string type to avoid dtype issues
+    # 4. Fill NaN values with '-' for clarity and consistency
+    # Using copy=False to modify in-place and avoid the downcasting warning
+    df_prepared = df_prepared.fillna('-', copy=False)
+    
+    # 5. Convert all columns to string type to avoid dtype issues
     # This ensures all values are treated as strings for formatting
     for col in df_prepared.columns:
         df_prepared[col] = df_prepared[col].astype(str)
     
-    # 5. Format data by column type
+    # 6. Format data by column type
     for col_name in df_prepared.columns:
         is_price_col = col_name in PRICE_COLUMNS
         is_qty_col = col_name in QUANTITY_COLUMNS

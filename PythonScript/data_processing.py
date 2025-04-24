@@ -10,6 +10,7 @@ import time
 from typing import Optional, Tuple, Dict, List
 import numpy as np
 from pathlib import Path
+import ast
 
 def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Processes the main input Excel file, reading config with ConfigParser."""
@@ -120,6 +121,74 @@ def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.Da
 #        Applies final formatting using external utility function.
 #     """
 #     pass 
+
+def verify_image_data(img_value, img_col_name):
+    """Helper function to verify and format image data for the Excel output."""
+    try:
+        # Handle dictionary format (expected for Naver images)
+        if isinstance(img_value, dict):
+            # If there's a local_path, verify it exists
+            if 'local_path' in img_value and img_value['local_path']:
+                local_path = img_value['local_path']
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    return img_value  # Return the valid dictionary
+            
+            # If no valid local_path but URL exists, keep the dictionary for the URL
+            if 'url' in img_value and img_value['url']:
+                return img_value  # Return dictionary with just URL
+            
+            return '-'  # No valid path or URL
+            
+        # Handle string dictionary representation (common in pandas serialization)
+        elif isinstance(img_value, str) and img_value and img_value != '-':
+            # Check if this is a string representation of a dictionary
+            img_value = img_value.strip()
+            if img_value.startswith('{') and img_value.endswith('}'):
+                try:
+                    # Try to parse the string as a dictionary
+                    img_dict = ast.literal_eval(img_value)
+                    if isinstance(img_dict, dict):
+                        # If it has a URL, return the parsed dictionary
+                        if 'url' in img_dict and img_dict['url']:
+                            return img_dict
+                except (SyntaxError, ValueError):
+                    pass  # If parsing fails, continue with normal string processing
+            
+            # For URL strings (not file paths)
+            if img_value.startswith(('http:', 'https:')):
+                # Return a dictionary format for consistency
+                source = img_col_name.split()[0].lower()
+                return {'url': img_value, 'source': source}
+
+            # For file path strings (absolute paths preferred)
+            elif os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
+                 # Convert file path to dictionary format for consistency
+                 source = img_col_name.split()[0].lower()
+                 # Try to construct a placeholder URL if none provided (might be inaccurate)
+                 img_value_str = img_value.replace(os.sep, '/')
+                 placeholder_url = f"file:///{img_value_str}"
+                 return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
+            # Handle relative paths (less ideal, try to resolve)
+            elif not os.path.isabs(img_value):
+                 try:
+                     # Attempt to resolve relative to a base path (e.g., project root or specific image dir)
+                     # This is a guess - adjust base_path as needed
+                     base_path = Path('C:/RPA/Image/Main') # Example base path
+                     abs_path = (base_path / img_value).resolve()
+                     if abs_path.exists() and abs_path.stat().st_size > 0:
+                         source = img_col_name.split()[0].lower()
+                         abs_path_str = str(abs_path).replace('\\', '/')
+                         placeholder_url = f"file:///{abs_path_str}"
+                         return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
+                 except Exception:
+                     pass # Path resolution failed
+
+            return '-'  # Invalid path or URL string
+
+        return '-'  # None, NaN, empty string, etc.
+    except Exception as e:
+        logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
+        return '-'  # Return placeholder on error
 
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
@@ -307,7 +376,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     if '고려기프트 상품링크' in df.columns and 'link' in item:
                         df.at[idx, '고려기프트 상품링크'] = item['link']
                     if '고려기프트 이미지' in df.columns and 'image_path' in item:
-                        df.at[idx, '고려기프트 이미지'] = item['image_path']
+                        # Store as proper dictionary instead of string
+                        if isinstance(item['image_path'], str):
+                            if item['image_path'].startswith('http'):
+                                df.at[idx, '고려기프트 이미지'] = {'url': item['image_path'], 'source': '고려기프트'}
+                            else:
+                                df.at[idx, '고려기프트 이미지'] = {'local_path': item['image_path'], 'source': '고려기프트'}
+                        else:
+                            df.at[idx, '고려기프트 이미지'] = item['image_path']
                     
                     kogift_update_count += 1
         
@@ -446,9 +522,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                 axis=1
             )
     
-    # Ensure image paths exist and are valid
+    # Ensure all image columns have proper dictionary format
     for img_col in ['네이버 이미지', '고려기프트 이미지', '본사 이미지']:
         if img_col in df.columns:
+            # Process the image column consistently with structured data
             df[img_col] = df[img_col].apply(
                 lambda x: verify_image_data(x, img_col)
             )
@@ -466,62 +543,6 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     
     logging.info(f"Formatted data for output: {len(df)} rows with image URLs: {img_url_counts}")
     return df
-
-def verify_image_data(img_value, img_col_name):
-    """Helper function to verify and format image data for the Excel output."""
-    try:
-        # Handle dictionary format (expected for Naver images)
-        if isinstance(img_value, dict):
-            # If there's a local_path, verify it exists
-            if 'local_path' in img_value and img_value['local_path']:
-                local_path = img_value['local_path']
-                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                    return img_value  # Return the valid dictionary
-            
-            # If no valid local_path but URL exists, keep the dictionary for the URL
-            if 'url' in img_value and img_value['url']:
-                return img_value  # Return dictionary with just URL
-            
-            return '-'  # No valid path or URL
-            
-        # Handle string path/URL
-        elif isinstance(img_value, str) and img_value and img_value != '-':
-            img_value = img_value.strip()
-            # For URL strings (not file paths)
-            if img_value.startswith(('http:', 'https:')):
-                # Return a dictionary format for consistency
-                source = img_col_name.split()[0].lower()
-                return {'url': img_value, 'source': source}
-
-            # For file path strings (absolute paths preferred)
-            elif os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
-                 # Convert file path to dictionary format for consistency
-                 source = img_col_name.split()[0].lower()
-                 # Try to construct a placeholder URL if none provided (might be inaccurate)
-                 img_value_str = img_value.replace(os.sep, '/')
-                 placeholder_url = f"file:///{img_value_str}"
-                 return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
-            # Handle relative paths (less ideal, try to resolve)
-            elif not os.path.isabs(img_value):
-                 try:
-                     # Attempt to resolve relative to a base path (e.g., project root or specific image dir)
-                     # This is a guess - adjust base_path as needed
-                     base_path = Path('C:/RPA/Image/Main') # Example base path
-                     abs_path = (base_path / img_value).resolve()
-                     if abs_path.exists() and abs_path.stat().st_size > 0:
-                         source = img_col_name.split()[0].lower()
-                         abs_path_str = str(abs_path).replace('\\', '/')
-                         placeholder_url = f"file:///{abs_path_str}"
-                         return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
-                 except Exception:
-                     pass # Path resolution failed
-
-            return '-'  # Invalid path or URL string
-
-        return '-'  # None, NaN, empty string, etc.
-    except Exception as e:
-        logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
-        return '-'  # Return placeholder on error
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
                     kogift_results: Optional[Dict[str, List[Dict]]] = None,
