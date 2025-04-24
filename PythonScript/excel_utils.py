@@ -298,572 +298,79 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
     logger.debug("Finished applying cell styles.")
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Process and embed images in Excel worksheet."""
+    """Processes image columns and embeds images into the worksheet."""
     logger.debug("Processing image columns...")
     
-    # Get image column indices
-    image_cols = {col: idx for idx, col in enumerate(df.columns, 1) 
-                 if col in IMAGE_COLUMNS}
-    
-    if not image_cols:
-        logger.info("No image columns found to process")
+    # Get indices of image columns
+    image_column_indices = {}
+    for col_name in IMAGE_COLUMNS:
+        if col_name in df.columns:
+            idx = list(df.columns).index(col_name) + 1  # Excel is 1-indexed
+            image_column_indices[col_name] = idx
+
+    if not image_column_indices:
+        logger.debug("No image columns found in DataFrame")
         return
-    
-    # Create a temporary directory for image processing if needed
-    temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'temp_images')
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    # Track processed images to avoid duplicate processing
-    processed_images = {}
-    
-    # Count successful/failed images for reporting
-    success_count = 0
-    failed_count = 0
-    
-    # Create recovery directories if they don't exist
-    recovery_dirs = [
-        os.path.join('C:', 'RPA', 'Image', 'Main', 'Haereum'),
-        os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift'),
-        os.path.join('C:', 'RPA', 'Image', 'Main', 'Naver'),
-        os.path.join('C:', 'RPA', 'Image', 'Main', 'kogift_pre'),
-        os.path.join('C:', 'RPA', 'Image', 'Target', 'Haereum'),
-        os.path.join('C:', 'RPA', 'Image', 'Target', 'Kogift'),
-        os.path.join('C:', 'RPA', 'Image', 'Target', 'Naver')
-    ]
-    for directory in recovery_dirs:
-        os.makedirs(directory, exist_ok=True)
-        
-    for row_idx in range(2, worksheet.max_row + 1):
-        for col_name, col_idx in image_cols.items():
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            if not cell.value or cell.value == '-':
-                continue
 
+    # Image size settings
+    img_width = 80
+    img_height = 80
+
+    # For each row in the data
+    for row_idx, row_data in enumerate(df.itertuples(), 2):  # Excel is 1-indexed, +1 for header
+        # Process each image column
+        for col_name, col_idx in image_column_indices.items():
             try:
-                # Initialize img_url to None at the very beginning
-                img_url = None
+                # Get the image data from the cell
+                image_value = getattr(row_data, col_name, "")
                 
-                # Handle both string paths and dictionary image info
-                if isinstance(cell.value, dict):
-                    img_info = cell.value
-                    img_path = None
-                    
-                    # Keep track of original data for logging
-                    original_data = str(img_info)
-                    
-                    # Get source from the dictionary
-                    source = img_info.get('source', '')
-                    
-                    # Try to get URL from the dictionary - do this first for img_url initialization
-                    if 'url' in img_info:
-                        img_url = img_info['url']
-                        # Fix backslashes in URLs immediately
-                        if img_url and '\\' in img_url:
-                            img_url = img_url.replace('\\', '/')
-                        # Fix URL format if it's missing proper scheme
-                        if img_url and img_url.startswith('https:') and not img_url.startswith('https://'):
-                            img_url = 'https://' + img_url[6:]
-                        elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https:')):
-                            # Handle case where URL is like 'https:\www...'
-                            scheme, path = img_url.split(':', 1)
-                            path = path.replace('\\', '').lstrip('/')
-                            img_url = f"{scheme}://{path}"
-                else:
-                    # Handle plain string path
-                    img_path = str(cell.value)
-                    # Check if it might be a URL
-                    if img_path.startswith('http'):
-                        img_url = img_path  # Store as URL for potential fallback
-                    
-                    # Create a dummy img_info for consistent handling
-                    img_info = {'source': 'unknown'}
-                    original_data = img_path
-                    source = 'unknown'
+                # Skip empty cells or error messages
+                if not image_value or image_value == '-' or any(err in str(image_value) for err in ERROR_MESSAGE_VALUES):
+                    continue
                 
-                # Normalize image paths (replace backslashes with forward slashes)
-                if 'local_path' in img_info and img_info['local_path']:
-                    img_info['local_path'] = img_info['local_path'].replace('\\', '/')
+                # Log processing of image value
+                logger.debug(f"Processing image in row {row_idx}, column {col_name}: {str(image_value)[:100]}...")
                 
-                # First try the 'original_path' key if it exists
-                if 'original_path' in img_info and img_info['original_path']:
-                    orig_path = img_info['original_path'].replace('\\', '/')
-                    # Check if the path exists
-                    if os.path.exists(orig_path):
-                        img_path = orig_path
-                        logger.debug(f"Using original_path: {img_path}")
+                # Handle different image data formats
+                img_path = None
                 
-                # If original_path doesn't exist, try local_path
-                if not img_path and 'local_path' in img_info and img_info['local_path']:
-                    local_path = img_info['local_path'].replace('\\', '/')
-                        
-                    # First check if the exact path exists
-                    if os.path.exists(local_path):
-                        img_path = local_path
-                        logger.debug(f"Using exact local_path: {img_path}")
-                    else:
-                        # If still no image found, try parsing from local_path
-                        try:
-                            # Extract file name components
-                            file_dir = os.path.dirname(local_path)
-                            file_name = os.path.basename(local_path)
-                            file_base, file_ext = os.path.splitext(file_name)
-                            
-                            # Check if the path has _nobg suffix and try to find original file
-                            if '_nobg.png' in file_name:
-                                base_name = file_base.replace('_nobg', '')
-                                # Try with multiple extensions
-                                for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                    test_path = os.path.join(file_dir, base_name + ext)
-                                    if os.path.exists(test_path):
-                                        img_path = test_path
-                                        logger.debug(f"Found original image using base name: {img_path}")
-                                        break
-                            
-                            # If still no path, try to find _nobg version
-                            if not img_path and not file_name.endswith('_nobg.png'):
-                                nobg_name = os.path.splitext(file_name)[0] + '_nobg.png'
-                                nobg_path = os.path.join(file_dir, nobg_name)
-                                if os.path.exists(nobg_path):
-                                    img_path = nobg_path
-                                    logger.debug(f"Found _nobg version: {img_path}")
-                            
-                            # Try searching in alternate directories
-                            if not img_path:
-                                search_dirs = []
-                                if 'naver' in source.lower():
-                                    search_dirs = [
-                                        os.path.join('C:', 'RPA', 'Image', 'Main', 'Naver'),
-                                        os.path.join('C:', 'RPA', 'Image', 'Target', 'Naver')
-                                    ]
-                                elif 'kogift' in source.lower() or 'koreagift' in source.lower():
-                                    search_dirs = [
-                                        os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift'),
-                                        os.path.join('C:', 'RPA', 'Image', 'Main', 'kogift_pre'),
-                                        os.path.join('C:', 'RPA', 'Image', 'Target', 'Kogift')
-                                    ]
-                                else:
-                                    search_dirs = [
-                                        os.path.join('C:', 'RPA', 'Image', 'Main', 'Haereum'),
-                                        os.path.join('C:', 'RPA', 'Image', 'Target', 'Haereum')
-                                    ]
-                                
-                                # Try each directory
-                                for search_dir in search_dirs:
-                                    if os.path.exists(search_dir):
-                                        # Try to find file with similar name
-                                        for fname in os.listdir(search_dir):
-                                            # Extract product name from filename
-                                            parts = file_name.split('_', 1)
-                                            if len(parts) > 1 and parts[1] in fname:
-                                                img_path = os.path.join(search_dir, fname)
-                                                logger.debug(f"Found in alternate directory: {img_path}")
-                                                break
-                                    if img_path:
-                                        break
-                        except Exception as path_err:
-                            logger.warning(f"Error trying to find similar file: {path_err}")
+                # Case 1: Image is a dictionary with 'local_path' key
+                if isinstance(image_value, dict) and 'local_path' in image_value:
+                    img_path = image_value['local_path']
                 
-                # Try a hash-based search if we have a URL but no path
-                if not img_path and img_url:
+                # Case 2: Image is a string path
+                elif isinstance(image_value, str):
+                    img_path = image_value
+                
+                # Check if image path exists and is valid
+                if img_path and os.path.isfile(img_path):
+                    # Add the image to the worksheet
                     try:
-                        # Normalize URL for hash creation
-                        url_to_hash = img_url
-                        # Create hash for searching
-                        url_hash = hashlib.md5(url_to_hash.encode()).hexdigest()[:10]
-                        
-                        # Define directories to search based on source
-                        search_dirs = []
-                        if 'naver' in source.lower():
-                            search_dirs = [
-                                os.path.join('C:', 'RPA', 'Image', 'Main', 'Naver'),
-                                os.path.join('C:', 'RPA', 'Image', 'Target', 'Naver')
-                            ]
-                        elif 'kogift' in source.lower() or 'koreagift' in source.lower():
-                            search_dirs = [
-                                os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift'),
-                                os.path.join('C:', 'RPA', 'Image', 'Main', 'kogift_pre'),
-                                os.path.join('C:', 'RPA', 'Image', 'Target', 'Kogift')
-                            ]
-                        else:
-                            search_dirs = [
-                                os.path.join('C:', 'RPA', 'Image', 'Main', 'Haereum'),
-                                os.path.join('C:', 'RPA', 'Image', 'Target', 'Haereum')
-                            ]
-                        
-                        # Search all directories for this hash
-                        for directory in search_dirs:
-                            if os.path.exists(directory):
-                                for filename in os.listdir(directory):
-                                    if url_hash in filename and os.path.isfile(os.path.join(directory, filename)):
-                                        img_path = os.path.join(directory, filename)
-                                        logger.debug(f"Found file using URL hash: {img_path}")
-                                        break
-                            if img_path:
-                                break
-                    except Exception as hash_err:
-                        logger.warning(f"Error searching by hash: {hash_err}")
-                
-                # If still no image found but we have a URL, try to download it now
-                if not img_path and img_url:
-                    try:
-                        # Normalize URL for download
-                        normalized_url = img_url
-                        
-                        # Ensure proper URL scheme
-                        if normalized_url.startswith('//'):
-                            normalized_url = 'https:' + normalized_url
-                        elif not normalized_url.startswith(('http://', 'https://')):
-                            if ":" in normalized_url:
-                                scheme, path = normalized_url.split(":", 1)
-                                normalized_url = f"{scheme}://{path.lstrip('/')}"
-                            else:
-                                normalized_url = 'https://' + normalized_url.lstrip('/')
-                        
-                        # Fix common URL issues with specific sites
-                        if 'jclgift.com' in normalized_url and '\\upload\\' in normalized_url:
-                            normalized_url = normalized_url.replace('\\upload\\', '/upload/')
-                        elif 'koreagift.com' in normalized_url and '\\ez\\upload\\' in normalized_url:
-                            normalized_url = normalized_url.replace('\\ez\\upload\\', '/ez/upload/')
-                        
-                        # Handle URLs with whitespace
-                        if ' ' in normalized_url:
-                            normalized_url = normalized_url.replace(' ', '%20')
-                        
-                        logger.info(f"Attempting to download from URL: {normalized_url}")
-                        
-                        # Generate a unique filename
-                        url_hash = hashlib.md5(normalized_url.encode()).hexdigest()[:10]
-                        timestamp = int(time.time())
-                        
-                        # Determine appropriate directory based on source
-                        if 'naver' in source.lower():
-                            save_dir = os.path.join('C:', 'RPA', 'Image', 'Main', 'Naver')
-                        elif 'kogift' in source.lower() or 'koreagift' in source.lower():
-                            save_dir = os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift')
-                        else:
-                            save_dir = os.path.join('C:', 'RPA', 'Image', 'Main', 'Haereum')
-                        
-                        # Ensure directory exists
-                        os.makedirs(save_dir, exist_ok=True)
-                        
-                        # Generate a descriptive filename
-                        if 'local_path' in img_info and img_info['local_path']:
-                            # Extract product name from local_path if possible
-                            base_name = os.path.basename(img_info['local_path'])
-                            # Remove extension and any hash part
-                            product_parts = base_name.split('_')
-                            if len(product_parts) > 2:
-                                # Keep only the first parts that likely represent the product name
-                                product_name = '_'.join(product_parts[1:-1]) 
-                            else:
-                                product_name = os.path.splitext(base_name)[0]
-                        else:
-                            product_name = f"recovery_{source}"
-                        
-                        # Clean filename to avoid special characters
-                        product_name = re.sub(r'[^\w\-_.]', '_', product_name)
-                        filename = f"{source}_{product_name}_{url_hash}_{timestamp}.jpg"
-                        download_path = os.path.join(save_dir, filename)
-                        
-                        # Download image
-                        logger.info(f"Attempting to download missing image: {normalized_url} -> {download_path}")
-                        
-                        # Try multiple user agents and referers
-                        headers_list = [
-                            {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                                'Referer': 'https://www.google.com/'
-                            },
-                            {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
-                                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                            },
-                            {
-                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
-                                'Accept': 'image/webp,image/*,*/*;q=0.8',
-                            }
-                        ]
-                        
-                        # Site-specific headers
-                        if 'jclgift' in normalized_url:
-                            for header in headers_list:
-                                header['Referer'] = 'https://www.jclgift.com/'
-                        elif 'kogift' in normalized_url or 'koreagift' in normalized_url:
-                            for header in headers_list:
-                                header['Referer'] = 'https://koreagift.com/'
-                        
-                        # Make multiple attempts with different headers
-                        response = None
-                        for headers in headers_list:
-                            try:
-                                response = requests.get(normalized_url, headers=headers, timeout=10)
-                                if response.status_code == 200:
-                                    break
-                                logger.warning(f"Download attempt with {headers['User-Agent']} failed with status {response.status_code}")
-                            except Exception as req_err:
-                                logger.warning(f"Download attempt failed with error: {req_err}")
-                        
-                        # Process response if we got a good status
-                        if response and response.status_code == 200:
-                            # Check it's actually an image
-                            content_type = response.headers.get('Content-Type', '')
-                            content_length = int(response.headers.get('Content-Length', 0)) or len(response.content)
-                            
-                            # Accept as image if content type indicates or if from known sites and has reasonable size
-                            is_likely_image = (
-                                content_type.startswith('image/') or
-                                (('jclgift' in normalized_url or 'koreagift' in normalized_url or 'pstatic' in normalized_url) and content_length > 1000)
-                            )
-                            
-                            if is_likely_image:
-                                # Save image to file
-                                with open(download_path, 'wb') as f:
-                                    f.write(response.content)
-                                
-                                # Verify it's a valid image file
-                                try:
-                                    from PIL import Image
-                                    img = Image.open(download_path)
-                                    img.verify()  # Basic verification
-                                    # Reset file pointer after verify
-                                    img = Image.open(download_path)
-                                    # Save with consistent format
-                                    img_path = download_path
-                                    logger.info(f"Successfully downloaded missing image: {download_path}")
-                                    
-                                    # Update the dictionary with the new local path
-                                    if isinstance(cell.value, dict):
-                                        cell.value['local_path'] = img_path
-                                        logger.debug(f"Updated image dictionary with downloaded path: {img_path}")
-                                except Exception as img_err:
-                                    logger.error(f"Downloaded file is not a valid image: {img_err}")
-                                    # Try to delete invalid image
-                                    try:
-                                        if os.path.exists(download_path):
-                                            os.remove(download_path)
-                                    except:
-                                        pass
-                            else:
-                                logger.warning(f"Downloaded content is not an image. Content-Type: {content_type}, Size: {content_length} bytes")
-                        else:
-                            status = response.status_code if response else "No response"
-                            logger.warning(f"Failed to download image after multiple attempts. Final status: {status}")
-                    except Exception as download_err:
-                        logger.error(f"Failed to download image as last resort: {download_err}")
-                
-                # If we still don't have an image path, log and skip
-                if not img_path:
-                    logger.warning(f"Image file not found: {original_data}")
-                    
-                    # Final attempt to fix URL before using it as hyperlink
-                    if img_url:
-                        # Make sure the URL is properly formatted for hyperlink
-                        if '\\' in img_url:
-                            img_url = img_url.replace('\\', '/')
-                        if img_url.startswith('https:') and not img_url.startswith('https://'):
-                            img_url = 'https://' + img_url[6:]
-                        elif ':' in img_url and not img_url.startswith(('http:', 'https://')):
-                            # Handle case where URL is like 'https:\www...'
-                            scheme, path = img_url.split(':', 1)
-                            path = path.replace('\\', '').lstrip('/')
-                            img_url = f"{scheme}://{path}"
-                        
-                        cell.value = img_url
-                        cell.hyperlink = img_url
-                        cell.font = LINK_FONT  # Apply hyperlink style
-                    else:
-                        cell.value = ERROR_MESSAGES['file_not_found']
-                    failed_count += 1
-                    continue
-                
-                # Normalize path
-                img_path = os.path.normpath(img_path)
-                
-                # Skip processing if this image was already processed
-                # IMPORTANT: Cache key should be the ORIGINAL path if available, or the primary path used
-                cache_key = img_info.get('original_path', img_path) if isinstance(cell.value, dict) else img_path
-                cache_key = os.path.normpath(cache_key)
-
-                if cache_key in processed_images:
-                    # Use the cached Excel image object
-                    excel_img = processed_images[cache_key]['image']
-
-                    # Recalculate anchor based on current cell
-                    excel_img.anchor = cell.coordinate
-
-                    # Add the cached image object to the worksheet
-                    worksheet.add_image(excel_img)
-                    logger.debug(f"Reused cached image for key: {cache_key} -> {cell.coordinate}")
-                    success_count += 1
-                    continue
-
-                # --- Final Path Existence Check and Fallback --- 
-                primary_path_to_use = None
-                # 1. Check if img_path (potentially _nobg version) exists
-                if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                    primary_path_to_use = img_path
-                    logger.debug(f"Using primary path (might be _nobg): {primary_path_to_use}")
-                # 2. If not, check original_path from dict if available
-                elif isinstance(cell.value, dict) and 'original_path' in cell.value:
-                    original_path = os.path.normpath(cell.value['original_path'])
-                    if os.path.exists(original_path) and os.path.getsize(original_path) > 0:
-                        primary_path_to_use = original_path
-                        logging.warning(f"Primary path '{img_path}' not found, falling back to original_path: {primary_path_to_use}")
-                    else:
-                        logging.warning(f"Neither primary path '{img_path}' nor original_path '{original_path}' exist or are valid.")
+                        img = openpyxl.drawing.image.Image(img_path)
+                        img.width = img_width
+                        img.height = img_height
+                        cell_address = f"{get_column_letter(col_idx)}{row_idx}"
+                        img.anchor = cell_address
+                        worksheet.add_image(img)
+                        logger.debug(f"Added image at {cell_address}: {img_path}")
+                    except Exception as img_err:
+                        logger.error(f"Failed to add image {img_path} to Excel: {img_err}")
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        cell.value = "이미지 처리 오류"
                 else:
-                     logging.warning(f"Primary path '{img_path}' not found and no original_path available.")
-
-                # If no valid path found after checks, handle fallback
-                if not primary_path_to_use:
-                    logger.warning(f"Final image path check failed - no valid file found for data: {original_data}")
-                    # Ensure img_url is set to something valid or None
-                    if img_url is None and isinstance(cell.value, dict) and 'url' in cell.value:
-                        img_url = cell.value['url']
-                        # Fix URL format if needed (moved URL fixing logic here)
-                        if img_url and '\\' in img_url:
-                            img_url = img_url.replace('\\', '/')
-                        if img_url and img_url.startswith('https:') and not img_url.startswith('https://'):
-                            img_url = 'https://' + img_url[6:]
-                        elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https:')):
-                            scheme, path = img_url.split(':', 1)
-                            path = path.replace('\\', '').lstrip('/')
-                            img_url = f"{scheme}://{path}"
-
-                    # If we have a URL, set it as a hyperlink as fallback
-                    if img_url:
-                        cell.value = img_url
-                        cell.hyperlink = img_url
-                        cell.font = LINK_FONT  # Apply hyperlink style
-                    else:
-                        cell.value = ERROR_MESSAGES['file_not_found']
-                    failed_count += 1
-                    continue
-                # --- End Fallback Check ---
-
-                # Use the verified existing path for processing
-                img_path_to_process = primary_path_to_use
-
-                try:
-                    # Log the file type
-                    file_ext = os.path.splitext(img_path_to_process)[1].lower()
-                    logger.debug(f"Processing image: {img_path_to_process} (type: {file_ext}) -> Cell: {cell.coordinate}")
-
-                    # Generate a hash-based filename for the processed image to avoid name conflicts
-                    # Use the path being processed for the hash
-                    img_hash = hashlib.md5(img_path_to_process.encode()).hexdigest()[:10]
-                    temp_path = os.path.join(temp_dir, f"temp_{img_hash}.jpg")
-
-                    # Check if we've already processed this image in a previous run
-                    if os.path.exists(temp_path) and os.path.getmtime(temp_path) > os.path.getmtime(img_path_to_process):
-                        # Use cached processed image if it exists and is newer than source
-                        processed_img_final_path = temp_path
-                        logger.debug(f"Using cached processed image: {processed_img_final_path}")
-                    else:
-                        # Open and validate image using the verified path
-                        with Image.open(img_path_to_process) as img:
-                            # Get dimensions for logging
-                            orig_width, orig_height = img.size
-                            logger.debug(f"Original image dimensions: {orig_width}x{orig_height}")
-                            
-                            # Convert to RGB if needed
-                            if img.mode in ('RGBA', 'LA'):
-                                img = img.convert('RGB')
-                            
-                            # Resize if too large
-                            if img.size[0] > IMAGE_MAX_SIZE[0] or img.size[1] > IMAGE_MAX_SIZE[1]:
-                                img.thumbnail(IMAGE_MAX_SIZE, Image.LANCZOS)
-                                logger.debug(f"Resized image to: {img.size[0]}x{img.size[1]}")
-                                
-                            # Save as optimized JPG 
-                            img.save(temp_path, 'JPEG', quality=IMAGE_QUALITY, optimize=True)
-                            processed_img_final_path = temp_path
-                            logger.debug(f"Saved optimized image: {processed_img_final_path}")
-                    
-                    # Add to worksheet with proper positioning
-                    excel_img = openpyxl.drawing.image.Image(processed_img_final_path)
-
-                    # Adjust size proportionally based on standard size
-                    # Re-open the *processed* image to get its final dimensions
-                    with Image.open(processed_img_final_path) as final_img:
-                        width, height = final_img.size
-                        ratio = min(IMAGE_STANDARD_SIZE[0] / width, IMAGE_STANDARD_SIZE[1] / height)
-                        excel_img.width = int(width * ratio)
-                        excel_img.height = int(height * ratio)
-
-                    # Calculate cell position for proper image placement
-                    excel_img.anchor = cell.coordinate
-
-                    # Store processed image info in cache using the original key
-                    processed_images[cache_key] = {
-                        'image': excel_img, # Store the Excel Image object itself
-                        'temp_path': processed_img_final_path if processed_img_final_path != img_path_to_process else None
-                    }
-
-                    # Add image to worksheet
-                    worksheet.add_image(excel_img)
-                    logger.debug(f"Successfully added image {processed_img_final_path} to cell {cell.coordinate}")
-                    success_count += 1
-                            
-                except Exception as img_e:
-                    logger.error(f"Error processing image {img_path_to_process}: {img_e}", exc_info=True)
-                    # Ensure img_url is set to something valid or None
-                    if img_url is None and isinstance(cell.value, dict) and 'url' in cell.value:
-                        img_url = cell.value['url']
-                        # Fix URL format if needed
-                        if img_url and '\\' in img_url:
-                            img_url = img_url.replace('\\', '/')
-                        if img_url and img_url.startswith('https:') and not img_url.startswith('https://'):
-                            img_url = 'https://' + img_url[6:]
-                        elif img_url and ':' in img_url and not img_url.startswith(('http:', 'https://')):
-                            # Handle case where URL is like 'https:\www...'
-                            scheme, path = img_url.split(':', 1)
-                            path = path.replace('\\', '').lstrip('/')
-                            img_url = f"{scheme}://{path}"
-                    
-                    # Try to save a basic error message and URL as fallback
-                    if img_url:
-                        cell.value = img_url
-                        try:
-                            cell.hyperlink = img_url
-                            cell.font = LINK_FONT
-                        except:
-                            pass
-                    else:
-                        cell.value = ERROR_MESSAGES['processing_error']
-                    failed_count += 1
-                    
+                    logger.warning(f"Image file not found or invalid: {img_path}")
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    cell.value = "이미지 파일 없음"
+            
             except Exception as e:
-                logger.error(f"Error processing image in cell {cell.coordinate}: {e}", exc_info=True)
-                # Initialize img_url before using it
-                img_url = None
-                # Try to save URL as fallback
-                if isinstance(cell.value, dict) and 'url' in cell.value:
-                    img_url = cell.value['url']
-                    if img_url:
-                        # Fix URL format if needed
-                        if '\\' in img_url:
-                            img_url = img_url.replace('\\', '/')
-                        if img_url.startswith('https:') and not img_url.startswith('https://'):
-                            img_url = 'https://' + img_url[6:]
-                        elif ':' in img_url and not img_url.startswith(('http:', 'https://')):
-                            # Handle case where URL is like 'https:\www...'
-                            scheme, path = img_url.split(':', 1)
-                            path = path.replace('\\', '').lstrip('/')
-                            img_url = f"{scheme}://{path}"
-                        
-                        cell.value = img_url
-                        try:
-                            cell.hyperlink = img_url
-                            cell.font = LINK_FONT
-                        except:
-                            pass
-                else:
-                    cell.value = ERROR_MESSAGES['processing_error']
-                failed_count += 1
-    
-    logger.info(f"Finished processing images: {success_count} succeeded, {failed_count} failed, {len(processed_images)} unique images in {len(image_cols)} columns")
+                logger.error(f"Error processing image in row {row_idx}, column {col_name}: {e}")
+                try:
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    cell.value = "이미지 처리 오류"
+                except:
+                    pass  # Last resort if we can't even set the cell value
+
+    logger.debug(f"Finished processing image columns")
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
@@ -1128,6 +635,18 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
              logger.warning("Input DataFrame was empty, saving an Excel file with only headers.")
              df_prepared = pd.DataFrame(columns=FINAL_COLUMN_ORDER)
 
+        # Check if file is already open
+        try:
+            # Try to open the file for writing to check if it's locked
+            if os.path.exists(output_path):
+                with open(output_path, 'a+b'):
+                    pass  # Just checking if we can open it for writing
+        except (IOError, PermissionError):
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            alternative_path = f"{os.path.splitext(output_path)[0]}_{timestamp}{os.path.splitext(output_path)[1]}"
+            logger.warning(f"Output file {output_path} is locked. Using alternative path: {alternative_path}")
+            output_path = alternative_path
+
         # 2. Save prepared data to Excel using openpyxl engine
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             df_prepared.to_excel(writer, index=False, sheet_name='Results', na_rep='-')
@@ -1135,38 +654,71 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
             logger.debug(f"DataFrame written to sheet 'Results'. Max Row: {worksheet.max_row}, Max Col: {worksheet.max_column}")
 
             # --- Apply Formatting AFTER data is written ---
-            # 3. Apply Column Widths and Cell Styles
-            _apply_column_widths(worksheet, df_prepared)
-            _apply_cell_styles_and_alignment(worksheet, df_prepared)
+            try:
+                # 3. Apply Column Widths and Cell Styles
+                _apply_column_widths(worksheet, df_prepared)
+                _apply_cell_styles_and_alignment(worksheet, df_prepared)
+            except Exception as e:
+                logger.error(f"Error during formatting: {e}")
 
-            # 4. Apply Conditional Formatting
-            _apply_conditional_formatting(worksheet, df_prepared)
+            try:
+                # 4. Apply Conditional Formatting
+                _apply_conditional_formatting(worksheet, df_prepared)
+            except Exception as e:
+                logger.error(f"Error during conditional formatting: {e}")
 
-            # 5. Handle Images (Embedding)
-            _process_image_columns(worksheet, df_prepared)
+            try:
+                # 5. Handle Images (Embedding)
+                _process_image_columns(worksheet, df_prepared)
+            except Exception as e:
+                logger.error(f"Error during image processing: {e}")
             
-            # 6. Adjust dimensions for image cells
-            _adjust_image_cell_dimensions(worksheet, df_prepared)
+            try:
+                # 6. Adjust dimensions for image cells
+                _adjust_image_cell_dimensions(worksheet, df_prepared)
+            except Exception as e:
+                logger.error(f"Error adjusting image cell dimensions: {e}")
 
-            # 7. Add Hyperlinks
-            _add_hyperlinks_to_worksheet(worksheet, df_prepared)
+            try:
+                # 7. Add Hyperlinks
+                _add_hyperlinks_to_worksheet(worksheet, df_prepared)
+            except Exception as e:
+                logger.error(f"Error adding hyperlinks: {e}")
 
-            # 8. Page Setup and Header/Footer
-            _setup_page_layout(worksheet)
-            _add_header_footer(worksheet)
+            try:
+                # 8. Page Setup and Header/Footer
+                _setup_page_layout(worksheet)
+                _add_header_footer(worksheet)
+            except Exception as e:
+                logger.error(f"Error setting up page layout: {e}")
 
-            # 9. Apply Table Format (Apply last after other formatting)
-            _apply_table_format(worksheet)
+            try:
+                # 9. Apply Table Format (Apply last after other formatting)
+                _apply_table_format(worksheet)
+            except Exception as e:
+                logger.error(f"Error applying table format: {e}")
 
         logger.info(f"Successfully created and formatted Excel file: {output_path}")
         return True
 
     except PermissionError as pe:
-         logger.error(f"Permission denied when trying to save Excel file: {output_path}. Check if the file is open. Error: {pe}")
-         return False
+        logger.error(f"Permission denied when trying to save Excel file: {output_path}. Check if the file is open. Error: {pe}")
+        try:
+            # Try with a different filename
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            alternative_path = f"{os.path.splitext(output_path)[0]}_{timestamp}{os.path.splitext(output_path)[1]}"
+            logger.info(f"Attempting to save with alternative filename: {alternative_path}")
+            
+            df_prepared = _prepare_data_for_excel(df.copy())
+            df_prepared.to_excel(alternative_path, index=False, engine='openpyxl', sheet_name='Results', na_rep='-')
+            logger.info(f"Successfully saved data to alternative path (without formatting): {alternative_path}")
+            return True
+        except Exception as alt_err:
+            logger.error(f"Also failed to save to alternative path: {alt_err}")
+            return False
     except Exception as e:
-         logger.error(f"Error creating Excel file: {e}", exc_info=True)
-         return False
+        logger.error(f"Error creating Excel file: {e}", exc_info=True)
+        return False
 
 def apply_excel_styles(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """
@@ -1187,40 +739,55 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
         
     # Adjust column widths for image columns consistently
     for col_name, col_idx in image_cols.items():
-        col_letter = get_column_letter(col_idx)
-        worksheet.column_dimensions[col_letter].width = IMAGE_CELL_WIDTH
+        try:
+            col_letter = get_column_letter(col_idx)
+            worksheet.column_dimensions[col_letter].width = IMAGE_CELL_WIDTH
+        except Exception as e:
+            logger.error(f"Error adjusting column width for {col_name}: {e}")
     
     # Create a set of rows that need height adjustment
     rows_with_images = set()
     
-    # Find rows that have actual images (not error messages or empty cells)
-    for row_idx in range(2, worksheet.max_row + 1):
-        for col_name, col_idx in image_cols.items():
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            cell_value = str(cell.value) if cell.value else ""
-            
-            # If the cell has content that looks like a path and not an error message
-            if (cell_value and cell_value != '-' and 
-                not any(err_msg in cell_value for err_msg in ERROR_MESSAGE_VALUES) and
-                ('\\' in cell_value or '/' in cell_value or '.jpg' in cell_value.lower() or 
-                 '.png' in cell_value.lower() or '.jpeg' in cell_value.lower())):
-                rows_with_images.add(row_idx)
-                break
+    try:
+        # Find rows that have actual images (not error messages or empty cells)
+        for row_idx in range(2, worksheet.max_row + 1):
+            for col_name, col_idx in image_cols.items():
+                try:
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    cell_value = str(cell.value) if cell.value else ""
+                    
+                    # If the cell has content that looks like a path and not an error message
+                    if (cell_value and cell_value != '-' and 
+                        not any(err_msg in cell_value for err_msg in ERROR_MESSAGE_VALUES) and
+                        ('\\' in cell_value or '/' in cell_value or '.jpg' in cell_value.lower() or 
+                        '.png' in cell_value.lower() or '.jpeg' in cell_value.lower())):
+                        rows_with_images.add(row_idx)
+                        break
+                except Exception as e:
+                    logger.error(f"Error checking cell at row {row_idx}, column {col_idx}: {e}")
+    except Exception as e:
+        logger.error(f"Error finding rows with images: {e}")
     
     # Apply height to rows with images
     for row_idx in rows_with_images:
-        worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
-        
-        # Also center-align all cells in this row to ensure uniform appearance
-        for col_idx in range(1, worksheet.max_column + 1):
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            # Only adjust vertical alignment to ensure content displays correctly with images
-            current_alignment = cell.alignment
-            cell.alignment = Alignment(
-                horizontal=current_alignment.horizontal,
-                vertical="center",
-                wrap_text=current_alignment.wrap_text
-            )
+        try:
+            worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
+            
+            # Also center-align all cells in this row to ensure uniform appearance
+            for col_idx in range(1, worksheet.max_column + 1):
+                try:
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    # Only adjust vertical alignment to ensure content displays correctly with images
+                    current_alignment = cell.alignment
+                    cell.alignment = Alignment(
+                        horizontal=current_alignment.horizontal,
+                        vertical="center",
+                        wrap_text=current_alignment.wrap_text
+                    )
+                except Exception as e:
+                    logger.error(f"Error adjusting cell alignment at row {row_idx}, column {col_idx}: {e}")
+        except Exception as e:
+            logger.error(f"Error adjusting row height for row {row_idx}: {e}")
     
     logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images")
 
