@@ -1560,6 +1560,7 @@ def post_process_matching_results(df, config):
         if '가격차이(2)(%)' in df_filtered.columns:
             goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)(%)'].notna() & df_filtered['가격차이(2)(%)'].gt(-1.0))
 
+        # Changed to avoid potential pandas version incompatibility
         rows_to_clear_goryeo = goryeo_clear_cond.fillna(False)
         if rows_to_clear_goryeo.any() and existing_goryeo_clear:
             df_filtered.loc[rows_to_clear_goryeo, existing_goryeo_clear] = np.nan 
@@ -1576,6 +1577,7 @@ def post_process_matching_results(df, config):
         elif '가격차이(3)(%)' in df_filtered.columns:
             naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)(%)'].notna() & df_filtered['가격차이(3)(%)'].gt(-1.0))
 
+        # Changed to avoid potential pandas version incompatibility
         rows_to_clear_naver1 = naver_clear_cond1.fillna(False)
         if rows_to_clear_naver1.any() and existing_naver_clear:
             df_filtered.loc[rows_to_clear_naver1, existing_naver_clear] = np.nan

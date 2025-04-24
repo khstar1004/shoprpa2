@@ -708,8 +708,13 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             )
     
     # 4. Fill NaN values with '-' for clarity and consistency
-    # Using copy=False to modify in-place and avoid the downcasting warning
-    df_prepared = df_prepared.fillna('-', copy=False)
+    try:
+        # Try newer pandas syntax with copy parameter
+        df_prepared = df_prepared.fillna('-', copy=False)
+    except TypeError:
+        # Fall back to older pandas syntax without copy parameter
+        df_prepared = df_prepared.fillna('-')
+        logger.debug("Using older pandas fillna() syntax without copy parameter")
     
     # 5. Convert all columns to string type to avoid dtype issues
     # This ensures all values are treated as strings for formatting
@@ -804,7 +809,21 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
              os.makedirs(output_dir, exist_ok=True)
 
         # 1. Prepare the data (column order, formatting)
-        df_prepared = _prepare_data_for_excel(df.copy())
+        try:
+            df_prepared = _prepare_data_for_excel(df.copy())
+        except TypeError as te:
+            if "copy" in str(te):
+                logger.warning("Pandas version compatibility issue detected. Trying with basic fillna.")
+                # Fall back to a simpler approach without using copy=False
+                df_temp = df.copy()
+                # Ensure all required columns exist
+                for col in FINAL_COLUMN_ORDER:
+                    if col not in df_temp.columns:
+                        df_temp[col] = '-'
+                # Basic formatting only - just fill NaN and convert to string
+                df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('-').astype(str)
+            else:
+                raise
 
         if df_prepared.empty and not df.empty:
              logger.error("Data preparation resulted in an empty DataFrame. Cannot save Excel.")
@@ -887,7 +906,22 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
             alternative_path = f"{os.path.splitext(output_path)[0]}_{timestamp}{os.path.splitext(output_path)[1]}"
             logger.info(f"Attempting to save with alternative filename: {alternative_path}")
             
-            df_prepared = _prepare_data_for_excel(df.copy())
+            try:
+                df_prepared = _prepare_data_for_excel(df.copy())
+            except TypeError as te:
+                if "copy" in str(te):
+                    logger.warning("Pandas version compatibility issue in alternative save. Using basic formatting.")
+                    # Fall back to a simpler approach
+                    df_temp = df.copy()
+                    # Ensure all required columns exist
+                    for col in FINAL_COLUMN_ORDER:
+                        if col not in df_temp.columns:
+                            df_temp[col] = '-'
+                    # Basic formatting only
+                    df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('-').astype(str)
+                else:
+                    raise
+
             df_prepared.to_excel(alternative_path, index=False, engine='openpyxl', sheet_name='Results', na_rep='-')
             logger.info(f"Successfully saved data to alternative path (without formatting): {alternative_path}")
             return True
