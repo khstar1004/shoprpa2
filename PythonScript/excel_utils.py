@@ -54,7 +54,6 @@ COLUMN_RENAME_MAP = {
     '판매단가(V포함)(2)': '판매단가(V포함)(2)',
     '판매단가2(VAT포함)': '판매단가(V포함)(2)',
     '가격차이(2)': '가격차이(2)',
-    '가격차이(2)(%)': '가격차이(2)(%)',
     '고려기프트 상품링크': '고려기프트 상품링크',
     '고 려기프트 상품링크': '고려기프트 상품링크',  # Add variant with space
     '고려 링크': '고려기프트 상품링크',
@@ -64,8 +63,6 @@ COLUMN_RENAME_MAP = {
     '판매단가(V포함)(3)': '판매단가(V포함)(3)',
     '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
     '가격차이(3)': '가격차이(3)',
-    '가격차이(3)(%)': '가격차이(3)(%)',
-    '가격차이 비율(3)': '가격차이(3)(%)', # Map both to the same output column
     '공급사명': '공급사명',
     '네이버 공급사명': '공급사명',
     '공급사 상품링크': '공급사 상품링크',
@@ -83,8 +80,8 @@ COLUMN_RENAME_MAP = {
 FINAL_COLUMN_ORDER = [
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
     '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
     '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
 
@@ -102,7 +99,7 @@ PRICE_COLUMNS = [
     '가격차이(2)', '가격차이(3)'
 ]
 QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
-PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
+PERCENTAGE_COLUMNS = [] # 퍼센트 컬럼 목록 비우기
 TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
 LINK_COLUMNS_FOR_HYPERLINK = {
     '본사상품링크': '본사상품링크',
@@ -542,33 +539,9 @@ def _add_header_footer(worksheet: openpyxl.worksheet.worksheet.Worksheet):
 
 def _apply_table_format(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Applies Excel table formatting to the data range."""
-    if worksheet.max_row <= 1:
-        logger.debug("Skipping table format: No data rows.")
-        return
-
-    table_range = f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
-    table_name = "PriceComparisonData"
-    # Check if table already exists
-    if table_name in worksheet.tables:
-         logger.warning(f"Table '{table_name}' already exists. Skipping table creation.")
-         # Optionally update table range if needed
-         # worksheet.tables[table_name].ref = table_range
-         return
-    try:
-        table = Table(displayName=table_name, ref=table_range)
-        # Choose a professional looking style
-        style = TableStyleInfo(
-            name="TableStyleMedium2", # A common, clean style
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False
-        )
-        table.tableStyleInfo = style
-        worksheet.add_table(table)
-        logger.debug(f"Applied Excel table format 'TableStyleMedium2' to range {table_range}")
-    except Exception as e:
-        logger.error(f"Failed to apply table formatting to range {table_range}: {e}")
+    # 테이블 서식 적용 함수 비우기 - 필터 적용 방지
+    logger.debug("Table formatting skipped as requested.")
+    return
 
 def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Prepares the DataFrame for Excel export: ensures columns, formats data.

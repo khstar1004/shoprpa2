@@ -177,10 +177,13 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         adodb_error_msg = "ADODB.Command 오류 '800a0d5d'"
                         invalid_format_msg = "응용 프로그램이 현재 작업에 대해 잘못된 형식을 가진 값을 사용하고 있습니다."
                         no_results_msg = ["0개의 상품이 검색되었습니다", "검색된 상품이 없습니다", "검색결과가 없습니다"]
+                        line_294_error = "/product_w/search_keyword.asp, 줄 294"
 
                         # Check for server-side errors
-                        if adodb_error_msg in page_content or invalid_format_msg in page_content:
-                            logger.warning(f"⚠️ Detected server-side ADODB error ('800a0d5d') for keyword: {keyword}. Skipping.")
+                        if (adodb_error_msg in page_content or 
+                            invalid_format_msg in page_content or 
+                            line_294_error in page_content):
+                            logger.warning(f"⚠️ Detected server-side ADODB error ('800a0d5d') or line 294 error for keyword: {keyword}. Skipping.")
                             await context.close()
                             
                             # If server error but we should still return an image
@@ -203,7 +206,6 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             if use_default_image and default_image_path and os.path.exists(default_image_path):
                                 logger.info(f"Using default image for non-existent product: {default_image_path}")
                                 return {"url": "default", "local_path": default_image_path, "source": "haereum_default"}
-                            return None
                     except PlaywrightError as pe:
                         # Handle potential timeout error when getting content if page is stuck
                         logger.warning(f"⚠️ Timed out or error checking for ADODB error message: {pe}")
