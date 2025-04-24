@@ -498,7 +498,8 @@ def verify_image_data(img_value, img_col_name):
                  # Convert file path to dictionary format for consistency
                  source = img_col_name.split()[0].lower()
                  # Try to construct a placeholder URL if none provided (might be inaccurate)
-                 placeholder_url = f"file:///{img_value.replace(os.sep, '/')}"
+                 img_value_str = img_value.replace(os.sep, '/')
+                 placeholder_url = f"file:///{img_value_str}"
                  return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
             # Handle relative paths (less ideal, try to resolve)
             elif not os.path.isabs(img_value):
@@ -509,7 +510,8 @@ def verify_image_data(img_value, img_col_name):
                      abs_path = (base_path / img_value).resolve()
                      if abs_path.exists() and abs_path.stat().st_size > 0:
                          source = img_col_name.split()[0].lower()
-                         placeholder_url = f"file:///{str(abs_path).replace('\\', '/')}"
+                         abs_path_str = str(abs_path).replace('\\', '/')
+                         placeholder_url = f"file:///{abs_path_str}"
                          return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
                  except Exception:
                      pass # Path resolution failed
