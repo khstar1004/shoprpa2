@@ -1407,7 +1407,9 @@ def test_kogift_scraper():
     # dispatch
     print(f"Test mode: {args.test_type}")
     if args.test_type == 'test2':
-        import asyncio; asyncio.run(run_test2())
+        # TODO: Implement run_test2 or remove this branch if not needed
+        # import asyncio; asyncio.run(run_test2())
+        logger.warning("Test type 'test2' selected but run_test2 is not implemented.")
     else:
         import asyncio; asyncio.run(run_standard_tests())
 

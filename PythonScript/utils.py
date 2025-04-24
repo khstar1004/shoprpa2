@@ -19,6 +19,7 @@ from datetime import datetime
 from image_downloader import download_images, predownload_kogift_images
 import aiofiles
 import inspect
+from io import BytesIO
 
 # --- Configuration Loading ---
 
@@ -377,78 +378,131 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
     return False
 
 async def download_image_async(url: str, save_path: Union[str, Path], client: httpx.AsyncClient, config: configparser.ConfigParser) -> bool:
-    """Asynchronously download an image from a URL to a local file path using httpx."""
+    """Asynchronously downloads an image from a URL and saves it to the specified path.
     
-    # Normalize the save path
-    save_path = Path(save_path)
-    save_path = Path(os.path.normpath(str(save_path)))
-    
-    # Ensure directory exists
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+    Args:
+        url: URL of the image to download.
+        save_path: Path where to save the downloaded image.
+        client: Async HTTPX client to use for the request.
+        config: Configuration object.
+        
+    Returns:
+        True if the download was successful, False otherwise.
+    """
+    if not url:
+        logging.error(f"Empty URL provided for download")
+        return False
+        
+    # Normalize the URL 
+    if not url.startswith(('http://', 'https://')):
+        if any(domain in url.lower() for domain in ['kogift', 'koreagift', 'naver', 'pstatic', 'jclgift']):
+            url = f"https:{url}" if url.startswith('//') else f"https://{url}"
+            logging.debug(f"Normalized URL for download: {url}")
+        else:
+            logging.error(f"Invalid URL scheme: {url}")
+            return False
     
     logging.debug(f"Downloading image from {url} to {save_path}")
     
-    # Get timeout settings from config
+    # Create directory if it doesn't exist
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Convert .asp extension to .jpg for better compatibility
+    if save_path.suffix.lower() == '.asp':
+        save_path = save_path.with_suffix('.jpg')
+        logging.debug(f"Changed file extension from .asp to .jpg: {save_path}")
+    
+    # Get retry settings from config
     try:
-        timeout = config.getfloat('Network', 'request_timeout', fallback=30.0)
+        max_retries = config.getint('Network', 'max_retries', fallback=2)
+        retry_delay = config.getfloat('Network', 'retry_delay', fallback=1.0)
     except (configparser.Error, ValueError):
-        timeout = 30.0  # Default timeout if not in config
-
-    max_retries = 3
-    retry_delay = 1.0
-    
-    # 파일 확장자 추정
-    file_ext = save_path.suffix.lower()
-    valid_image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
-    
-    for attempt in range(max_retries):
-        try:
-            # Set timeout and follow redirects
-            response = await client.get(url, follow_redirects=True, timeout=timeout)
-            response.raise_for_status()  # Raise an error for bad responses
-            
-            # Content-Type check removed to handle cases where servers incorrectly return 'text/plain'
-            # for image content (specifically for koreagift.com)
-            
-            # Read the image data - fixed to handle response.read() correctly
-            image_data = response.read()
-            if inspect.isawaitable(image_data):
-                image_data = await image_data
-            
-            # Check image data size
-            if len(image_data) < 100:  # Extremely small file, probably not a valid image
-                logging.warning(f"Image data too small ({len(image_data)} bytes), probably not a valid image")
-                return False
-                
-            # Save the image
-            async with aiofiles.open(save_path, 'wb') as f:
-                await f.write(image_data)
-                
-            logging.info(f"Successfully downloaded image to {save_path}")
-            return True
-
-        except httpx.TimeoutException:
-            logging.warning(f"Timeout downloading image (attempt {attempt+1}/{max_retries}): {url}")
-        except httpx.HTTPStatusError as http_err:
-            status_code = http_err.response.status_code
-            logging.warning(f"HTTP error {status_code} downloading image (attempt {attempt+1}/{max_retries}): {url}")
-            
-            # 404 오류면 더 시도하지 않음
-            if status_code == 404:
-                logging.error(f"Image not found (404): {url}")
-                break
-                
-        except httpx.RequestError as req_err:
-            logging.warning(f"Request error downloading image (attempt {attempt+1}/{max_retries}): {url}, Error: {req_err}")
-        except Exception as e:
-            logging.error(f"Error downloading image (attempt {attempt+1}/{max_retries}): {url}, Error: {e}", exc_info=True)
+        max_retries = 2
+        retry_delay = 1.0
         
-        # Exponential backoff
-        if attempt < max_retries - 1:
-            # 재시도 전 지연 시간 증가
-            retry_delay *= 2
-            await asyncio.sleep(retry_delay)
+    # Set custom headers for image download
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
+    
+    # Try to download with retries
+    for attempt in range(max_retries + 1):
+        try:
+            response = await client.get(url, headers=headers, follow_redirects=True, timeout=20.0)
             
+            if response.status_code == 200:
+                # Check content type to ensure it's an image
+                content_type = response.headers.get('Content-Type', '')
+                if not content_type.startswith(('image/', 'application/octet-stream')):
+                    logging.warning(f"Downloaded content is not an image: {url}, Content-Type: {content_type}")
+                    # If it's not an image but we got a 200 response, try to save it anyway
+                    # but only if content was received
+                    if not response.content:
+                        return False
+                
+                # Verify we can open it as an image before saving to disk
+                try:
+                    img = Image.open(BytesIO(response.content))
+                    # Save in original format, but ensure we use a proper image extension
+                    actual_format = img.format.lower() if img.format else 'jpeg'
+                    proper_extension = f".{actual_format}" if actual_format != 'jpeg' else '.jpg'
+                    
+                    # Update the save path with the proper extension
+                    if save_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                        save_path = save_path.with_suffix(proper_extension)
+                        logging.debug(f"Updated file extension to match actual image format: {save_path}")
+                    
+                    # Save the image in its detected format
+                    img.save(save_path)
+                    logging.info(f"Successfully downloaded image to {save_path}")
+                    return True
+                except Exception as img_err:
+                    logging.error(f"Error processing downloaded image from {url}: {img_err}")
+                    # Try to save the raw bytes as a fallback
+                    try:
+                        with open(save_path, 'wb') as f:
+                            f.write(response.content)
+                        logging.warning(f"Saved raw download content to {save_path} (not verified as valid image)")
+                        return True
+                    except Exception as write_err:
+                        logging.error(f"Error saving raw download content: {write_err}")
+                        return False
+            
+            # Handle error status codes
+            elif response.status_code == 404:
+                logging.error(f"Image not found (404): {url}")
+                return False
+            else:
+                logging.warning(f"Failed to download image from {url}. Status: {response.status_code}. Attempt {attempt+1}/{max_retries+1}")
+                
+                # Only retry on server errors (5xx) or certain client errors
+                if not (response.status_code >= 500 or response.status_code in [429, 408, 425]):
+                    logging.error(f"Not retrying due to status code {response.status_code}")
+                    return False
+                    
+                if attempt < max_retries:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                else:
+                    logging.error(f"Max retries ({max_retries}) reached for {url}")
+                    return False
+                    
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            logging.warning(f"Network error downloading {url}: {e}. Attempt {attempt+1}/{max_retries+1}")
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay * (attempt + 1))
+                continue
+            else:
+                logging.error(f"Max retries ({max_retries}) reached for {url} due to network errors")
+                return False
+        except Exception as e:
+            logging.error(f"Unexpected error downloading {url}: {e}")
+            return False
+    
+    # Should not reach here, but just in case
     return False
 
 # --- Text Processing Utilities ---

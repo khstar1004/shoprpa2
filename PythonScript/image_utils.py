@@ -145,6 +145,22 @@ def remove_background(input_path: Union[str, Path, Image.Image, bytes], output_p
         if not input_path.exists():
             logging.error(f"Input file not found: {input_path}")
             return False
+        
+        # Handle .asp file extension (fix for current issue)
+        if input_path.suffix.lower() == '.asp':
+            try:
+                # Try to open the file with PIL and convert to a standard image format
+                temp_img = Image.open(input_path)
+                # Save to a temporary file with a valid image extension
+                temp_path = input_path.with_suffix('.png')
+                temp_img.save(temp_path)
+                # Update input_path to use the converted image
+                input_path = temp_path
+                logging.info(f"Converted .asp file to PNG format: {temp_path}")
+            except Exception as e:
+                logging.error(f"Error converting .asp file to valid image format: {e}")
+                return False
+        
         try:
             with open(input_path, 'rb') as i:
                 input_data = i.read()
@@ -161,7 +177,17 @@ def remove_background(input_path: Union[str, Path, Image.Image, bytes], output_p
             logging.error(f"Error processing PIL Image object: {e}")
             return False
     elif isinstance(input_path, bytes):
-        input_data = input_path
+        # When dealing with raw bytes, try to open as an image first to validate
+        try:
+            img = Image.open(BytesIO(input_path))
+            # If successful, convert to PNG format for better compatibility
+            buffer = BytesIO()
+            img.save(buffer, format="PNG")
+            buffer.seek(0)
+            input_data = buffer.read()
+        except Exception as e:
+            logging.error(f"Error processing image bytes: {e}")
+            return False
     else:
         logging.error(f"Unsupported input type: {type(input_path)}")
         return False

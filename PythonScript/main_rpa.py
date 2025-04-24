@@ -115,6 +115,19 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.warning("Neither '본사 이미지' nor '본사상품링크' found for input image preprocessing.")
 
             if input_url_col: # Proceed only if a URL column was found
+                # Ensure background removal is properly configured
+                try:
+                    use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                    if not use_bg_removal:
+                        logging.info("Background removal is disabled in config. Images will be downloaded without background removal.")
+                    else:
+                        # Initialize background removal early to avoid concurrent initialization issues
+                        from image_utils import initialize_rembg_session
+                        initialize_rembg_session()
+                        logging.info("Background removal is enabled. Images will be processed with background removal.")
+                except (configparser.Error, ValueError, ImportError) as e:
+                    logging.warning(f"Error configuring background removal: {e}. Proceeding with default settings.")
+                
                 input_file_image_map = await preprocess_and_download_images(
                     df=haoreum_df,
                     url_column_name=input_url_col, # Use the determined column name
