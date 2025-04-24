@@ -1142,6 +1142,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                     item_data['link'] = final_href_url  # 매칭 로직 호환성
                                     item_data['name'] = name.strip() if name else ""
                                     item_data['price'] = price_value
+                                    # Calculate price with VAT (부가세포함 가격)
+                                    item_data['price_with_vat'] = round(price_value * 1.1)  # 부가세 10% 추가
                                     item_data['supplier'] = supplier  # 공급사 정보 추가
                                     # Add which keyword found this item
                                     item_data['search_keyword'] = keyword

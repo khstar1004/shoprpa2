@@ -80,7 +80,7 @@ COLUMN_RENAME_MAP = {
 FINAL_COLUMN_ORDER = [
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
     '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '고려기프트 상품링크',
+    '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '고려기프트 상품링크',
     '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
     '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
@@ -309,6 +309,10 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     
     # Track processed images to avoid duplicate processing
     processed_images = {}
+    
+    # Count successful/failed images for reporting
+    success_count = 0
+    failed_count = 0
         
     for row_idx in range(2, worksheet.max_row + 1):
         for col_name, col_idx in image_cols.items():
@@ -320,77 +324,161 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 # Handle both string paths and dictionary image info
                 if isinstance(cell.value, dict):
                     img_info = cell.value
-                    # Use original image instead of background-removed
                     img_path = None
+                    img_url = None
                     
-                    # First check for local_path (as specified in the dictionary)
-                    if 'local_path' in img_info:
-                        # Convert background-removed path (_nobg.png) to original image path
-                        orig_path = img_info['local_path']
-                        if '_nobg.png' in orig_path:
-                            orig_path = orig_path.replace('_nobg.png', '.jpg')
-                        
-                        # Check if original path exists
+                    # Keep track of original data for logging
+                    original_data = str(img_info)
+                    
+                    # Try to get URL from the dictionary
+                    if 'url' in img_info:
+                        img_url = img_info['url']
+                        if img_url and '\\' in img_url:
+                            # Fix backslashes in URLs
+                            img_url = img_url.replace('\\', '/')
+                            if img_url.startswith('https:') and not img_url.startswith('https://'):
+                                img_url = 'https://' + img_url[6:]
+                    
+                    # First try the 'original_path' key if it exists (new field we added)
+                    if 'original_path' in img_info and img_info['original_path']:
+                        orig_path = img_info['original_path']
+                        # Normalize path - replace double backslashes and ensure proper format
+                        if '\\\\' in orig_path:
+                            orig_path = orig_path.replace('\\\\', '\\')
+                        # Check if the path exists
                         if os.path.exists(orig_path):
                             img_path = orig_path
-                        else:
-                            # Try different extensions if original not found
-                            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                test_path = orig_path.replace(os.path.splitext(orig_path)[1], ext)
-                                if os.path.exists(test_path):
-                                    img_path = test_path
-                                    break
+                            logger.debug(f"Using original_path: {img_path}")
                     
-                    # If local path not found, try using URL directly
-                    if not img_path and 'url' in img_info:
-                        url = img_info['url']
-                        # Properly format URL (fixing the backslash issue)
-                        if '\\' in url:
-                            url = url.replace('\\', '/')
-                        if url.startswith('https:') and not url.startswith('https://'):
-                            url = 'https://' + url[6:]
-                        
-                        # Check if there's a pre-downloaded version in the correct directory
-                        source = img_info.get('source', '')
-                        if source == 'haereum':
-                            prefixed_dir = 'Haereum'
-                        elif source == 'kogift' or source == 'kogift_pre':
-                            prefixed_dir = 'kogift_pre'
-                        elif source == 'naver':
-                            prefixed_dir = 'Naver'
-                        else:
-                            prefixed_dir = ''
-                        
-                        # Try to find a downloaded version based on URL hash
-                        if prefixed_dir:
-                            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-                            base_img_dir = os.path.join('C:\\RPA\\Image\\Main', prefixed_dir)
+                    # If original_path doesn't exist, try local_path
+                    if not img_path and 'local_path' in img_info and img_info['local_path']:
+                        local_path = img_info['local_path']
+                        # Normalize path
+                        if '\\\\' in local_path:
+                            local_path = local_path.replace('\\\\', '\\')
                             
-                            # Search for files with matching hash pattern
-                            if os.path.exists(base_img_dir):
-                                for filename in os.listdir(base_img_dir):
-                                    if url_hash in filename and os.path.isfile(os.path.join(base_img_dir, filename)):
-                                        img_path = os.path.join(base_img_dir, filename)
-                                        # Prefer non-background-removed version
-                                        if not '_nobg' in filename:
+                        # First check if the exact path exists
+                        if os.path.exists(local_path):
+                            img_path = local_path
+                            logger.debug(f"Using exact local_path: {img_path}")
+                        else:
+                            # Try without _nobg suffix if it's there
+                            if '_nobg.png' in local_path:
+                                orig_path = local_path.replace('_nobg.png', '.jpg')
+                                if os.path.exists(orig_path):
+                                    img_path = orig_path
+                                    logger.debug(f"Found non-background removed version: {img_path}")
+                                else:
+                                    # Try other extensions
+                                    for ext in ['.png', '.jpeg', '.gif']:
+                                        test_path = local_path.replace('_nobg.png', ext)
+                                        if os.path.exists(test_path):
+                                            img_path = test_path
+                                            logger.debug(f"Found alternate extension: {img_path}")
                                             break
+                    
+                    # If still no image found, try to find any file with the hash in the appropriate directory
+                    if not img_path and img_url:
+                        # Extract hash and try to find matching files
+                        source = img_info.get('source', '')
+                        url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
                         
-                        # If still no image found, use the URL value for display
-                        if not img_path:
-                            cell.value = url
-                            continue
+                        # Determine the appropriate directory
+                        if source == 'haereum':
+                            target_dir = 'C:\\RPA\\Image\\Main\\Haereum'
+                        elif source in ['kogift', 'kogift_pre']:
+                            target_dir = 'C:\\RPA\\Image\\Main\\kogift_pre'
+                        elif source == 'naver':
+                            target_dir = 'C:\\RPA\\Image\\Main\\Naver'
+                        else:
+                            # Try all directories in case source is not specified
+                            possible_dirs = [
+                                'C:\\RPA\\Image\\Main\\Haereum',
+                                'C:\\RPA\\Image\\Main\\kogift_pre',
+                                'C:\\RPA\\Image\\Main\\Naver'
+                            ]
+                            
+                            # Search all directories for files containing the hash
+                            for dir_path in possible_dirs:
+                                if os.path.exists(dir_path):
+                                    for filename in os.listdir(dir_path):
+                                        # Look for hash in filename and prefer non-background removed images
+                                        if url_hash in filename and os.path.isfile(os.path.join(dir_path, filename)):
+                                            candidate_path = os.path.join(dir_path, filename)
+                                            if not '_nobg' in filename:
+                                                img_path = candidate_path
+                                                logger.debug(f"Found by hash in {dir_path}: {img_path}")
+                                                break
+                                            elif not img_path:  # Use nobg version if that's all we have
+                                                img_path = candidate_path
+                                    
+                                    if img_path:
+                                        break
+                            
+                            # Skip to next iteration if no image path is found
+                            if not img_path:
+                                continue
+                        
+                        # If we have a specific target directory, look there for matching files
+                        if not img_path and os.path.exists(target_dir):
+                            for filename in os.listdir(target_dir):
+                                if url_hash in filename and os.path.isfile(os.path.join(target_dir, filename)):
+                                    candidate_path = os.path.join(target_dir, filename)
+                                    if not '_nobg' in filename:
+                                        img_path = candidate_path
+                                        logger.debug(f"Found by hash in {target_dir}: {img_path}")
+                                        break
+                                    elif not img_path:  # Use nobg version if that's all we have
+                                        img_path = candidate_path
+                    
+                    # If we still don't have an image path, try parsing from local_path
+                    if not img_path and 'local_path' in img_info:
+                        try:
+                            # Extract file name components
+                            file_dir = os.path.dirname(img_info['local_path'])
+                            file_name = os.path.basename(img_info['local_path'])
+                            
+                            # If directory exists, try to find files with similar names
+                            if os.path.exists(file_dir):
+                                for f in os.listdir(file_dir):
+                                    # Look for files that share significant parts of the name
+                                    name_parts = file_name.split('_')
+                                    if len(name_parts) > 2:
+                                        # Look for files with the same prefix and same product name part
+                                        if f.startswith(name_parts[0]) and name_parts[1] in f:
+                                            img_path = os.path.join(file_dir, f)
+                                            # Prefer non-background removed images
+                                            if not '_nobg' in f:
+                                                logger.debug(f"Found by name matching: {img_path}")
+                                                break
+                        except Exception as path_err:
+                            logger.warning(f"Error trying to find similar file: {path_err}")
+                    
+                    # If still no image found but we have a URL, save it for display
+                    if not img_path:
+                        logger.warning(f"Image file not found for dictionary input: {original_data}")
+                        if img_url:
+                            cell.value = img_url
+                        else:
+                            cell.value = ERROR_MESSAGES['file_not_found']
+                        failed_count += 1
+                        continue
                 else:
+                    # Handle plain string path
                     img_path = str(cell.value)
-
-                # Check for common path issues and fix them
+                
+                # Final check for common path issues
                 if img_path and '\\' in img_path:
-                    img_path = img_path.replace('\\', '/')
+                    # Ensure backslashes are consistent (no double backslashes)
+                    if '\\\\' in img_path:
+                        img_path = img_path.replace('\\\\', '\\')
                 
                 # Handle _nobg suffix in paths - prefer original images
                 if img_path and '_nobg.png' in img_path:
                     orig_path = img_path.replace('_nobg.png', '.jpg')
                     if os.path.exists(orig_path):
                         img_path = orig_path
+                        logger.debug(f"Using non-background removed version: {img_path}")
                 
                 # Normalize path
                 img_path = os.path.normpath(img_path) if img_path else None
@@ -403,19 +491,26 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     excel_img.anchor = cell_anchor
                     # Add image to worksheet
                     worksheet.add_image(excel_img)
+                    logger.debug(f"Reused cached image: {img_path}")
+                    success_count += 1
                     continue
                 
                 # Verify image file exists and is valid
                 if not img_path or not os.path.exists(img_path):
                     # Log the issue
-                    logger.warning(f"Image file not found: {cell.value}")
-                    if isinstance(cell.value, dict) and cell.value.get('url'):
+                    logger.warning(f"Image file not found: {img_path or cell.value}")
+                    if isinstance(cell.value, dict) and 'url' in cell.value:
                         cell.value = cell.value.get('url')
                     else:
                         cell.value = ERROR_MESSAGES['file_not_found']
+                    failed_count += 1
                     continue
                     
                 try:
+                    # Log the file type
+                    file_ext = os.path.splitext(img_path)[1].lower()
+                    logger.debug(f"Processing image: {img_path} (type: {file_ext})")
+                    
                     # Generate a hash-based filename for the processed image to avoid name conflicts
                     img_hash = hashlib.md5(img_path.encode()).hexdigest()[:10]
                     temp_path = os.path.join(temp_dir, f"temp_{img_hash}.jpg")
@@ -424,9 +519,14 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     if os.path.exists(temp_path) and os.path.getmtime(temp_path) > os.path.getmtime(img_path):
                         # Use cached processed image if it exists and is newer than source
                         img_path = temp_path
+                        logger.debug(f"Using cached processed image: {temp_path}")
                     else:
                         # Open and validate image
                         with Image.open(img_path) as img:
+                            # Get dimensions for logging
+                            orig_width, orig_height = img.size
+                            logger.debug(f"Original image dimensions: {orig_width}x{orig_height}")
+                            
                             # Convert to RGB if needed
                             if img.mode in ('RGBA', 'LA'):
                                 img = img.convert('RGB')
@@ -434,10 +534,12 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             # Resize if too large
                             if img.size[0] > IMAGE_MAX_SIZE[0] or img.size[1] > IMAGE_MAX_SIZE[1]:
                                 img.thumbnail(IMAGE_MAX_SIZE, Image.Resampling.LANCZOS)
+                                logger.debug(f"Resized image to: {img.size[0]}x{img.size[1]}")
                                 
                             # Save as optimized JPG 
                             img.save(temp_path, 'JPEG', quality=IMAGE_QUALITY, optimize=True)
                             img_path = temp_path
+                            logger.debug(f"Saved optimized image: {temp_path}")
                     
                     # Add to worksheet with proper positioning
                     excel_img = openpyxl.drawing.image.Image(img_path)
@@ -462,16 +564,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     # Add image to worksheet
                     worksheet.add_image(excel_img)
                     logger.debug(f"Successfully added image {img_path} to cell {cell.coordinate}")
+                    success_count += 1
                             
                 except Exception as img_e:
                     logger.error(f"Error processing image {img_path}: {img_e}")
                     cell.value = ERROR_MESSAGES['processing_error']
+                    failed_count += 1
                     
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
                 cell.value = ERROR_MESSAGES['processing_error']
+                failed_count += 1
     
-    logger.debug(f"Finished processing {len(processed_images)} unique images in {len(image_cols)} columns")
+    logger.info(f"Finished processing images: {success_count} succeeded, {failed_count} failed, {len(processed_images)} unique images in {len(image_cols)} columns")
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
@@ -634,49 +739,35 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     # 3. Fill NaN values with '-' for consistency
     df_prepared.fillna('-', inplace=True)
     
-    # 4. Format data by column type using safer approach
+    # 4. Convert all columns to string type to avoid dtype issues
+    # This ensures all values are treated as strings for formatting
+    for col in df_prepared.columns:
+        df_prepared[col] = df_prepared[col].astype(str)
     
-    # --- Format text columns ---
-    text_cols = [col for col in TEXT_COLUMNS if col in df_prepared.columns]
-    if text_cols:
-        # Convert to string, strip whitespace, replace empty with '-'
-        df_prepared[text_cols] = df_prepared[text_cols].astype(str)
-        for col in text_cols:
-            # Handle special characters and whitespace
-            df_prepared[col] = (df_prepared[col]
-                               .str.replace('\xa0', ' ')
-                               .str.strip()
-                               .replace('', '-'))
-    
-    # --- Format price, quantity and percentage columns ---
+    # 5. Format data by column type
     for col_name in df_prepared.columns:
         is_price_col = col_name in PRICE_COLUMNS
         is_qty_col = col_name in QUANTITY_COLUMNS
         is_pct_col = col_name in PERCENTAGE_COLUMNS
 
         if is_price_col or is_qty_col or is_pct_col:
-            # Handle each row individually to avoid dtype issues
+            # Handle each row individually
             for idx in df_prepared.index:
                 value = df_prepared.at[idx, col_name]
                 
                 # Skip processing for error messages and placeholders
-                if isinstance(value, str) and (
-                   value.strip() == '-' or 
-                   any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES)):
+                if value.strip() == '-' or any(err_msg in value for err_msg in ERROR_MESSAGE_VALUES):
                     continue
                 
                 # Format numeric values
                 try:
-                    # Convert to string first to handle any type
-                    value_str = str(value).strip()
-                    
                     # Skip empty values and placeholders
-                    if value_str.lower() in ['-', '', 'none', 'nan'] or pd.isna(value):
+                    if value.lower().strip() in ['-', '', 'none', 'nan']:
                         df_prepared.at[idx, col_name] = '-'
                         continue
                     
                     # Clean numeric string and convert
-                    clean_value = value_str.replace(',', '').replace('%', '')
+                    clean_value = value.replace(',', '').replace('%', '')
                     numeric_value = float(clean_value)
                     
                     # Format based on column type
@@ -687,15 +778,19 @@ def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                     elif is_pct_col:
                         formatted_value = f"{numeric_value:.1f}%"
                     
-                    # Update the cell with formatted value
+                    # Update the cell with formatted value (always as string)
+                    # This avoids the dtype incompatibility warning
                     df_prepared.at[idx, col_name] = formatted_value
                     
                 except (ValueError, TypeError):
-                    # If conversion fails, ensure clean string representation
-                    if not isinstance(value, str):
-                        df_prepared.at[idx, col_name] = str(value).strip()
+                    # Keep the value as is if conversion fails
+                    continue
                 except Exception as e:
                     logger.warning(f"Error formatting value '{value}' in column {col_name}: {e}")
+    
+    # Create a copy to ensure all data is properly converted to strings
+    # This helps avoid dtype issues during Excel writing
+    df_prepared = df_prepared.astype(str)
     
     logger.info(f"Data preparation finished. Final rows: {len(df_prepared)}")
     return df_prepared

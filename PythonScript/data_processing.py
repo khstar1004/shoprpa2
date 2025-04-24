@@ -278,10 +278,22 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     item = kogift_data[0]  # Use the first match
                     
                     # Update Kogift related columns
-                    if '기본수량(2)' in df.columns and 'quantity' in item:
-                        df.at[idx, '기본수량(2)'] = item['quantity']
-                    if '판매단가(V포함)(2)' in df.columns and 'price' in item:
-                        df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                    # 기본수량(2) should match 기본수량(1) for direct price comparison
+                    if '기본수량(2)' in df.columns:
+                        # Copy the value from 기본수량(1)
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량(2)'] = row['기본수량(1)']
+                        # If quantity exists in the item, only use it as a fallback
+                        elif 'quantity' in item:
+                            df.at[idx, '기본수량(2)'] = item['quantity']
+                    
+                    # Use price_with_vat instead of price when available (VAT included)
+                    if '판매단가(V포함)(2)' in df.columns:
+                        if 'price_with_vat' in item and item['price_with_vat']:
+                            df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
+                        elif 'price' in item:
+                            df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                    
                     if '고려기프트 상품링크' in df.columns and 'link' in item:
                         df.at[idx, '고려기프트 상품링크'] = item['link']
                     if '고려기프트 이미지' in df.columns and 'image_path' in item:
