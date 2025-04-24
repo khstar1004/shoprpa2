@@ -318,3 +318,57 @@
 2025-04-23 16:10:21,308 - INFO - [excel_utils.py:784] - Successfully created and formatted Excel file: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_161021.xlsx
 2025-04-23 16:10:21,308 - INFO - [test_excel_creation_local.py:180] - Excel file creation test successful! Output saved to: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250423_161021.xlsx
 2025-04-23 16:10:21,311 - INFO - [test_excel_creation_local.py:191] - --- Finished Excel Creation Test with REAL Local Images ---
+2025-04-24 16:47:49,075 - INFO - [test_excel_creation_local.py:63] - --- Starting Excel Creation Test with REAL Local Images ---
+2025-04-24 16:47:49,077 - INFO - [test_excel_creation_local.py:73] - Verifying test image paths...
+2025-04-24 16:47:49,078 - WARNING - [test_excel_creation_local.py:53] - Image file not found: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,079 - WARNING - [test_excel_creation_local.py:53] - Image file not found: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,080 - WARNING - [test_excel_creation_local.py:53] - Image file not found: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,115 - INFO - [test_excel_creation_local.py:130] - Sample DataFrame created with 3 rows using real data structure.
+2025-04-24 16:47:49,144 - DEBUG - [test_excel_creation_local.py:131] - Sample DataFrame Head:
+  구분  담당자        업체명  업체코드    Code    중분류카테고리                        상품명  기본수량(1)  판매단가(V포함)                                                        본사상품링크 기본수량(2) 판매단가(V포함)(2) 가격차이(2) 가격차이(2)(%)                                                           고려기프트 상품링크 기본수량(3) 판매단가(V포함)(3) 가격차이(3) 가격차이(3)(%) 공급사명                                              네이버 쇼핑 링크 공급사 상품링크                                                                            본사 이미지                                                          고려기프트 이미지                                                        네이버 이미지 매칭_여부 매칭_정확도 텍스트_유사도 이미지_유사도 매칭_품질
+0  A  김균아  엠제이(MJ)기획  3941  437611  가방(에코백/면)           사랑이 엔젤하트 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437611       -            -       -          -                                       가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음       -            -       -          -    -                                가격이 범위내에 없거나 검색된 상품이 없음        -  C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg  C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg  C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg     -      -       -       -     -
+1  A  김균아  엠제이(MJ)기획  3941  437593  가방(에코백/면)          사랑이 큐피트화살 투포켓 에코백      200       2970  http://www.jclgift.com/product/product_view.asp?p_idx=437593     200       2854.5  -115.5       -3.9  http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303       -            -       -          -    -                          일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음        -  C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg  C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg  C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg     -      -       -       -     -
+2  A  김균아  엠제이(MJ)기획  3941  437551      어린이우산  캐치티니핑 53 스무디 입체리본 투명 아동우산       50      17820  http://www.jclgift.com/product/product_view.asp?p_idx=437551      50        16852    -968       -5.4  http://koreagift.com/ez/mall.php?cat=004002005&query=view&no=170277       1        14490   -3330      -18.6  네이버  https://search.shopping.naver.com/catalog/53165134501        -  C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg  C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg  C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg     -      -       -       -     -
+2025-04-24 16:47:49,145 - INFO - [test_excel_creation_local.py:134] - Calling create_final_output_excel to generate: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250424_164749.xlsx
+2025-04-24 16:47:49,146 - INFO - [excel_utils.py:620] - Starting creation of final Excel output: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250424_164749.xlsx
+2025-04-24 16:47:49,148 - INFO - [excel_utils.py:508] - Preparing data for Excel export. Initial rows: 3, Initial columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_품질']
+2025-04-24 16:47:49,151 - DEBUG - [excel_utils.py:520] - Columns reordered and selected. Final columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_품질']
+2025-04-24 16:47:49,169 - INFO - [excel_utils.py:592] - Data preparation finished. Final rows: 3
+2025-04-24 16:47:49,215 - DEBUG - [excel_utils.py:653] - DataFrame written to sheet 'Results'. Max Row: 4, Max Col: 30
+2025-04-24 16:47:49,216 - DEBUG - [excel_utils.py:227] - Applying column widths. DataFrame columns: ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크', '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_품질']
+2025-04-24 16:47:49,218 - DEBUG - [excel_utils.py:257] - Finished applying column widths.
+2025-04-24 16:47:49,219 - DEBUG - [excel_utils.py:261] - Applying cell styles and alignments.
+2025-04-24 16:47:49,243 - DEBUG - [excel_utils.py:298] - Finished applying cell styles.
+2025-04-24 16:47:49,244 - DEBUG - [excel_utils.py:376] - Applying conditional formatting.
+2025-04-24 16:47:49,246 - DEBUG - [excel_utils.py:416] - Finished applying conditional formatting for negative price differences.
+2025-04-24 16:47:49,247 - DEBUG - [excel_utils.py:302] - Processing image columns...
+2025-04-24 16:47:49,248 - DEBUG - [excel_utils.py:332] - Processing image in row 2, column 본사 이미지: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,249 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,250 - DEBUG - [excel_utils.py:332] - Processing image in row 2, column 고려기프트 이미지: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,251 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,252 - DEBUG - [excel_utils.py:332] - Processing image in row 2, column 네이버 이미지: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,254 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,254 - DEBUG - [excel_utils.py:332] - Processing image in row 3, column 본사 이미지: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,255 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,256 - DEBUG - [excel_utils.py:332] - Processing image in row 3, column 고려기프트 이미지: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,256 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,257 - DEBUG - [excel_utils.py:332] - Processing image in row 3, column 네이버 이미지: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,258 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,259 - DEBUG - [excel_utils.py:332] - Processing image in row 4, column 본사 이미지: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,260 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Haereum\haereum__AGK_NORDIC__블랙_프리미엄_28_프라이팬_콤비_111b244db2.jpg
+2025-04-24 16:47:49,260 - DEBUG - [excel_utils.py:332] - Processing image in row 4, column 고려기프트 이미지: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,262 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\kogift_pre\kogift_pre_12c8c525c8_1c8b17f355.jpg
+2025-04-24 16:47:49,263 - DEBUG - [excel_utils.py:332] - Processing image in row 4, column 네이버 이미지: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,264 - WARNING - [excel_utils.py:361] - Image file not found: C:\RPA\Image\Main\Naver\naver_웨일리케어_올인원_샴푸바디워시_19cdadc75a.jpg
+2025-04-24 16:47:49,265 - DEBUG - [excel_utils.py:372] - Finished processing image columns
+2025-04-24 16:47:49,266 - DEBUG - [excel_utils.py:731] - Adjusting dimensions for image cells...
+2025-04-24 16:47:49,267 - DEBUG - [excel_utils.py:791] - Adjusted dimensions for 0 rows with images
+2025-04-24 16:47:49,268 - DEBUG - [excel_utils.py:438] - Adding hyperlinks. Link columns defined: ['본사상품링크', '고려기프트 상품링크', '공급사 상품링크', '네이버 쇼핑 링크']
+2025-04-24 16:47:49,269 - INFO - [excel_utils.py:479] - Finished adding hyperlinks. Added 6 links. Found 0 non-URL values in link columns.
+2025-04-24 16:47:49,270 - DEBUG - [excel_utils.py:420] - Setting up page layout.
+2025-04-24 16:47:49,271 - DEBUG - [excel_utils.py:432] - Page layout settings applied.
+2025-04-24 16:47:49,271 - WARNING - [excel_utils.py:491] - Could not set header/footer: 'Worksheet' object has no attribute 'header_footer'
+2025-04-24 16:47:49,272 - DEBUG - [excel_utils.py:496] - Table formatting skipped as requested.
+2025-04-24 16:47:49,324 - INFO - [excel_utils.py:700] - Successfully created and formatted Excel file: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250424_164749.xlsx
+2025-04-24 16:47:49,325 - INFO - [test_excel_creation_local.py:143] - Excel file creation test successful! Output saved to: C:\Users\james\Desktop\Shoprpa2\OUTPUT\test_real_local_image_output_20250424_164749.xlsx
+2025-04-24 16:47:49,327 - INFO - [test_excel_creation_local.py:153] - --- Finished Excel Creation Test with REAL Local Images ---

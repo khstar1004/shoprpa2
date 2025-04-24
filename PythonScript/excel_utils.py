@@ -312,54 +312,53 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         logger.debug("No image columns found in DataFrame")
         return
 
-    # Image size settings
-    img_width = 80
-    img_height = 80
+    # Image size settings - increased for better visibility
+    img_width = 120  # Increased from 80
+    img_height = 120  # Increased from 80
 
     # For each row in the data
-    for row_idx, row_data in enumerate(df.itertuples(), 2):  # Excel is 1-indexed, +1 for header
+    for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
         # Process each image column
         for col_name, col_idx in image_column_indices.items():
             try:
-                # Get the image data from the cell
-                image_value = getattr(row_data, col_name, "")
+                # Get the cell value (image path)
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                image_path = str(cell.value).strip()
                 
                 # Skip empty cells or error messages
-                if not image_value or image_value == '-' or any(err in str(image_value) for err in ERROR_MESSAGE_VALUES):
+                if not image_path or image_path == '-' or any(err in image_path for err in ERROR_MESSAGE_VALUES):
                     continue
                 
-                # Log processing of image value
-                logger.debug(f"Processing image in row {row_idx}, column {col_name}: {str(image_value)[:100]}...")
+                logger.debug(f"Processing image in row {row_idx}, column {col_name}: {image_path}")
                 
-                # Handle different image data formats
-                img_path = None
-                
-                # Case 1: Image is a dictionary with 'local_path' key
-                if isinstance(image_value, dict) and 'local_path' in image_value:
-                    img_path = image_value['local_path']
-                
-                # Case 2: Image is a string path
-                elif isinstance(image_value, str):
-                    img_path = image_value
-                
-                # Check if image path exists and is valid
-                if img_path and os.path.isfile(img_path):
-                    # Add the image to the worksheet
+                # Check if image path exists
+                if os.path.isfile(image_path):
                     try:
-                        img = openpyxl.drawing.image.Image(img_path)
+                        # Try to open the image first to verify it's valid
+                        with Image.open(image_path) as img_check:
+                            pass  # Just checking if it can be opened
+                        
+                        # Add the image to the worksheet
+                        img = openpyxl.drawing.image.Image(image_path)
                         img.width = img_width
                         img.height = img_height
+                        
+                        # Calculate cell position
                         cell_address = f"{get_column_letter(col_idx)}{row_idx}"
+                        
+                        # Set image anchor with offset to center in cell
                         img.anchor = cell_address
                         worksheet.add_image(img)
-                        logger.debug(f"Added image at {cell_address}: {img_path}")
+                        
+                        # Clear the cell value since we're showing the image
+                        cell.value = ""
+                        
+                        logger.debug(f"Successfully added image at {cell_address}: {image_path}")
                     except Exception as img_err:
-                        logger.error(f"Failed to add image {img_path} to Excel: {img_err}")
-                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        logger.error(f"Failed to process image {image_path}: {img_err}")
                         cell.value = "이미지 처리 오류"
                 else:
-                    logger.warning(f"Image file not found or invalid: {img_path}")
-                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    logger.warning(f"Image file not found: {image_path}")
                     cell.value = "이미지 파일 없음"
             
             except Exception as e:
@@ -368,9 +367,9 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     cell = worksheet.cell(row=row_idx, column=col_idx)
                     cell.value = "이미지 처리 오류"
                 except:
-                    pass  # Last resort if we can't even set the cell value
+                    pass
 
-    logger.debug(f"Finished processing image columns")
+    logger.debug("Finished processing image columns")
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
