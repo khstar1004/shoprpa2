@@ -80,9 +80,10 @@ COLUMN_RENAME_MAP = {
 FINAL_COLUMN_ORDER = [
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
     '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '고려기프트 상품링크',
-    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
-    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+    '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지',
+    '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_품질'
 ]
 
 # Columns that must be present in the input file for processing
@@ -313,6 +314,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     # Count successful/failed images for reporting
     success_count = 0
     failed_count = 0
+    
+    # Create recovery directories if they don't exist
+    recovery_dirs = [
+        "C:\\RPA\\Image\\Main\\Haereum",
+        "C:\\RPA\\Image\\Main\\Kogift",
+        "C:\\RPA\\Image\\Main\\Naver",
+        "C:\\RPA\\Image\\Main\\kogift_pre",
+        "C:\\RPA\\Image\\Target\\Haereum",
+        "C:\\RPA\\Image\\Target\\Kogift",
+        "C:\\RPA\\Image\\Target\\Naver"
+    ]
+    for directory in recovery_dirs:
+        os.makedirs(directory, exist_ok=True)
         
     for row_idx in range(2, worksheet.max_row + 1):
         for col_name, col_idx in image_cols.items():
@@ -336,10 +350,17 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         if img_url and '\\' in img_url:
                             # Fix backslashes in URLs
                             img_url = img_url.replace('\\', '/')
+                            # Fix URL format if it's missing proper scheme
                             if img_url.startswith('https:') and not img_url.startswith('https://'):
                                 img_url = 'https://' + img_url[6:]
+                            elif ':' in img_url and not img_url.startswith(('http:', 'https:')):
+                                # Handle case where URL is like 'https:\www...'
+                                img_url = 'https://' + img_url.split(':', 1)[1].lstrip('\\').lstrip('/')
                     
-                    # First try the 'original_path' key if it exists (new field we added)
+                    # Get source from the dictionary
+                    source = img_info.get('source', '')
+                    
+                    # First try the 'original_path' key if it exists
                     if 'original_path' in img_info and img_info['original_path']:
                         orig_path = img_info['original_path']
                         # Normalize path - replace double backslashes and ensure proper format
@@ -364,72 +385,88 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         else:
                             # Try without _nobg suffix if it's there
                             if '_nobg.png' in local_path:
-                                orig_path = local_path.replace('_nobg.png', '.jpg')
-                                if os.path.exists(orig_path):
-                                    img_path = orig_path
-                                    logger.debug(f"Found non-background removed version: {img_path}")
-                                else:
-                                    # Try other extensions
-                                    for ext in ['.png', '.jpeg', '.gif']:
-                                        test_path = local_path.replace('_nobg.png', ext)
-                                        if os.path.exists(test_path):
-                                            img_path = test_path
-                                            logger.debug(f"Found alternate extension: {img_path}")
-                                            break
-                    
-                    # If still no image found, try to find any file with the hash in the appropriate directory
-                    if not img_path and img_url:
-                        # Extract hash and try to find matching files
-                        source = img_info.get('source', '')
-                        url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
-                        
-                        # Determine the appropriate directory
-                        if source == 'haereum':
-                            target_dir = 'C:\\RPA\\Image\\Main\\Haereum'
-                        elif source in ['kogift', 'kogift_pre']:
-                            target_dir = 'C:\\RPA\\Image\\Main\\kogift_pre'
-                        elif source == 'naver':
-                            target_dir = 'C:\\RPA\\Image\\Main\\Naver'
-                        else:
-                            # Try all directories in case source is not specified
-                            possible_dirs = [
-                                'C:\\RPA\\Image\\Main\\Haereum',
-                                'C:\\RPA\\Image\\Main\\kogift_pre',
-                                'C:\\RPA\\Image\\Main\\Naver'
-                            ]
-                            
-                            # Search all directories for files containing the hash
-                            for dir_path in possible_dirs:
-                                if os.path.exists(dir_path):
-                                    for filename in os.listdir(dir_path):
-                                        # Look for hash in filename and prefer non-background removed images
-                                        if url_hash in filename and os.path.isfile(os.path.join(dir_path, filename)):
-                                            candidate_path = os.path.join(dir_path, filename)
-                                            if not '_nobg' in filename:
-                                                img_path = candidate_path
-                                                logger.debug(f"Found by hash in {dir_path}: {img_path}")
-                                                break
-                                            elif not img_path:  # Use nobg version if that's all we have
-                                                img_path = candidate_path
-                                    
-                                    if img_path:
+                                # Try multiple variations of the file extension
+                                for test_ext in ['.jpg', '.png', '.jpeg']:
+                                    orig_path = local_path.replace('_nobg.png', test_ext)
+                                    if os.path.exists(orig_path):
+                                        img_path = orig_path
+                                        logger.debug(f"Found non-background removed version: {img_path}")
                                         break
                             
-                            # Skip to next iteration if no image path is found
+                            # Try alternate directory structures
                             if not img_path:
-                                continue
+                                # Try with Main instead of Target path
+                                alt_path = local_path.replace('\\Target\\', '\\Main\\').replace('/Target/', '/Main/')
+                                if os.path.exists(alt_path):
+                                    img_path = alt_path
+                                    logger.debug(f"Found in alternate Main directory: {img_path}")
+                                else:
+                                    # Try without _nobg in alternate path
+                                    if '_nobg.png' in alt_path:
+                                        for test_ext in ['.jpg', '.png', '.jpeg']:
+                                            test_alt_path = alt_path.replace('_nobg.png', test_ext)
+                                            if os.path.exists(test_alt_path):
+                                                img_path = test_alt_path
+                                                logger.debug(f"Found alternate extension in Main directory: {img_path}")
+                                                break
+                    
+                    # If still no image found, try to find any file with the hash or product name in the appropriate directory
+                    if not img_path and img_url:
+                        # Extract hash from URL or generate new one
+                        url_hash = None
                         
-                        # If we have a specific target directory, look there for matching files
-                        if not img_path and os.path.exists(target_dir):
-                            for filename in os.listdir(target_dir):
-                                if url_hash in filename and os.path.isfile(os.path.join(target_dir, filename)):
-                                    candidate_path = os.path.join(target_dir, filename)
-                                    if not '_nobg' in filename:
-                                        img_path = candidate_path
-                                        logger.debug(f"Found by hash in {target_dir}: {img_path}")
+                        # Fix URL if it has backslashes
+                        if isinstance(img_url, str) and '\\' in img_url:
+                            img_url = img_url.replace('\\', '/')
+                        
+                        # Generate hash from URL
+                        try:
+                            if img_url:
+                                url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                        except Exception as hash_err:
+                            logger.error(f"Error generating hash from URL '{img_url}': {hash_err}")
+                            # Generate a random hash as fallback
+                            url_hash = hashlib.md5(str(time.time()).encode()).hexdigest()[:10]
+                        
+                        # Determine the appropriate directories to search
+                        img_dirs = []
+                        if source == 'haereum':
+                            img_dirs.append('C:\\RPA\\Image\\Main\\Haereum')
+                            img_dirs.append('C:\\RPA\\Image\\Target\\Haereum')
+                        elif source in ['kogift', 'kogift_pre']:
+                            img_dirs.append('C:\\RPA\\Image\\Main\\kogift_pre')
+                            img_dirs.append('C:\\RPA\\Image\\Main\\Kogift')
+                            img_dirs.append('C:\\RPA\\Image\\Target\\Kogift')
+                        elif source == 'naver':
+                            img_dirs.append('C:\\RPA\\Image\\Main\\Naver')
+                            img_dirs.append('C:\\RPA\\Image\\Target\\Naver')
+                        
+                        # Add some common alternative paths to check
+                        img_dirs.extend([
+                            'C:\\RPA\\Image\\Main',
+                            'C:\\RPA\\Image\\Target',
+                            'C:\\RPA\\Image\\Main\\Haereum',
+                            'C:\\RPA\\Image\\Main\\kogift_pre',
+                            'C:\\RPA\\Image\\Main\\Naver'
+                        ])
+                        
+                        # Search all directories for files containing the hash
+                        if url_hash:
+                            for dir_path in img_dirs:
+                                if os.path.exists(dir_path):
+                                    found_files = []
+                                    # First collect all potential matching files
+                                    for filename in os.listdir(dir_path):
+                                        if url_hash in filename and os.path.isfile(os.path.join(dir_path, filename)):
+                                            found_files.append(filename)
+                                    
+                                    # Sort to prefer non-nobg files first
+                                    found_files.sort(key=lambda x: '_nobg' in x)
+                                    
+                                    if found_files:
+                                        img_path = os.path.join(dir_path, found_files[0])
+                                        logger.debug(f"Found by hash in {dir_path}: {img_path}")
                                         break
-                                    elif not img_path:  # Use nobg version if that's all we have
-                                        img_path = candidate_path
                     
                     # If we still don't have an image path, try parsing from local_path
                     if not img_path and 'local_path' in img_info:
@@ -440,7 +477,12 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                             # If directory exists, try to find files with similar names
                             if os.path.exists(file_dir):
-                                for f in os.listdir(file_dir):
+                                # Get all files in directory
+                                dir_files = os.listdir(file_dir)
+                                # Sort files to prefer shorter names first (less likely to have encoding issues)
+                                dir_files.sort(key=len)
+                                
+                                for f in dir_files:
                                     # Look for files that share significant parts of the name
                                     name_parts = file_name.split('_')
                                     if len(name_parts) > 2:
@@ -454,11 +496,103 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         except Exception as path_err:
                             logger.warning(f"Error trying to find similar file: {path_err}")
                     
-                    # If still no image found but we have a URL, save it for display
+                    # If still no image found but we have a URL, try to download it now as last resort
+                    if not img_path and img_url:
+                        try:
+                            # Normalize URL for download
+                            normalized_url = img_url
+                            if '\\' in normalized_url:
+                                normalized_url = normalized_url.replace('\\', '/')
+                            
+                            # Ensure proper URL scheme
+                            if normalized_url.startswith('//'):
+                                normalized_url = 'https:' + normalized_url
+                            elif not normalized_url.startswith(('http://', 'https://')):
+                                if ":" in normalized_url:
+                                    scheme, path = normalized_url.split(":", 1)
+                                    normalized_url = f"{scheme}://{path.lstrip('/')}"
+                                else:
+                                    normalized_url = 'https://' + normalized_url.lstrip('/')
+                            
+                            # Generate a unique filename
+                            url_hash = hashlib.md5(normalized_url.encode()).hexdigest()[:10]
+                            timestamp = int(time.time())
+                            
+                            # Determine appropriate directory based on source
+                            save_dir = 'C:\\RPA\\Image\\Main\\Haereum'  # Default
+                            if source == 'kogift' or source == 'kogift_pre':
+                                save_dir = 'C:\\RPA\\Image\\Main\\Kogift'
+                            elif source == 'naver':
+                                save_dir = 'C:\\RPA\\Image\\Main\\Naver'
+                            
+                            # Ensure directory exists
+                            os.makedirs(save_dir, exist_ok=True)
+                            
+                            # Define filename and path
+                            filename = f"recovery_{source}_{url_hash}_{timestamp}.jpg"
+                            download_path = os.path.join(save_dir, filename)
+                            
+                            # Download image
+                            logger.info(f"Attempting to download image as last resort: {normalized_url} -> {download_path}")
+                            
+                            # Simple synchronous download with requests
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+                            }
+                            # Add Referer for known sites
+                            if 'jclgift' in normalized_url:
+                                headers['Referer'] = 'https://www.jclgift.com/'
+                            elif 'kogift' in normalized_url or 'koreagift' in normalized_url:
+                                headers['Referer'] = 'https://koreagift.com/'
+                            
+                            # Make request with a reasonable timeout
+                            response = requests.get(normalized_url, headers=headers, timeout=15)
+                            
+                            if response.status_code == 200:
+                                # Check it's actually an image
+                                content_type = response.headers.get('Content-Type', '')
+                                if content_type.startswith('image/') or 'jclgift' in normalized_url or 'pstatic' in normalized_url:
+                                    # Save image to file
+                                    with open(download_path, 'wb') as f:
+                                        f.write(response.content)
+                                    
+                                    # Verify it's a valid image file
+                                    try:
+                                        from PIL import Image
+                                        img = Image.open(download_path)
+                                        img.verify()  # Basic verification
+                                        img_path = download_path
+                                        logger.info(f"Successfully downloaded missing image: {download_path}")
+                                    except Exception as img_err:
+                                        logger.error(f"Downloaded file is not a valid image: {img_err}")
+                        except Exception as download_err:
+                            logger.error(f"Failed to download image as last resort: {download_err}")
+                    
+                    # If still no image found but we have a URL, set it as a hyperlink in the cell
                     if not img_path:
-                        logger.warning(f"Image file not found for dictionary input: {original_data}")
+                        logger.warning(f"Image file not found: {original_data}")
                         if img_url:
+                            # Normalize URL for display
+                            if '\\' in img_url:
+                                img_url = img_url.replace('\\', '/')
+                            
+                            # Ensure proper URL scheme
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+                            elif not img_url.startswith(('http://', 'https://')):
+                                if ":" in img_url:
+                                    scheme, path = img_url.split(":", 1)
+                                    if scheme.lower() in ['http', 'https']:
+                                        img_url = f"{scheme}://{path.lstrip('/')}"
+                                    else:
+                                        img_url = 'https://' + img_url.lstrip('/')
+                                else:
+                                    img_url = 'https://' + img_url.lstrip('/')
+                                
                             cell.value = img_url
+                            cell.hyperlink = img_url
+                            cell.font = LINK_FONT  # Apply hyperlink style
                         else:
                             cell.value = ERROR_MESSAGES['file_not_found']
                         failed_count += 1
@@ -475,10 +609,22 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 
                 # Handle _nobg suffix in paths - prefer original images
                 if img_path and '_nobg.png' in img_path:
-                    orig_path = img_path.replace('_nobg.png', '.jpg')
-                    if os.path.exists(orig_path):
-                        img_path = orig_path
-                        logger.debug(f"Using non-background removed version: {img_path}")
+                    # Try multiple extensions
+                    found_original = False
+                    for test_ext in ['.jpg', '.png', '.jpeg']:
+                        orig_path = img_path.replace('_nobg.png', test_ext)
+                        if os.path.exists(orig_path):
+                            img_path = orig_path
+                            logger.debug(f"Using non-background removed version: {img_path}")
+                            found_original = True
+                            break
+                    
+                    if not found_original:
+                        # Try alternate paths
+                        alt_path = img_path.replace('\\Target\\', '\\Main\\').replace('/Target/', '/Main/')
+                        if os.path.exists(alt_path):
+                            img_path = alt_path
+                            logger.debug(f"Found in alternate Main directory: {img_path}")
                 
                 # Normalize path
                 img_path = os.path.normpath(img_path) if img_path else None
@@ -497,10 +643,23 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 
                 # Verify image file exists and is valid
                 if not img_path or not os.path.exists(img_path):
-                    # Log the issue
-                    logger.warning(f"Image file not found: {img_path or cell.value}")
-                    if isinstance(cell.value, dict) and 'url' in cell.value:
-                        cell.value = cell.value.get('url')
+                    # If the path doesn't exist at this point after all our checks, log and skip
+                    logger.warning(f"Final image path check failed - file not found: {img_path}")
+                    # If we have a URL, set it as a hyperlink as fallback
+                    if img_url:
+                        # Normalize URL for display
+                        if '\\' in img_url:
+                            img_url = img_url.replace('\\', '/')
+                        
+                        if not img_url.startswith(('http://', 'https://')):
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+                            else:
+                                img_url = 'https://' + img_url.lstrip('/')
+                                
+                        cell.value = img_url
+                        cell.hyperlink = img_url
+                        cell.font = LINK_FONT  # Apply hyperlink style
                     else:
                         cell.value = ERROR_MESSAGES['file_not_found']
                     failed_count += 1
@@ -568,12 +727,34 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                 except Exception as img_e:
                     logger.error(f"Error processing image {img_path}: {img_e}")
-                    cell.value = ERROR_MESSAGES['processing_error']
+                    # Try to save a basic error message and URL as fallback
+                    if isinstance(cell.value, dict) and 'url' in cell.value:
+                        img_url = cell.value['url']
+                        if img_url:
+                            cell.value = img_url
+                            try:
+                                cell.hyperlink = img_url
+                                cell.font = LINK_FONT
+                            except:
+                                pass
+                    else:
+                        cell.value = ERROR_MESSAGES['processing_error']
                     failed_count += 1
                     
             except Exception as e:
                 logger.error(f"Error processing image in cell {cell.coordinate}: {e}")
-                cell.value = ERROR_MESSAGES['processing_error']
+                # Try to save URL as fallback
+                if isinstance(cell.value, dict) and 'url' in cell.value:
+                    img_url = cell.value['url']
+                    if img_url:
+                        cell.value = img_url
+                        try:
+                            cell.hyperlink = img_url
+                            cell.font = LINK_FONT
+                        except:
+                            pass
+                else:
+                    cell.value = ERROR_MESSAGES['processing_error']
                 failed_count += 1
     
     logger.info(f"Finished processing images: {success_count} succeeded, {failed_count} failed, {len(processed_images)} unique images in {len(image_cols)} columns")

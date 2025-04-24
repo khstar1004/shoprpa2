@@ -201,230 +201,349 @@ def get_image_path(url: str) -> str:
     return str(image_path)
 
 async def download_image(session: aiohttp.ClientSession, url: str, retry_count: int = 0) -> Tuple[str, bool, str]:
-    """이미지 다운로드 함수"""
-    if not url or retry_count >= MAX_RETRIES:
-        logger.warning(f"Failed to download image after {retry_count} retries: {url}")
-        return url, False, ""
+    """Download an image from a URL and save it locally.
     
-    try:
-        # URL 정규화
-        if not url.startswith(('http://', 'https://')):
-            if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower() or "jclgift" in url.lower():
-                url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
+    Args:
+        session: The aiohttp client session to use for requests.
+        url: The URL of the image to download.
+        retry_count: Current retry attempt (used internally for recursion).
+        
+    Returns:
+        Tuple of (url, success_bool, local_path or error_message)
+    """
+    if not url:
+        return url, False, "Empty URL"
+        
+    # Fix URL format issues (especially with backslashes)
+    if isinstance(url, str) and "\\" in url:
+        url = url.replace("\\", "/")
+    
+    # Normalize URL
+    if not url.startswith(('http://', 'https://')):
+        if any(domain in url.lower() for domain in ["kogift", "koreagift", "adpanchok", "jclgift"]):
+            # Handle different URL formats
+            if url.startswith('//'):
+                url = f"https:{url}"
+            elif ":" in url and not url.startswith(('http:', 'https:')):
+                # Handle case where URL is like 'https:\www...'
+                parts = url.split(':', 1)
+                if len(parts) == 2:
+                    scheme = parts[0].lower()
+                    path = parts[1].lstrip('/').lstrip('\\')
+                    url = f"{scheme}://{path}"
             else:
-                logger.warning(f"Invalid URL format: {url}")
-                return url, False, ""
-                
-        # Check for non-image extensions
-        parsed_url = urlparse(url)
-        path = unquote(parsed_url.path)
-        _, ext = os.path.splitext(path)
-        ext = ext.lower()
-        non_image_extensions = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']
+                url = f"https://{url}"
+        else:
+            return url, False, f"Invalid URL scheme: {url}"
+    
+    # Determine the appropriate directory based on URL
+    if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+        save_dir = KOGIFT_IMAGE_DIR
+    elif "jclgift" in url.lower():
+        # Save jclgift images in a haereum directory
+        haereum_dir = Path(os.path.dirname(KOGIFT_IMAGE_DIR)) / 'Haereum'
+        haereum_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = haereum_dir
+    elif "pstatic.net" in url.lower() or "naver" in url.lower():
+        # Save Naver images in a naver directory
+        naver_dir = Path(os.path.dirname(KOGIFT_IMAGE_DIR)) / 'Naver'
+        naver_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = naver_dir
+    else:
+        # Use generic directory for other URLs
+        save_dir = KOGIFT_IMAGE_DIR
+    
+    # Generate a filename based on URL hash
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    
+    # Get file extension from URL
+    parsed_url = urlparse(url)
+    path = unquote(parsed_url.path)
+    _, ext = os.path.splitext(path)
+    
+    # Handle problematic extensions
+    if ext.lower() in ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']:
+        ext = '.jpg'  # Default to jpg for non-image extensions
+    elif not ext:
+        ext = '.jpg'  # Default extension if none provided
+    elif len(ext) > 5:
+        ext = '.jpg'  # If extension is unusually long, use default
+    
+    # Ensure extension starts with a dot
+    if not ext.startswith('.'):
+        ext = '.' + ext
+    
+    # Create a filename with source info
+    if "jclgift" in url.lower():
+        source_prefix = "haereum"
+    elif "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+        source_prefix = "kogift"
+    elif "pstatic" in url.lower() or "naver" in url.lower():
+        source_prefix = "naver"
+    else:
+        source_prefix = "other"
         
-        if ext in non_image_extensions:
-            logger.warning(f"Skipping download of non-image file with extension {ext}: {url}")
-            return url, False, ""
-        
-        # URL 검증
-        if VERIFY_IMAGE_URLS:
-            verified_url, valid, error_msg = await verify_image_url(session, url)
-            if not valid:
-                logger.warning(f"Invalid image URL: {url}, Error: {error_msg}")
-                return url, False, ""
-            url = verified_url
-        
-        # 이미지 경로 생성
-        image_path = get_image_path(url)
-        if not image_path:
-            logger.warning(f"Could not generate image path for URL: {url}")
-            return url, False, ""
-            
-        # 이미지 경로를 Path 객체로 변환
-        image_path = Path(image_path)
-        
-        # 고유한 임시 파일 경로 생성 (충돌 방지)
-        temp_path = image_path.with_name(f"{image_path.stem}_{random.randint(1000, 9999)}.tmp")
-        
-        # 이미지가 이미 있는지 확인
-        if image_path.exists():
-            file_size = image_path.stat().st_size
-            if file_size > 0:  # 파일이 있고 내용이 있으면 다운로드 스킵
-                logger.debug(f"Image already exists: {url} -> {image_path}")
-                return url, True, str(image_path)
-        
-        # Kogift 이미지 다운로드를 위한 특별한 헤더 설정
+    filename = f"{source_prefix}_{url_hash[:10]}{ext}"
+    image_path = save_dir / filename
+    
+    # For jclgift URLs, also save a copy in Main folder without nobg
+    create_nobg_version = False
+    if "jclgift" in url.lower():
+        main_dir = Path(os.path.dirname(save_dir.parent)) / 'Main' / 'Haereum'
+        main_dir.mkdir(parents=True, exist_ok=True)
+        main_filename = f"{source_prefix}_{url_hash[:10]}{ext}"
+        main_path = main_dir / main_filename
+        create_nobg_version = True
+    
+    # Check if file already exists and is of sufficient size
+    if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:  # 1KB minimum
+        logger.debug(f"Image already exists: {image_path}")
+        return url, True, str(image_path)
+    
+    # Process source-specific headers
+    headers = {}
+    is_jclgift = "jclgift" in url.lower()
+    is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
+    
+    if is_kogift:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
             'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Referer': 'https://koreagift.com/'
         }
-        
-        # 이미지 다운로드
+    elif is_jclgift:
+        headers = {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.jclgift.com/'
+        }
+    
+    # Try to download the image
+    try:
         async with session.get(url, headers=headers, timeout=30) as response:
             if response.status != 200:
-                logger.warning(f"Failed to download image: {url}, status: {response.status}")
-                if retry_count < MAX_RETRIES - 1:
-                    await asyncio.sleep(1.0 * (2 ** retry_count))  # Exponential backoff
+                # Handle special cases for certain status codes
+                if response.status == 404:
+                    logger.warning(f"Image not found (404): {url}")
+                    return url, False, "404 Not Found"
+                    
+                if retry_count < MAX_RETRIES:
+                    logger.warning(f"Got HTTP {response.status} for {url}, retrying ({retry_count + 1}/{MAX_RETRIES})...")
+                    await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
                     return await download_image(session, url, retry_count + 1)
-                return url, False, ""
+                else:
+                    return url, False, f"HTTP error {response.status} after {MAX_RETRIES} retries"
             
-            # Content-Type 확인 (text/plain 등 이미지 아닌 경우 처리)
-            content_type = response.headers.get('Content-Type', '').lower()
-            if not content_type.startswith('image/') and 'octet-stream' not in content_type:
-                logger.warning(f"URL does not return an image (Content-Type: {content_type}): {url}")
-                # 재시도 없이 바로 실패 처리 (서버가 이미지를 주지 않음)
-                return url, False, ""
+            # Check content type
+            content_type = response.headers.get('Content-Type', '')
+            is_naver = "pstatic.net" in url.lower()
             
-            # 이미지 데이터 읽기
+            if not content_type.startswith('image/') and not is_naver and not is_kogift and not is_jclgift:
+                logger.warning(f"Non-image content type: {content_type} for {url}")
+                if retry_count < MAX_RETRIES:
+                    await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
+                    return await download_image(session, url, retry_count + 1)
+                else:
+                    return url, False, f"Non-image content type: {content_type}"
+            
+            # Get content
             data = await response.read()
             
-            # 데이터 크기 검증
-            if len(data) < 100:
-                logger.warning(f"Invalid Kogift image data (too small): {len(data)} bytes")
-                if retry_count < MAX_RETRIES - 1:
-                    await asyncio.sleep(1.0 * (2 ** retry_count))
-                    return await download_image(session, url, retry_count + 1)
-                return url, False, ""
-            
-            # 임시 파일에 저장
-            async with aiofiles.open(temp_path, 'wb') as f:
-                await f.write(data)
-            
-            # 이미지 유효성 검사
+            # Verify data is an image before saving
             try:
-                with Image.open(temp_path) as img:
-                    img.verify()
-                with Image.open(temp_path) as img:
-                    if img.width < 10 or img.height < 10:
-                        logger.warning(f"Image dimensions too small: {img.width}x{img.height}")
-                        if retry_count < MAX_RETRIES - 1:
-                            await asyncio.sleep(1.0 * (2 ** retry_count))
-                            return await download_image(session, url, retry_count + 1)
-                        return url, False, ""
+                img = Image.open(io.BytesIO(data))
+                img.verify()  # Verify it's a valid image
+                
+                # Get the actual image format
+                img = Image.open(io.BytesIO(data))
+                img_format = img.format.lower() if img.format else 'jpeg'
+                
+                # Check dimensions
+                width, height = img.size
+                if width < 20 or height < 20:
+                    logger.warning(f"Image dimensions too small: {width}x{height} for {url}")
+                    if not is_kogift and not is_jclgift and retry_count < MAX_RETRIES:
+                        await asyncio.sleep(0.5 * (retry_count + 1))
+                        return await download_image(session, url, retry_count + 1)
+                    
+                # Update extension based on actual format
+                proper_ext = f".{img_format}" if img_format != 'jpeg' else '.jpg'
+                if proper_ext != ext:
+                    filename = f"{source_prefix}_{url_hash[:10]}{proper_ext}"
+                    image_path = save_dir / filename
+                    
+                    # Update main_path too if applicable
+                    if create_nobg_version:
+                        main_filename = f"{source_prefix}_{url_hash[:10]}{proper_ext}"
+                        main_path = main_dir / main_filename
+                
+                # Use semaphore for file operations to prevent race conditions
+                async with file_semaphore:
+                    # Make sure parent directory exists
+                    os.makedirs(image_path.parent, exist_ok=True)
+                    
+                    # Write image to file
+                    async with aiofiles.open(image_path, 'wb') as f:
+                        await f.write(data)
+                    
+                    # If this is jclgift, also save to Main folder 
+                    if create_nobg_version:
+                        os.makedirs(main_path.parent, exist_ok=True)
+                        async with aiofiles.open(main_path, 'wb') as f:
+                            await f.write(data)
+                            
+                        # Also create a _nobg.png version for the background-removed image path
+                        nobg_path = os.path.splitext(main_path)[0] + "_nobg.png"
+                        async with aiofiles.open(nobg_path, 'wb') as f:
+                            await f.write(data)
+                        
+                        # Return the Main path to use for images
+                        return url, True, str(main_path)
+                
+                # Return success with the path to the saved image
+                return url, True, str(image_path)
+                
             except Exception as img_err:
-                logger.warning(f"Invalid image data: {img_err}")
-                if retry_count < MAX_RETRIES - 1:
-                    await asyncio.sleep(1.0 * (2 ** retry_count))
+                logger.warning(f"Invalid image data for {url}: {img_err}")
+                if retry_count < MAX_RETRIES:
+                    await asyncio.sleep(0.5 * (retry_count + 1))
                     return await download_image(session, url, retry_count + 1)
-                return url, False, ""
-            
-            # 임시 파일을 실제 파일로 이동
-            logger.debug(f"Attempting to move temp file {temp_path} to {image_path}")
-            if image_path.exists():
-                logger.debug(f"Destination file {image_path} exists, attempting to remove it first.")
-                image_path.unlink()
-            try:
-                temp_path.rename(image_path)
-                logger.info(f"Successfully moved temp file to final path: {image_path}")
-            except OSError as e:
-                logger.error(f"Failed to move temp file {temp_path} to {image_path}: {e}")
-                # 이동 실패 시 파일을 삭제하거나 다른 처리를 할 수 있음
-                try:
-                    temp_path.unlink() # 임시 파일 삭제 시도
-                except OSError as unlink_e:
-                    logger.error(f"Could not remove temporary file {temp_path} after move failed: {unlink_e}")
-                return url, False, "" # 이동 실패 시 다운로드 실패로 처리
-            
-            logger.info(f"Successfully downloaded image: {url} -> {image_path}")
-            return url, True, str(image_path)
+                else:
+                    return url, False, f"Invalid image data: {img_err}"
+    
+    except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+        if retry_count < MAX_RETRIES:
+            logger.warning(f"Connection error for {url}, retrying ({retry_count + 1}/{MAX_RETRIES}): {e}")
+            await asyncio.sleep(0.5 * (retry_count + 1))
+            return await download_image(session, url, retry_count + 1)
+        else:
+            logger.error(f"Connection error for {url} after {MAX_RETRIES} retries: {e}")
+            return url, False, f"Connection error: {e}"
             
     except Exception as e:
-        logger.error(f"Error downloading image {url}: {e}")
-        if retry_count < MAX_RETRIES - 1:
-            await asyncio.sleep(1.0 * (2 ** retry_count))
-            return await download_image(session, url, retry_count + 1)
-        return url, False, ""
+        logger.error(f"Unexpected error downloading {url}: {e}")
+        return url, False, f"Unexpected error: {e}"
 
 async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
-    """이미지 URL 목록에서 비동기적으로 이미지 다운로드"""
-    # 결과를 저장할 딕셔너리: {url: local_path}
-    results = {}
+    """Download multiple images asynchronously.
     
-    # 빈 URL 제거
-    image_urls = [url for url in image_urls if url]
-    
+    Args:
+        image_urls: List of image URLs to download.
+        
+    Returns:
+        Dictionary mapping original URLs to local file paths.
+    """
     if not image_urls:
-        logger.warning("No image URLs provided for download")
-        return results
+        return {}
     
-    # URL 정규화
+    # Normalize all URLs first - fix backslashes
     normalized_urls = []
+    original_to_normalized = {}
+    
     for url in image_urls:
-        if not url.startswith(('http://', 'https://')):
-            if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
-                norm_url = f"https://{url}" if not url.startswith('//') else f"https:{url}"
-                normalized_urls.append(norm_url)
-            else:
-                logger.warning(f"Skipping invalid URL: {url}")
+        if not url:
+            continue
+            
+        # Fix backslashes
+        if isinstance(url, str) and "\\" in url:
+            normalized_url = url.replace("\\", "/")
         else:
-            normalized_urls.append(url)
+            normalized_url = url
+            
+        # Add proper scheme if needed
+        if isinstance(normalized_url, str) and not normalized_url.startswith(('http://', 'https://')):
+            domain_keywords = ["kogift", "koreagift", "adpanchok", "jclgift"]
+            if any(kw in normalized_url.lower() for kw in domain_keywords):
+                # Handle different URL formats
+                if normalized_url.startswith('//'):
+                    normalized_url = f"https:{normalized_url}"
+                elif ":" in normalized_url and not normalized_url.startswith(('http:', 'https:')):
+                    # Handle case where URL is like 'https:\www...'
+                    parts = normalized_url.split(':', 1)
+                    if len(parts) == 2:
+                        scheme = parts[0].lower()
+                        path = parts[1].lstrip('/').lstrip('\\')
+                        normalized_url = f"{scheme}://{path}"
+                else:
+                    normalized_url = f"https://{normalized_url}"
+                    
+        normalized_urls.append(normalized_url)
+        original_to_normalized[url] = normalized_url
     
-    # 이미 로컬에 다운로드된 이미지 필터링
-    to_download = []
-    for url in normalized_urls:
-        path = get_image_path(url)
-        if path and os.path.exists(path) and os.path.getsize(path) > 0:
-            logger.debug(f"Image already exists: {url} -> {path}")
-            results[url] = path
-        else:
-            to_download.append(url)
+    # Create result dictionary to store URLs and their local paths
+    result_dict = {}
     
-    if not to_download:
-        logger.info("No new images to download")
-        return results
+    # Log basic info
+    logger.info(f"Downloading {len(normalized_urls)} images...")
     
-    logger.info(f"Downloading {len(to_download)} images...")
-    
-    # TCP 연결 재사용을 위한 세션 설정
-    timeout = aiohttp.ClientTimeout(total=30)
-    conn_limit = min(10, len(to_download))  # 최대 10개 연결 제한
-    
-    # 사용자 에이전트 설정
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://koreagift.com/'
+    # Create directories for each source type if they don't exist
+    source_dirs = {
+        'haereum': Path('C:\\RPA\\Image\\Main\\Haereum'),
+        'kogift': Path('C:\\RPA\\Image\\Main\\Kogift'),
+        'naver': Path('C:\\RPA\\Image\\Main\\Naver'),
+        'target_haereum': Path('C:\\RPA\\Image\\Target\\Haereum'),
+        'target_kogift': Path('C:\\RPA\\Image\\Target\\Kogift'),
+        'target_naver': Path('C:\\RPA\\Image\\Target\\Naver')
     }
     
-    # 비동기 세션 생성 및 연결 제한 설정
-    connector = aiohttp.TCPConnector(limit=conn_limit, ssl=False)
+    for d in source_dirs.values():
+        os.makedirs(d, exist_ok=True)
     
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
-        # 동시 다운로드를 위한 태스크 생성
-        tasks = []
-        for url in to_download:
-            task = asyncio.create_task(download_image(session, url))
-            tasks.append(task)
+    # Create aiohttp session 
+    conn = aiohttp.TCPConnector(ssl=False, limit=5)
+    timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_connect=10, sock_read=30)
+    
+    async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
+        # Create tasks for downloading each image
+        tasks = [download_image(session, url) for url in normalized_urls]
         
-        # 모든 태스크 완료 대기
-        completed = await asyncio.gather(*tasks, return_exceptions=True)
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # 결과 처리
-        for url, completed_task_result in zip(to_download, completed):
-            # gather 결과가 예외일 수 있으므로 확인
-            if isinstance(completed_task_result, Exception):
-                logger.error(f"Task failed for URL {url}: {completed_task_result}")
-                continue
-            
-            # download_image의 반환값 (url, success, path) 처리
-            if isinstance(completed_task_result, tuple) and len(completed_task_result) == 3:
-                _, success, path = completed_task_result
-                if success and path:
-                    results[url] = path
-                    # 로그는 download_image 내부에서 이미 출력됨
-                    # logger.info(f"Successfully downloaded: {url} -> {path}") 
+        # Process results
+        successful = 0
+        failed = 0
+        
+        for original_url, result in zip(image_urls, results):
+            if isinstance(result, Exception):
+                logger.error(f"Error downloading {original_url}: {result}")
+                result_dict[original_url] = None
+                failed += 1
+            elif isinstance(result, tuple) and len(result) == 3:
+                _, success, path_or_error = result
+                if success:
+                    successful += 1
+                    # Store both the image path and additional metadata to aid in Excel embedding
+                    if "jclgift" in original_url.lower():
+                        source = "haereum"
+                    elif "kogift" in original_url.lower() or "koreagift" in original_url.lower():
+                        source = "kogift" 
+                    elif "pstatic" in original_url.lower() or "naver" in original_url.lower():
+                        source = "naver"
+                    else:
+                        source = "other"
+                    
+                    # Include additional metadata for image in result
+                    result_dict[original_url] = {
+                        'url': original_url,
+                        'local_path': path_or_error,
+                        'source': source
+                    }
                 else:
-                    logger.warning(f"Failed to download: {url}")
+                    result_dict[original_url] = None
+                    failed += 1
+                    logger.warning(f"Failed to download {original_url}: {path_or_error}")
             else:
-                 logger.error(f"Unexpected task result format for URL {url}: {completed_task_result}")
+                result_dict[original_url] = None
+                failed += 1
+                logger.error(f"Unexpected result format for {original_url}: {result}")
     
-    success_count = len(results)
-    logger.info(f"Downloaded {success_count}/{len(image_urls)} images successfully")
+    # Log stats
+    logger.info(f"Image download complete: {successful} successful, {failed} failed out of {len(image_urls)} total")
     
-    return results
+    return result_dict
 
 async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optional[str]]:
     """고려기프트 제품 이미지를 미리 다운로드"""

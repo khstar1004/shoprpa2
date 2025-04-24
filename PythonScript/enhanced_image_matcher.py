@@ -1011,16 +1011,48 @@ def match_naver_product_images(haoreum_paths: List[str],
         logger.warning("No valid Haoreum images found")
         return results
     
-    # Extract Naver image URLs from results
+    # Extract Naver image paths from results
     naver_images = []
     product_names = []
+    missing_images = 0
+    valid_images = 0
+    
     for _, row in naver_results.iterrows():
-        if isinstance(row.get('original_row'), dict):
-            product_name = row['original_row'].get('상품명')
-            image_url = row.get('네이버 이미지')
-            if product_name and image_url and image_url != '-':
-                naver_images.append(image_url)
-                product_names.append(product_name)
+        try:
+            if isinstance(row.get('original_row'), dict):
+                product_name = row['original_row'].get('상품명')
+                # Check both 네이버 이미지 and 네이버쇼핑(이미지링크) columns
+                image_path = None
+                for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
+                    if col in row and row[col] and row[col] != '-':
+                        image_path = row[col]
+                        break
+                
+                # Also check in the original_row
+                if not image_path and 'original_row' in row:
+                    for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
+                        if col in row['original_row'] and row['original_row'][col] and row['original_row'][col] != '-':
+                            image_path = row['original_row'][col]
+                            break
+                
+                if not image_path:
+                    logger.warning(f"No image path found for product: {product_name}")
+                    missing_images += 1
+                    continue
+                
+                # Check if the image file exists
+                if os.path.exists(image_path):
+                    naver_images.append(image_path)
+                    product_names.append(product_name)
+                    valid_images += 1
+                else:
+                    logger.warning(f"Image file does not exist: {image_path} for product: {product_name}")
+                    missing_images += 1
+        except Exception as e:
+            logger.error(f"Error processing row in naver_results: {e}")
+            continue
+    
+    logger.info(f"Found {valid_images} valid Naver images, {missing_images} missing or invalid")
     
     if not naver_images:
         logger.warning("No valid Naver images found in results")
@@ -1041,6 +1073,10 @@ def match_naver_product_images(haoreum_paths: List[str],
         # Find best matching Naver image
         for naver_url, product_name in zip(naver_images, product_names):
             try:
+                if not os.path.exists(naver_url):
+                    logger.warning(f"Skipping non-existent Naver image: {naver_url}")
+                    continue
+                    
                 is_match, similarity, scores = matcher.is_match(haoreum_path, naver_url, threshold)
                 
                 if is_match and similarity > best_similarity:
@@ -1065,6 +1101,10 @@ def match_naver_product_images(haoreum_paths: List[str],
         # Log progress
         if (h_idx + 1) % 10 == 0 or h_idx == len(haoreum_valid) - 1:
             logger.info(f"Processed {h_idx + 1}/{len(haoreum_valid)} Haoreum images")
+    
+    # Log match results summary
+    matched_count = sum(1 for result in results.values() if result['is_match'])
+    logger.info(f"Matched {matched_count}/{len(results)} Haoreum images with Naver images")
     
     # Clean up
     matcher.clear_cache()

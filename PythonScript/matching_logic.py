@@ -248,54 +248,67 @@ class MatchQualityEvaluator:
 # --- Product Matching Logic ---
 class ProductMatcher:
     def __init__(self, config: configparser.ConfigParser):
-        """
-        Initialize a ProductMatcher with configuration
-
-        Args:
-            config: Configuration object with matching settings
-        """
-        # Extract configuration values with fallbacks
+        """Initialize the product matcher with configuration."""
+        self.feature_cache = {}
         self.config = config
         
-        # Thresholds
-        self.text_similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.55)
-        self.image_similarity_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.5)
-        self.combined_threshold = config.getfloat('Matching', 'combined_threshold', fallback=0.6)
-        self.minimum_combined_score = config.getfloat('Matching', 'minimum_combined_score', fallback=0.5)
+        # Set default thresholds and weights - will be overridden if in config
+        self.text_similarity_threshold = 0.45
+        self.image_similarity_threshold = 0.42
+        self.combined_threshold = 0.48
+        self.minimum_combined_score = 0.40
+        self.text_weight = 0.65
+        self.image_weight = 0.35
+        self.price_similarity_weight = 0.15
+        self.exact_match_bonus = 0.25
+        self.image_model_name = 'EfficientNetB0'
+        self.text_model_name = 'jhgan/ko-sroberta-multitask'
+        self.use_tfidf = False
+        self.use_ensemble_models = True
         
-        # Image processing settings
-        self.image_resize_dimension = config.getint('ImageMatching', 'resize_dimension', fallback=224)
-        self.image_batch_size = config.getint('ImageMatching', 'batch_size', fallback=32)
-        
-        # Weights for combined score
-        self.text_weight = config.getfloat('Matching', 'text_weight', fallback=0.6)
-        self.image_weight = config.getfloat('Matching', 'image_weight', fallback=0.4)
-        
-        # Model paths
-        self.text_model_path = config.get('Matching', 'text_model_name', 
-                                         fallback='jhgan/ko-sroberta-multitask')
-        self.image_model_path = config.get('Matching', 'image_model_name', 
-                                          fallback='efficientnet_b0')
-        
-        # Enhanced text matching settings
-        self.exact_match_bonus = config.getfloat('Matching', 'exact_match_bonus', fallback=0.2)
-        self.token_match_weight = config.getfloat('Matching', 'token_match_weight', fallback=0.3)
-        self.use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=True)
-        self.ensemble_models = config.getboolean('Matching', 'use_ensemble_models', fallback=True)
-        self.fuzzy_match_threshold = config.getfloat('Matching', 'fuzzy_match_threshold', fallback=0.8)
-        
-        # Enhanced image matching settings
-        self.use_gpu = config.getboolean('GPU', 'use_gpu', fallback=False)
-        self.image_ensemble = config.getboolean('ImageMatching', 'use_multiple_models', fallback=True)
-        
-        # Category-specific thresholds
-        self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=True)
+        # Initialize category thresholds
+        self.use_category_thresholds = False
         self.category_thresholds = {}
-        self._load_category_thresholds(config)
         
-        # Initialize models lazily when needed
+        try:
+            # Load thresholds from config if available
+            self.text_similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=self.text_similarity_threshold)
+            self.image_similarity_threshold = config.getfloat('Matching', 'image_threshold', fallback=self.image_similarity_threshold)
+            self.combined_threshold = config.getfloat('Matching', 'combined_threshold', fallback=self.combined_threshold)
+            self.minimum_combined_score = config.getfloat('Matching', 'minimum_combined_score', fallback=self.minimum_combined_score)
+            self.text_weight = config.getfloat('Matching', 'text_weight', fallback=self.text_weight)
+            self.image_weight = config.getfloat('Matching', 'image_weight', fallback=self.image_weight)
+            self.price_similarity_weight = config.getfloat('Matching', 'price_similarity_weight', fallback=self.price_similarity_weight)
+            self.exact_match_bonus = config.getfloat('Matching', 'exact_match_bonus', fallback=self.exact_match_bonus)
+            self.use_category_thresholds = config.getboolean('Matching', 'use_category_thresholds', fallback=False)
+            self.image_model_name = config.get('Matching', 'image_model_name', fallback=self.image_model_name)
+            self.text_model_name = config.get('Matching', 'text_model_name', fallback=self.text_model_name)
+            self.use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=self.use_tfidf)
+            self.use_ensemble_models = config.getboolean('Matching', 'use_ensemble_models', fallback=self.use_ensemble_models)
+            
+            # Load category thresholds if enabled
+            if self.use_category_thresholds:
+                self._load_category_thresholds(config)
+        except Exception as e:
+            logging.error(f"Error reading matching thresholds/weights/models from [Matching] config: {e}. Using defaults.")
+        
+        # Initialize text model
         self.text_model = None
+        self.text_tokenizer = None
+        self.tfidf_vectorizer = None
+        try:
+            self._initialize_text_model()
+        except Exception as e:
+            logging.error(f"Error initializing text model: {e}")
+            logging.warning("Text matching will use fallback methods only.")
+        
+        # Initialize image model
         self.image_model = None
+        try:
+            self._initialize_image_model()
+        except Exception as e:
+            logging.error(f"Error initializing image model: {e}")
+            logging.warning("Image matching will be limited or disabled.")
         
         # Initialize additional tools and caches for enhanced accuracy
         self.feature_cache = FeatureCache(config)
@@ -727,25 +740,32 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
                 # Add Naver data if available
                 if best_naver_match:
                     result.update({
-                        '네이버 공급사명': best_naver_match['match_data'].get('seller'),
-                        '네이버 링크': best_naver_match['match_data'].get('link'),
-                        '네이버쇼핑(이미지링크)': best_naver_match['match_data'].get('image_path'),
-                        '판매단가3 (VAT포함)': best_naver_match['match_data'].get('price'),
-                        '_네이버_TextSim': best_naver_match['text_similarity'],
-                        '_해오름_네이버_ImageSim': best_naver_match['image_similarity'],
-                        '_네이버_Combined': best_naver_match['combined_score'],
-                        '네이버 기본수량': best_naver_match['match_data'].get('quantity', '-')
+                        '매칭_사이트': 'Naver',
+                        '공급사명': best_naver_match['match_data'].get('mallName', best_naver_match['match_data'].get('seller', '')),
+                        '네이버 쇼핑 링크': best_naver_match['match_data'].get('link'),
+                        '공급사 상품링크': best_naver_match['match_data'].get('mallProductUrl', best_naver_match['match_data'].get('originallink')),
+                        '네이버 이미지': best_naver_match['match_data'].get('image_path'),
+                        '판매단가(V포함)(3)': best_naver_match['match_data'].get('price'),
+                        '텍스트_유사도': best_naver_match['text_similarity'],
+                        '이미지_유사도': best_naver_match['image_similarity'],
+                        '매칭_정확도': best_naver_match['combined_score'],
+                        '기본수량(3)': best_naver_match['match_data'].get('quantity', '1'),
+                        '매칭_여부': 'Y',
+                        '매칭_품질': '상' if best_naver_match['combined_score'] > 0.8 else '중' if best_naver_match['combined_score'] > 0.6 else '하'
                     })
                 else:
                     result.update({
-                        '네이버 공급사명': None,
-                        '네이버 링크': None,
-                        '네이버쇼핑(이미지링크)': None,
-                        '판매단가3 (VAT포함)': None,
-                        '_네이버_TextSim': 0.0,
-                        '_해오름_네이버_ImageSim': 0.0,
-                        '_네이버_Combined': None,
-                        '네이버 기본수량': '-'
+                        '공급사명': None,
+                        '네이버 쇼핑 링크': None,
+                        '공급사 상품링크': None,
+                        '네이버 이미지': None,
+                        '판매단가(V포함)(3)': None,
+                        '텍스트_유사도': 0.0 if best_kogift_match else None,
+                        '이미지_유사도': 0.0 if best_kogift_match else None,
+                        '매칭_정확도': None,
+                        '기본수량(3)': None,
+                        '매칭_여부': 'Y' if best_kogift_match else 'N',
+                        '매칭_품질': '실패'
                     })
 
                 logging.debug(f"Successfully matched product {haoreum_product['name']}")

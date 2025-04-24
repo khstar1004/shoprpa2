@@ -83,14 +83,33 @@ async def get_image_from_url(session: aiohttp.ClientSession, image_url: str) -> 
             logging.error("Empty image URL provided to get_image_from_url")
             return None
             
-        # URL 정규화
-        if not image_url.startswith(('http://', 'https://')):
-            if "kogift" in image_url.lower() or "koreagift" in image_url.lower() or "adpanchok" in image_url.lower() or "jclgift" in image_url.lower():
-                image_url = f"https:{image_url}" if not image_url.startswith('//') else f"https:{image_url}"
-                logging.debug(f"Normalized image URL: {image_url}")
-            else:
-                logging.error(f"Invalid image URL scheme: {image_url}")
-                return None
+        # Fix URL format - ensure forward slashes and proper scheme
+        if isinstance(image_url, str):
+            # Fix backslashes in URLs (this is a common issue with crawled URLs)
+            if "\\" in image_url:
+                image_url = image_url.replace("\\", "/")
+            
+            # Now normalize URLs with proper scheme
+            if not image_url.startswith(('http://', 'https://')):
+                if any(domain in image_url.lower() for domain in ["kogift", "koreagift", "adpanchok", "jclgift"]):
+                    # Add proper scheme based on URL format
+                    if image_url.startswith('//'):
+                        image_url = f"https:{image_url}"
+                    elif ":" in image_url and not image_url.startswith(('http:', 'https:')):
+                        # Handle case where URL is like 'https:\www...' - split at colon and fix scheme
+                        parts = image_url.split(':', 1)
+                        if len(parts) == 2:
+                            scheme = parts[0].lower()
+                            path = parts[1].lstrip('/').lstrip('\\')
+                            image_url = f"{scheme}://{path}"
+                    else:
+                        # Simple case - just prefix with https://
+                        image_url = f"https://{image_url}"
+                    
+                    logging.debug(f"Normalized image URL: {image_url}")
+                else:
+                    logging.error(f"Invalid image URL scheme: {image_url}")
+                    return None
 
         # Use the async downloader - IMPORTANT: This needs the session and save_directory potentially
         # This function might need redesign if it's intended to directly use the downloader's logic

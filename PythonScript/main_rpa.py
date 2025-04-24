@@ -11,6 +11,7 @@ import configparser
 import hashlib
 import datetime
 import traceback
+import shutil
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -396,6 +397,33 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             if img_url:
                                 logging.debug(f"네이버 이미지 URL 샘플 #{sample_count+1}: {img_url}")
                                 sample_count += 1
+                
+                # Ensure Naver images are downloaded to the correct directory
+                naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
+                os.makedirs(naver_image_dir, exist_ok=True)
+                logging.info(f"Ensuring Naver images directory exists: {naver_image_dir}")
+                
+                # Fix any image paths to ensure they're in the right directory
+                img_fix_count = 0
+                for name, items in naver_map.items():
+                    for item in items:
+                        img_path = item.get('image_path')
+                        if img_path and isinstance(img_path, str) and os.path.exists(img_path):
+                            # Check if the image is in the wrong directory
+                            if 'Naver' not in img_path.replace('\\', '/').split('/'):
+                                # Move to correct directory
+                                filename = os.path.basename(img_path)
+                                new_path = os.path.join(naver_image_dir, filename)
+                                try:
+                                    shutil.copy2(img_path, new_path)
+                                    item['image_path'] = new_path
+                                    img_fix_count += 1
+                                    logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
+                                except Exception as e:
+                                    logging.error(f"Error fixing Naver image path: {e}")
+                
+                if img_fix_count > 0:
+                    logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
             except Exception as e:
                 logging.error(f"Error creating Naver map: {e}", exc_info=True)
                 naver_map = {}

@@ -308,10 +308,32 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         return None
 
     try:
-        # Ensure save directory exists
-        os.makedirs(save_dir, exist_ok=True)
+        # Ensure URL is properly encoded and valid
+        if not (url.startswith('http://') or url.startswith('https://')):
+            logger.warning(f"Invalid URL format: {url}")
+            return None
+            
+        # Handle URL encoding
+        if '%' not in url and ' ' in url:
+            url = url.replace(' ', '%20')
 
-        # Generate safe filename
+        # Ensure save directory exists (standardize paths)
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
+        
+        # Always add Naver subdirectory unless it already exists in the path
+        if not save_dir.endswith('Naver'):
+            # Normalize path separators
+            save_dir_normalized = save_dir.replace('/', os.sep).replace('\\', os.sep)
+            
+            if 'Naver' not in save_dir_normalized.split(os.sep):
+                # Create the Naver subdirectory
+                naver_dir = os.path.join(save_dir, 'Naver')
+                os.makedirs(naver_dir, exist_ok=True)
+                save_dir = naver_dir
+                logger.debug(f"Using Naver subdirectory: {save_dir}")
+        
+        # Generate safe filename that's compatible with both actual filename and path navigation
         safe_name = re.sub(r'[^\w\-_.]', '_', product_name)[:50]
         url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
         
@@ -323,6 +345,9 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         filename = f"naver_{safe_name}_{url_hash}{ext}"
         local_path = os.path.join(save_dir, filename)
         final_image_path = local_path
+        
+        # Log the path being used
+        logger.debug(f"Naver image will be saved to: {local_path}")
         
         # Skip if file exists
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
@@ -352,56 +377,73 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             
             return final_image_path
 
-        # Download image
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to download image: {url}, status: {response.status}")
-                    return None
-                
-                # Save to temporary file
-                temp_path = f"{local_path}.{time.time_ns()}.tmp"
-                try:
-                    async with aiofiles.open(temp_path, 'wb') as f:
-                        await f.write(await response.read())
-                    
-                    # Validate image
-                    with Image.open(temp_path) as img:
-                        img.verify()
-                    with Image.open(temp_path) as img:
-                        if img.mode in ('RGBA', 'LA'):
-                            img = img.convert('RGB')
-                            img.save(temp_path, 'JPEG', quality=85)
-                    
-                    # Move temp file to final location
-                    if os.path.exists(local_path):
-                        os.remove(local_path)
-                    os.rename(temp_path, local_path)
-                    logger.info(f"Successfully downloaded image: {url} -> {local_path}")
-                    
-                    # Attempt background removal if needed
-                    try:
-                        use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
-                        if use_bg_removal:
-                            from image_utils import remove_background
-                            bg_removed_path = local_path.replace('.', '_nobg.', 1)
-                            if remove_background(local_path, bg_removed_path):
-                                final_image_path = bg_removed_path
-                                logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
-                            else:
-                                logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
-                    except Exception as bg_err:
-                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+        # Download image with retry logic
+        max_retries = config.getint('Network', 'max_retries', fallback=3)
+        for attempt in range(max_retries):
+            try:
+                # Download image
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                        if response.status != 200:
+                            logger.error(f"Failed to download image: {url}, status: {response.status}")
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1)  # Wait before retry
+                                continue
+                            return None
                         
-                    return final_image_path
-                except Exception as e:
-                    logger.error(f"Error processing image {url}: {e}")
-                    if os.path.exists(temp_path):
+                        # Save to temporary file
+                        temp_path = f"{local_path}.{time.time_ns()}.tmp"
                         try:
-                            os.remove(temp_path)
-                        except:
-                            pass
-                    return None
+                            async with aiofiles.open(temp_path, 'wb') as f:
+                                await f.write(await response.read())
+                            
+                            # Validate image
+                            with Image.open(temp_path) as img:
+                                img.verify()
+                            with Image.open(temp_path) as img:
+                                if img.mode in ('RGBA', 'LA'):
+                                    img = img.convert('RGB')
+                                    img.save(temp_path, 'JPEG', quality=85)
+                            
+                            # Move temp file to final location
+                            if os.path.exists(local_path):
+                                os.remove(local_path)
+                            os.rename(temp_path, local_path)
+                            logger.info(f"Successfully downloaded image: {url} -> {local_path}")
+                            
+                            # Attempt background removal if needed
+                            try:
+                                use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                                if use_bg_removal:
+                                    from image_utils import remove_background
+                                    bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                                    if remove_background(local_path, bg_removed_path):
+                                        final_image_path = bg_removed_path
+                                        logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
+                                    else:
+                                        logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
+                            except Exception as bg_err:
+                                logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                                
+                            return final_image_path
+                        except Exception as e:
+                            logger.error(f"Error processing image {url}: {e}")
+                            if os.path.exists(temp_path):
+                                try:
+                                    os.remove(temp_path)
+                                except:
+                                    pass
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1)  # Wait before retry
+                                continue
+                            return None
+            except aiohttp.ClientError as e:
+                logger.error(f"Network error downloading image {url}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)  # Wait before retry
+                    continue
+                return None
+                
     except Exception as e:
         logger.error(f"Error downloading image {url}: {e}")
         return None
