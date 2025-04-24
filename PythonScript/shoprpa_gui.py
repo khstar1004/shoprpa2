@@ -26,10 +26,14 @@ class WorkerThread(QThread):
     progress = pyqtSignal(str, str)  # (type, message)
     finished = pyqtSignal(bool, str)  # (success, output_path)
     
-    def __init__(self, config_path):
+    def __init__(self, config_path, input_file=None, process_type=None, batch_size=None):
         super().__init__()
         self.config_path = config_path
+        self.input_file = input_file
+        self.process_type = process_type
+        self.batch_size = batch_size
         self.running = False
+        self.output_path = None
         
     def run(self):
         try:
@@ -44,9 +48,36 @@ class WorkerThread(QThread):
 
             # Set up progress queue
             self.progress_queue = self.progress
+            
+            # Set input file path in config if provided
+            if self.input_file and os.path.exists(self.input_file):
+                if 'Paths' not in CONFIG:
+                    CONFIG.add_section('Paths')
+                CONFIG.set('Paths', 'input_file', self.input_file)
+                self.progress.emit("status", f"Using input file: {os.path.basename(self.input_file)}")
+            
+            # Set process type if provided (A for approval, P for price management)
+            if self.process_type:
+                if 'Processing' not in CONFIG:
+                    CONFIG.add_section('Processing')
+                process_code = 'A' if '승인관리' in self.process_type else 'P'
+                CONFIG.set('Processing', 'process_type', process_code)
+                self.progress.emit("status", f"Process type: {self.process_type}")
+            
+            # Set batch size if provided
+            if self.batch_size and self.batch_size > 0:
+                if 'Processing' not in CONFIG:
+                    CONFIG.add_section('Processing')
+                CONFIG.set('Processing', 'batch_size', str(self.batch_size))
+                self.progress.emit("status", f"Batch size: {self.batch_size}")
 
             # Run RPA process
             asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=self.progress_queue))
+            
+            # Determine if successful based on presence of output_path
+            success = hasattr(self, 'output_path') and self.output_path is not None
+            output_path = self.output_path if success else ""
+            self.finished.emit(success, output_path)
             
         except Exception as e:
             error_msg = f"An error occurred: {str(e)}\n{traceback.format_exc()}"
@@ -55,7 +86,6 @@ class WorkerThread(QThread):
             self.finished.emit(False, "")
         finally:
             self.running = False
-            self.progress.emit("finished", "True")
             
     def stop(self):
         if self.running:
@@ -178,6 +208,12 @@ class MainWindow(QMainWindow):
         browse_btn.clicked.connect(self.browse_file)
         file_layout.addWidget(browse_btn, 1, 0)
         
+        # Add Open File button (initially disabled)
+        self.open_file_btn = QPushButton("결과 파일 열기")
+        self.open_file_btn.setEnabled(False)
+        self.open_file_btn.clicked.connect(self.open_result_file)
+        file_layout.addWidget(self.open_file_btn, 1, 1)
+        
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
         
@@ -203,6 +239,24 @@ class MainWindow(QMainWindow):
         
         # Progress bar
         self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p% 완료")
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid grey;
+                border-radius: 5px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                width: 5px;
+                margin: 0px;
+            }
+        """)
         layout.addWidget(self.progress_bar)
         
         # Control buttons
@@ -306,14 +360,31 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'stop_btn'):
                 self.stop_btn.setEnabled(True)
             
-            # Clear status text
+            # Disable open file button during processing
+            if hasattr(self, 'open_file_btn'):
+                self.open_file_btn.setEnabled(False)
+            
+            # Clear status text and reset progress bar
             self.status_text.clear()
+            self.progress_bar.setValue(0)
+            
+            # Add initial status
+            self.status_text.append(f"상태: 처리 시작 - {os.path.basename(self.input_file)}")
+            
+            # Get current settings from UI
+            selected_process_type = self.process_type.currentText()
+            selected_batch_size = self.batch_size.value()
             
             # Create and start worker thread
             if self.worker is not None and self.worker.isRunning():
                 self.worker.stop()
                 
-            self.worker = WorkerThread(self.config_path)
+            self.worker = WorkerThread(
+                self.config_path, 
+                self.input_file,
+                selected_process_type,
+                selected_batch_size
+            )
             self.worker.progress.connect(self.update_progress)
             self.worker.finished.connect(self.processing_finished)
             self.worker.start()
@@ -354,14 +425,31 @@ class MainWindow(QMainWindow):
         try:
             if type == "status":
                 self.status_text.append(f"상태: {message}")
+                # Reset progress bar if it's at 100%
+                if self.progress_bar.value() >= 100:
+                    self.progress_bar.setValue(0)
+                # Pulse the progress bar
+                current_value = self.progress_bar.value()
+                new_value = min(current_value + 5, 95)  # Never reach 100 except for completion
+                self.progress_bar.setValue(new_value)
             elif type == "error":
                 self.status_text.append(f"오류: {message}")
                 QMessageBox.warning(self, "오류", message)
             elif type == "finished":
                 self.status_text.append("처리 완료")
+                self.progress_bar.setValue(100)  # Set to 100% on completion
                 self.start_btn.setEnabled(True)
                 if hasattr(self, 'stop_btn'):
                     self.stop_btn.setEnabled(False)
+            elif type == "final_path":
+                # Handle the output file path
+                if message and not message.startswith("Error:"):
+                    self.status_text.append(f"출력 파일: {message}")
+                    # Store the last output path for "Open File" functionality
+                    self.last_output_path = message
+                    # If this is running in the WorkerThread, store the path
+                    if hasattr(self, 'output_path'):
+                        self.output_path = message
         except Exception as e:
             logging.error(f"Progress update error: {str(e)}")
     
@@ -376,11 +464,33 @@ class MainWindow(QMainWindow):
                 msg = f"처리가 완료되었습니다."
                 if output_path:
                     msg += f"\n출력 파일: {output_path}"
+                    # Store the output path and enable the open file button
+                    self.last_output_path = output_path
+                    if hasattr(self, 'open_file_btn'):
+                        self.open_file_btn.setEnabled(True)
                 QMessageBox.information(self, "완료", msg)
             else:
                 QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
         except Exception as e:
             logging.error(f"Processing finished handler error: {str(e)}")
+
+    def open_result_file(self):
+        """Open the result file"""
+        try:
+            if hasattr(self, 'last_output_path') and self.last_output_path:
+                if sys.platform == 'win32':
+                    os.startfile(self.last_output_path)
+                elif sys.platform == 'darwin':  # macOS
+                    import subprocess
+                    subprocess.call(('open', self.last_output_path))
+                else:  # Linux
+                    import subprocess
+                    subprocess.call(('xdg-open', self.last_output_path))
+            else:
+                QMessageBox.warning(self, "경고", "출력 파일이 없습니다.")
+        except Exception as e:
+            logging.error(f"Error opening result file: {str(e)}")
+            QMessageBox.warning(self, "오류", f"출력 파일을 열 수 없습니다: {str(e)}")
 
 if __name__ == "__main__":
     try:

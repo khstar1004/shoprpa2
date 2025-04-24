@@ -16,7 +16,7 @@ import shutil
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
-from excel_utils import create_final_output_excel
+from excel_utils import create_split_excel_outputs
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
 from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
@@ -199,7 +199,11 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
 
             # Validate Kogift results
             if isinstance(kogift_crawl_results, dict):
-                kogift_count = len(kogift_crawl_results)
+                # Count actual items with data, not just the number of product entries
+                valid_product_count = sum(1 for items in kogift_crawl_results.values() if items and len(items) > 0)
+                valid_item_count = sum(len(items) for items in kogift_crawl_results.values() if items)
+                kogift_count = valid_product_count
+                logging.debug(f"Kogift results: {valid_product_count} products with matches (total {valid_item_count} items)")
                 if kogift_count == 0:
                     logging.warning("Kogift crawl resulted in empty dictionary")
             elif isinstance(kogift_crawl_results, pd.DataFrame):
@@ -216,7 +220,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 if naver_count == 0:
                     logging.warning("Naver crawl resulted in empty list")
             elif isinstance(naver_crawl_results, pd.DataFrame):
-                naver_count = len(naver_crawl_results) if not naver_crawl_results.empty else 0
+                # Count only rows with successful matches (where '네이버_상품명' is not the default "not found" value)
+                if not naver_crawl_results.empty and '네이버_상품명' in naver_crawl_results.columns:
+                    naver_count = (naver_crawl_results['네이버_상품명'] != '검색된 상품이 없음').sum()
+                    logging.debug(f"Naver successful matches: {naver_count} out of {len(naver_crawl_results)} total rows")
+                else:
+                    naver_count = len(naver_crawl_results) if not naver_crawl_results.empty else 0
+                    logging.debug("Using total row count for Naver results as '네이버_상품명' column not found")
                 if naver_crawl_results.empty:
                     logging.warning("Naver crawl resulted in empty DataFrame")
             else:
@@ -224,7 +234,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.warning(f"Unexpected Naver results type: {type(naver_crawl_results)}")
 
             # Validate Haereum results
-            haereum_count = len(haereum_image_url_map)
+            if isinstance(haereum_image_url_map, dict):
+                # Count only entries with actual URLs
+                valid_haereum_count = sum(1 for item in haereum_image_url_map.values() if item)
+                haereum_count = valid_haereum_count
+                logging.debug(f"Haereum URL results: {valid_haereum_count} products with valid URLs out of {len(haereum_image_url_map)} total")
+            else:
+                haereum_count = len(haereum_image_url_map) if hasattr(haereum_image_url_map, '__len__') else 0
             if haereum_count == 0:
                 logging.warning("Haereum URL crawl resulted in empty map")
 
@@ -623,14 +639,16 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
                 
-                # Save the file
-                success = create_final_output_excel(formatted_df, output_path)
+                # Create both Excel files (with and without images)
+                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(formatted_df, output_path)
                 
-                if success:
-                    logging.info(f"[Step 7/7] Output file saved and formatted: {output_path}. Duration: {time.time() - step_start_time:.2f} sec")
+                if result_success and upload_success:
+                    logging.info(f"Successfully created both Excel files:")
+                    logging.info(f"- Result file (with images): {result_path}")
+                    logging.info(f"- Upload file (links only): {upload_path}")
                     if progress_queue: progress_queue.emit("status", "Output file saved successfully")
                 else:
-                    raise Exception("Failed to save output file")
+                    raise Exception("Failed to create one or both Excel files")
                 
             except Exception as save_err:
                 error_msg = f"Failed to save or format output file: {str(save_err)}"

@@ -158,8 +158,8 @@ IMAGE_QUALITY = 85  # JPEG compression quality
 SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']  # Supported by Excel 2021
 
 # Image cell specific styling
-IMAGE_CELL_HEIGHT = 90  # Row height for image cells
-IMAGE_CELL_WIDTH = 15   # Column width for image cells
+IMAGE_CELL_HEIGHT = 120  # Row height for image cells (increased from 90)
+IMAGE_CELL_WIDTH = 22   # Column width for image cells (increased from 15)
 
 # --- Utility Functions ---
 
@@ -315,8 +315,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         return
 
     # Image size settings - increased for better visibility
-    img_width = 120  # Increased from 80
-    img_height = 120  # Increased from 80
+    img_width = 150  # Increased from 120
+    img_height = 150  # Increased from 120
 
     # For each row in the data
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
@@ -325,138 +325,181 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             try:
                 # Get the cell value (image path)
                 cell = worksheet.cell(row=row_idx, column=col_idx)
-                original_path = str(cell.value)
-                image_path = original_path.strip()
+                original_value = cell.value
                 
                 logger.info(f"Row {row_idx}, Column {col_name}:")
-                logger.info(f"  Original path: '{original_path}'")
-                logger.info(f"  Stripped path: '{image_path}'")
-                logger.info(f"  Path type: {type(image_path)}")
+                logger.info(f"  Original value: '{original_value}'")
+                logger.info(f"  Value type: {type(original_value)}")
                 
                 # Skip empty cells or error messages
-                if not image_path or image_path == '-' or any(err in image_path for err in ERROR_MESSAGE_VALUES):
-                    logger.info(f"  Skipping path: Empty or error message")
+                if not original_value or original_value == '-' or (isinstance(original_value, str) and 
+                                                               any(err in original_value for err in ERROR_MESSAGE_VALUES)):
+                    logger.info(f"  Skipping value: Empty or error message")
                     continue
                 
-                # Check if the path is actually a dictionary represented as a string
-                # Common scenario with image data stored as JSON-like dictionaries
-                url = None
-                if image_path.startswith('{') and image_path.endswith('}'):
+                # Handle dictionary format - This is the preferred format for all image sources
+                img_dict = None
+                if isinstance(original_value, dict):
+                    img_dict = original_value
+                    logger.info(f"  Found image dictionary: {img_dict}")
+                elif isinstance(original_value, str) and original_value.startswith('{') and original_value.endswith('}'):
+                    # Try to parse dictionary from string
                     try:
-                        # Convert string representation to actual dictionary
-                        # This handles cases where dictionaries are stored as strings
                         import ast
-                        img_dict = ast.literal_eval(image_path)
-                        if isinstance(img_dict, dict) and 'url' in img_dict:
-                            url = img_dict['url']
-                            logger.info(f"  Found URL in dictionary string: {url}")
+                        img_dict = ast.literal_eval(original_value)
+                        if not isinstance(img_dict, dict):
+                            img_dict = None
+                        logger.info(f"  Parsed dictionary from string: {img_dict}")
                     except (SyntaxError, ValueError) as e:
                         logger.warning(f"  Failed to parse dictionary-like string: {e}")
+                        img_dict = None
                 
-                # If we got a URL from the dictionary, try to download the image
-                if url:
-                    try:
+                # Process image based on source type
+                if img_dict and isinstance(img_dict, dict):
+                    # Determine image path based on dictionary format
+                    local_path = img_dict.get('local_path')
+                    url = img_dict.get('url')
+                    source = img_dict.get('source', '').lower()
+                    
+                    # Try local_path first if available
+                    if local_path and os.path.isfile(local_path):
+                        image_path = local_path
+                        logger.info(f"  Using local path from dictionary: {local_path}")
+                    # If no valid local path but URL exists, try to download
+                    elif url:
+                        logger.info(f"  No valid local path, attempting to download from URL: {url}")
+                        
                         # Create a temporary directory for downloaded images if not exists
                         import tempfile
-                        import os
                         temp_dir = os.path.join(tempfile.gettempdir(), "rpa_image_cache")
                         os.makedirs(temp_dir, exist_ok=True)
                         
-                        # Create a unique filename for the downloaded image
-                        # Get just the filename from the URL
-                        from urllib.parse import urlparse
-                        import hashlib
-                        parsed_url = urlparse(url)
-                        url_path = parsed_url.path
-                        file_name = os.path.basename(url_path)
-                        
-                        # If filename is empty or too short, create a hash-based name
-                        if not file_name or len(file_name) < 5:
-                            file_name = hashlib.md5(url.encode()).hexdigest() + ".jpg"
-                        
-                        temp_file_path = os.path.join(temp_dir, file_name)
-                        
-                        # Only download if the file doesn't already exist
-                        if not os.path.exists(temp_file_path):
-                            logger.info(f"  Downloading image from URL: {url}")
-                            import requests
-                            response = requests.get(url, timeout=10)
-                            response.raise_for_status()  # Raise exception for bad responses
+                        # Generate unique filename
+                        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
+                        file_ext = os.path.splitext(urlparse(url).path)[1].lower() or '.jpg'
+                        if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+                            file_ext = '.jpg'
                             
-                            # Save the image
-                            with open(temp_file_path, "wb") as f:
-                                f.write(response.content)
-                            logger.info(f"  Downloaded image to: {temp_file_path}")
+                        # Create source-specific filename
+                        if source in ['haoreum', 'kogift', 'naver']:
+                            filename = f"{source}_{url_hash}{file_ext}"
+                        else:
+                            filename = f"image_{url_hash}{file_ext}"
+                            
+                        temp_file_path = os.path.join(temp_dir, filename)
+                        
+                        # Download the image if needed
+                        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
+                            try:
+                                import requests
+                                response = requests.get(url, timeout=10)
+                                response.raise_for_status()
+                                
+                                with open(temp_file_path, "wb") as f:
+                                    f.write(response.content)
+                                logger.info(f"  Downloaded image to: {temp_file_path}")
+                                image_path = temp_file_path
+                            except Exception as download_err:
+                                logger.error(f"  Failed to download image: {download_err}")
+                                cell.value = "이미지 다운로드 실패"
+                                continue
                         else:
                             logger.info(f"  Using cached image at: {temp_file_path}")
+                            image_path = temp_file_path
+                    else:
+                        logger.warning(f"  No valid image path or URL in dictionary")
+                        cell.value = "이미지 경로 없음"
+                        continue
+                # Handle string path directly
+                elif isinstance(original_value, str):
+                    # Check if it's a valid file path
+                    if os.path.isfile(original_value):
+                        image_path = original_value
+                        logger.info(f"  Using direct file path: {image_path}")
+                    # Check if it's a URL
+                    elif original_value.startswith(('http://', 'https://')):
+                        url = original_value
+                        logger.info(f"  Found URL string, attempting to download: {url}")
                         
-                        # Add image to worksheet if download succeeded
-                        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
+                        # Create a temporary directory for downloaded images if not exists
+                        import tempfile
+                        temp_dir = os.path.join(tempfile.gettempdir(), "rpa_image_cache")
+                        os.makedirs(temp_dir, exist_ok=True)
+                        
+                        # Generate unique filename
+                        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
+                        file_ext = os.path.splitext(urlparse(url).path)[1].lower() or '.jpg'
+                        if file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+                            file_ext = '.jpg'
+                            
+                        # Determine source from column name
+                        if '본사' in col_name:
+                            source = 'haoreum'
+                        elif '고려' in col_name:
+                            source = 'kogift'
+                        elif '네이버' in col_name:
+                            source = 'naver'
+                        else:
+                            source = 'other'
+                            
+                        filename = f"{source}_{url_hash}{file_ext}"
+                        temp_file_path = os.path.join(temp_dir, filename)
+                        
+                        # Download the image if needed
+                        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
                             try:
-                                # Verify the image is valid
-                                with Image.open(temp_file_path) as img_check:
-                                    img_size = img_check.size
-                                    logger.info(f"  Downloaded image size: {img_size}")
+                                import requests
+                                response = requests.get(url, timeout=10)
+                                response.raise_for_status()
                                 
-                                # Add the image to the worksheet
-                                img = openpyxl.drawing.image.Image(temp_file_path)
-                                img.width = img_width
-                                img.height = img_height
-                                cell_address = f"{get_column_letter(col_idx)}{row_idx}"
-                                img.anchor = cell_address
-                                worksheet.add_image(img)
-                                
-                                # Clear the cell value since we're showing the image
-                                cell.value = ""
-                                logger.info(f"  Successfully added image to cell {cell_address}")
-                                continue  # Skip the remaining processing for this cell
-                            except Exception as img_err:
-                                logger.error(f"  Failed to process downloaded image: {img_err}")
-                                # Fall back to setting a message in the cell
-                                cell.value = "이미지 처리 오류"
-                    except Exception as download_err:
-                        logger.error(f"  Failed to download image from URL: {download_err}")
-                        cell.value = "이미지 다운로드 실패"
+                                with open(temp_file_path, "wb") as f:
+                                    f.write(response.content)
+                                logger.info(f"  Downloaded image to: {temp_file_path}")
+                                image_path = temp_file_path
+                            except Exception as download_err:
+                                logger.error(f"  Failed to download image: {download_err}")
+                                cell.value = "이미지 다운로드 실패"
+                                continue
+                        else:
+                            logger.info(f"  Using cached image at: {temp_file_path}")
+                            image_path = temp_file_path
+                    else:
+                        logger.warning(f"  Invalid image path: {original_value}")
+                        cell.value = "이미지 파일 없음"
                         continue
                 
-                # If we get here, either there was no URL or download failed
-                # Try to handle raw file path if that's what we have
-                # Convert to raw string path for local file checks
-                raw_path = rf"{image_path}"
-                logger.info(f"  Raw string path: '{raw_path}'")
-                logger.info(f"  Raw path exists: {os.path.isfile(raw_path)}")
-                
-                # Check if image path exists as a file
-                if os.path.isfile(raw_path):
-                    try:
-                        # Try to open the image first to verify it's valid
-                        with Image.open(raw_path) as img_check:
-                            logger.info(f"  Successfully opened image: {raw_path}")
-                            img_size = img_check.size
-                            logger.info(f"  Image size: {img_size}")
+                # Add image to worksheet
+                try:
+                    # Verify the image file
+                    with Image.open(image_path) as img_check:
+                        img_size = img_check.size
+                        logger.info(f"  Image size: {img_size}")
                         
-                        # Add the image to the worksheet
-                        img = openpyxl.drawing.image.Image(raw_path)
-                        img.width = img_width
-                        img.height = img_height
-                        
-                        # Calculate cell position
-                        cell_address = f"{get_column_letter(col_idx)}{row_idx}"
-                        
-                        # Set image anchor with offset to center in cell
-                        img.anchor = cell_address
-                        worksheet.add_image(img)
-                        
-                        # Clear the cell value since we're showing the image
-                        cell.value = ""
-                        
-                        logger.info(f"  Successfully added image to cell {cell_address}")
-                    except Exception as img_err:
-                        logger.error(f"  Failed to process image {raw_path}: {img_err}")
-                        cell.value = "이미지 처리 오류"
-                else:
-                    logger.warning(f"  Image file not found: {raw_path}")
-                    cell.value = "이미지 파일 없음"
+                        # Skip very small images
+                        if img_size[0] < 20 or img_size[1] < 20:
+                            logger.warning(f"  Image too small: {img_size}")
+                            cell.value = "이미지 크기가 너무 작음"
+                            continue
+                    
+                    # Add the image to the worksheet
+                    img = openpyxl.drawing.image.Image(image_path)
+                    img.width = img_width
+                    img.height = img_height
+                    
+                    # Calculate cell position
+                    cell_address = f"{get_column_letter(col_idx)}{row_idx}"
+                    
+                    # Set image anchor
+                    img.anchor = cell_address
+                    worksheet.add_image(img)
+                    
+                    # Clear the cell value since we're showing the image
+                    cell.value = ""
+                    
+                    logger.info(f"  Successfully added image to cell {cell_address}")
+                except Exception as img_err:
+                    logger.error(f"  Failed to process image {image_path}: {img_err}")
+                    cell.value = "이미지 처리 오류"
             
             except Exception as e:
                 logger.error(f"Error processing image in row {row_idx}, column {col_name}: {e}")
@@ -613,7 +656,7 @@ def verify_image_data(img_value, img_col_name):
                 # If parsing fails, treat as a regular string
                 pass
                 
-        # Handle dictionary format (expected for Naver images)
+        # Handle dictionary format (expected for all image sources)
         if isinstance(img_value, dict):
             # If there's a local_path, verify it exists
             if 'local_path' in img_value and img_value['local_path']:
@@ -630,151 +673,160 @@ def verify_image_data(img_value, img_col_name):
         # Handle string path/URL
         elif isinstance(img_value, str) and img_value and img_value != '-':
             img_value = img_value.strip()
+            
+            # Determine source from column name
+            source_map = {
+                '본사': 'haoreum',
+                '고려': 'kogift',
+                '네이버': 'naver'
+            }
+            
+            source = 'other'
+            for key, value in source_map.items():
+                if key in img_col_name:
+                    source = value
+                    break
+            
             # For URL strings (not file paths)
             if img_value.startswith(('http:', 'https:')):
                 # Return a dictionary format for consistency
-                source = img_col_name.split()[0].lower()
                 return {'url': img_value, 'source': source}
 
+            # Fix backslashes in path
+            if '\\' in img_value:
+                img_value = img_value.replace('\\', '/')
+            
             # For file path strings (absolute paths preferred)
-            elif os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
-                 # Convert file path to dictionary format for consistency
-                 source = img_col_name.split()[0].lower()
-                 # Try to construct a placeholder URL if none provided (might be inaccurate)
-                 img_value_str = img_value.replace(os.sep, '/')
-                 placeholder_url = f"file:///{img_value_str}"
-                 return {'url': placeholder_url, 'local_path': img_value, 'original_path': img_value, 'source': source}
-            # Handle relative paths (less ideal, try to resolve)
+            if os.path.isabs(img_value) and os.path.exists(img_value) and os.path.getsize(img_value) > 0:
+                # Convert file path to dictionary format for consistency
+                img_value_str = img_value.replace(os.sep, '/')
+                placeholder_url = f"file:///{img_value_str}"
+                return {
+                    'url': placeholder_url, 
+                    'local_path': img_value, 
+                    'original_path': img_value, 
+                    'source': source
+                }
+                
+            # Handle relative paths by checking multiple base directories
             elif not os.path.isabs(img_value):
-                 try:
-                     # Attempt to resolve relative to a base path (e.g., project root or specific image dir)
-                     # This is a guess - adjust base_path as needed
-                     base_path = Path('C:/RPA/Image/Main') # Example base path
-                     abs_path = (base_path / img_value).resolve()
-                     if abs_path.exists() and abs_path.stat().st_size > 0:
-                         source = img_col_name.split()[0].lower()
-                         abs_path_str = str(abs_path).replace('\\', '/')
-                         placeholder_url = f"file:///{abs_path_str}"
-                         return {'url': placeholder_url, 'local_path': str(abs_path), 'original_path': str(abs_path), 'source': source}
-                 except Exception:
-                     pass # Path resolution failed
+                # Try different base paths based on source type
+                base_paths = []
+                if source == 'haoreum':
+                    base_paths = [
+                        Path('C:/RPA/Image/Main/Haoreum'),
+                        Path('C:/RPA/Image/Target/Haoreum'),
+                        Path('C:/RPA/Image/Haoreum'),
+                        Path('C:/RPA/Image')
+                    ]
+                elif source == 'kogift':
+                    base_paths = [
+                        Path('C:/RPA/Image/Main/Kogift'),
+                        Path('C:/RPA/Image/Target/Kogift'),
+                        Path('C:/RPA/Image/Kogift'),
+                        Path('C:/RPA/Image')
+                    ]
+                elif source == 'naver':
+                    base_paths = [
+                        Path('C:/RPA/Image/Main/Naver'),
+                        Path('C:/RPA/Image/Target/Naver'),
+                        Path('C:/RPA/Image/Naver'),
+                        Path('C:/RPA/Image')
+                    ]
+                else:
+                    base_paths = [
+                        Path('C:/RPA/Image/Main'),
+                        Path('C:/RPA/Image/Target'),
+                        Path('C:/RPA/Image')
+                    ]
+                
+                # Try each base path for resolving the relative path
+                for base_path in base_paths:
+                    try:
+                        abs_path = (base_path / img_value).resolve()
+                        if abs_path.exists() and abs_path.stat().st_size > 0:
+                            abs_path_str = str(abs_path).replace('\\', '/')
+                            placeholder_url = f"file:///{abs_path_str}"
+                            return {
+                                'url': placeholder_url, 
+                                'local_path': str(abs_path), 
+                                'original_path': str(abs_path), 
+                                'source': source
+                            }
+                    except Exception:
+                        continue  # Try next base path
+                
+                # If we reach here, all base paths failed
+                if source == 'haoreum':
+                    # For Haoreum, try to check if the image might be in a common format
+                    try:
+                        # Try standard haereum image format
+                        standard_paths = [
+                            # Common Haoreum image patterns
+                            f"C:/RPA/Image/Main/Haoreum/haoreum_{os.path.basename(img_value)}",
+                            f"C:/RPA/Image/Main/Haoreum/haoreum_{img_value}",
+                            f"C:/RPA/Image/Main/Haoreum/{os.path.basename(img_value)}"
+                        ]
+                        
+                        for std_path in standard_paths:
+                            if os.path.exists(std_path) and os.path.getsize(std_path) > 0:
+                                std_path_str = std_path.replace('\\', '/')
+                                placeholder_url = f"file:///{std_path_str}"
+                                return {
+                                    'url': placeholder_url, 
+                                    'local_path': std_path, 
+                                    'original_path': img_value, 
+                                    'source': 'haoreum'
+                                }
+                    except Exception:
+                        pass  # Ignore errors in this speculative search
 
-            return '-'  # Invalid path or URL string
+            # If all attempts fail, return the original string for further handling
+            return {'original_path': img_value, 'source': source}
 
         return '-'  # None, NaN, empty string, etc.
     except Exception as e:
         logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
         return '-'  # Return placeholder on error
 
-def _prepare_data_for_excel(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepares the DataFrame for Excel export: ensures columns, formats data.
-    Handles numeric conversion carefully to preserve error strings.
+def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame:
     """
-    if df is None:
-        logger.error("_prepare_data_for_excel received None DataFrame.")
-        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
-
-    df_prepared = df.copy()
-    logger.info(f"Preparing data for Excel export. Initial rows: {len(df_prepared)}, Initial columns: {df_prepared.columns.tolist()}")
-
-    # 1. Ensure all FINAL columns exist, add if missing with '-'
-    missing_cols = [col for col in FINAL_COLUMN_ORDER if col not in df_prepared.columns]
-    if missing_cols:
-        logger.warning(f"Missing columns in input data: {missing_cols}")
-        for col in missing_cols:
-            df_prepared[col] = '-'
-
-    # 2. Select and Reorder columns STRICTLY according to FINAL_COLUMN_ORDER
-    try:
-        df_prepared = df_prepared[FINAL_COLUMN_ORDER]
-        logger.debug(f"Columns reordered and selected. Final columns: {df_prepared.columns.tolist()}")
-    except KeyError as ke:
-        logger.error(f"KeyError during column selection: {ke}")
-        # Fall back to ensuring all required columns exist
-        available_final_cols = [col for col in FINAL_COLUMN_ORDER if col in df.columns]
-        df_prepared = df[available_final_cols]
-        # Add missing ones with '-'
-        for col in FINAL_COLUMN_ORDER:
-            if col not in df_prepared.columns:
-                df_prepared[col] = '-'
-        df_prepared = df_prepared[FINAL_COLUMN_ORDER]  # Try reordering again
-
-    # 3. Process image columns before conversion to string
-    # Convert dictionary-like strings to actual dictionaries for image columns
-    for col in IMAGE_COLUMNS:
-        if col in df_prepared.columns:
-            df_prepared[col] = df_prepared[col].apply(
-                lambda x: verify_image_data(x, col)
-            )
+    Prepares the DataFrame for Excel output.
     
-    # 4. Fill NaN values with '-' for clarity and consistency
-    try:
-        # Try newer pandas syntax with copy parameter
-        df_prepared = df_prepared.fillna('-', copy=False)
-    except TypeError:
-        # Fall back to older pandas syntax without copy parameter
-        df_prepared = df_prepared.fillna('-')
-        logger.debug("Using older pandas fillna() syntax without copy parameter")
+    Args:
+        df (pd.DataFrame): The DataFrame to prepare
+        skip_images (bool): If True, skip image columns for upload file
+        
+    Returns:
+        pd.DataFrame: Prepared DataFrame
+    """
+    # Make a copy to avoid modifying the original
+    df = df.copy()
     
-    # 5. Convert all columns to string type to avoid dtype issues
-    # This ensures all values are treated as strings for formatting
-    for col in df_prepared.columns:
-        df_prepared[col] = df_prepared[col].astype(str)
+    # Ensure all required columns exist
+    for col in FINAL_COLUMN_ORDER:
+        if col not in df.columns:
+            df[col] = ""
     
-    # 6. Format data by column type
-    for col_name in df_prepared.columns:
-        is_price_col = col_name in PRICE_COLUMNS
-        is_qty_col = col_name in QUANTITY_COLUMNS
-        is_pct_col = col_name in PERCENTAGE_COLUMNS
-
-        if is_price_col or is_qty_col or is_pct_col:
-            # Handle each row individually
-            for idx in df_prepared.index:
-                value = df_prepared.at[idx, col_name]
-                
-                # Skip processing for error messages and placeholders
-                if pd.isna(value) or value.strip() == '-' or any(err_msg in str(value) for err_msg in ERROR_MESSAGE_VALUES):
-                    continue
-                
-                # Ensure value is string before checks
-                value_str = str(value)
-
-                # Format numeric values
-                try:
-                    # Skip empty values and placeholders
-                    if value_str.lower().strip() in ['.', '-', '', 'none', 'nan']:
-                        df_prepared.at[idx, col_name] = '-'
-                        continue
-
-                    # Clean numeric string and convert
-                    clean_value = value_str.replace(',', '').replace('%', '')
-                    numeric_value = float(clean_value)
-
-                    # Format based on column type
-                    if is_price_col:
-                        formatted_value = '-' if numeric_value == 0 else f"{numeric_value:,.0f}"
-                    elif is_qty_col:
-                        formatted_value = '-' if numeric_value == 0 else f"{int(numeric_value):,}"
-                    elif is_pct_col:
-                        # Ensure integer formatting for percentage
-                        formatted_value = f"{int(round(numeric_value))}%"
-
-                    # Update the cell with formatted value (always as string)
-                    # This avoids the dtype incompatibility warning
-                    df_prepared.at[idx, col_name] = formatted_value
-                    
-                except (ValueError, TypeError):
-                    # Keep the value as is if conversion fails
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error formatting value '{value}' in column {col_name}: {e}")
+    # Select and reorder columns based on FINAL_COLUMN_ORDER
+    df = df[FINAL_COLUMN_ORDER]
     
-    # Create a copy to ensure all data is properly converted to strings
-    # This helps avoid dtype issues during Excel writing
-    df_prepared = df_prepared.astype(str)
+    # For upload file, remove image data columns
+    if skip_images:
+        image_columns = [col for col in df.columns if '이미지' in col]
+        for col in image_columns:
+            df[col] = df[col].apply(lambda x: '' if isinstance(x, dict) and 'path' in x else x)
     
-    logger.info(f"Data preparation finished. Final rows: {len(df_prepared)}")
-    return df_prepared
+    # Format numeric columns
+    for col in df.columns:
+        if any(keyword in col for keyword in ['단가', '가격']):
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].fillna('')
+            except Exception as e:
+                logging.warning(f"Error formatting numeric column {col}: {str(e)}")
+    
+    return df
 
 def safe_excel_operation(func):
     """
@@ -791,11 +843,178 @@ def safe_excel_operation(func):
 
 # --- Main Public Function --- #
 
+def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
+    """
+    Creates two separate Excel files from the input DataFrame:
+    1. A "result" file with both images and links (same as create_final_output_excel)
+    2. An "upload" file with only links (no images)
+    
+    Args:
+        df (pd.DataFrame): The DataFrame to save to Excel
+        output_path (str): Path for the result file (with images)
+        
+    Returns:
+        tuple: (result_success, upload_success, result_path, upload_path) - Booleans indicating if each file 
+              was successfully created, and the paths to both files
+    """
+    logging.info(f"Starting creation of split Excel outputs (result and upload files)")
+    
+    # Generate the upload file path by adding _upload before the extension
+    base_name, ext = os.path.splitext(output_path)
+    upload_path = f"{base_name}_upload{ext}"
+    
+    # Log the paths that will be created
+    logging.info(f"Result file path (with images): {output_path}")
+    logging.info(f"Upload file path (links only): {upload_path}")
+    
+    # Check if either file is locked
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, 'a'):
+                pass
+        except PermissionError:
+            logging.error(f"Result file is locked: {output_path}")
+            return False, False, output_path, upload_path
+    
+    if os.path.exists(upload_path):
+        try:
+            with open(upload_path, 'a'):
+                pass
+        except PermissionError:
+            logging.error(f"Upload file is locked: {upload_path}")
+            return False, False, output_path, upload_path
+    
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Copy the DataFrame to avoid modifying the original
+    df_result = df.copy()
+    df_upload = df.copy()
+    
+    # Process data for both files
+    result_success = False
+    upload_success = False
+    
+    try:
+        # 1. Create the result file (with images)
+        result_success = create_final_output_excel(df_result, output_path)
+        
+        # 2. Create the upload file (links only)
+        if result_success:
+            # Create the upload file without images
+            upload_success = _create_upload_excel(df_upload, upload_path)
+    
+    except Exception as e:
+        logging.error(f"Error creating split Excel outputs: {str(e)}", exc_info=True)
+        return False, False, output_path, upload_path
+    
+    # Return the results
+    if result_success and upload_success:
+        logging.info(f"Successfully created both result and upload Excel files")
+    else:
+        if not result_success:
+            logging.error(f"Failed to create result Excel file")
+        if not upload_success:
+            logging.error(f"Failed to create upload Excel file")
+    
+    return result_success, upload_success, output_path, upload_path
+
+def _create_upload_excel(df: pd.DataFrame, output_path: str) -> bool:
+    """
+    Internal function to create the upload Excel file (with links only, no images)
+    
+    Args:
+        df (pd.DataFrame): The DataFrame to save to Excel
+        output_path (str): Path where to save the Excel file
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logging.info(f"Creating upload Excel file (links only): {output_path}")
+    
+    try:
+        # Prepare data for Excel (similar to create_final_output_excel but without images)
+        df = _prepare_data_for_excel(df, skip_images=True)
+        
+        # Create a Pandas Excel writer
+        writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
+        
+        # Convert the DataFrame to an Excel object
+        df.to_excel(writer, sheet_name='Sheet1', index=False)
+        
+        # Get workbook and worksheet objects
+        workbook = writer.book
+        worksheet = writer.sheets['Sheet1']
+        
+        # Apply basic formatting (headers, column widths, etc.)
+        _apply_excel_formatting(workbook, worksheet, df, include_images=False)
+        
+        # Save the Excel file
+        writer.close()
+        logging.info(f"Successfully created upload Excel file at: {output_path}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error creating upload Excel file: {str(e)}", exc_info=True)
+        return False
+
+def _apply_excel_formatting(workbook, worksheet, df, include_images=True):
+    """
+    Apply Excel formatting including headers, column widths, and cell styles.
+    
+    Args:
+        workbook: xlsxwriter workbook object
+        worksheet: xlsxwriter worksheet object
+        df: DataFrame being written
+        include_images: Whether to include image formatting
+    """
+    # Define formats
+    header_format = workbook.add_format({
+        'bold': True, 
+        'text_wrap': True,
+        'valign': 'top',
+        'border': 1
+    })
+    
+    # Write column headers with the defined format
+    for col_num, value in enumerate(df.columns.values):
+        worksheet.write(0, col_num, value, header_format)
+    
+    # Set column widths based on content
+    for col_num, column in enumerate(df.columns):
+        column_width = max(
+            df[column].astype(str).map(len).max(),
+            len(str(column))
+        ) + 2  # Add a little extra space
+        
+        # Limit column width to reasonable size
+        column_width = min(column_width, 50)
+        
+        # For image columns, set specific width when including images
+        if include_images and '이미지' in column:
+            column_width = 22  # IMAGE_CELL_WIDTH
+        
+        worksheet.set_column(col_num, col_num, column_width)
+    
+    # If not including images, we're done
+    if not include_images:
+        return
+    
+    # Add images to cells if include_images is True
+    # (This would be handled by the image insertion functions in create_final_output_excel)
+
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     """
     Creates the final formatted Excel file.
     Orchestrates data preparation, styling, image handling, and saving.
+    
+    Args:
+        df: DataFrame containing the data to save
+        output_path: Path where the Excel file will be saved
+        
+    Returns:
+        bool: True if successful, False otherwise
     """
     if df is None:
         logger.error("Cannot create Excel file: Input DataFrame is None.")
@@ -949,11 +1168,12 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     if not image_cols:
         return
         
-    # Adjust column widths for image columns consistently
+    # Increase column widths for image columns to accommodate larger images
     for col_name, col_idx in image_cols.items():
         try:
             col_letter = get_column_letter(col_idx)
-            worksheet.column_dimensions[col_letter].width = IMAGE_CELL_WIDTH
+            # Use larger column width for image columns
+            worksheet.column_dimensions[col_letter].width = 22  # Increased from 15
         except Exception as e:
             logger.error(f"Error adjusting column width for {col_name}: {e}")
     
@@ -966,13 +1186,30 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
             for col_name, col_idx in image_cols.items():
                 try:
                     cell = worksheet.cell(row=row_idx, column=col_idx)
-                    cell_value = str(cell.value) if cell.value else ""
                     
-                    # If the cell has content that looks like a path and not an error message
+                    # If the cell is empty, it likely has an image
+                    if cell.value == "" or cell.value is None:
+                        rows_with_images.add(row_idx)
+                        break
+                        
+                    # Check for image data in dictionary format
+                    cell_value = str(cell.value) if cell.value else ""
+                    if cell_value and cell_value.startswith('{') and cell_value.endswith('}'):
+                        try:
+                            import ast
+                            img_dict = ast.literal_eval(cell_value)
+                            if isinstance(img_dict, dict) and ('local_path' in img_dict or 'url' in img_dict):
+                                rows_with_images.add(row_idx)
+                                break
+                        except:
+                            pass
+                            
+                    # Check for path-like strings
                     if (cell_value and cell_value != '-' and 
                         not any(err_msg in cell_value for err_msg in ERROR_MESSAGE_VALUES) and
                         ('\\' in cell_value or '/' in cell_value or '.jpg' in cell_value.lower() or 
-                        '.png' in cell_value.lower() or '.jpeg' in cell_value.lower())):
+                         '.png' in cell_value.lower() or '.jpeg' in cell_value.lower() or
+                         'http' in cell_value.lower())):
                         rows_with_images.add(row_idx)
                         break
                 except Exception as e:
@@ -980,16 +1217,17 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     except Exception as e:
         logger.error(f"Error finding rows with images: {e}")
     
-    # Apply height to rows with images
+    # Apply increased height to rows with images
     for row_idx in rows_with_images:
         try:
-            worksheet.row_dimensions[row_idx].height = IMAGE_CELL_HEIGHT
+            # Set larger row height to accommodate the bigger images
+            worksheet.row_dimensions[row_idx].height = 120  # Increased from 90
             
-            # Also center-align all cells in this row to ensure uniform appearance
+            # Center-align all cells in this row for better appearance with images
             for col_idx in range(1, worksheet.max_column + 1):
                 try:
                     cell = worksheet.cell(row=row_idx, column=col_idx)
-                    # Only adjust vertical alignment to ensure content displays correctly with images
+                    # Preserve horizontal alignment, set vertical to center
                     current_alignment = cell.alignment
                     cell.alignment = Alignment(
                         horizontal=current_alignment.horizontal,
