@@ -12,18 +12,10 @@ import shutil
 def integrate_haereum_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     해오름 기프트 이미지를 DataFrame에 통합합니다.
-    모든 해오름 이미지를 찾아 DataFrame의 비어있는 '본사 이미지' 칼럼에 추가합니다.
-    
-    Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
-    
-    Returns:
-        이미지가 통합된 DataFrame
+    상품명을 기준으로 이미지를 매칭합니다.
     """
     try:
         logging.info("통합: 해오름 기프트 이미지를 결과에 추가합니다...")
-        # DataFrame 복사본 생성
         result_df = df.copy()
         
         # 해오름 이미지 디렉토리 경로
@@ -39,35 +31,32 @@ def integrate_haereum_images(df: pd.DataFrame, config: configparser.ConfigParser
             # '본사 이미지' 열이 없으면 추가
             if '본사 이미지' not in result_df.columns:
                 result_df['본사 이미지'] = None
-                logging.info("통합: '본사 이미지' 열이 없어 새로 추가했습니다.")
             
             # 이미지 추가 카운터
             added_images = 0
             
-            # 모든 해오름 이미지 경로를 DataFrame에 추가
+            # 상품명을 기준으로 이미지 매칭
             for img_path in haereum_images:
-                product_name = img_path.stem
-                if product_name.startswith('haereum_'):
-                    product_name = product_name[8:]  # 'haereum_' 접두사 제거
-                product_name = product_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
+                # 이미지 파일명에서 상품명 추출
+                img_name = img_path.stem
+                if img_name.startswith('haereum_'):
+                    img_name = img_name[8:]  # 'haereum_' 접두사 제거
+                img_name = img_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
                 
-                # 본사 이미지 칼럼에 이미지 경로 추가 (딕셔너리 형태로)
-                for i in range(len(result_df)):
-                    # 안전한 방식으로 값 확인
-                    current_value = result_df.iloc[i]['본사 이미지']
-                    
-                    if current_value is None or pd.isna(current_value) or \
-                       (isinstance(current_value, str) and current_value in ['-', '']):
-                        # at 메서드 사용 - 위치 기반 인덱싱 대신
+                # DataFrame에서 해당 상품명을 가진 행 찾기
+                matching_rows = result_df[result_df['상품명'].str.contains(img_name, case=False, na=False)]
+                
+                if not matching_rows.empty:
+                    for idx in matching_rows.index:
+                        # 이미지 데이터 구성
                         image_data = {
                             'local_path': str(img_path),
                             'source': 'haereum',
                             'url': f"file:///{str(img_path).replace(os.sep, '/')}",
                             'original_path': str(img_path)
                         }
-                        result_df.at[i, '본사 이미지'] = image_data
+                        result_df.at[idx, '본사 이미지'] = image_data
                         added_images += 1
-                        break  # 첫 번째 빈 행에만 추가
             
             logging.info(f"통합: {added_images}개의 해오름 이미지를 DataFrame에 추가했습니다.")
         else:
@@ -77,24 +66,15 @@ def integrate_haereum_images(df: pd.DataFrame, config: configparser.ConfigParser
     
     except Exception as e:
         logging.error(f"통합: 해오름 이미지 추가 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
         return df
 
 def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     고려기프트 이미지를 DataFrame에 통합합니다.
-    모든 고려기프트 이미지를 찾아 DataFrame의 비어있는 '고려기프트 이미지' 칼럼에 추가합니다.
-    
-    Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
-    
-    Returns:
-        이미지가 통합된 DataFrame
+    상품명을 기준으로 이미지를 매칭합니다.
     """
     try:
         logging.info("통합: 고려기프트 이미지를 결과에 추가합니다...")
-        # DataFrame 복사본 생성
         result_df = df.copy()
         
         # 고려기프트 이미지 디렉토리 경로
@@ -110,35 +90,32 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
             # '고려기프트 이미지' 열이 없으면 추가
             if '고려기프트 이미지' not in result_df.columns:
                 result_df['고려기프트 이미지'] = None
-                logging.info("통합: '고려기프트 이미지' 열이 없어 새로 추가했습니다.")
             
             # 이미지 추가 카운터
             added_images = 0
             
-            # 모든 고려기프트 이미지 경로를 DataFrame에 추가
+            # 상품명을 기준으로 이미지 매칭
             for img_path in kogift_images:
-                product_name = img_path.stem
-                if product_name.startswith('kogift_'):
-                    product_name = product_name[7:]  # 'kogift_' 접두사 제거
-                product_name = product_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
+                # 이미지 파일명에서 상품명 추출
+                img_name = img_path.stem
+                if img_name.startswith('kogift_'):
+                    img_name = img_name[7:]  # 'kogift_' 접두사 제거
+                img_name = img_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
                 
-                # 고려기프트 이미지 칼럼에 이미지 경로 추가 (딕셔너리 형태로)
-                for i in range(len(result_df)):
-                    # 안전한 방식으로 값 확인
-                    current_value = result_df.iloc[i]['고려기프트 이미지']
-                    
-                    if current_value is None or pd.isna(current_value) or \
-                       (isinstance(current_value, str) and current_value in ['-', '']):
-                        # at 메서드 사용 - 위치 기반 인덱싱 대신
+                # DataFrame에서 해당 상품명을 가진 행 찾기
+                matching_rows = result_df[result_df['상품명'].str.contains(img_name, case=False, na=False)]
+                
+                if not matching_rows.empty:
+                    for idx in matching_rows.index:
+                        # 이미지 데이터 구성
                         image_data = {
                             'local_path': str(img_path),
                             'source': 'kogift',
                             'url': f"file:///{str(img_path).replace(os.sep, '/')}",
                             'original_path': str(img_path)
                         }
-                        result_df.at[i, '고려기프트 이미지'] = image_data
+                        result_df.at[idx, '고려기프트 이미지'] = image_data
                         added_images += 1
-                        break  # 첫 번째 빈 행에만 추가
             
             logging.info(f"통합: {added_images}개의 고려기프트 이미지를 DataFrame에 추가했습니다.")
         else:
@@ -148,24 +125,15 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
     
     except Exception as e:
         logging.error(f"통합: 고려기프트 이미지 추가 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
         return df
 
 def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     네이버 이미지를 DataFrame에 통합합니다.
-    모든 네이버 이미지를 찾아 DataFrame의 비어있는 '네이버 이미지' 칼럼에 추가합니다.
-    
-    Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
-    
-    Returns:
-        이미지가 통합된 DataFrame
+    상품명을 기준으로 이미지를 매칭합니다.
     """
     try:
         logging.info("통합: 네이버 이미지를 결과에 추가합니다...")
-        # DataFrame 복사본 생성
         result_df = df.copy()
         
         # 네이버 이미지 디렉토리 경로
@@ -181,35 +149,32 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
             # '네이버 이미지' 열이 없으면 추가
             if '네이버 이미지' not in result_df.columns:
                 result_df['네이버 이미지'] = None
-                logging.info("통합: '네이버 이미지' 열이 없어 새로 추가했습니다.")
             
             # 이미지 추가 카운터
             added_images = 0
             
-            # 모든 네이버 이미지 경로를 DataFrame에 추가
+            # 상품명을 기준으로 이미지 매칭
             for img_path in naver_images:
-                product_name = img_path.stem
-                if product_name.startswith('naver_'):
-                    product_name = product_name[6:]  # 'naver_' 접두사 제거
-                product_name = product_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
+                # 이미지 파일명에서 상품명 추출
+                img_name = img_path.stem
+                if img_name.startswith('naver_'):
+                    img_name = img_name[6:]  # 'naver_' 접두사 제거
+                img_name = img_name.replace('_', ' ')  # 언더스코어를 공백으로 변경
                 
-                # 네이버 이미지 칼럼에 이미지 경로 추가 (딕셔너리 형태로)
-                for i in range(len(result_df)):
-                    # 안전한 방식으로 값 확인
-                    current_value = result_df.iloc[i]['네이버 이미지']
-                    
-                    if current_value is None or pd.isna(current_value) or \
-                       (isinstance(current_value, str) and current_value in ['-', '']):
-                        # at 메서드 사용 - 위치 기반 인덱싱 대신
+                # DataFrame에서 해당 상품명을 가진 행 찾기
+                matching_rows = result_df[result_df['상품명'].str.contains(img_name, case=False, na=False)]
+                
+                if not matching_rows.empty:
+                    for idx in matching_rows.index:
+                        # 이미지 데이터 구성
                         image_data = {
                             'local_path': str(img_path),
                             'source': 'naver',
                             'url': f"file:///{str(img_path).replace(os.sep, '/')}",
                             'original_path': str(img_path)
                         }
-                        result_df.at[i, '네이버 이미지'] = image_data
+                        result_df.at[idx, '네이버 이미지'] = image_data
                         added_images += 1
-                        break  # 첫 번째 빈 행에만 추가
             
             logging.info(f"통합: {added_images}개의 네이버 이미지를 DataFrame에 추가했습니다.")
         else:
@@ -219,7 +184,6 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
     
     except Exception as e:
         logging.error(f"통합: 네이버 이미지 추가 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
         return df
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
@@ -288,6 +252,10 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
 def create_excel_with_images(df, output_file):
     """이미지가 포함된 엑셀 파일 생성"""
     try:
+        # '번호' 컬럼이 없으면 추가
+        if '번호' not in df.columns:
+            df['번호'] = range(1, len(df) + 1)
+        
         # 임시 디렉토리 생성
         temp_dir = Path("temp_images")
         temp_dir.mkdir(exist_ok=True)
@@ -326,21 +294,51 @@ def create_excel_with_images(df, output_file):
                 '네이버 이미지': row['네이버 이미지']
             }
             
-            for col_idx, (col_name, img_path) in enumerate(image_columns.items(), 4):
-                if img_path and pd.notna(img_path):
-                    try:
-                        # 이미지 파일 복사
-                        img = Image(img_path)
-                        # 이미지 크기 조정 (최대 100x100)
-                        img.width = 100
-                        img.height = 100
-                        # 이미지 추가
-                        ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
-                    except Exception as e:
-                        logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
-                        ws.cell(row=row_idx, column=col_idx, value=str(img_path))
-                else:
+            for col_idx, (col_name, img_data) in enumerate(image_columns.items(), 4):
+                if pd.isna(img_data) or img_data is None:
                     ws.cell(row=row_idx, column=col_idx, value="")
+                    continue
+                
+                try:
+                    # 이미지 경로 추출
+                    img_path = None
+                    if isinstance(img_data, dict):
+                        # excel_utils.py 형식의 딕셔너리 처리
+                        img_path = img_data.get('local_path')
+                        if not img_path and 'url' in img_data:
+                            # URL만 있는 경우 셀에 URL 표시
+                            ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
+                            continue
+                    elif isinstance(img_data, str):
+                        # 문자열 경로 처리
+                        img_path = img_data
+                    
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            # 이미지 파일 복사
+                            img = Image(img_path)
+                            # 이미지 크기 조정 (최대 100x100)
+                            img.width = 100
+                            img.height = 100
+                            # 이미지 추가
+                            ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
+                            ws.cell(row=row_idx, column=col_idx, value="")  # 이미지가 있으면 셀 값 비움
+                        except Exception as e:
+                            logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
+                            # 이미지 추가 실패 시 경로나 URL 표시
+                            if isinstance(img_data, dict):
+                                ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', str(img_path)))
+                            else:
+                                ws.cell(row=row_idx, column=col_idx, value=str(img_path))
+                    else:
+                        # 이미지 파일이 없는 경우 URL이나 경로 표시
+                        if isinstance(img_data, dict):
+                            ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', ''))
+                        else:
+                            ws.cell(row=row_idx, column=col_idx, value=str(img_data))
+                except Exception as e:
+                    logging.error(f"이미지 처리 중 오류 발생 ({col_name}): {e}")
+                    ws.cell(row=row_idx, column=col_idx, value="이미지 처리 오류")
         
         # 엑셀 파일 저장
         wb.save(output_file)
