@@ -207,8 +207,20 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                     # --- Initial Similarity Check ---
                     title_tokens = tokenize_korean(title)
                     similarity = jaccard_similarity(original_query_tokens, title_tokens)
-                    if similarity < initial_sim_threshold:
-                        logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to low initial similarity ({similarity:.2f} < {initial_sim_threshold}): '{title}'")
+                    
+                    # 더 정교한 유사도 계산 (Kogift 방식 참고)
+                    # 토큰 길이에 따른 가중치 추가
+                    weight = 1.0
+                    common_tokens = set(original_query_tokens) & set(title_tokens)
+                    for token in common_tokens:
+                        if len(token) >= 4:  # 4글자 이상 토큰에 가중치
+                            weight += 0.1
+                    
+                    # 가중치 적용된 유사도
+                    weighted_similarity = similarity * weight
+                    
+                    if weighted_similarity < initial_sim_threshold:
+                        logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to low weighted similarity ({weighted_similarity:.2f} < {initial_sim_threshold}): '{title}'")
                         continue
                     # --- End Initial Similarity Check ---
 
@@ -217,6 +229,27 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                     image_url = item.get("image", "")
                     mall_product_url = item.get("productUrl", link) # Use link if productUrl missing
 
+                    # 공급사 분류 (Kogift 방식 참고)
+                    supplier_type = "일반"
+                    
+                    # 주요 공급사 확인
+                    if "네이버" in seller or "스마트스토어" in seller:
+                        supplier_type = "네이버"
+                    elif "쿠팡" in seller:
+                        supplier_type = "쿠팡"
+                    elif "11번가" in seller:
+                        supplier_type = "11번가"
+                    elif "G마켓" in seller or "지마켓" in seller:
+                        supplier_type = "G마켓"
+                    elif "옥션" in seller:
+                        supplier_type = "옥션"
+                    elif "인터파크" in seller:
+                        supplier_type = "인터파크"
+                    elif "위메프" in seller:
+                        supplier_type = "위메프"
+                    elif "티몬" in seller:
+                        supplier_type = "티몬"
+                    
                     # Basic check for promotional items
                     is_promotional = any(promo.lower() in title.lower() or promo.lower() in seller.lower() for promo in promo_keywords)
                     if is_promotional:
@@ -232,7 +265,9 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                         'quantity': "1",
                         'mallName': seller,
                         'mallProductUrl': mall_product_url,
-                        'initial_similarity': round(similarity, 3) # Store similarity for potential future use/logging
+                        'initial_similarity': round(weighted_similarity, 3),  # 가중치 적용된 유사도 저장
+                        'supplier': supplier_type,  # 공급사 유형 추가
+                        'source': 'naver'  # 출처 명시
                     }
                     # --- End Data Extraction ---
 
@@ -246,7 +281,7 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
                     current_keyword_results.append(product)
                     items_added_this_page += 1
-                    logger.debug(f"  -> Added item #{item_idx+1} (Sim: {similarity:.2f}): '{title[:50]}...' (Price: {price}, Seller: '{seller}')")
+                    logger.debug(f"  -> Added item #{item_idx+1} (Sim: {weighted_similarity:.2f}): '{title[:50]}...' (Price: {price}, Seller: '{seller}')")
 
                 except Exception as e:
                     logger.error(f"🟢 Error processing Naver item #{item_idx+1} (Keyword: '{query}'): {e}. Data: {item}", exc_info=True)
@@ -292,7 +327,7 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
 async def download_naver_image(url: str, save_dir: str, product_name: str, config: configparser.ConfigParser) -> Optional[str]:
     """
-    Download a single Naver image to the specified directory.
+    Download a single Naver image to the specified directory with enhanced processing.
 
     Args:
         url (str): The image URL to download.
@@ -333,27 +368,41 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                 save_dir = naver_dir
                 logger.debug(f"Using Naver subdirectory: {save_dir}")
         
-        # Generate safe filename that's compatible with both actual filename and path navigation
-        safe_name = re.sub(r'[^\w\-_.]', '_', product_name)[:50]
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+        # Sanitize product name more carefully - Kogift 방식과 유사하게 처리
+        if product_name is None:
+            sanitized_name = "unknown_product"
+        else:
+            # 한글 문자가 포함된 경우 해시 기반 이름 사용 (깨짐 방지)
+            if any('\uAC00' <= c <= '\uD7A3' for c in product_name):
+                # 한글이 포함된 상품명은 해시로 처리
+                sanitized_name = hashlib.md5(product_name.encode('utf-8', errors='ignore')).hexdigest()[:16]
+                logger.debug(f"Using hash-based name for Korean product name: {sanitized_name}")
+            else:
+                # 영문/숫자로만 구성된 상품명은 적절히 정리
+                sanitized_name = re.sub(r'[^\w\d-]', '_', product_name)[:30]
+                # 일관된 길이를 위해 패딩 추가
+                sanitized_name = sanitized_name.ljust(30, '_')
         
-        # Get file extension from URL
-        _, ext = os.path.splitext(urlparse(url).path)
-        ext = ext.lower() if ext.lower() in ['.jpg', '.jpeg', '.png', '.gif'] else '.jpg'
+        # URL의 고유 해시 생성 (파일명 중복 방지)
+        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
         
-        # Create filename with consistent pattern across all sources
-        filename = f"naver_{safe_name}_{url_hash}{ext}"
+        # URL에서 파일 확장자 추출
+        parsed_url = urlparse(url)
+        file_ext = os.path.splitext(parsed_url.path)[1].lower()
+        # 확장자가 없거나 유효하지 않은 경우 기본값 사용
+        if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+            file_ext = '.jpg'
+        
+        # 일관된 형식의 파일명 생성 (출처 정보 포함)
+        filename = f"naver_{sanitized_name}_{url_hash}{file_ext}"
         local_path = os.path.join(save_dir, filename)
         final_image_path = local_path
         
-        # Log the path being used
-        logger.debug(f"Naver image will be saved to: {local_path}")
-        
-        # Skip if file exists
+        # 이미 파일이 존재하는 경우 중복 다운로드 방지
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             logger.debug(f"Image already exists: {local_path}")
             
-            # Check for existing background-removed version
+            # 배경 제거 버전이 이미 있는지 확인
             try:
                 use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
                 if use_bg_removal:
@@ -362,7 +411,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                         final_image_path = bg_removed_path
                         logger.debug(f"Using existing background-removed image: {final_image_path}")
                     else:
-                        # Try to remove background if no-bg version doesn't exist
+                        # 배경 제거 버전이 없으면 생성 시도
                         try:
                             from image_utils import remove_background
                             if remove_background(local_path, bg_removed_path):
@@ -377,27 +426,34 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             
             return final_image_path
 
-        # Download image with retry logic
+        # 네트워크 요청 헤더 설정 (한국 사이트 호환성 위한 사용자 에이전트 등 추가)
+        headers = {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        # 재시도 로직으로 다운로드
         max_retries = config.getint('Network', 'max_retries', fallback=3)
         for attempt in range(max_retries):
             try:
-                # Download image
+                # 이미지 다운로드
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), headers=headers) as response:
                         if response.status != 200:
                             logger.error(f"Failed to download image: {url}, status: {response.status}")
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(1)  # Wait before retry
+                                await asyncio.sleep(1)  # 재시도 전 대기
                                 continue
                             return None
                         
-                        # Save to temporary file
+                        # 임시 파일에 저장
                         temp_path = f"{local_path}.{time.time_ns()}.tmp"
                         try:
                             async with aiofiles.open(temp_path, 'wb') as f:
                                 await f.write(await response.read())
                             
-                            # Validate image
+                            # 이미지 검증
                             with Image.open(temp_path) as img:
                                 img.verify()
                             with Image.open(temp_path) as img:
@@ -405,13 +461,13 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                                     img = img.convert('RGB')
                                     img.save(temp_path, 'JPEG', quality=85)
                             
-                            # Move temp file to final location
+                            # 임시 파일을 최종 위치로 이동
                             if os.path.exists(local_path):
                                 os.remove(local_path)
                             os.rename(temp_path, local_path)
                             logger.info(f"Successfully downloaded image: {url} -> {local_path}")
                             
-                            # Attempt background removal if needed
+                            # 필요시 배경 제거 시도
                             try:
                                 use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
                                 if use_bg_removal:
@@ -434,13 +490,13 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                                 except:
                                     pass
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(1)  # Wait before retry
+                                await asyncio.sleep(1)  # 재시도 전 대기
                                 continue
                             return None
             except aiohttp.ClientError as e:
                 logger.error(f"Network error downloading image {url}: {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(1)  # Wait before retry
+                    await asyncio.sleep(1)  # 재시도 전 대기
                     continue
                 return None
                 
@@ -448,7 +504,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         logger.error(f"Error downloading image {url}: {e}")
         return None
 
-async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser) -> list:
     """
     Crawl product information from Naver Shopping using API asynchronously for multiple product rows,
     including image downloading and optional background removal.
@@ -459,13 +515,11 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         config (configparser.ConfigParser): ConfigParser object containing configuration.
 
     Returns:
-        pd.DataFrame: A DataFrame containing all original columns plus the crawled data columns
-                      (like '네이버_상품명', '판매단가(V포함)(3)', '공급사명', etc.).
-                      If no results are found for a row, corresponding columns will contain '-'.
+        list: A list of dictionaries containing crawled Naver data with original product names
     """
     if product_rows is None or len(product_rows) == 0:
         logger.info("🟢 Naver crawl: Input product_rows is empty or None. Skipping.")
-        return pd.DataFrame()  # Return empty DataFrame
+        return []  # Return empty list
 
     total_products = len(product_rows)
     logger.info(f"🟢 --- Starting Naver product crawl for {total_products} products (Async) ---")
@@ -483,7 +537,7 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_dir}")
     except Exception as e:
         logger.error(f"Error reading config: {e}")
-        return pd.DataFrame()
+        return []
 
     # Create semaphore for concurrent API requests
     api_semaphore = asyncio.Semaphore(max_concurrent_api)
@@ -502,7 +556,7 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         # Run tasks concurrently and collect results
         processed_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Filter out exceptions and flatten results
+    # Filter out exceptions and None results
     results = []
     for res in processed_results:
         if isinstance(res, Exception):
@@ -510,25 +564,9 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         elif res is not None:
             results.append(res)
 
-    # Create final DataFrame
-    if not results:
-        logger.warning("No valid results obtained from Naver crawl.")
-        # Return original DataFrame with empty Naver columns if needed, or just empty
-        # Let's add empty columns for consistency if results were expected
-        empty_naver_cols = {
-            '네이버_상품명': '검색된 상품이 없음', '기본수량(3)': '검색된 상품이 없음', 
-            '판매단가(V포함)(3)': '검색된 상품이 없음', '공급사명': '검색된 상품이 없음', 
-            '네이버 쇼핑 링크': '검색된 상품이 없음', '공급사 상품링크': '검색된 상품이 없음', 
-            '네이버 이미지': '검색된 상품이 없음'
-        }
-        final_df = product_rows.assign(**empty_naver_cols)
-    else:
-        # Create DataFrame from results (which now include original data)
-        final_df = pd.DataFrame(results)
-        
-    logger.info(f"🟢 Naver crawl finished. Processed {len(final_df)} rows.")
+    logger.info(f"🟢 Naver crawl finished. Processed {len(results)} valid results out of {total_products} rows.")
     
-    return final_df
+    return results
 
 # Helper function to process a single row for crawl_naver_products
 async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir):
@@ -556,48 +594,38 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
             reference_price=reference_price
         )
 
-    # Prepare result dictionary starting with original row data
-    result_data = row.to_dict() 
-    # Add default Naver columns
-    result_data.update({
-        '네이버_상품명': '검색된 상품이 없음',
-        '기본수량(3)': '검색된 상품이 없음',
-        '판매단가(V포함)(3)': '검색된 상품이 없음',
-        '공급사명': '검색된 상품이 없음',
-        '네이버 쇼핑 링크': '검색된 상품이 없음',
-        '공급사 상품링크': '검색된 상품이 없음',
-        '네이버 이미지': '검색된 상품이 없음'
-    })
+    if not naver_data:
+        return None  # No Naver data found
 
-    if naver_data:
-        first_item = naver_data[0]
-        result_data.update({
-            '네이버_상품명': first_item.get('name'),
-            '기본수량(3)': first_item.get('quantity', '1'),
-            '판매단가(V포함)(3)': first_item.get('price'),
-            '공급사명': first_item.get('mallName'),
-            '네이버 쇼핑 링크': first_item.get('link'),
-            '공급사 상품링크': first_item.get('mallProductUrl')
-        })
+    # Return the first Naver result with the original product name
+    first_item = naver_data[0]
+    result_data = {
+        'original_product_name': product_name,
+        'name': first_item.get('name'),
+        'price': first_item.get('price'),
+        'seller_name': first_item.get('mallName'),
+        'link': first_item.get('link'),
+        'seller_link': first_item.get('mallProductUrl'),
+        'source': 'naver'  # 공급사 정보 명시 (Kogift 방식을 따라)
+    }
 
-        # Download image if URL exists
-        image_url = first_item.get('image_url')
-        if image_url:
-            # Store the image information in a dictionary format for proper handling in excel_utils.py
-            result_data['네이버 이미지'] = {
+    # Process image if available
+    image_url = first_item.get('image_url')
+    if image_url:
+        result_data['image_url'] = image_url
+        
+        # Download the image
+        local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
+        if local_path:
+            # Kogift처럼 image_path 대신 더 명확한 구조화된 이미지 정보 제공
+            result_data['image_path'] = local_path
+            # 이미지 데이터를 excel_utils.py에서 사용할 수 있는 형식으로 제공
+            result_data['image_data'] = {
                 'url': image_url,
+                'local_path': local_path,
+                'original_path': local_path,
                 'source': 'naver'
             }
-            
-            # Pass the specific Naver image directory and config for background removal
-            local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
-            if local_path:
-                # Include both URL and local path in the dictionary
-                result_data['네이버 이미지'] = {
-                    'url': image_url,
-                    'local_path': local_path,
-                    'source': 'naver'
-                }
     
     return result_data
 

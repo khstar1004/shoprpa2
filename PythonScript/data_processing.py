@@ -401,10 +401,19 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     item = naver_data[0]  # Use the first match
                     
                     # Update Naver related columns
-                    if '기본수량(3)' in df.columns and 'quantity' in item:
-                        df.at[idx, '기본수량(3)'] = item['quantity']
+                    # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
+                    if '기본수량(3)' in df.columns:
+                        # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량(3)'] = row['기본수량(1)']
+                        else:
+                            df.at[idx, '기본수량(3)'] = 1  # 기본값
+                    
+                    # 판매단가 정보 업데이트
                     if '판매단가(V포함)(3)' in df.columns and 'price' in item:
                         df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                    
+                    # 링크 정보 업데이트
                     if '네이버 쇼핑 링크' in df.columns and 'link' in item:
                         df.at[idx, '네이버 쇼핑 링크'] = item['link']
                     if '공급사 상품링크' in df.columns and 'seller_link' in item:
@@ -412,61 +421,46 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     if '공급사명' in df.columns and 'seller_name' in item:
                         df.at[idx, '공급사명'] = item['seller_name']
                     
-                    # Handle Naver image data properly
+                    # Handle Naver image data properly - 통일된 형식으로 처리
                     if '네이버 이미지' in df.columns:
-                        # Check for various image data formats
+                        # Kogift와 동일한 방식으로 이미지 데이터 처리
                         if 'image_data' in item and isinstance(item['image_data'], dict):
-                            # Already in the proper dictionary format for excel_utils.py
+                            # 이미 올바른 형식으로 준비된 이미지 데이터 사용
                             df.at[idx, '네이버 이미지'] = item['image_data']
                         elif 'image_path' in item and 'image_url' in item:
-                            # We have both path and URL, create a dictionary
+                            # URL과 로컬 경로가 모두 있는 경우
                             image_data = {
                                 'url': item['image_url'],
                                 'local_path': item['image_path'],
-                                'source': 'naver'
+                                'source': 'naver',
+                                'original_path': item.get('original_path', item['image_path'])
                             }
                             df.at[idx, '네이버 이미지'] = image_data
                         elif 'image_path' in item:
-                            # We only have the path, might be a URL or a local path
+                            # 로컬 경로만 있는 경우
                             image_path = item['image_path']
                             if isinstance(image_path, str):
-                                if image_path.startswith('http'):
-                                    # It's a URL
-                                    image_data = {
-                                        'url': image_path,
-                                        'source': 'naver'
-                                    }
-                                    df.at[idx, '네이버 이미지'] = image_data
-                                elif os.path.exists(image_path):
-                                    # It's a local file path
-                                    # Try to reconstruct a URL from the local path
-                                    if 'link' in item:
-                                        image_data = {
-                                            'url': item['link'],
-                                            'local_path': image_path,
-                                            'source': 'naver'
-                                        }
-                                    else:
-                                        image_data = {
-                                            'local_path': image_path,
-                                            'source': 'naver'
-                                        }
-                                    df.at[idx, '네이버 이미지'] = image_data
-                                else:
-                                    # Not a URL and not a valid path
-                                    df.at[idx, '네이버 이미지'] = '-'
-                            else:
-                                # Not a string
-                                df.at[idx, '네이버 이미지'] = '-'
+                                # URL 생성 (파일 경로인 경우 file:// 형식으로)
+                                url = item.get('image_url', None)
+                                if not url and os.path.exists(image_path):
+                                    url = f"file:///{image_path.replace(os.sep, '/')}"
+                                
+                                image_data = {
+                                    'url': url if url else '',
+                                    'local_path': image_path,
+                                    'source': 'naver',
+                                    'original_path': item.get('original_path', image_path)
+                                }
+                                df.at[idx, '네이버 이미지'] = image_data
                         elif 'image_url' in item:
-                            # We only have the URL
+                            # URL만 있는 경우
                             image_data = {
                                 'url': item['image_url'],
                                 'source': 'naver'
                             }
                             df.at[idx, '네이버 이미지'] = image_data
                         else:
-                             df.at[idx, '네이버 이미지'] = '-' # Ensure default if no image info
+                            df.at[idx, '네이버 이미지'] = '-'  # 이미지 정보 없음
                     
                     naver_update_count += 1
         

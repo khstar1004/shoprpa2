@@ -112,7 +112,7 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
     """
     고려기프트 이미지를 DataFrame에 통합합니다.
     상품명을 기준으로 이미지를 매칭합니다.
-    해시 형태의 파일명은 모든 행에 할당합니다.
+    이름 매칭 알고리즘을 개선하여 더 정확한 상품 매칭을 구현합니다.
     """
     try:
         logging.info("통합: 고려기프트 이미지를 결과에 추가합니다...")
@@ -132,76 +132,74 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
             if '고려기프트 이미지' not in result_df.columns:
                 result_df['고려기프트 이미지'] = None
             
-            # 이미지 추가 카운터
-            added_images = 0
-            
-            # 각 상품명에 대한 토큰 생성 (더 나은 매칭을 위해)
-            product_tokens = {}
-            for idx, row in result_df.iterrows():
-                product_name = str(row['상품명']).lower()
-                # 숫자, 알파벳, 한글만 남기고 공백으로 변환 후 토큰화
-                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
-                tokens = [t for t in clean_name.split() if len(t) > 1]  # 2자 이상 토큰만 유지
-                product_tokens[idx] = tokens
-            
-            # 고려기프트 이미지의 행 할당을 위한 인덱스
-            assignment_idx = 0
-            
-            # 상품명을 기준으로 이미지 매칭
+            # 이미지 파일명 정보 저장
+            image_info = {}
             for img_path in kogift_images:
                 # 이미지 파일명에서 상품명 추출
                 img_name = img_path.stem
+                original_img_name = img_name
+                
+                # 접두사 제거
                 if img_name.startswith('kogift_'):
                     img_name = img_name[7:]  # 'kogift_' 접두사 제거
                 
-                # 파일명 형태에 따른 처리
+                # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
                 if '_' in img_name:
                     parts = img_name.split('_')
-                    
-                    # 해시와 해시 형태 처리 (모든 행에 1개씩 할당)
-                    if all(len(part) >= 8 and part.isalnum() for part in parts):
-                        logging.debug(f"해시 형태 파일명 감지: {img_path.name}")
-                        
-                        # 특정 행에 고려기프트 이미지 할당 (라운드 로빈 방식)
-                        if assignment_idx >= len(result_df):
-                            assignment_idx = 0
-                        
-                        idx = assignment_idx
-                        assignment_idx += 1
-                        
-                        # 이미지 데이터 구성
-                        image_data = {
-                            'local_path': str(img_path),
-                            'source': 'kogift',
-                            'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                            'original_path': str(img_path)
-                        }
-                        result_df.at[idx, '고려기프트 이미지'] = image_data
-                        added_images += 1
-                        logging.debug(f"Kogift 해시 이미지 '{img_path.name}' 행 {idx}에 추가")
-                        continue
-                    
-                    # 일반적인 해시 제거 (마지막 부분이 해시인 경우)
-                    elif len(parts[-1]) <= 10 and parts[-1].isalnum():
+                    # 마지막 부분이 해시처럼 생겼는지 확인
+                    if len(parts[-1]) <= 10 and parts[-1].isalnum():
                         img_name = '_'.join(parts[:-1])
                 
-                # 이미지 이름 토큰화
-                img_name_clean = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-                img_tokens = [t for t in img_name_clean.replace('_', ' ').split() if len(t) > 1]
+                # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
+                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
+                tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
                 
-                # 디버깅 출력
-                logging.debug(f"처리된 고려기프트 이미지 이름: '{img_name}' (원본: {img_path.name}), 토큰: {img_tokens}")
+                image_info[str(img_path)] = {
+                    'original_name': original_img_name,
+                    'clean_name': img_name,
+                    'tokens': tokens,
+                    'path': img_path
+                }
+            
+            # 이미지 추가 카운터
+            added_images = 0
+            assigned_rows = set()  # 이미지가 이미 할당된 행 추적
+            
+            # 정확한 상품명 매칭을 시도하고, 나머지는 후처리
+            for idx, row in result_df.iterrows():
+                product_name = str(row['상품명']).lower()
+                # 상품명 토큰화
+                clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
+                product_tokens = [t.lower() for t in clean_product.split() if len(t) > 1]
                 
-                # 토큰이 없거나 모두 짧은 경우
-                if not img_tokens:
-                    # 특정 행에 고려기프트 이미지 할당 (라운드 로빈 방식)
-                    if assignment_idx >= len(result_df):
-                        assignment_idx = 0
+                best_match = None
+                best_score = 0
+                
+                # 모든 이미지와 비교하여 최적의 매치 찾기
+                for img_path, info in image_info.items():
+                    # 토큰 기반 유사도 계산
+                    common_tokens = set(product_tokens) & set(info['tokens'])
                     
-                    idx = assignment_idx
-                    assignment_idx += 1
-                    
-                    # 이미지 데이터 구성
+                    # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
+                    total_tokens = len(set(product_tokens) | set(info['tokens']))
+                    if total_tokens > 0:
+                        similarity = len(common_tokens) / total_tokens
+                        
+                        # 더 긴 토큰이 매칭되면 가중치 부여
+                        weight = 1.0
+                        for token in common_tokens:
+                            if len(token) >= 4:  # 4글자 이상 토큰에 가중치
+                                weight += 0.1
+                        
+                        similarity *= weight
+                        
+                        if similarity > best_score and similarity >= 0.2:  # 최소 20% 이상 매칭
+                            best_score = similarity
+                            best_match = img_path
+                
+                # 최적 매치가 있으면 이미지 할당
+                if best_match:
+                    img_path = image_info[best_match]['path']
                     image_data = {
                         'local_path': str(img_path),
                         'source': 'kogift',
@@ -210,36 +208,35 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
                     }
                     result_df.at[idx, '고려기프트 이미지'] = image_data
                     added_images += 1
-                    logging.debug(f"Kogift 토큰 없는 이미지 '{img_path.name}' 행 {idx}에 추가")
-                    continue
+                    assigned_rows.add(idx)
+                    logging.debug(f"상품명 매칭: 고려기프트 이미지 '{image_info[best_match]['clean_name']}' -> 상품 '{product_name}' (점수: {best_score:.2f})")
+            
+            # 매칭되지 않은 이미지들을 매칭되지 않은 행에 할당
+            if len(assigned_rows) < len(result_df) and len(image_info) > added_images:
+                # 할당되지 않은 이미지 목록
+                unused_images = [info['path'] for path, info in image_info.items() 
+                                if not any(str(info['path']) == str(row_data.get('original_path', '')) 
+                                          for idx, row_data in result_df['고려기프트 이미지'].items() 
+                                          if pd.notna(row_data))]
                 
-                # DataFrame에서 해당 상품명을 가진 행 찾기 - 토큰 매칭
-                matched = False
+                # 할당되지 않은 행 찾기
+                unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
                 
-                for idx, tokens in product_tokens.items():
-                    # 공통 토큰 찾기
-                    common_tokens = set(tokens) & set(img_tokens)
+                # 개수 조정
+                num_to_assign = min(len(unused_images), len(unassigned_rows))
+                for i in range(num_to_assign):
+                    idx = unassigned_rows[i]
+                    img_path = unused_images[i]
                     
-                    # 매칭 점수 계산 (공통 토큰 수 / 이미지 토큰 수)
-                    matching_score = len(common_tokens) / len(img_tokens) if img_tokens else 0
-                    
-                    # 임계값 이상 매칭되면 추가 (최소 30% 이상 매칭)
-                    if common_tokens and matching_score >= 0.3:
-                        product_name = result_df.iloc[idx]['상품명']
-                        # 이미지 데이터 구성
-                        image_data = {
-                            'local_path': str(img_path),
-                            'source': 'kogift',
-                            'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                            'original_path': str(img_path)
-                        }
-                        result_df.at[idx, '고려기프트 이미지'] = image_data
-                        added_images += 1
-                        matched = True
-                        logging.debug(f"매칭 성공: 고려기프트 이미지 '{img_name}' -> 상품 '{product_name}' (점수: {matching_score:.2f}, 공통 토큰: {common_tokens})")
-                
-                if not matched:
-                    logging.debug(f"매칭 실패: 고려기프트 이미지 '{img_name}'와 일치하는 상품명 없음")
+                    image_data = {
+                        'local_path': str(img_path),
+                        'source': 'kogift',
+                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                        'original_path': str(img_path)
+                    }
+                    result_df.at[idx, '고려기프트 이미지'] = image_data
+                    added_images += 1
+                    logging.debug(f"보조 할당: 고려기프트 이미지 '{img_path.name}' -> 행 {idx}")
             
             logging.info(f"통합: {added_images}개의 고려기프트 이미지를 DataFrame에 추가했습니다.")
         else:
@@ -255,7 +252,7 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
     """
     네이버 이미지를 DataFrame에 통합합니다.
     상품명을 기준으로 이미지를 매칭합니다.
-    매칭 임계값을 낮추어 더 유연한 매칭을 제공합니다.
+    이름 매칭 알고리즘을 개선하여 더 정확한 상품 매칭을 구현합니다.
     """
     try:
         logging.info("통합: 네이버 이미지를 결과에 추가합니다...")
@@ -275,52 +272,74 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
             if '네이버 이미지' not in result_df.columns:
                 result_df['네이버 이미지'] = None
             
-            # 이미지 추가 카운터
-            added_images = 0
-            
-            # 각 상품명에 대한 토큰 생성 (더 나은 매칭을 위해)
-            product_tokens = {}
-            for idx, row in result_df.iterrows():
-                product_name = str(row['상품명']).lower()
-                # 숫자, 알파벳, 한글만 남기고 공백으로 변환 후 토큰화
-                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
-                tokens = [t for t in clean_name.split() if len(t) > 1]  # 2자 이상 토큰만 유지
-                product_tokens[idx] = tokens
-            
-            # 네이버 이미지의 행 할당을 위한 인덱스
-            assignment_idx = 0
-            
-            # 상품명을 기준으로 이미지 매칭
+            # 이미지 파일명 정보 저장
+            image_info = {}
             for img_path in naver_images:
                 # 이미지 파일명에서 상품명 추출
                 img_name = img_path.stem
+                original_img_name = img_name
+                
+                # 접두사 제거
                 if img_name.startswith('naver_'):
                     img_name = img_name[6:]  # 'naver_' 접두사 제거
                 
-                # 해시 부분 제거 (마지막 _ 이후 부분)
+                # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
                 if '_' in img_name:
                     parts = img_name.split('_')
-                    # 마지막 부분이 해시처럼 생겼는지 확인 (10자리 이하의 알파벳+숫자)
+                    # 마지막 부분이 해시처럼 생겼는지 확인
                     if len(parts[-1]) <= 10 and parts[-1].isalnum():
                         img_name = '_'.join(parts[:-1])
                 
-                # 이미지 이름 토큰화
-                img_name_clean = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-                img_tokens = [t for t in img_name_clean.replace('_', ' ').split() if len(t) > 1]
+                # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
+                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
+                tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
                 
-                # 디버깅 출력
-                logging.debug(f"처리된 네이버 이미지 이름: '{img_name}' (원본: {img_path.name}), 토큰: {img_tokens}")
+                image_info[str(img_path)] = {
+                    'original_name': original_img_name,
+                    'clean_name': img_name,
+                    'tokens': tokens,
+                    'path': img_path
+                }
+            
+            # 이미지 추가 카운터
+            added_images = 0
+            assigned_rows = set()  # 이미지가 이미 할당된 행 추적
+            
+            # 정확한 상품명 매칭을 시도하고, 나머지는 후처리
+            for idx, row in result_df.iterrows():
+                product_name = str(row['상품명']).lower()
+                # 상품명 토큰화
+                clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
+                product_tokens = [t.lower() for t in clean_product.split() if len(t) > 1]
                 
-                # 토큰이 없거나 모두 짧은 경우
-                if not img_tokens:
-                    # 특정 행에 네이버 이미지 할당 (라운드 로빈 방식)
-                    if assignment_idx >= len(result_df):
-                        assignment_idx = 0
+                best_match = None
+                best_score = 0
+                
+                # 모든 이미지와 비교하여 최적의 매치 찾기
+                for img_path, info in image_info.items():
+                    # 토큰 기반 유사도 계산
+                    common_tokens = set(product_tokens) & set(info['tokens'])
                     
-                    idx = assignment_idx
-                    assignment_idx += 1
-                    
-                    # 이미지 데이터 구성
+                    # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
+                    total_tokens = len(set(product_tokens) | set(info['tokens']))
+                    if total_tokens > 0:
+                        similarity = len(common_tokens) / total_tokens
+                        
+                        # 더 긴 토큰이 매칭되면 가중치 부여
+                        weight = 1.0
+                        for token in common_tokens:
+                            if len(token) >= 4:  # 4글자 이상 토큰에 가중치
+                                weight += 0.1
+                        
+                        similarity *= weight
+                        
+                        if similarity > best_score and similarity >= 0.2:  # 최소 20% 이상 매칭
+                            best_score = similarity
+                            best_match = img_path
+                
+                # 최적 매치가 있으면 이미지 할당
+                if best_match:
+                    img_path = image_info[best_match]['path']
                     image_data = {
                         'local_path': str(img_path),
                         'source': 'naver',
@@ -329,32 +348,26 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
                     }
                     result_df.at[idx, '네이버 이미지'] = image_data
                     added_images += 1
-                    logging.debug(f"네이버 토큰 없는 이미지 '{img_path.name}' 행 {idx}에 추가")
-                    continue
+                    assigned_rows.add(idx)
+                    logging.debug(f"상품명 매칭: 네이버 이미지 '{image_info[best_match]['clean_name']}' -> 상품 '{product_name}' (점수: {best_score:.2f})")
+            
+            # 매칭되지 않은 이미지들을 매칭되지 않은 행에 할당
+            if len(assigned_rows) < len(result_df) and len(image_info) > added_images:
+                # 할당되지 않은 이미지 목록
+                unused_images = [info['path'] for path, info in image_info.items() 
+                                if not any(str(info['path']) == str(row_data.get('original_path', '')) 
+                                          for idx, row_data in result_df['네이버 이미지'].items() 
+                                          if pd.notna(row_data))]
                 
-                # DataFrame에서 해당 상품명을 가진 행 찾기 - 토큰 매칭
-                matched = False
-                best_match_idx = None
-                best_match_score = 0.0
+                # 할당되지 않은 행 찾기
+                unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
                 
-                for idx, tokens in product_tokens.items():
-                    # 공통 토큰 찾기
-                    common_tokens = set(tokens) & set(img_tokens)
+                # 개수 조정
+                num_to_assign = min(len(unused_images), len(unassigned_rows))
+                for i in range(num_to_assign):
+                    idx = unassigned_rows[i]
+                    img_path = unused_images[i]
                     
-                    # 매칭 점수 계산 (공통 토큰 수 / 이미지 토큰 수)
-                    matching_score = len(common_tokens) / max(len(img_tokens), 1)
-                    
-                    # 임계값 이상 매칭되면 매칭 후보에 추가 (20% 이상 매칭)
-                    if common_tokens and matching_score >= 0.2:  # 임계값 낮춤
-                        if matching_score > best_match_score:
-                            best_match_score = matching_score
-                            best_match_idx = idx
-                
-                # 최적 매칭이 있으면 이미지 추가
-                if best_match_idx is not None:
-                    idx = best_match_idx
-                    product_name = result_df.iloc[idx]['상품명']
-                    # 이미지 데이터 구성
                     image_data = {
                         'local_path': str(img_path),
                         'source': 'naver',
@@ -363,30 +376,7 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
                     }
                     result_df.at[idx, '네이버 이미지'] = image_data
                     added_images += 1
-                    matched = True
-                    logging.debug(f"매칭 성공: 네이버 이미지 '{img_name}' -> 상품 '{product_name}' (점수: {best_match_score:.2f})")
-                    continue
-                
-                # 매칭이 안 된 경우 라운드 로빈 방식으로 할당
-                if not matched:
-                    logging.debug(f"매칭 실패: 네이버 이미지 '{img_name}'와 일치하는 상품명 없음, 라운드 로빈 할당")
-                    
-                    # 특정 행에 네이버 이미지 할당 (라운드 로빈 방식)
-                    if assignment_idx >= len(result_df):
-                        assignment_idx = 0
-                    
-                    idx = assignment_idx
-                    assignment_idx += 1
-                    
-                    # 이미지 데이터 구성
-                    image_data = {
-                        'local_path': str(img_path),
-                        'source': 'naver',
-                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                        'original_path': str(img_path)
-                    }
-                    result_df.at[idx, '네이버 이미지'] = image_data
-                    added_images += 1
+                    logging.debug(f"보조 할당: 네이버 이미지 '{img_path.name}' -> 행 {idx}")
             
             logging.info(f"통합: {added_images}개의 네이버 이미지를 DataFrame에 추가했습니다.")
         else:

@@ -217,23 +217,82 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.warning(f"Unexpected Kogift results type: {type(kogift_crawl_results)}")
 
             # Validate Naver results
-            if isinstance(naver_crawl_results, list):
-                naver_count = len(naver_crawl_results)
-                if naver_count == 0:
-                    logging.warning("Naver crawl resulted in empty list")
-            elif isinstance(naver_crawl_results, pd.DataFrame):
-                # Count only rows with successful matches (where '네이버_상품명' is not the default "not found" value)
-                if not naver_crawl_results.empty and '네이버_상품명' in naver_crawl_results.columns:
-                    naver_count = (naver_crawl_results['네이버_상품명'] != '검색된 상품이 없음').sum()
-                    logging.debug(f"Naver successful matches: {naver_count} out of {len(naver_crawl_results)} total rows")
-                else:
-                    naver_count = len(naver_crawl_results) if not naver_crawl_results.empty else 0
-                    logging.debug("Using total row count for Naver results as '네이버_상품명' column not found")
-                if naver_crawl_results.empty:
-                    logging.warning("Naver crawl resulted in empty DataFrame")
+            if isinstance(naver_crawl_results, list) and len(naver_crawl_results) > 0:
+                try:
+                    naver_map = {}
+                    for item in naver_crawl_results:
+                        if isinstance(item, dict) and 'original_product_name' in item:
+                            product_name = item.get('original_product_name')
+                            if product_name:
+                                # Extract Naver data and put it in a list for each product
+                                naver_data = {k: v for k, v in item.items() if k != 'original_product_name'}
+                                if product_name not in naver_map:
+                                    naver_map[product_name] = []
+                                naver_map[product_name].append(naver_data)
+                    
+                    logging.debug(f"Created Naver map with {len(naver_map)} entries.")
+                    
+                    # 샘플 이미지 URL 로깅 (디버깅용)
+                    sample_count = 0
+                    for name, items in naver_map.items():
+                        if items and sample_count < 5:  # 최대 5개 샘플만
+                            for item in items[:1]:  # 각 제품당 첫 번째 항목만
+                                img_url = item.get('image_url') or item.get('image_path')
+                                if img_url:
+                                    logging.debug(f"네이버 이미지 URL 샘플 #{sample_count+1}: {img_url}")
+                                    sample_count += 1
+                    
+                    # Ensure Naver images are downloaded to the correct directory
+                    naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
+                    os.makedirs(naver_image_dir, exist_ok=True)
+                    logging.info(f"Ensuring Naver images directory exists: {naver_image_dir}")
+                    
+                    # Fix any image paths to ensure they're in the right directory
+                    img_fix_count = 0
+                    for name, items in naver_map.items():
+                        for item in items:
+                            img_path = item.get('image_path')
+                            img_url = item.get('image_url')
+                            
+                            # Make sure we have a URL for each item (needed for excel_utils.py)
+                            if not img_url and img_path and img_path.startswith('http'):
+                                item['image_url'] = img_path
+                                img_url = img_path
+                            
+                            # Process local image paths
+                            if img_path and isinstance(img_path, str) and not img_path.startswith('http') and os.path.exists(img_path):
+                                # Check if the image is in the wrong directory
+                                if 'Naver' not in img_path.replace('\\', '/').split('/'):
+                                    # Move to correct directory
+                                    filename = os.path.basename(img_path)
+                                    new_path = os.path.join(naver_image_dir, filename)
+                                    try:
+                                        shutil.copy2(img_path, new_path)
+                                        item['image_path'] = new_path
+                                        img_fix_count += 1
+                                        logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
+                                    except Exception as e:
+                                        logging.error(f"Error fixing Naver image path: {e}")
+                                
+                            # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
+                            if img_url:
+                                # Update the item's image data to dictionary format for excel_utils.py
+                                image_data = {
+                                    'url': img_url,
+                                    'local_path': item['image_path'], # Use corrected path
+                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
+                                    'source': 'naver'
+                                }
+                                item['image_data'] = image_data
+                    
+                    if img_fix_count > 0:
+                        logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
+                except Exception as e:
+                    logging.error(f"Error creating Naver map: {e}", exc_info=True)
+                    naver_map = {}
             else:
-                naver_count = 0
-                logging.warning(f"Unexpected Naver results type: {type(naver_crawl_results)}")
+                naver_map = {}
+                logging.warning("Naver results are empty or not in expected format")
 
             # Validate Haereum results
             if isinstance(haereum_image_url_map, dict):
@@ -249,11 +308,11 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             # Log crawl statistics
             logging.info("Crawl Results Summary:")
             logging.info(f"- Kogift items: {kogift_count}")
-            logging.info(f"- Naver items: {naver_count}")
+            logging.info(f"- Naver items: {len(naver_crawl_results) if isinstance(naver_crawl_results, list) else 'Naver results are not in list format'}")
             logging.info(f"- Haereum URLs: {haereum_count}")
 
             if progress_queue:
-                progress_queue.emit("status", f"크롤링 완료 (Kogift: {kogift_count}, Naver: {naver_count}, Haereum: {haereum_count})")
+                progress_queue.emit("status", f"크롤링 완료 (Kogift: {kogift_count}, Naver: {len(naver_crawl_results) if isinstance(naver_crawl_results, list) else 'Naver results are not in list format'}, Haereum: {haereum_count})")
 
         except Exception as e:
             logging.error(f"Error processing crawl results: {e}")
@@ -396,18 +455,19 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                  kogift_map = {}
 
         # Process Naver results
-        if isinstance(naver_crawl_results, pd.DataFrame) and not naver_crawl_results.empty:
+        if isinstance(naver_crawl_results, list) and len(naver_crawl_results) > 0:
             try:
-                # Convert DataFrame to list of dictionaries if needed
-                if not isinstance(naver_crawl_results, list):
-                    naver_crawl_results = naver_crawl_results.to_dict('records')
+                naver_map = {}
+                for item in naver_crawl_results:
+                    if isinstance(item, dict) and 'original_product_name' in item:
+                        product_name = item.get('original_product_name')
+                        if product_name:
+                            # Extract Naver data and put it in a list for each product
+                            naver_data = {k: v for k, v in item.items() if k != 'original_product_name'}
+                            if product_name not in naver_map:
+                                naver_map[product_name] = []
+                            naver_map[product_name].append(naver_data)
                 
-                # Create Naver map
-                naver_map = {
-                    entry['original_row'].get('상품명'): entry['naver_data']
-                    for entry in naver_crawl_results
-                    if entry and isinstance(entry.get('original_row'), dict) and entry['original_row'].get('상품명') and entry.get('naver_data') is not None
-                }
                 logging.debug(f"Created Naver map with {len(naver_map)} entries.")
                 
                 # 샘플 이미지 URL 로깅 (디버깅용)
