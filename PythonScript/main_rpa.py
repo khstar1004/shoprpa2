@@ -12,6 +12,7 @@ import hashlib
 import datetime
 import traceback
 import shutil
+from pathlib import Path
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -20,6 +21,7 @@ from excel_utils import create_split_excel_outputs
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
 from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
+from image_integration import integrate_and_filter_images
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -638,6 +640,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 input_filename_base = input_filename.rsplit('.', 1)[0]
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
+                
+                # 이미지 통합 및 필터링 수행
+                try:
+                    logging.info("이미지 통합 및 유사도 기반 필터링 시작...")
+                    formatted_df = integrate_and_filter_images(formatted_df, config)
+                    logging.info("이미지 통합 및 유사도 기반 필터링 완료")
+                except Exception as e:
+                    logging.error(f"이미지 통합 및 필터링 중 오류 발생: {e}", exc_info=True)
                 
                 # Create both Excel files (with and without images)
                 result_success, upload_success, result_path, upload_path = create_split_excel_outputs(formatted_df, output_path)
