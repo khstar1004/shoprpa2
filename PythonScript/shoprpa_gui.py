@@ -216,58 +216,107 @@ class MainWindow(QMainWindow):
     def create_process_tab(self):
         """Create the main processing tab"""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setSpacing(16)  # Add more spacing between elements
         
-        # Header with logo
-        header = QHBoxLayout()
-        if 'logo' in self.icons:
-            logo = QSvgWidget(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'logo.svg'))
-            logo.setFixedSize(180, 50)
-            header.addWidget(logo)
+        # 전체 레이아웃
+        main_layout = QVBoxLayout(tab)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Create title with version
+        # 헤더 백그라운드 및 로고 부분
+        header_frame = QFrame()
+        header_frame.setObjectName("headerFrame")
+        header_frame.setMinimumHeight(80)
+        header_frame.setMaximumHeight(80)
+        header_frame.setStyleSheet("""
+            #headerFrame {
+                background-color: #f5f5f5;
+                border-radius: 8px;
+                border: 1px solid #e0e0e0;
+            }
+        """)
+        
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(20, 5, 20, 5)
+        
+        # SVG 로고 이미지
+        logo = QSvgWidget(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'compact-logo.svg'))
+        logo.setFixedSize(36, 36)
+        header_layout.addWidget(logo)
+        
+        # 타이틀 레이아웃
         title_layout = QVBoxLayout()
+        title_layout.setSpacing(0)
+        
+        # 타이틀과 버전 텍스트
         title = QLabel("ShopRPA")
-        title.setStyleSheet("font-size: 18pt; font-weight: bold;")
+        title.setStyleSheet("font-size: 18pt; font-weight: bold; color: #333;")
+        subtitle = QLabel("가격 비교 자동화 시스템")
+        subtitle.setStyleSheet("font-size: 9pt; color: #666;")
         version = QLabel("v1.0.2")
-        version.setStyleSheet("color: #666; font-size: 9pt;")
+        version.setStyleSheet("font-size: 8pt; color: #888;")
+        
         title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
         title_layout.addWidget(version)
-        header.addLayout(title_layout)
+        header_layout.addLayout(title_layout)
         
-        header.addStretch()
+        # 스페이서 추가 (왼쪽 정렬)
+        header_layout.addStretch(1)
         
-        # Add a status indicator
+        # 상태 표시기
+        self.status_layout = QHBoxLayout()
+        status_indicator_icon = QSvgWidget(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'status-ready.svg'))
+        status_indicator_icon.setFixedSize(24, 24)
         self.status_indicator = QLabel("준비됨")
-        self.status_indicator.setStyleSheet("background-color: #4CAF50; color: white; padding: 5px 10px; border-radius: 10px;")
-        header.addWidget(self.status_indicator)
+        self.status_indicator.setStyleSheet("""
+            font-weight: bold;
+            color: #4CAF50;
+            padding: 5px;
+        """)
         
-        layout.addLayout(header)
+        self.status_layout.addWidget(status_indicator_icon)
+        self.status_layout.addWidget(self.status_indicator)
+        header_layout.addLayout(self.status_layout)
         
-        # Add separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(separator)
+        main_layout.addWidget(header_frame)
         
-        # Main content in a horizontal splitter
+        # 컨텐츠 영역 (스플리터)
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Left side - settings and control
+        # 왼쪽 패널 (컨트롤 영역)
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 16, 0)
+        left_layout.setContentsMargins(0, 10, 10, 0)
         
-        # File selection
+        # 파일 선택 섹션
         file_group = QGroupBox("입력 파일")
-        file_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        file_layout = QGridLayout()
+        file_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
         
+        file_layout = QVBoxLayout(file_group)
+        file_layout.setSpacing(10)
+        
+        # 파일 선택 표시
         self.file_label = QLabel("선택된 파일: 없음")
-        file_layout.addWidget(self.file_label, 0, 0, 1, 2)
+        self.file_label.setWordWrap(True)
+        self.file_label.setStyleSheet("color: #666;")
         
-        # Modern upload button with icon
+        # 파일 버튼 레이아웃
+        file_buttons = QHBoxLayout()
+        
+        # 파일 선택 버튼
         browse_btn = QPushButton("파일 선택")
         browse_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'file-upload.svg')))
         browse_btn.setStyleSheet("""
@@ -277,6 +326,8 @@ class MainWindow(QMainWindow):
                 border: none;
                 padding: 8px 16px;
                 border-radius: 4px;
+                font-weight: bold;
+                min-width: 100px;
             }
             QPushButton:hover {
                 background-color: #0b7dda;
@@ -286,9 +337,8 @@ class MainWindow(QMainWindow):
             }
         """)
         browse_btn.clicked.connect(self.browse_file)
-        file_layout.addWidget(browse_btn, 1, 0)
         
-        # Add Open File button (initially disabled)
+        # 결과 파일 열기 버튼
         self.open_file_btn = QPushButton("결과 파일 열기")
         self.open_file_btn.setEnabled(False)
         self.open_file_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'file.svg')))
@@ -299,6 +349,8 @@ class MainWindow(QMainWindow):
                 border: none;
                 padding: 8px 16px;
                 border-radius: 4px;
+                font-weight: bold;
+                min-width: 120px;
             }
             QPushButton:hover {
                 background-color: #45a049;
@@ -312,26 +364,47 @@ class MainWindow(QMainWindow):
             }
         """)
         self.open_file_btn.clicked.connect(self.open_result_file)
-        file_layout.addWidget(self.open_file_btn, 1, 1)
         
-        file_group.setLayout(file_layout)
+        file_buttons.addWidget(browse_btn)
+        file_buttons.addWidget(self.open_file_btn)
+        
+        file_layout.addWidget(self.file_label)
+        file_layout.addLayout(file_buttons)
+        
         left_layout.addWidget(file_group)
         
-        # Process settings
+        # 처리 설정 섹션
         settings_group = QGroupBox("처리 설정")
-        settings_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        settings_layout = QGridLayout()
+        settings_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
         
-        # Process type selection
+        settings_layout = QGridLayout(settings_group)
+        settings_layout.setColumnStretch(1, 1)
+        settings_layout.setVerticalSpacing(10)
+        
+        # 처리 유형 설정
         settings_layout.addWidget(QLabel("처리 유형:"), 0, 0)
         self.process_type = QComboBox()
         self.process_type.addItems(["승인관리 (A)", "가격관리 (P)"])
         self.process_type.setStyleSheet("""
             QComboBox {
                 border: 1px solid #ccc;
-                border-radius: 3px;
+                border-radius: 4px;
                 padding: 5px;
-                min-width: 6em;
+                background-color: white;
+                min-height: 25px;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
@@ -344,7 +417,7 @@ class MainWindow(QMainWindow):
         """)
         settings_layout.addWidget(self.process_type, 0, 1)
         
-        # Batch size selection
+        # 배치 크기 설정
         settings_layout.addWidget(QLabel("배치 크기:"), 1, 0)
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 1000)
@@ -352,72 +425,34 @@ class MainWindow(QMainWindow):
         self.batch_size.setStyleSheet("""
             QSpinBox {
                 border: 1px solid #ccc;
-                border-radius: 3px;
+                border-radius: 4px;
                 padding: 5px;
+                background-color: white;
+                min-height: 25px;
             }
         """)
         settings_layout.addWidget(self.batch_size, 1, 1)
         
-        settings_group.setLayout(settings_layout)
         left_layout.addWidget(settings_group)
         
-        # Control buttons
-        button_layout = QHBoxLayout()
-        
-        # Start button
-        self.start_btn = QPushButton("처리 시작")
-        self.start_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'batch.svg')))
-        self.start_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #398439;
-            }
-        """)
-        self.start_btn.clicked.connect(self.start_processing)
-        button_layout.addWidget(self.start_btn)
-        
-        # Stop button
-        self.stop_btn = QPushButton("처리 중단")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
-            QPushButton:pressed {
-                background-color: #b71c1c;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-        self.stop_btn.clicked.connect(self.stop_processing)
-        button_layout.addWidget(self.stop_btn)
-        
-        left_layout.addLayout(button_layout)
-        
-        # Progress bar
+        # 진행 상태 섹션
         progress_group = QGroupBox("진행 상태")
-        progress_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        progress_layout = QVBoxLayout()
+        progress_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        
+        progress_layout = QVBoxLayout(progress_group)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
@@ -431,6 +466,7 @@ class MainWindow(QMainWindow):
                 border-radius: 5px;
                 text-align: center;
                 height: 20px;
+                background-color: #f5f5f5;
             }
             QProgressBar::chunk {
                 background-color: #4CAF50;
@@ -439,43 +475,114 @@ class MainWindow(QMainWindow):
         """)
         progress_layout.addWidget(self.progress_bar)
         
-        progress_group.setLayout(progress_layout)
         left_layout.addWidget(progress_group)
         
-        # Add stretch to push everything up
-        left_layout.addStretch()
+        # 컨트롤 버튼
+        control_layout = QHBoxLayout()
+        control_layout.setSpacing(10)
         
-        # Right side - status log
+        # 시작 버튼
+        self.start_btn = QPushButton("처리 시작")
+        self.start_btn.setIcon(QIcon(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'batch.svg')))
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                font-weight: bold;
+                border-radius: 4px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #398439;
+            }
+        """)
+        self.start_btn.clicked.connect(self.start_processing)
+        
+        # 중지 버튼
+        self.stop_btn = QPushButton("처리 중단")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                font-weight: bold;
+                border-radius: 4px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+            QPushButton:pressed {
+                background-color: #b71c1c;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.stop_btn.clicked.connect(self.stop_processing)
+        
+        control_layout.addWidget(self.start_btn)
+        control_layout.addWidget(self.stop_btn)
+        left_layout.addLayout(control_layout)
+        
+        # 공간 늘리기
+        left_layout.addStretch(1)
+        
+        # 오른쪽 패널 (로그 출력)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(16, 0, 0, 0)
+        right_layout.setContentsMargins(10, 10, 0, 0)
         
+        # 로그 그룹
         log_group = QGroupBox("로그")
-        log_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        log_layout = QVBoxLayout()
+        log_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
         
-        # Status text area
+        log_layout = QVBoxLayout(log_group)
+        
+        # 로그 출력 영역
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
+        self.status_text.setMinimumHeight(200)
         self.status_text.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #ccc;
                 border-radius: 4px;
                 background-color: #f9f9f9;
                 font-family: 'Consolas', monospace;
+                padding: 5px;
             }
         """)
         log_layout.addWidget(self.status_text)
         
-        log_group.setLayout(log_layout)
         right_layout.addWidget(log_group)
         
-        # Add panels to splitter
+        # 패널 추가
         content_splitter.addWidget(left_panel)
         content_splitter.addWidget(right_panel)
-        content_splitter.setSizes([400, 600])  # Initial sizes
+        content_splitter.setSizes([350, 650])
         
-        layout.addWidget(content_splitter)
+        main_layout.addWidget(content_splitter, 1)  # 스트레치 추가
         
         return tab
         
@@ -1002,7 +1109,20 @@ class MainWindow(QMainWindow):
                 
                 # Update status indicator
                 self.status_indicator.setText("처리 중")
-                self.status_indicator.setStyleSheet("background-color: #2196F3; color: white; padding: 5px 10px; border-radius: 10px;")
+                self.status_indicator.setStyleSheet("font-weight: bold; color: #2196F3; padding: 5px;")
+                
+                # Update status icon
+                status_icon_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    'assets', 'status-processing.svg'
+                )
+                if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
+                    old_icon = self.status_layout.itemAt(0).widget()
+                    if old_icon:
+                        new_icon = QSvgWidget(status_icon_path)
+                        new_icon.setFixedSize(24, 24)
+                        self.status_layout.replaceWidget(old_icon, new_icon)
+                        old_icon.deleteLater()
                 
                 # Reset progress bar if it's at 100%
                 if self.progress_bar.value() >= 100:
@@ -1022,7 +1142,20 @@ class MainWindow(QMainWindow):
                 
                 # Update status indicator to show error
                 self.status_indicator.setText("오류")
-                self.status_indicator.setStyleSheet("background-color: #f44336; color: white; padding: 5px 10px; border-radius: 10px;")
+                self.status_indicator.setStyleSheet("font-weight: bold; color: #f44336; padding: 5px;")
+                
+                # Update status icon
+                status_icon_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    'assets', 'status-error.svg'
+                )
+                if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
+                    old_icon = self.status_layout.itemAt(0).widget()
+                    if old_icon:
+                        new_icon = QSvgWidget(status_icon_path)
+                        new_icon.setFixedSize(24, 24)
+                        self.status_layout.replaceWidget(old_icon, new_icon)
+                        old_icon.deleteLater()
                 
                 # Show error message in status bar
                 self.statusBar.showMessage(f"오류: {message}", 5000)
@@ -1036,7 +1169,20 @@ class MainWindow(QMainWindow):
                 
                 # Update status indicator to show completion
                 self.status_indicator.setText("완료")
-                self.status_indicator.setStyleSheet("background-color: #4CAF50; color: white; padding: 5px 10px; border-radius: 10px;")
+                self.status_indicator.setStyleSheet("font-weight: bold; color: #4CAF50; padding: 5px;")
+                
+                # Update status icon
+                status_icon_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    'assets', 'status-ready.svg'
+                )
+                if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
+                    old_icon = self.status_layout.itemAt(0).widget()
+                    if old_icon:
+                        new_icon = QSvgWidget(status_icon_path)
+                        new_icon.setFixedSize(24, 24)
+                        self.status_layout.replaceWidget(old_icon, new_icon)
+                        old_icon.deleteLater()
                 
                 self.progress_bar.setValue(100)  # Set to 100% on completion
                 self.start_btn.setEnabled(True)
