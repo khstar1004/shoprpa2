@@ -3,389 +3,272 @@ import logging
 import pandas as pd
 from pathlib import Path
 import configparser
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import get_column_letter
 import shutil
 
-def integrate_haereum_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
-    해오름 기프트 이미지를 DataFrame에 통합합니다.
-    상품명을 기준으로 이미지를 매칭합니다.
-    """
-    try:
-        logging.info("통합: 해오름 기프트 이미지를 결과에 추가합니다...")
-        result_df = df.copy()
-        
-        # 해오름 이미지 디렉토리 경로
-        haereum_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')) / 'Haereum'
-        
-        if haereum_dir.exists():
-            # JPG와 PNG 파일 모두 찾기 (nobg 파일 제외)
-            haereum_images = sorted([f for f in haereum_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
-                             sorted([f for f in haereum_dir.glob("*.png") if "_nobg" not in f.name])
-            
-            logging.info(f"통합: 해오름 이미지 {len(haereum_images)}개 발견")
-            
-            # '본사 이미지' 열이 없으면 추가
-            if '본사 이미지' not in result_df.columns:
-                result_df['본사 이미지'] = None
-            
-            # 이미지 추가 카운터
-            added_images = 0
-            
-            # 디버깅용 상품명 확인
-            if len(result_df) > 0:
-                sample_names = result_df['상품명'].tolist()[:5]  # 첫 5개 상품명 샘플
-                logging.debug(f"상품명 샘플: {sample_names}")
-            
-            # 각 상품명에 대한 토큰 생성 (더 나은 매칭을 위해)
-            product_tokens = {}
-            for idx, row in result_df.iterrows():
-                product_name = str(row['상품명']).lower()
-                # 숫자, 알파벳, 한글만 남기고 공백으로 변환 후 토큰화
-                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
-                tokens = [t for t in clean_name.split() if len(t) > 1]  # 2자 이상 토큰만 유지
-                product_tokens[idx] = tokens
-            
-            # 상품명을 기준으로 이미지 매칭
-            for img_path in haereum_images:
-                # 이미지 파일명에서 상품명 추출
-                img_name = img_path.stem
-                if img_name.startswith('haereum_'):
-                    img_name = img_name[8:]  # 'haereum_' 접두사 제거
-                
-                # 해시 부분 제거 (마지막 _ 이후 부분)
-                if '_' in img_name:
-                    parts = img_name.split('_')
-                    # 마지막 부분이 해시처럼 생겼는지 확인 (10자리 이하의 알파벳+숫자)
-                    if len(parts[-1]) <= 10 and parts[-1].isalnum():
-                        img_name = '_'.join(parts[:-1])
-                
-                # 이미지 이름 토큰화
-                img_name_clean = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-                img_tokens = [t for t in img_name_clean.replace('_', ' ').split() if len(t) > 1]
-                
-                # 디버깅 출력
-                logging.debug(f"처리된 이미지 이름: '{img_name}' (원본: {img_path.name}), 토큰: {img_tokens}")
-                
-                # DataFrame에서 해당 상품명을 가진 행 찾기 - 토큰 매칭
-                matched = False
-                
-                for idx, tokens in product_tokens.items():
-                    # 공통 토큰 찾기
-                    common_tokens = set(tokens) & set(img_tokens)
-                    
-                    # 매칭 점수 계산 (공통 토큰 수 / 이미지 토큰 수)
-                    matching_score = len(common_tokens) / len(img_tokens) if img_tokens else 0
-                    
-                    # 임계값 이상 매칭되면 추가 (최소 30% 이상 매칭)
-                    if common_tokens and matching_score >= 0.3:
-                        product_name = result_df.iloc[idx]['상품명']
-                        # 이미지 데이터 구성
-                        image_data = {
-                            'local_path': str(img_path),
-                            'source': 'haereum',
-                            'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                            'original_path': str(img_path)
-                        }
-                        result_df.at[idx, '본사 이미지'] = image_data
-                        added_images += 1
-                        matched = True
-                        logging.debug(f"매칭 성공: 이미지 '{img_name}' -> 상품 '{product_name}' (점수: {matching_score:.2f}, 공통 토큰: {common_tokens})")
-                
-                if not matched:
-                    logging.debug(f"매칭 실패: 이미지 '{img_name}'와 일치하는 상품명 없음")
-            
-            logging.info(f"통합: {added_images}개의 해오름 이미지를 DataFrame에 추가했습니다.")
-        else:
-            logging.warning(f"통합: 해오름 이미지 디렉토리를 찾을 수 없습니다: {haereum_dir}")
-        
-        return result_df
+    이미지 메타데이터를 준비합니다.
     
-    except Exception as e:
-        logging.error(f"통합: 해오름 이미지 추가 중 오류 발생: {e}", exc_info=True)
-        return df
+    Args:
+        image_dir: 이미지 디렉토리 경로
+        prefix: 이미지 파일명 접두사 (예: 'haereum_', 'kogift_', 'naver_')
+        
+    Returns:
+        이미지 메타데이터 사전
+    """
+    image_info = {}
+    
+    if not image_dir.exists():
+        logging.warning(f"이미지 디렉토리를 찾을 수 없습니다: {image_dir}")
+        return image_info
+    
+    # JPG와 PNG 파일 모두 찾기 (nobg 파일 제외)
+    images = sorted([f for f in image_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
+             sorted([f for f in image_dir.glob("*.png") if "_nobg" not in f.name])
+    
+    logging.info(f"{len(images)}개의 {prefix} 이미지 발견")
+    
+    for img_path in images:
+        # 이미지 파일명에서 상품명 추출
+        img_name = img_path.stem
+        original_img_name = img_name
+        
+        # 접두사 제거
+        if img_name.startswith(prefix):
+            img_name = img_name[len(prefix):]  # 접두사 제거
+        
+        # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
+        if '_' in img_name:
+            parts = img_name.split('_')
+            # 마지막 부분이 해시처럼 생겼는지 확인
+            if len(parts[-1]) <= 10 and parts[-1].isalnum():
+                img_name = '_'.join(parts[:-1])
+        
+        # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
+        clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
+        tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
+        
+        image_info[str(img_path)] = {
+            'original_name': original_img_name,
+            'clean_name': img_name,
+            'tokens': tokens,
+            'path': img_path
+        }
+    
+    return image_info
 
-def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> float:
     """
-    고려기프트 이미지를 DataFrame에 통합합니다.
-    상품명을 기준으로 이미지를 매칭합니다.
-    이름 매칭 알고리즘을 개선하여 더 정확한 상품 매칭을 구현합니다.
-    """
-    try:
-        logging.info("통합: 고려기프트 이미지를 결과에 추가합니다...")
-        result_df = df.copy()
-        
-        # 고려기프트 이미지 디렉토리 경로
-        kogift_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')) / 'Kogift'
-        
-        if kogift_dir.exists():
-            # JPG와 PNG 파일 모두 찾기 (nobg 파일 제외)
-            kogift_images = sorted([f for f in kogift_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
-                            sorted([f for f in kogift_dir.glob("*.png") if "_nobg" not in f.name])
-            
-            logging.info(f"통합: 고려기프트 이미지 {len(kogift_images)}개 발견")
-            
-            # '고려기프트 이미지' 열이 없으면 추가
-            if '고려기프트 이미지' not in result_df.columns:
-                result_df['고려기프트 이미지'] = None
-            
-            # 이미지 파일명 정보 저장
-            image_info = {}
-            for img_path in kogift_images:
-                # 이미지 파일명에서 상품명 추출
-                img_name = img_path.stem
-                original_img_name = img_name
-                
-                # 접두사 제거
-                if img_name.startswith('kogift_'):
-                    img_name = img_name[7:]  # 'kogift_' 접두사 제거
-                
-                # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
-                if '_' in img_name:
-                    parts = img_name.split('_')
-                    # 마지막 부분이 해시처럼 생겼는지 확인
-                    if len(parts[-1]) <= 10 and parts[-1].isalnum():
-                        img_name = '_'.join(parts[:-1])
-                
-                # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
-                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-                tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
-                
-                image_info[str(img_path)] = {
-                    'original_name': original_img_name,
-                    'clean_name': img_name,
-                    'tokens': tokens,
-                    'path': img_path
-                }
-            
-            # 이미지 추가 카운터
-            added_images = 0
-            assigned_rows = set()  # 이미지가 이미 할당된 행 추적
-            
-            # 정확한 상품명 매칭을 시도하고, 나머지는 후처리
-            for idx, row in result_df.iterrows():
-                product_name = str(row['상품명']).lower()
-                # 상품명 토큰화
-                clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
-                product_tokens = [t.lower() for t in clean_product.split() if len(t) > 1]
-                
-                best_match = None
-                best_score = 0
-                
-                # 모든 이미지와 비교하여 최적의 매치 찾기
-                for img_path, info in image_info.items():
-                    # 토큰 기반 유사도 계산
-                    common_tokens = set(product_tokens) & set(info['tokens'])
-                    
-                    # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
-                    total_tokens = len(set(product_tokens) | set(info['tokens']))
-                    if total_tokens > 0:
-                        similarity = len(common_tokens) / total_tokens
-                        
-                        # 더 긴 토큰이 매칭되면 가중치 부여
-                        weight = 1.0
-                        for token in common_tokens:
-                            if len(token) >= 4:  # 4글자 이상 토큰에 가중치
-                                weight += 0.1
-                        
-                        similarity *= weight
-                        
-                        if similarity > best_score and similarity >= 0.2:  # 최소 20% 이상 매칭
-                            best_score = similarity
-                            best_match = img_path
-                
-                # 최적 매치가 있으면 이미지 할당
-                if best_match:
-                    img_path = image_info[best_match]['path']
-                    image_data = {
-                        'local_path': str(img_path),
-                        'source': 'kogift',
-                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                        'original_path': str(img_path)
-                    }
-                    result_df.at[idx, '고려기프트 이미지'] = image_data
-                    added_images += 1
-                    assigned_rows.add(idx)
-                    logging.debug(f"상품명 매칭: 고려기프트 이미지 '{image_info[best_match]['clean_name']}' -> 상품 '{product_name}' (점수: {best_score:.2f})")
-            
-            # 매칭되지 않은 이미지들을 매칭되지 않은 행에 할당
-            if len(assigned_rows) < len(result_df) and len(image_info) > added_images:
-                # 할당되지 않은 이미지 목록
-                unused_images = [info['path'] for path, info in image_info.items() 
-                                if not any(str(info['path']) == str(row_data.get('original_path', '')) 
-                                          for idx, row_data in result_df['고려기프트 이미지'].items() 
-                                          if pd.notna(row_data) and isinstance(row_data, dict))]
-                
-                # 할당되지 않은 행 찾기
-                unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
-                
-                # 개수 조정
-                num_to_assign = min(len(unused_images), len(unassigned_rows))
-                for i in range(num_to_assign):
-                    idx = unassigned_rows[i]
-                    img_path = unused_images[i]
-                    
-                    image_data = {
-                        'local_path': str(img_path),
-                        'source': 'kogift',
-                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                        'original_path': str(img_path)
-                    }
-                    result_df.at[idx, '고려기프트 이미지'] = image_data
-                    added_images += 1
-                    logging.debug(f"보조 할당: 고려기프트 이미지 '{img_path.name}' -> 행 {idx}")
-            
-            logging.info(f"통합: {added_images}개의 고려기프트 이미지를 DataFrame에 추가했습니다.")
-        else:
-            logging.warning(f"통합: 고려기프트 이미지 디렉토리를 찾을 수 없습니다: {kogift_dir}")
-        
-        return result_df
+    상품명과 이미지 이름 간의 유사도를 계산합니다.
     
-    except Exception as e:
-        logging.error(f"통합: 고려기프트 이미지 추가 중 오류 발생: {e}", exc_info=True)
-        return df
+    Args:
+        product_tokens: 상품명에서 추출한 토큰 목록
+        image_tokens: 이미지 이름에서 추출한 토큰 목록
+        
+    Returns:
+        유사도 점수 (0.0 ~ 1.0)
+    """
+    # 토큰 기반 유사도 계산
+    common_tokens = set(product_tokens) & set(image_tokens)
+    
+    # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
+    total_tokens = len(set(product_tokens) | set(image_tokens))
+    if total_tokens == 0:
+        return 0.0
+        
+    similarity = len(common_tokens) / total_tokens
+    
+    # 더 긴 토큰이 매칭되면 가중치 부여
+    weight = 1.0
+    for token in common_tokens:
+        if len(token) >= 4:  # 4글자 이상 토큰에 가중치
+            weight += 0.1
+    
+    return similarity * weight
 
-def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+def tokenize_product_name(product_name: str) -> List[str]:
     """
-    네이버 이미지를 DataFrame에 통합합니다.
-    상품명을 기준으로 이미지를 매칭합니다.
-    이름 매칭 알고리즘을 개선하여 더 정확한 상품 매칭을 구현합니다.
+    상품명을 토큰화합니다.
+    
+    Args:
+        product_name: 상품명
+        
+    Returns:
+        토큰 목록
+    """
+    # 특수문자를 공백으로 변환하고, 소문자로 변환
+    clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name.lower()])
+    # 2자 이상의 토큰만 추출
+    return [t.lower() for t in clean_product.split() if len(t) > 1]
+
+def find_best_image_matches(product_names: List[str], 
+                           haereum_images: Dict[str, Dict], 
+                           kogift_images: Dict[str, Dict], 
+                           naver_images: Dict[str, Dict],
+                           similarity_threshold: float = 0.2) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
+    """
+    각 상품에 대해 세 가지 이미지 소스에서 가장 적합한 이미지를 찾습니다.
+    세 이미지가 서로 일관성을 유지하도록 합니다.
+    
+    Args:
+        product_names: 상품명 목록
+        haereum_images: 해오름 이미지 정보
+        kogift_images: 고려기프트 이미지 정보
+        naver_images: 네이버 이미지 정보
+        similarity_threshold: 최소 유사도 점수
+        
+    Returns:
+        각 상품별 (해오름 이미지 경로, 고려기프트 이미지 경로, 네이버 이미지 경로) 튜플 목록
+    """
+    results = []
+    
+    # 모든 이미지 소스를 한번에 처리하여 일관된 매칭 보장
+    for product_name in product_names:
+        product_tokens = tokenize_product_name(product_name)
+        
+        # 각 소스별 최적 매치 찾기
+        haereum_best = find_best_match_for_product(product_tokens, haereum_images, similarity_threshold)
+        kogift_best = find_best_match_for_product(product_tokens, kogift_images, similarity_threshold)
+        naver_best = find_best_match_for_product(product_tokens, naver_images, similarity_threshold)
+        
+        # 결과 추가
+        results.append((haereum_best, kogift_best, naver_best))
+        
+        # 로깅
+        haereum_name = haereum_images[haereum_best]['clean_name'] if haereum_best else "없음"
+        kogift_name = kogift_images[kogift_best]['clean_name'] if kogift_best else "없음"
+        naver_name = naver_images[naver_best]['clean_name'] if naver_best else "없음"
+        
+        logging.debug(f"상품 '{product_name}' 매칭 결과:")
+        logging.debug(f"  해오름: {haereum_name}")
+        logging.debug(f"  고려기프트: {kogift_name}")
+        logging.debug(f"  네이버: {naver_name}")
+    
+    return results
+
+def find_best_match_for_product(product_tokens: List[str], 
+                               image_info: Dict[str, Dict], 
+                               similarity_threshold: float = 0.2) -> Optional[str]:
+    """
+    상품에 대해 가장 유사한 이미지를 찾습니다.
+    
+    Args:
+        product_tokens: 상품명 토큰
+        image_info: 이미지 정보 사전
+        similarity_threshold: 최소 유사도 점수
+        
+    Returns:
+        가장 유사한 이미지 경로 또는 None
+    """
+    best_match = None
+    best_score = 0
+    
+    for img_path, info in image_info.items():
+        similarity = calculate_similarity(product_tokens, info['tokens'])
+        
+        if similarity > best_score and similarity >= similarity_threshold:
+            best_score = similarity
+            best_match = img_path
+    
+    return best_match
+
+def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+    """
+    세 가지 이미지 소스(해오름, 고려기프트, 네이버)의 이미지를 DataFrame에 통합합니다.
+    상품별로 일관된 이미지 매칭을 보장합니다.
+    
+    Args:
+        df: 처리할 DataFrame
+        config: 설정 파일
+        
+    Returns:
+        이미지가 통합된 DataFrame
     """
     try:
-        logging.info("통합: 네이버 이미지를 결과에 추가합니다...")
+        logging.info("통합: 이미지 통합 프로세스 시작...")
         result_df = df.copy()
         
-        # 네이버 이미지 디렉토리 경로
-        naver_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')) / 'Naver'
+        # 이미지 디렉토리 경로
+        main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'))
+        haereum_dir = main_img_dir / 'Haereum'
+        kogift_dir = main_img_dir / 'Kogift'
+        naver_dir = main_img_dir / 'Naver'
         
-        if naver_dir.exists():
-            # JPG와 PNG 파일 모두 찾기 (nobg 파일 제외)
-            naver_images = sorted([f for f in naver_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
-                           sorted([f for f in naver_dir.glob("*.png") if "_nobg" not in f.name])
-            
-            logging.info(f"통합: 네이버 이미지 {len(naver_images)}개 발견")
-            
-            # '네이버 이미지' 열이 없으면 추가
-            if '네이버 이미지' not in result_df.columns:
-                result_df['네이버 이미지'] = None
-            
-            # 이미지 파일명 정보 저장
-            image_info = {}
-            for img_path in naver_images:
-                # 이미지 파일명에서 상품명 추출
-                img_name = img_path.stem
-                original_img_name = img_name
-                
-                # 접두사 제거
-                if img_name.startswith('naver_'):
-                    img_name = img_name[6:]  # 'naver_' 접두사 제거
-                
-                # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
-                if '_' in img_name:
-                    parts = img_name.split('_')
-                    # 마지막 부분이 해시처럼 생겼는지 확인
-                    if len(parts[-1]) <= 10 and parts[-1].isalnum():
-                        img_name = '_'.join(parts[:-1])
-                
-                # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
-                clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-                tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
-                
-                image_info[str(img_path)] = {
-                    'original_name': original_img_name,
-                    'clean_name': img_name,
-                    'tokens': tokens,
-                    'path': img_path
+        # 이미지 메타데이터 준비
+        haereum_images = prepare_image_metadata(haereum_dir, 'haereum_')
+        kogift_images = prepare_image_metadata(kogift_dir, 'kogift_')
+        naver_images = prepare_image_metadata(naver_dir, 'naver_')
+        
+        # 필요한 열 추가
+        if '본사 이미지' not in result_df.columns:
+            result_df['본사 이미지'] = None
+        if '고려기프트 이미지' not in result_df.columns:
+            result_df['고려기프트 이미지'] = None
+        if '네이버 이미지' not in result_df.columns:
+            result_df['네이버 이미지'] = None
+        
+        # 상품 목록 추출
+        product_names = result_df['상품명'].tolist()
+        
+        # 최적 매치 찾기 (일관성 보장)
+        best_matches = find_best_image_matches(
+            product_names,
+            haereum_images,
+            kogift_images,
+            naver_images,
+            similarity_threshold=0.2
+        )
+        
+        # 결과를 DataFrame에 적용
+        for idx, (haereum_path, kogift_path, naver_path) in enumerate(best_matches):
+            # 해오름 이미지
+            if haereum_path:
+                img_path = haereum_images[haereum_path]['path']
+                image_data = {
+                    'local_path': str(img_path),
+                    'source': 'haereum',
+                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                    'original_path': str(img_path)
                 }
+                result_df.at[idx, '본사 이미지'] = image_data
             
-            # 이미지 추가 카운터
-            added_images = 0
-            assigned_rows = set()  # 이미지가 이미 할당된 행 추적
+            # 고려기프트 이미지
+            if kogift_path:
+                img_path = kogift_images[kogift_path]['path']
+                image_data = {
+                    'local_path': str(img_path),
+                    'source': 'kogift',
+                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                    'original_path': str(img_path)
+                }
+                result_df.at[idx, '고려기프트 이미지'] = image_data
             
-            # 정확한 상품명 매칭을 시도하고, 나머지는 후처리
-            for idx, row in result_df.iterrows():
-                product_name = str(row['상품명']).lower()
-                # 상품명 토큰화
-                clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name])
-                product_tokens = [t.lower() for t in clean_product.split() if len(t) > 1]
-                
-                best_match = None
-                best_score = 0
-                
-                # 모든 이미지와 비교하여 최적의 매치 찾기
-                for img_path, info in image_info.items():
-                    # 토큰 기반 유사도 계산
-                    common_tokens = set(product_tokens) & set(info['tokens'])
-                    
-                    # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
-                    total_tokens = len(set(product_tokens) | set(info['tokens']))
-                    if total_tokens > 0:
-                        similarity = len(common_tokens) / total_tokens
-                        
-                        # 더 긴 토큰이 매칭되면 가중치 부여
-                        weight = 1.0
-                        for token in common_tokens:
-                            if len(token) >= 4:  # 4글자 이상 토큰에 가중치
-                                weight += 0.1
-                        
-                        similarity *= weight
-                        
-                        if similarity > best_score and similarity >= 0.2:  # 최소 20% 이상 매칭
-                            best_score = similarity
-                            best_match = img_path
-                
-                # 최적 매치가 있으면 이미지 할당
-                if best_match:
-                    img_path = image_info[best_match]['path']
-                    image_data = {
-                        'local_path': str(img_path),
-                        'source': 'naver',
-                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                        'original_path': str(img_path)
-                    }
-                    result_df.at[idx, '네이버 이미지'] = image_data
-                    added_images += 1
-                    assigned_rows.add(idx)
-                    logging.debug(f"상품명 매칭: 네이버 이미지 '{image_info[best_match]['clean_name']}' -> 상품 '{product_name}' (점수: {best_score:.2f})")
-            
-            # 매칭되지 않은 이미지들을 매칭되지 않은 행에 할당
-            if len(assigned_rows) < len(result_df) and len(image_info) > added_images:
-                # 할당되지 않은 이미지 목록
-                unused_images = [info['path'] for path, info in image_info.items() 
-                                if not any(str(info['path']) == str(row_data.get('original_path', '')) 
-                                          for idx, row_data in result_df['네이버 이미지'].items() 
-                                          if pd.notna(row_data) and isinstance(row_data, dict))]
-                
-                # 할당되지 않은 행 찾기
-                unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
-                
-                # 개수 조정
-                num_to_assign = min(len(unused_images), len(unassigned_rows))
-                for i in range(num_to_assign):
-                    idx = unassigned_rows[i]
-                    img_path = unused_images[i]
-                    
-                    image_data = {
-                        'local_path': str(img_path),
-                        'source': 'naver',
-                        'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                        'original_path': str(img_path)
-                    }
-                    result_df.at[idx, '네이버 이미지'] = image_data
-                    added_images += 1
-                    logging.debug(f"보조 할당: 네이버 이미지 '{img_path.name}' -> 행 {idx}")
-            
-            logging.info(f"통합: {added_images}개의 네이버 이미지를 DataFrame에 추가했습니다.")
-        else:
-            logging.warning(f"통합: 네이버 이미지 디렉토리를 찾을 수 없습니다: {naver_dir}")
+            # 네이버 이미지
+            if naver_path:
+                img_path = naver_images[naver_path]['path']
+                image_data = {
+                    'local_path': str(img_path),
+                    'source': 'naver',
+                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                    'original_path': str(img_path)
+                }
+                result_df.at[idx, '네이버 이미지'] = image_data
+        
+        # 매칭 결과 요약
+        haereum_count = sum(1 for m in best_matches if m[0] is not None)
+        kogift_count = sum(1 for m in best_matches if m[1] is not None)
+        naver_count = sum(1 for m in best_matches if m[2] is not None)
+        
+        logging.info(f"통합: 이미지 매칭 완료 - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
         
         return result_df
     
     except Exception as e:
-        logging.error(f"통합: 네이버 이미지 추가 중 오류 발생: {e}", exc_info=True)
+        logging.error(f"통합: 이미지 통합 중 오류 발생: {e}", exc_info=True)
         return df
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
@@ -603,19 +486,13 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         logging.info("이미지 통합 및 필터링 프로세스 시작...")
         
-        # 1. 해오름 이미지 통합
-        result_df = integrate_haereum_images(df, config)
+        # 새로운 통합 이미지 함수로 모든 이미지 소스를 한번에 처리
+        result_df = integrate_images(df, config)
         
-        # 2. 고려기프트 이미지 통합
-        result_df = integrate_kogift_images(result_df, config)
-        
-        # 3. 네이버 이미지 통합
-        result_df = integrate_naver_images(result_df, config)
-        
-        # 4. 이미지 유사도 필터링
+        # 필터링 적용
         result_df = filter_images_by_similarity(result_df, config)
         
-        # 5. 필요한 경우에만 결과를 별도의 엑셀 파일로 저장 (이미지 포함)
+        # 필요한 경우에만 결과를 별도의 엑셀 파일로 저장 (이미지 포함)
         if save_excel_output:
             try:
                 output_dir = Path(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'))
