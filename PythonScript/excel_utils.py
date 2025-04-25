@@ -178,8 +178,8 @@ IMAGE_QUALITY = 85  # JPEG compression quality
 SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']  # Supported by Excel 2021
 
 # Image cell specific styling
-IMAGE_CELL_HEIGHT = 120  # Row height for image cells (increased from 90)
-IMAGE_CELL_WIDTH = 22   # Column width for image cells (increased from 15)
+IMAGE_CELL_HEIGHT = 180  # Increased from 120 to accommodate both image and link
+IMAGE_CELL_WIDTH = 22   # Column width for image cells
 
 # --- Utility Functions ---
 
@@ -478,7 +478,9 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                         
                                         # Check content type
                                         content_type = response.headers.get('Content-Type', '')
-                                        if not content_type.startswith('image/') and not ('jclgift' in url or 'kogift' in url or 'pstatic' in url):
+                                        # 고려기프트, adpanchok 사이트는 text/plain으로 이미지를 반환하므로 예외 처리
+                                        is_kogift_url = any(domain in url.lower() for domain in ['koreagift.com', 'adpanchok.co.kr', 'kogift'])
+                                        if not content_type.startswith('image/') and not is_kogift_url and not ('jclgift' in url or 'pstatic' in url):
                                             logger.warning(f"  URL doesn't return an image: {content_type}")
                                             cell.value = "이미지 아님 (URL)"
                                             continue
@@ -731,8 +733,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         img.anchor = cell.coordinate
                         worksheet.add_image(img)
                         
-                        # Clear the cell value since we're showing the image
-                        cell.value = "" # Important: Clear the path string/dict
+                        # Keep the link in the cell value if available
+                        if img_dict and 'url' in img_dict:
+                            cell.value = img_dict['url']
+                            cell.hyperlink = img_dict['url']
+                            cell.font = LINK_FONT
+                            cell.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+                        elif isinstance(original_value, str) and ('http' in original_value or 'https' in original_value):
+                            cell.value = original_value
+                            cell.hyperlink = original_value
+                            cell.font = LINK_FONT
+                            cell.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
+                        else:
+                            cell.value = ""
                         
                         logger.info(f"  Successfully added image {os.path.basename(image_path_to_embed)} to cell {cell.coordinate}")
                         
@@ -1121,20 +1134,22 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
     
     # Generate the upload file path by adding _upload before the extension
     base_name, ext = os.path.splitext(output_path)
+    # Add _result suffix to the result file path
+    result_path = f"{base_name}_result{ext}"
     upload_path = f"{base_name}_upload{ext}"
     
     # Log the paths that will be created
-    logging.info(f"Result file path (with images): {output_path}")
+    logging.info(f"Result file path (with images): {result_path}")
     logging.info(f"Upload file path (links only): {upload_path}")
     
     # Check if either file is locked
-    if os.path.exists(output_path):
+    if os.path.exists(result_path):
         try:
-            with open(output_path, 'a'):
+            with open(result_path, 'a'):
                 pass
         except PermissionError:
-            logging.error(f"Result file is locked: {output_path}")
-            return False, False, output_path, upload_path
+            logging.error(f"Result file is locked: {result_path}")
+            return False, False, result_path, upload_path
     
     if os.path.exists(upload_path):
         try:
@@ -1142,10 +1157,10 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
                 pass
         except PermissionError:
             logging.error(f"Upload file is locked: {upload_path}")
-            return False, False, output_path, upload_path
+            return False, False, result_path, upload_path
     
     # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(result_path), exist_ok=True)
     
     # Copy the DataFrame to avoid modifying the original
     df_result = df.copy()
@@ -1157,7 +1172,7 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
     
     try:
         # 1. Create the result file (with images)
-        result_success = create_final_output_excel(df_result, output_path)
+        result_success = create_final_output_excel(df_result, result_path)
         
         # 2. Create the upload file (links only)
         if result_success:
@@ -1166,7 +1181,7 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
     
     except Exception as e:
         logging.error(f"Error creating split Excel outputs: {str(e)}", exc_info=True)
-        return False, False, output_path, upload_path
+        return False, False, result_path, upload_path
     
     # Return the results
     if result_success and upload_success:
@@ -1177,7 +1192,7 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
         if not upload_success:
             logging.error(f"Failed to create upload Excel file")
     
-    return result_success, upload_success, output_path, upload_path
+    return result_success, upload_success, result_path, upload_path
 
 def _create_upload_excel(df: pd.DataFrame, output_path: str) -> bool:
     """
