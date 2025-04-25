@@ -122,7 +122,7 @@ PRICE_COLUMNS = [
     '가격차이(2)', '가격차이(3)'
 ]
 QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
-PERCENTAGE_COLUMNS = [] # 퍼센트 컬럼 목록 비우기
+PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)'] # 퍼센트 컬럼 추가
 TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
 LINK_COLUMNS_FOR_HYPERLINK = {
     '본사상품링크': '본사상품링크',

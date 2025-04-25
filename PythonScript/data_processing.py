@@ -498,8 +498,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(2)(%)'] = df.apply(
-                lambda x: (pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100 
+                lambda x: int((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
                 if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1
@@ -515,8 +515,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(3)(%)'] = df.apply(
-                lambda x: (pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100 
+                lambda x: int((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
                 if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1

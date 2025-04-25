@@ -644,7 +644,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 # 이미지 통합 및 필터링 수행
                 try:
                     logging.info("이미지 통합 및 유사도 기반 필터링 시작...")
-                    formatted_df = integrate_and_filter_images(formatted_df, config)
+                    formatted_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     logging.info("이미지 통합 및 유사도 기반 필터링 완료")
                 except Exception as e:
                     logging.error(f"이미지 통합 및 필터링 중 오류 발생: {e}", exc_info=True)

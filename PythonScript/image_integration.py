@@ -264,8 +264,18 @@ def create_excel_with_images(df, output_file):
         wb = Workbook()
         ws = wb.active
         
+        # 사용 가능한 컬럼 확인
+        available_columns = df.columns.tolist()
+        logging.info(f"엑셀 생성: 사용 가능한 컬럼: {available_columns}")
+        
+        # 기본 헤더 및 데이터 컬럼 정의
+        base_headers = ['번호', '상품명']
+        optional_headers = ['파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
+        
+        # 실제 사용할 헤더 목록 생성
+        headers = base_headers + [h for h in optional_headers if h in available_columns]
+        
         # 헤더 작성
-        headers = ['번호', '상품명', '파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
         for col, header in enumerate(headers, 1):
             ws.cell(row=1, column=col, value=header)
         
@@ -275,28 +285,50 @@ def create_excel_with_images(df, output_file):
             ws.row_dimensions[row].height = 100  # 데이터 행 높이
         
         # 열 너비 설정
-        column_widths = {'A': 5, 'B': 30, 'C': 30, 'D': 15, 'E': 15, 'F': 15, 'G': 15}
+        column_widths = {}
+        for i, header in enumerate(headers):
+            col_letter = get_column_letter(i+1)
+            if header == '번호':
+                column_widths[col_letter] = 5
+            elif header == '상품명':
+                column_widths[col_letter] = 30
+            elif header == '파일명':
+                column_widths[col_letter] = 30
+            else:
+                column_widths[col_letter] = 15
+        
         for col, width in column_widths.items():
             ws.column_dimensions[col].width = width
         
         # 데이터 및 이미지 추가
         for row_idx, (_, row) in enumerate(df.iterrows(), 2):
             # 기본 데이터 추가
-            ws.cell(row=row_idx, column=1, value=row['번호'])
-            ws.cell(row=row_idx, column=2, value=row['상품명'])
-            ws.cell(row=row_idx, column=3, value=row['파일명'])
-            ws.cell(row=row_idx, column=7, value=row['이미지_유사도'])
+            col_idx = 1
+            
+            # 번호 추가
+            ws.cell(row=row_idx, column=col_idx, value=row['번호'])
+            col_idx += 1
+            
+            # 상품명 추가
+            ws.cell(row=row_idx, column=col_idx, value=row['상품명'])
+            col_idx += 1
+            
+            # 파일명 추가 (있을 경우)
+            if '파일명' in available_columns:
+                ws.cell(row=row_idx, column=col_idx, value=row['파일명'])
+                col_idx += 1
+            
+            # 이미지 데이터 처리
+            image_columns = {}
+            for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+                if col_name in available_columns:
+                    image_columns[col_name] = row.get(col_name)
             
             # 이미지 추가
-            image_columns = {
-                '본사 이미지': row['본사 이미지'],
-                '고려기프트 이미지': row['고려기프트 이미지'],
-                '네이버 이미지': row['네이버 이미지']
-            }
-            
-            for col_idx, (col_name, img_data) in enumerate(image_columns.items(), 4):
+            for col_name, img_data in image_columns.items():
                 if pd.isna(img_data) or img_data is None:
                     ws.cell(row=row_idx, column=col_idx, value="")
+                    col_idx += 1
                     continue
                 
                 try:
@@ -308,6 +340,7 @@ def create_excel_with_images(df, output_file):
                         if not img_path and 'url' in img_data:
                             # URL만 있는 경우 셀에 URL 표시
                             ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
+                            col_idx += 1
                             continue
                     elif isinstance(img_data, str):
                         # 문자열 경로 처리
@@ -339,6 +372,13 @@ def create_excel_with_images(df, output_file):
                 except Exception as e:
                     logging.error(f"이미지 처리 중 오류 발생 ({col_name}): {e}")
                     ws.cell(row=row_idx, column=col_idx, value="이미지 처리 오류")
+                
+                col_idx += 1
+            
+            # 이미지 유사도 추가 (있을 경우)
+            if '이미지_유사도' in available_columns:
+                ws.cell(row=row_idx, column=col_idx, value=row['이미지_유사도'])
+                col_idx += 1
         
         # 엑셀 파일 저장
         wb.save(output_file)
@@ -350,13 +390,15 @@ def create_excel_with_images(df, output_file):
     except Exception as e:
         logging.error(f"엑셀 파일 생성 중 오류 발생: {e}", exc_info=True)
 
-def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
+                            save_excel_output=False) -> pd.DataFrame:
     """
     이미지 통합 및 유사도 기반 이미지 필터링을 순차적으로 수행합니다.
     
     Args:
         df: 처리할 DataFrame
         config: 설정 파일
+        save_excel_output: 결과를 별도의 엑셀 파일로 저장할지 여부 (기본값: False)
     
     Returns:
         처리된 DataFrame
@@ -376,11 +418,17 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
         # 4. 이미지 유사도 필터링
         result_df = filter_images_by_similarity(result_df, config)
         
-        # 5. 결과를 엑셀 파일로 저장 (이미지 포함)
-        output_dir = Path(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / "image_integration_results.xlsx"
-        create_excel_with_images(result_df, output_file)
+        # 5. 필요한 경우에만 결과를 별도의 엑셀 파일로 저장 (이미지 포함)
+        if save_excel_output:
+            try:
+                output_dir = Path(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'))
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_file = output_dir / "image_integration_results.xlsx"
+                create_excel_with_images(result_df, output_file)
+                logging.info(f"이미지 통합 결과가 별도 파일로 저장되었습니다: {output_file}")
+            except Exception as excel_error:
+                logging.error(f"이미지 통합 결과 엑셀 파일 생성 실패: {excel_error}", exc_info=True)
+                # 엑셀 파일 저장 실패는 전체 처리 실패로 간주하지 않음
         
         logging.info("이미지 통합 및 필터링 프로세스 완료!")
         return result_df
@@ -406,6 +454,7 @@ if __name__ == "__main__":
     
     # 테스트 데이터 생성
     test_df = pd.DataFrame({
+        '번호': [1, 2],
         '상품명': ['테스트 상품 1', '테스트 상품 2'],
         '본사 이미지': [None, None],
         '고려기프트 이미지': [None, None],
@@ -414,7 +463,7 @@ if __name__ == "__main__":
     })
     
     # 이미지 통합 및 필터링 테스트
-    result_df = integrate_and_filter_images(test_df, config)
+    result_df = integrate_and_filter_images(test_df, config, save_excel_output=True)
     
     # 결과 출력
     logging.info(f"테스트 결과 DataFrame 형태: {result_df.shape}")

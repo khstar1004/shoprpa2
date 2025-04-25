@@ -1306,7 +1306,7 @@ def process_matching(
                    result_df['가격차이(2)'] = diff
                    result_df['가격차이(2)(%)'] = np.where(
                        calculate_mask, # Use the combined mask
-                       (diff / base_price_col.where(calculate_mask)) * 100,
+                       np.rint((diff / base_price_col.where(calculate_mask)) * 100).astype(int),
                        None
                    )
                 else:
@@ -1329,7 +1329,7 @@ def process_matching(
                    result_df['가격차이(3)'] = diff
                    result_df['가격차이(3)(%)'] = np.where(
                        calculate_mask, # Use the combined mask
-                       (diff / base_price_col.where(calculate_mask)) * 100,
+                       np.rint((diff / base_price_col.where(calculate_mask)) * 100).astype(int),
                        None
                    )
                 else:
@@ -1599,7 +1599,7 @@ def post_process_matching_results(df, config):
             if key in df_filtered.columns:
                 numeric_series = pd.to_numeric(df_filtered[key], errors='coerce')
                 mask = numeric_series.notna()
-                df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{x:.1f} %")
+                df_filtered.loc[mask, key] = numeric_series[mask].apply(lambda x: f"{int(x)} %")
 
         price_diff_cols_to_format = ['가격차이(2)', '가격차이(3)']
         for key in price_diff_cols_to_format:
