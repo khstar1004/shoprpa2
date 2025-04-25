@@ -11,7 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('image_matching_test.log')
+        logging.FileHandler('image_matching_test.log', encoding='utf-8')
     ]
 )
 
@@ -65,23 +65,23 @@ def test_image_matching():
         for idx, row in result_df.iterrows():
             product_name = row['상품명']
             
-            # Check if images are found
-            has_haereum = "✓" if '본사 이미지' in result_df.columns and pd.notna(row['본사 이미지']) else "✗"
-            has_kogift = "✓" if '고려기프트 이미지' in result_df.columns and pd.notna(row['고려기프트 이미지']) else "✗"
-            has_naver = "✓" if '네이버 이미지' in result_df.columns and pd.notna(row['네이버 이미지']) else "✗"
+            # Check if images are found - cp949 인코딩 문제를 피하기 위해 체크 표시 대신 'O'와 'X' 사용
+            has_haereum = "O" if '본사 이미지' in result_df.columns and pd.notna(row['본사 이미지']) else "X"
+            has_kogift = "O" if '고려기프트 이미지' in result_df.columns and pd.notna(row['고려기프트 이미지']) else "X"
+            has_naver = "O" if '네이버 이미지' in result_df.columns and pd.notna(row['네이버 이미지']) else "X"
             
             logging.info(f"Product: '{product_name}' - Haereum: {has_haereum}, Kogift: {has_kogift}, Naver: {has_naver}")
             
             # Log image paths for verification
-            if has_haereum == "✓":
+            if has_haereum == "O":
                 haereum_path = row['본사 이미지']['local_path']
                 logging.info(f"  Haereum image: {os.path.basename(haereum_path)}")
             
-            if has_kogift == "✓":
+            if has_kogift == "O":
                 kogift_path = row['고려기프트 이미지']['local_path']
                 logging.info(f"  Kogift image: {os.path.basename(kogift_path)}")
             
-            if has_naver == "✓":
+            if has_naver == "O":
                 naver_path = row['네이버 이미지']['local_path']
                 logging.info(f"  Naver image: {os.path.basename(naver_path)}")
             
