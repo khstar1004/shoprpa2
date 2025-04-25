@@ -716,7 +716,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     logging.info(f"Successfully created both Excel files:")
                     logging.info(f"- Result file (with images): {result_path}")
                     logging.info(f"- Upload file (links only): {upload_path}")
-                    if progress_queue: progress_queue.emit("status", "Output file saved successfully")
+                    if progress_queue: 
+                        progress_queue.emit("status", "Output file saved successfully")
+                        # Make sure to emit the final path for GUI to capture
+                        progress_queue.emit("final_path", result_path)
                 else:
                     raise Exception("Failed to create one or both Excel files")
                 
@@ -735,16 +738,27 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         total_time = time.time() - main_start_time
         logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
         if progress_queue:
-            progress_queue.emit("finished", "True")
+            # First send the result path if available
             if output_path:
-                progress_queue.emit("final_path", output_path)
+                # Double check that the output path exists
+                if os.path.exists(output_path):
+                    logging.info(f"Emitting final output path: {output_path}")
+                    progress_queue.emit("final_path", output_path)
+                else:
+                    logging.warning(f"Output path does not exist: {output_path}")
+                    progress_queue.emit("final_path", f"Error: Output file not found at {output_path}")
             else:
+                logging.warning("No output path available")
                 progress_queue.emit("final_path", "Error: No output file created")
+            
+            # Then mark the process as finished
+            progress_queue.emit("finished", "True")
 
     except Exception as e:
         logging.error(f"Error in main: {e}", exc_info=True)
         if progress_queue:
             progress_queue.emit("error", str(e))
+            progress_queue.emit("finished", "False")
         return
 
 def run_cli():

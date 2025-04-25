@@ -1559,8 +1559,15 @@ def post_process_matching_results(df, config):
         goryeo_clear_cond = pd.Series(False, index=df_filtered.index)
         if '가격차이(2)' in df_filtered.columns:
             goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)'].notna() & df_filtered['가격차이(2)'].ge(0))
+        
+        # Check for both possible column name formats
         if '가격차이(2)(%)' in df_filtered.columns:
             goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)(%)'].notna() & df_filtered['가격차이(2)(%)'].gt(-1.0))
+        elif '가격차이(2)%' in df_filtered.columns:
+            goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2)%'].notna() & df_filtered['가격차이(2)%'].gt(-1.0))
+        elif '가격차이(2) %' in df_filtered.columns:
+            goryeo_clear_cond = goryeo_clear_cond | (df_filtered['가격차이(2) %'].notna() & df_filtered['가격차이(2) %'].gt(-1.0))
+        # Removed duplicate check for '가격차이(2)(%)'
 
         # Changed to avoid potential pandas version incompatibility
         rows_to_clear_goryeo = goryeo_clear_cond.fillna(False)
@@ -1574,10 +1581,16 @@ def post_process_matching_results(df, config):
         naver_clear_cond1 = pd.Series(False, index=df_filtered.index)
         if '가격차이(3)' in df_filtered.columns:
             naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)'].notna() & df_filtered['가격차이(3)'].ge(0))
+        
+        # Check for all possible column name variants
         if '가격차이 비율(3)' in df_filtered.columns:
             naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이 비율(3)'].notna() & df_filtered['가격차이 비율(3)'].gt(-1.0))
         elif '가격차이(3)(%)' in df_filtered.columns:
             naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)(%)'].notna() & df_filtered['가격차이(3)(%)'].gt(-1.0))
+        elif '가격차이(3)%' in df_filtered.columns:
+            naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3)%'].notna() & df_filtered['가격차이(3)%'].gt(-1.0))
+        elif '가격차이(3) %' in df_filtered.columns:
+            naver_clear_cond1 = naver_clear_cond1 | (df_filtered['가격차이(3) %'].notna() & df_filtered['가격차이(3) %'].gt(-1.0))
 
         # Changed to avoid potential pandas version incompatibility
         rows_to_clear_naver1 = naver_clear_cond1.fillna(False)

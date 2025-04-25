@@ -217,7 +217,7 @@ def integrate_kogift_images(df: pd.DataFrame, config: configparser.ConfigParser)
                 unused_images = [info['path'] for path, info in image_info.items() 
                                 if not any(str(info['path']) == str(row_data.get('original_path', '')) 
                                           for idx, row_data in result_df['고려기프트 이미지'].items() 
-                                          if pd.notna(row_data))]
+                                          if pd.notna(row_data) and isinstance(row_data, dict))]
                 
                 # 할당되지 않은 행 찾기
                 unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
@@ -357,7 +357,7 @@ def integrate_naver_images(df: pd.DataFrame, config: configparser.ConfigParser) 
                 unused_images = [info['path'] for path, info in image_info.items() 
                                 if not any(str(info['path']) == str(row_data.get('original_path', '')) 
                                           for idx, row_data in result_df['네이버 이미지'].items() 
-                                          if pd.notna(row_data))]
+                                          if pd.notna(row_data) and isinstance(row_data, dict))]
                 
                 # 할당되지 않은 행 찾기
                 unassigned_rows = [idx for idx in range(len(result_df)) if idx not in assigned_rows]
