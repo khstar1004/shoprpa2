@@ -8,6 +8,16 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import get_column_letter
 import shutil
+import sys
+
+# Import enhanced image matcher
+try:
+    from PythonScript.enhanced_image_matcher import EnhancedImageMatcher
+    ENHANCED_MATCHER_AVAILABLE = True
+    logging.info("Enhanced image matcher is available")
+except ImportError:
+    ENHANCED_MATCHER_AVAILABLE = False
+    logging.warning("Enhanced image matcher is not available, falling back to text-based matching")
 
 def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
@@ -114,7 +124,8 @@ def find_best_image_matches(product_names: List[str],
                            haereum_images: Dict[str, Dict], 
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
-                           similarity_threshold: float = 0.1) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
+                           similarity_threshold: float = 0.1,
+                           config: Optional[configparser.ConfigParser] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
     각 상품에 대해 세 가지 이미지 소스에서 가장 적합한 이미지를 찾습니다.
     세 이미지가 서로 일관성을 유지하도록 합니다.
@@ -125,6 +136,7 @@ def find_best_image_matches(product_names: List[str],
         kogift_images: 고려기프트 이미지 정보
         naver_images: 네이버 이미지 정보
         similarity_threshold: 최소 유사도 점수
+        config: 설정 파일 객체
         
     Returns:
         각 상품별 (해오름 이미지 경로, 고려기프트 이미지 경로, 네이버 이미지 경로) 튜플 목록
@@ -136,6 +148,22 @@ def find_best_image_matches(product_names: List[str],
     used_kogift = set()
     used_naver = set()
     
+    # 향상된 이미지 매처 초기화 (가능한 경우)
+    enhanced_matcher = None
+    use_enhanced_matcher = False
+    
+    # 향상된 이미지 매칭 사용 여부
+    if config:
+        use_enhanced_matcher = config.getboolean('ImageMatching', 'use_enhanced_matcher', fallback=True)
+        
+    if ENHANCED_MATCHER_AVAILABLE and use_enhanced_matcher:
+        try:
+            enhanced_matcher = EnhancedImageMatcher(config)
+            logging.info("향상된 이미지 매칭을 사용합니다")
+        except Exception as e:
+            logging.error(f"향상된 이미지 매처 초기화 실패: {e}")
+            enhanced_matcher = None
+    
     # 모든 이미지 소스를 한번에 처리하여 일관된 매칭 보장
     for product_name in product_names:
         product_tokens = tokenize_product_name(product_name)
@@ -145,16 +173,31 @@ def find_best_image_matches(product_names: List[str],
         if haereum_best:
             used_haereum.add(haereum_best)
         
-        # 이미 매칭된 해오름 이미지가 있다면, 그 이미지명을 기준으로 다른 소스 매칭 시도
-        if haereum_best and haereum_images[haereum_best]['clean_name']:
+        # 이미 매칭된 해오름 이미지가 있다면, 그 이미지를 기준으로 다른 소스 매칭 시도
+        if haereum_best:
             # 해오름 이미지 이름에서 토큰 추출
             haereum_tokens = tokenize_product_name(haereum_images[haereum_best]['clean_name'])
             
-            # 해오름 이미지 이름으로 다른 소스 매칭 시도 (더 정확한 매칭)
-            kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.05)
-            naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.05)
+            # 향상된 이미지 매처 사용 시 이미지 기반 매칭
+            if enhanced_matcher:
+                kogift_best = find_best_match_with_enhanced_matcher(
+                    str(haereum_images[haereum_best]['path']), 
+                    kogift_images, 
+                    used_kogift, 
+                    enhanced_matcher
+                )
+                naver_best = find_best_match_with_enhanced_matcher(
+                    str(haereum_images[haereum_best]['path']), 
+                    naver_images, 
+                    used_naver, 
+                    enhanced_matcher
+                )
+            else:
+                # 텍스트 기반 매칭
+                kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.05)
+                naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.05)
         else:
-            # 원래 상품명으로 매칭 시도
+            # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
             kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, similarity_threshold)
             naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, similarity_threshold)
         
@@ -175,36 +218,6 @@ def find_best_image_matches(product_names: List[str],
         logging.debug(f"  해오름: {haereum_name}")
         logging.debug(f"  고려기프트: {kogift_name}")
         logging.debug(f"  네이버: {naver_name}")
-    
-    # 남은 제품에 대해 이미지 할당 (1:1 매핑이 안된 경우)
-    # 각 소스에서 사용되지 않은 이미지 중에서 가장 적합한 이미지를 할당
-    if len(used_haereum) < len(haereum_images) and len(used_kogift) < len(kogift_images) and len(used_naver) < len(naver_images):
-        for idx, (haereum_path, kogift_path, naver_path) in enumerate(results):
-            # 이미 모든 소스에 이미지가 할당된 경우 건너뜀
-            if haereum_path and kogift_path and naver_path:
-                continue
-                
-            product_name = product_names[idx]
-            product_tokens = tokenize_product_name(product_name)
-            
-            # 할당되지 않은 이미지 소스에 대해 처리
-            if not haereum_path:
-                haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, 0.05)
-                if haereum_best:
-                    used_haereum.add(haereum_best)
-                    results[idx] = (haereum_best, results[idx][1], results[idx][2])
-                    
-            if not kogift_path:
-                kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, 0.05)
-                if kogift_best:
-                    used_kogift.add(kogift_best)
-                    results[idx] = (results[idx][0], kogift_best, results[idx][2])
-                    
-            if not naver_path:
-                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.05)
-                if naver_best:
-                    used_naver.add(naver_best)
-                    results[idx] = (results[idx][0], results[idx][1], naver_best)
     
     return results
 
@@ -266,6 +279,83 @@ def find_best_match_for_product(product_tokens: List[str],
         logging.debug(f"최적 매치: {image_info[best_match]['clean_name']} (점수: {best_score:.3f})")
     else:
         logging.debug(f"매치 없음 (임계값: {similarity_threshold})")
+    
+    return best_match
+
+def find_best_match_with_enhanced_matcher(
+    source_img_path: str, 
+    target_images: Dict[str, Dict], 
+    used_images: Set[str] = None,
+    enhanced_matcher: Any = None
+) -> Optional[str]:
+    """
+    향상된 이미지 매처를 이용하여 가장 유사한 이미지를 찾습니다.
+    
+    Args:
+        source_img_path: 소스 이미지 경로
+        target_images: 대상 이미지 정보 사전
+        used_images: 이미 사용된 이미지 경로 집합
+        enhanced_matcher: 향상된 이미지 매처 객체
+        
+    Returns:
+        가장 유사한 이미지 경로 또는 None
+    """
+    if not enhanced_matcher:
+        logging.warning("향상된 이미지 매처가 없습니다. 기본 텍스트 매칭으로 대체합니다.")
+        return None
+        
+    if used_images is None:
+        used_images = set()
+        
+    best_match = None
+    best_score = 0
+    high_confidence_threshold = 0.65  # 높은 신뢰도 임계값
+    min_confidence_threshold = 0.45   # 최소 신뢰도 임계값
+    
+    logging.debug(f"향상된 이미지 매칭 시도 - 이미지: {source_img_path}")
+    logging.debug(f"사용 가능한 대상 이미지: {len(target_images) - len(used_images)}개")
+    
+    # 매칭 결과를 추적하기 위한 리스트
+    match_scores = []
+    
+    for img_path, info in target_images.items():
+        # 이미 사용된 이미지는 건너뜀
+        if img_path in used_images:
+            continue
+            
+        # 이미지 유사도 계산
+        try:
+            similarity = enhanced_matcher.calculate_similarity(source_img_path, str(info['path']))
+            
+            # 모든 매칭 점수 추적
+            if similarity > 0:
+                match_scores.append((info['clean_name'], similarity))
+                
+            if similarity > best_score:
+                best_score = similarity
+                best_match = img_path
+        except Exception as e:
+            logging.warning(f"이미지 유사도 계산 중 오류 발생: {e}")
+    
+    # 상위 3개 매칭 점수 로깅
+    if match_scores:
+        top_matches = sorted(match_scores, key=lambda x: x[1], reverse=True)[:3]
+        logging.debug(f"상위 3개 이미지 매칭: {top_matches}")
+    
+    # 최종 매칭 결과 로깅
+    if best_match:
+        logging.debug(f"최적의 이미지 매치: {target_images[best_match]['clean_name']} (점수: {best_score:.3f})")
+        
+        # 높은 신뢰도 임계값보다 낮은 점수는 매칭 안함 (신뢰도 없음)
+        if best_score < min_confidence_threshold:
+            logging.debug(f"신뢰도가 너무 낮아 매칭하지 않습니다 (점수: {best_score:.3f} < {min_confidence_threshold})")
+            return None
+            
+        # 경고 로그 - 낮은 신뢰도 매칭
+        if best_score < high_confidence_threshold:
+            logging.warning(f"낮은 신뢰도로 매칭되었습니다: {target_images[best_match]['clean_name']} (점수: {best_score:.3f})")
+    else:
+        logging.debug("이미지 매치 없음")
     
     return best_match
 
@@ -333,6 +423,17 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         except ValueError as e:
             logging.warning(f"이미지 매칭 임계값 설정 오류: {e}. 기본값 0.1을 사용합니다.")
             similarity_threshold = 0.1
+            
+        # 향상된 이미지 매칭 사용 여부
+        use_enhanced_matcher = config.getboolean('ImageMatching', 'use_enhanced_matcher', fallback=True)
+        
+        if ENHANCED_MATCHER_AVAILABLE and use_enhanced_matcher:
+            logging.info("향상된 이미지 매칭을 사용합니다.")
+        else:
+            if not ENHANCED_MATCHER_AVAILABLE:
+                logging.warning("향상된 이미지 매처 모듈을 사용할 수 없습니다. 텍스트 기반 매칭을 사용합니다.")
+            elif not use_enhanced_matcher:
+                logging.info("설정에 따라 텍스트 기반 매칭을 사용합니다.")
         
         # 최적 매치 찾기 (일관성 보장)
         best_matches = find_best_image_matches(
@@ -340,7 +441,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             haereum_images,
             kogift_images,
             naver_images,
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold,
+            config=config
         )
         
         # 매칭 결과 통계
@@ -349,65 +451,6 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         naver_matched = sum(1 for m in best_matches if m[2] is not None)
         
         logging.info(f"1차 매칭 결과 - 해오름: {haereum_matched}/{len(product_names)}개, 고려기프트: {kogift_matched}/{len(product_names)}개, 네이버: {naver_matched}/{len(product_names)}개")
-        
-        # 매칭 실패한 경우, 임계값을 낮춰서 재시도
-        if kogift_matched == 0 or naver_matched == 0:
-            logging.info("고려기프트 또는 네이버 이미지 매칭 실패. 임계값을 낮춰서 재시도합니다.")
-            
-            # 임계값 낮추기
-            retry_threshold = 0.03  # 더 낮은 임계값
-            
-            # 다시 매칭 시도
-            best_matches = find_best_image_matches(
-                product_names,
-                haereum_images,
-                kogift_images,
-                naver_images,
-                similarity_threshold=retry_threshold
-            )
-            
-            # 재시도 결과 통계
-            haereum_matched = sum(1 for m in best_matches if m[0] is not None)
-            kogift_matched = sum(1 for m in best_matches if m[1] is not None)
-            naver_matched = sum(1 for m in best_matches if m[2] is not None)
-            
-            logging.info(f"2차 매칭 결과 - 해오름: {haereum_matched}/{len(product_names)}개, 고려기프트: {kogift_matched}/{len(product_names)}개, 네이버: {naver_matched}/{len(product_names)}개")
-            
-            # 여전히 매칭 실패한 경우, 백업 전략 시도
-            if kogift_matched == 0 or naver_matched == 0:
-                logging.info("백업 매칭 전략 시도: 이미지 이름 패턴 기반 매칭")
-                
-                # 백업 전략: 완전히 매칭되지 않은 제품에 대해 단순히 순서대로 할당
-                # (최후의 수단으로 사용)
-                unused_kogift = [path for path in kogift_images.keys() 
-                               if not any(match[1] == path for match in best_matches if match[1] is not None)]
-                unused_naver = [path for path in naver_images.keys() 
-                               if not any(match[2] == path for match in best_matches if match[2] is not None)]
-                
-                logging.info(f"미사용 이미지 - 고려기프트: {len(unused_kogift)}개, 네이버: {len(unused_naver)}개")
-                
-                # 매칭되지 않은 제품 인덱스
-                unmatched_kogift_idx = [i for i, match in enumerate(best_matches) if match[1] is None]
-                unmatched_naver_idx = [i for i, match in enumerate(best_matches) if match[2] is None]
-                
-                # 고려기프트 이미지 할당
-                for i, idx in enumerate(unmatched_kogift_idx):
-                    if i < len(unused_kogift):
-                        kogift_path = unused_kogift[i]
-                        best_matches[idx] = (best_matches[idx][0], kogift_path, best_matches[idx][2])
-                
-                # 네이버 이미지 할당
-                for i, idx in enumerate(unmatched_naver_idx):
-                    if i < len(unused_naver):
-                        naver_path = unused_naver[i]
-                        best_matches[idx] = (best_matches[idx][0], best_matches[idx][1], naver_path)
-                
-                # 최종 결과 통계
-                haereum_matched = sum(1 for m in best_matches if m[0] is not None)
-                kogift_matched = sum(1 for m in best_matches if m[1] is not None)
-                naver_matched = sum(1 for m in best_matches if m[2] is not None)
-                
-                logging.info(f"최종 매칭 결과 - 해오름: {haereum_matched}/{len(product_names)}개, 고려기프트: {kogift_matched}/{len(product_names)}개, 네이버: {naver_matched}/{len(product_names)}개")
         
         # 결과를 DataFrame에 적용
         for idx, (haereum_path, kogift_path, naver_path) in enumerate(best_matches):
