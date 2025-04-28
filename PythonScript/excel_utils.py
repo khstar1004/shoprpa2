@@ -733,16 +733,16 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         img.anchor = cell.coordinate
                         worksheet.add_image(img)
                         
-                        # Keep the link in the cell value if available
+                        # Keep URLs as plain text, not hyperlinks
                         if img_dict and 'url' in img_dict:
                             cell.value = img_dict['url']
-                            cell.hyperlink = img_dict['url']
-                            cell.font = LINK_FONT
+                            # Don't set hyperlink
+                            cell.font = DEFAULT_FONT  # Use regular font, not link style
                             cell.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
                         elif isinstance(original_value, str) and ('http' in original_value or 'https' in original_value):
                             cell.value = original_value
-                            cell.hyperlink = original_value
-                            cell.font = LINK_FONT
+                            # Don't set hyperlink
+                            cell.font = DEFAULT_FONT  # Use regular font, not link style
                             cell.alignment = Alignment(horizontal='center', vertical='top', wrap_text=True)
                         else:
                             cell.value = ""
@@ -830,22 +830,20 @@ def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
         logger.error(f"Failed to set page layout options: {e}")
 
 def _add_hyperlinks_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Adds hyperlinks to specified link columns."""
-    logger.debug(f"Adding hyperlinks. Link columns defined: {list(LINK_COLUMNS_FOR_HYPERLINK.keys())}")
+    """Process link columns but do NOT convert to hyperlinks - keep as plain text."""
+    logger.debug(f"Processing links as plain text (hyperlinks disabled)")
     # Find column indices for defined link columns
     link_col_indices = {col: idx for idx, col in enumerate(df.columns, 1) if col in LINK_COLUMNS_FOR_HYPERLINK}
 
     if not link_col_indices:
-        logger.debug("No columns found for adding hyperlinks.")
+        logger.debug("No link columns found for processing.")
         return
 
     # Basic URL pattern check (simplified)
     url_pattern = re.compile(r'^https?://\S+$', re.IGNORECASE)
 
-    link_added_count = 0
-    invalid_link_count = 0
+    url_count = 0
     for col_name, col_idx in link_col_indices.items():
-        # logger.debug(f"Processing hyperlinks for column: {col_name} (Index: {col_idx})") # Reduce verbosity
         for row_idx in range(2, worksheet.max_row + 1):
             cell = worksheet.cell(row=row_idx, column=col_idx)
             link_text = str(cell.value) if cell.value else ''
@@ -854,25 +852,18 @@ def _add_hyperlinks_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Workshe
             if not link_text or link_text.lower() in ['-', 'nan', 'none', ''] or link_text in ERROR_MESSAGE_VALUES:
                 continue
 
-            try:
-                # Attempt to match URL pattern
-                if url_pattern.match(link_text):
-                    # Check if it already has a hyperlink (rare, but possible)
-                    if not cell.hyperlink:
-                         cell.hyperlink = link_text
-                         cell.font = LINK_FONT # Apply link style
-                         link_added_count += 1
-                    # else: # Already has hyperlink, ensure style is correct
-                    #      cell.font = LINK_FONT
-                else:
-                    # If it's not a valid-looking URL, treat as text
-                    invalid_link_count += 1
-                    # logger.debug(f"Non-URL or invalid format in link column {cell.coordinate}: '{link_text[:50]}...'")
-                    pass # Keep default font/style for non-links
-            except Exception as e:
-                logger.warning(f"Error processing link cell {cell.coordinate} ('{link_text[:50]}...'): {e}")
+            # If cell has a hyperlink attribute already set, remove it
+            if hasattr(cell, 'hyperlink') and cell.hyperlink:
+                cell.hyperlink = None
+                
+            # Use regular font (not blue/underlined)
+            cell.font = DEFAULT_FONT
+            
+            # Count valid URLs just for logging
+            if url_pattern.match(link_text):
+                url_count += 1
 
-    logger.info(f"Finished adding hyperlinks. Added {link_added_count} links. Found {invalid_link_count} non-URL values in link columns.")
+    logger.info(f"Processed link columns as plain text. Found {url_count} URLs across link columns.")
 
 def _add_header_footer(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Adds standard header and footer."""
@@ -1076,7 +1067,14 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
         image_columns = [col for col in df.columns if '이미지' in col]
         for col in image_columns:
             # Replace image dict/path with empty string for upload file
-            df[col] = df[col].apply(lambda x: '' if isinstance(x, dict) or (isinstance(x, str) and ('/' in x or '\\' in x)) else x)
+            df[col] = df[col].apply(
+                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
+                    '' if isinstance(x, dict) or 
+                    (isinstance(x, str) and ('/' in x or '\\' in x) and 
+                    not (x.startswith('http://') or x.startswith('https://')))
+                    else x
+                )
+            )
         logger.debug(f"Cleared image data for upload file from columns: {image_columns}")
     
     # Format numeric columns (prices, quantities)
@@ -1211,6 +1209,19 @@ def _create_upload_excel(df: pd.DataFrame, output_path: str) -> bool:
         # Prepare data for Excel (similar to create_final_output_excel but without images)
         df = _prepare_data_for_excel(df, skip_images=True)
         
+        # Format URLs in link columns (keep as plain text, don't format as hyperlinks)
+        for col_name in df.columns:
+            if col_name in LINK_COLUMNS_FOR_HYPERLINK or '링크' in col_name:
+                df[col_name] = df[col_name].apply(
+                    lambda x: str(x) if pd.notna(x) and (
+                        isinstance(x, str) and (
+                            x.startswith('http://') or 
+                            x.startswith('https://')
+                        )
+                    ) else ''
+                )
+                logging.debug(f"Validated URLs in column '{col_name}' (as plain text)")
+        
         # Create a Pandas Excel writer
         writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
         
@@ -1251,6 +1262,11 @@ def _apply_excel_formatting(workbook, worksheet, df, include_images=True):
         'border': 1
     })
     
+    # Define a regular cell format (not hyperlink)
+    text_format = workbook.add_format({
+        'text_wrap': True
+    })
+    
     # Write column headers with the defined format
     for col_num, value in enumerate(df.columns.values):
         worksheet.write(0, col_num, value, header_format)
@@ -1268,6 +1284,16 @@ def _apply_excel_formatting(workbook, worksheet, df, include_images=True):
         # For image columns, set specific width when including images
         if include_images and '이미지' in column:
             column_width = 22  # IMAGE_CELL_WIDTH
+        
+        # For link columns, ensure they're wide enough but don't create hyperlinks
+        if column in LINK_COLUMNS_FOR_HYPERLINK or '링크' in column:
+            column_width = max(column_width, 35)  # Ensure links have enough width
+            
+            # Write URLs as plain text
+            for row_num, value in enumerate(df[column], start=1):
+                if pd.notna(value) and isinstance(value, str):
+                    # Write the cell with regular format (not a hyperlink)
+                    worksheet.write(row_num, col_num, value, text_format)
         
         worksheet.set_column(col_num, col_num, column_width)
     
