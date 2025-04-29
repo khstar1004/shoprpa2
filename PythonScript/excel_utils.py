@@ -36,6 +36,13 @@ except (AttributeError, ImportError):
 # Initialize logger
 logger = logging.getLogger(__name__)
 
+# Define constants for image source directory names
+HAEREUM_DIR_NAME = 'Haereum'
+KOGIFT_DIR_NAME = 'Kogift' # Changed from kogift_pre / Kogift
+NAVER_DIR_NAME = 'Naver'   # Changed to lowercase 'naver'
+OTHER_DIR_NAME = 'Other'
+
+
 # Initialize config parser
 CONFIG = configparser.ConfigParser()
 config_ini_path = Path(__file__).resolve().parent.parent / 'config.ini'
@@ -52,86 +59,115 @@ except Exception as e:
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
-# Column Rename Mapping (Keep for potential input variations)
+# Column Rename Mapping (Update based on 엑셀골든_upload and potential variations)
+# Ensure keys cover variations, values match FINAL_COLUMN_ORDER_UPLOAD
 COLUMN_RENAME_MAP = {
-    '날짜': '구분',
+    # 구분
+    '구분': '구분',
+    '구분(승인관리:A/가격관리:P)': '구분',
+    # 담당자
     '담당자': '담당자',
-    '담 당자': '담당자',
-    '업체명': '업체명',
-    '업체코드': '업체코드',
-    'Code': 'Code',
-    '상품코드': 'Code',
-    '중분류카테고리': '중분류카테고리',
-    '카테고리(중분류)': '중분류카테고리',
+    # 공급사명 (Input source? 네이버 공급사명 is separate)
+    '업체명': '공급사명', # Assuming '업체명' from input maps to '공급사명' in output
+    # 공급처코드
+    '업체코드': '공급처코드',
+    # 상품코드
+    'Code': '상품코드',
+    '상품코드': '상품코드',
+    # 카테고리(중분류)
+    '중분류카테고리': '카테고리(중분류)',
+    '카테고리(중분류)': '카테고리(중분류)',
+    # 상품명
     '상품명': '상품명',
     'name': '상품명',
-    '기본수량(1)': '기본수량(1)',
-    '본사 기본수량': '기본수량(1)',
-    '판매단가(V포함)': '판매단가(V포함)',
-    '판매단가1(VAT포함)': '판매단가(V포함)',
-    '본사상품링크': '본사상품링크',
-    '본사링크': '본사상품링크',
-    '기본수량(2)': '기본수량(2)',
-    '고려 기본수량': '기본수량(2)',
-    '판매가(V포함)(2)': '판매가(V포함)(2)',
-    '판매단가(V포함)(2)': '판매단가(V포함)(2)',
-    '판매단가2(VAT포함)': '판매단가(V포함)(2)',
-    '가격차이(2)': '가격차이(2)',
-    '고려기프트 상품링크': '고려기프트 상품링크',
-    '고 려기프트 상품링크': '고려기프트 상품링크',  # Add variant with space
-    '고려 링크': '고려기프트 상품링크',
-    '고 려 링크': '고려기프트 상품링크',  # Add variant with spaces
-    '기본수량(3)': '기본수량(3)',
-    '네이버 기본수량': '기본수량(3)',
-    '판매단가(V포함)(3)': '판매단가(V포함)(3)',
-    '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
-    '가격차이(3)': '가격차이(3)',
-    '공급사명': '공급사명',
-    '네이버 공급사명': '공급사명',
-    '공급사 상품링크': '공급사 상품링크',
-    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
-    '네이버 링크': '네이버 쇼핑 링크',
-    '본사 이미지': '본사 이미지',
-    '해오름이미지경로': '본사 이미지',
-    '고려기프트 이미지': '고려기프트 이미지',
-    '고려기프트(이미지링크)': '고려기프트 이미지',
-    '네이버 이미지': '네이버 이미지',
-    '네이버쇼핑(이미지링크)': '네이버 이미지'
+    # 본사 기본수량
+    '기본수량(1)': '본사 기본수량',
+    '본사 기본수량': '본사 기본수량',
+    # 판매단가1(VAT포함)
+    '판매단가(V포함)': '판매단가1(VAT포함)',
+    '판매단가1(VAT포함)': '판매단가1(VAT포함)',
+    # 본사링크
+    '본사상품링크': '본사링크',
+    '본사링크': '본사링크',
+    # 고려 기본수량
+    '기본수량(2)': '고려 기본수량',
+    '고려 기본수량': '고려 기본수량',
+    # 판매단가2(VAT포함)
+    '판매가(V포함)(2)': '판매단가2(VAT포함)',
+    '판매단가(V포함)(2)': '판매단가2(VAT포함)',
+    '판매단가2(VAT포함)': '판매단가2(VAT포함)',
+    # 고려 가격차이
+    '가격차이(2)': '고려 가격차이',
+    # 고려 가격차이(%)
+    '가격차이(2)(%)': '고려 가격차이(%)',
+    # 고려 링크
+    '고려기프트 상품링크': '고려 링크',
+    '고려 링크': '고려 링크',
+    # 네이버 기본수량
+    '기본수량(3)': '네이버 기본수량',
+    '네이버 기본수량': '네이버 기본수량',
+    # 판매단가3 (VAT포함)
+    '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
+    '판매단가3 (VAT포함)': '판매단가3 (VAT포함)',
+    # 네이버 가격차이
+    '가격차이(3)': '네이버 가격차이',
+    # 네이버가격차이(%)
+    '가격차이(3)(%)': '네이버가격차이(%)',
+    # 네이버 공급사명
+    '공급사명': '네이버 공급사명', # Note: Input '공급사명' maps to '네이버 공급사명' here? Review logic if needed.
+    '네이버 공급사명': '네이버 공급사명',
+    # 네이버 링크 (Input '공급사 상품링크' might map here?)
+    '네이버 쇼핑 링크': '네이버 링크',
+    '네이버 링크': '네이버 링크',
+    '공급사 상품링크': '네이버 링크', # Check if this mapping is correct
+    # 해오름(이미지링크)
+    '본사 이미지': '해오름(이미지링크)',
+    '해오름이미지경로': '해오름(이미지링크)',
+    # 고려기프트(이미지링크)
+    '고려기프트 이미지': '고려기프트(이미지링크)',
+    '고려기프트(이미지링크)': '고려기프트(이미지링크)',
+    # 네이버쇼핑(이미지링크)
+    '네이버 이미지': '네이버쇼핑(이미지링크)',
+    '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)'
 }
 
-# Final Target Column Order (Based on "엑셀 골든")
+# Final Target Column Order (Based on "엑셀골든_upload") - Use this for both files now?
+# Let's define two orders: one for upload, one for result? Or just use upload for both?
+# For now, update FINAL_COLUMN_ORDER to match the upload format strictly.
 FINAL_COLUMN_ORDER = [
-    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
-    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
-    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드',
+    '카테고리(중분류)', '상품명', '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
+    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
+    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)',
+    '네이버 공급사명', '네이버 링크',
+    '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
 ]
 
 # Columns that must be present in the input file for processing
-# This can be a subset of FINAL_COLUMN_ORDER
+# Update this based on the new FINAL_COLUMN_ORDER if necessary,
+# focusing on the absolutely essential input fields needed.
 REQUIRED_INPUT_COLUMNS = [
+    # Keep the original core requirements, renaming handled by COLUMN_RENAME_MAP
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리',
     '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
 ]
 
 # --- Column Type Definitions for Formatting ---
-# Define columns for specific formatting rules
+# Update these lists based on the new FINAL_COLUMN_ORDER names
 PRICE_COLUMNS = [
-    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
-    '가격차이(2)', '가격차이(3)'
+    '판매단가1(VAT포함)', '판매단가2(VAT포함)', '판매단가3 (VAT포함)',
+    '고려 가격차이', '네이버 가격차이'
 ]
-QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
-PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)'] # 퍼센트 컬럼 추가
-TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
+QUANTITY_COLUMNS = ['본사 기본수량', '고려 기본수량', '네이버 기본수량']
+PERCENTAGE_COLUMNS = ['고려 가격차이(%)', '네이버가격차이(%)']
+TEXT_COLUMNS = ['구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명', '네이버 공급사명']
 LINK_COLUMNS_FOR_HYPERLINK = {
-    '본사상품링크': '본사상품링크',
-    '고려기프트 상품링크': '고려기프트 상품링크',
-    '공급사 상품링크': '공급사 상품링크',
-    '네이버 쇼핑 링크': '네이버 쇼핑 링크'
-    # Image columns are handled separately
+    '본사링크': '본사링크',
+    '고려 링크': '고려 링크',
+    '네이버 링크': '네이버 링크'
+    # Image columns handled separately
 }
-IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+IMAGE_COLUMNS = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
 
 # Error Messages Constants (Can be used for conditional formatting or checks)
 ERROR_MESSAGES = {
@@ -168,7 +204,7 @@ DEFAULT_BORDER = Border(left=THIN_BORDER_SIDE, right=THIN_BORDER_SIDE, top=THIN_
 LINK_FONT = Font(color="0000FF", underline="single", name='맑은 고딕', size=10)
 INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red for invalid links
 
-NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff
+NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff < -1
 
 # Image Processing Constants
 IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
@@ -310,9 +346,11 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
                       is_numeric_value = False
 
             # Apply right alignment to numbers and specifically formatted percentage strings
+            # Use the updated column names
             if is_pct_col or ((col_name_str in PRICE_COLUMNS or col_name_str in QUANTITY_COLUMNS) and is_numeric_value):
                 cell.alignment = RIGHT_ALIGNMENT
-            elif col_name_str in IMAGE_COLUMNS or 'Code' in col_name_str or '코드' in col_name_str or col_name_str == '구분':
+            # Update checks for center alignment based on new names
+            elif col_name_str in IMAGE_COLUMNS or '코드' in col_name_str or col_name_str == '구분(승인관리:A/가격관리:P)':
                  cell.alignment = CENTER_ALIGNMENT
             else:
                 cell.alignment = LEFT_ALIGNMENT # Default left align for text/links/errors
@@ -387,17 +425,18 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         source = img_dict.get('source', '').lower()
                         
                         # Try to find the image by searching in the correct directory
+                        search_dir = None
                         if source in ['haereum', 'haoreum']:
-                            search_dir = IMAGE_MAIN_DIR / 'Haereum'
+                            search_dir = IMAGE_MAIN_DIR / HAEREUM_DIR_NAME
                         elif source in ['kogift', 'koreagift']:
-                            search_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
+                            search_dir = IMAGE_MAIN_DIR / KOGIFT_DIR_NAME
                         elif source == 'naver':
-                            search_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
+                            search_dir = IMAGE_MAIN_DIR / NAVER_DIR_NAME
                         else:
                             search_dir = IMAGE_MAIN_DIR
-                            
+                        
                         # Try to find an existing image file that matches our pattern
-                        if search_dir.exists():
+                        if search_dir and search_dir.exists(): # Check if search_dir is not None
                             # Extract filename from original_path if available
                             original_path = img_dict.get('original_path', '')
                             if original_path and isinstance(original_path, str):
@@ -439,13 +478,13 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 try:
                                     # Create proper download directory based on source
                                     if source in ['haereum', 'haoreum'] or 'jclgift' in url.lower():
-                                        save_dir = IMAGE_MAIN_DIR / 'Haereum'
+                                        save_dir = IMAGE_MAIN_DIR / HAEREUM_DIR_NAME
                                     elif source in ['kogift', 'koreagift'] or any(kw in url.lower() for kw in ['kogift', 'koreagift', 'adpanchok']):
-                                        save_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
+                                        save_dir = IMAGE_MAIN_DIR / KOGIFT_DIR_NAME
                                     elif source == 'naver' or 'pstatic' in url.lower():
-                                        save_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
+                                        save_dir = IMAGE_MAIN_DIR / NAVER_DIR_NAME
                                     else:
-                                        save_dir = IMAGE_MAIN_DIR / 'Other'
+                                        save_dir = IMAGE_MAIN_DIR / OTHER_DIR_NAME
                                     
                                     # Ensure directory exists
                                     save_dir.mkdir(parents=True, exist_ok=True)
@@ -529,15 +568,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             source = 'other'
                             if '본사' in col_name or 'haereum' in path_str or 'jclgift' in path_str: 
                                 source = 'haereum'
-                                save_dir = IMAGE_MAIN_DIR / 'Haereum'
+                                save_dir = IMAGE_MAIN_DIR / HAEREUM_DIR_NAME
                             elif '고려' in col_name or any(kw in path_str.lower() for kw in ['kogift', 'koreagift', 'adpanchok']): 
                                 source = 'kogift'
-                                save_dir = IMAGE_MAIN_DIR / 'kogift'  # Changed from kogift_pre to kogift
+                                save_dir = IMAGE_MAIN_DIR / KOGIFT_DIR_NAME
                             elif '네이버' in col_name or 'naver' in path_str or 'pstatic' in path_str: 
                                 source = 'naver'
-                                save_dir = IMAGE_MAIN_DIR / 'naver'  # Changed to lowercase 'naver'
+                                save_dir = IMAGE_MAIN_DIR / NAVER_DIR_NAME
                             else:
-                                save_dir = IMAGE_MAIN_DIR / 'Other'
+                                save_dir = IMAGE_MAIN_DIR / OTHER_DIR_NAME
                             
                             # Ensure directory exists
                             save_dir.mkdir(parents=True, exist_ok=True)
@@ -605,16 +644,17 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         # Determine source folders to search based on column name
                         search_dirs = []
                         if '본사' in col_name:
-                            search_dirs = [IMAGE_MAIN_DIR / 'Haereum']
+                            search_dirs = [IMAGE_MAIN_DIR / HAEREUM_DIR_NAME]
                         elif '고려' in col_name:
-                            search_dirs = [IMAGE_MAIN_DIR / 'kogift']  # Changed from kogift_pre to kogift
+                            search_dirs = [IMAGE_MAIN_DIR / KOGIFT_DIR_NAME]
                         elif '네이버' in col_name:
-                            search_dirs = [IMAGE_MAIN_DIR / 'naver']  # Changed to lowercase 'naver'
+                            search_dirs = [IMAGE_MAIN_DIR / NAVER_DIR_NAME]
                         else:
                             search_dirs = [
-                                IMAGE_MAIN_DIR / 'Haereum',
-                                IMAGE_MAIN_DIR / 'kogift',  # Changed from kogift_pre to kogift
-                                IMAGE_MAIN_DIR / 'naver',  # Changed to lowercase 'naver'
+                                IMAGE_MAIN_DIR / HAEREUM_DIR_NAME,
+                                IMAGE_MAIN_DIR / KOGIFT_DIR_NAME,
+                                IMAGE_MAIN_DIR / NAVER_DIR_NAME,
+                                IMAGE_MAIN_DIR / OTHER_DIR_NAME, # Add Other as potential search dir
                                 IMAGE_MAIN_DIR
                             ]
                             
@@ -768,48 +808,59 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     logger.debug("Finished processing image columns")
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Applies conditional formatting (e.g., yellow fill for negative price difference rows)."""
+    """Applies conditional formatting (e.g., yellow fill for price difference < -1)."""
     logger.debug("Applying conditional formatting.")
-    
-    # Find price difference columns (non-percentage)
+
+    # Find price difference columns (non-percentage) using new names
     price_diff_cols = [
         col for col in df.columns
-        if '가격차이' in str(col) and '%' not in str(col)
+        if col in ['고려 가격차이', '네이버 가격차이']
     ]
 
     if not price_diff_cols:
         logger.debug("No price difference columns found for conditional formatting.")
         return
 
-    # Define yellow fill for negative values
+    # Define yellow fill
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
     # Process each row
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
+        highlight_row = False # Flag to highlight the row
         for price_diff_col in price_diff_cols:
+            if price_diff_col not in df.columns: # Check if column exists in df
+                continue
             col_idx = df.columns.get_loc(price_diff_col) + 1  # 1-based index for openpyxl
             cell = worksheet.cell(row=row_idx, column=col_idx)
-            
-            # Get cell value and check if it's negative
+
+            # Get cell value and check if it's < -1
             try:
                 if cell.value not in ['-', '', None]:  # Skip empty or placeholder values
                     # Remove commas and convert to float
                     value_str = str(cell.value).replace(',', '')
                     value = float(value_str)
-                    
-                    # If value is negative, highlight entire row
-                    if value < 0:
-                        for col in range(1, worksheet.max_column + 1):
-                            worksheet.cell(row=row_idx, column=col).fill = yellow_fill
-                        break  # Break inner loop once row is highlighted
+
+                    # Highlight if value is less than -1
+                    if value < -1:
+                        highlight_row = True
+                        break # Found a reason to highlight, no need to check other diff cols for this row
             except ValueError:
                 # Skip if value cannot be converted to float (e.g., error messages)
                 continue
             except Exception as e:
-                logger.error(f"Error processing cell {cell.coordinate}: {e}")
+                logger.error(f"Error processing cell {cell.coordinate} for conditional formatting: {e}")
                 continue
 
-    logger.debug("Finished applying conditional formatting for negative price differences.")
+        # If the flag is set, highlight the entire row
+        if highlight_row:
+            for col in range(1, worksheet.max_column + 1):
+                try:
+                    worksheet.cell(row=row_idx, column=col).fill = yellow_fill
+                except Exception as e:
+                     logger.error(f"Error applying fill to cell R{row_idx}C{col}: {e}")
+
+
+    logger.debug("Finished applying conditional formatting for price differences < -1.")
 
 def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Sets up page orientation, print area, freeze panes, etc."""
@@ -832,7 +883,7 @@ def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
 def _add_hyperlinks_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Process link columns but do NOT convert to hyperlinks - keep as plain text."""
     logger.debug(f"Processing links as plain text (hyperlinks disabled)")
-    # Find column indices for defined link columns
+    # Find column indices for defined link columns using new names
     link_col_indices = {col: idx for idx, col in enumerate(df.columns, 1) if col in LINK_COLUMNS_FOR_HYPERLINK}
 
     if not link_col_indices:
@@ -961,30 +1012,27 @@ def verify_image_data(img_value, img_col_name):
                 base_paths = []
                 if source == 'haoreum':
                     base_paths = [
-                        Path('C:/RPA/Image/Main/Haoreum'),
-                        Path('C:/RPA/Image/Target/Haoreum'),
-                        Path('C:/RPA/Image/Haoreum'),
-                        Path('C:/RPA/Image')
+                        IMAGE_MAIN_DIR / HAEREUM_DIR_NAME,
+                        IMAGE_MAIN_DIR / 'Target' / HAEREUM_DIR_NAME, # Assuming Target exists
+                        IMAGE_MAIN_DIR # Fallback
                     ]
                 elif source == 'kogift':
                     base_paths = [
-                        Path('C:/RPA/Image/Main/Kogift'),
-                        Path('C:/RPA/Image/Target/Kogift'),
-                        Path('C:/RPA/Image/Kogift'),
-                        Path('C:/RPA/Image')
+                        IMAGE_MAIN_DIR / KOGIFT_DIR_NAME,
+                        IMAGE_MAIN_DIR / 'Target' / KOGIFT_DIR_NAME,
+                        IMAGE_MAIN_DIR
                     ]
                 elif source == 'naver':
                     base_paths = [
-                        Path('C:/RPA/Image/Main/Naver'),
-                        Path('C:/RPA/Image/Target/Naver'),
-                        Path('C:/RPA/Image/Naver'),
-                        Path('C:/RPA/Image')
+                        IMAGE_MAIN_DIR / NAVER_DIR_NAME,
+                        IMAGE_MAIN_DIR / 'Target' / NAVER_DIR_NAME,
+                        IMAGE_MAIN_DIR
                     ]
-                else:
+                else: # source == 'other'
                     base_paths = [
-                        Path('C:/RPA/Image/Main'),
-                        Path('C:/RPA/Image/Target'),
-                        Path('C:/RPA/Image')
+                        IMAGE_MAIN_DIR / OTHER_DIR_NAME,
+                        IMAGE_MAIN_DIR / 'Target' / OTHER_DIR_NAME,
+                        IMAGE_MAIN_DIR # General fallback
                     ]
                 
                 # Try each base path for resolving the relative path
@@ -1009,20 +1057,20 @@ def verify_image_data(img_value, img_col_name):
                     try:
                         # Try standard haereum image format
                         standard_paths = [
-                            # Common Haoreum image patterns
-                            f"C:/RPA/Image/Main/Haoreum/haoreum_{os.path.basename(img_value)}",
-                            f"C:/RPA/Image/Main/Haoreum/haoreum_{img_value}",
-                            f"C:/RPA/Image/Main/Haoreum/{os.path.basename(img_value)}"
+                            # Common Haoreum image patterns using the base dir constant
+                            IMAGE_MAIN_DIR / HAEREUM_DIR_NAME / f"haoreum_{os.path.basename(img_value)}",
+                            IMAGE_MAIN_DIR / HAEREUM_DIR_NAME / f"haoreum_{img_value}",
+                            IMAGE_MAIN_DIR / HAEREUM_DIR_NAME / os.path.basename(img_value)
                         ]
                         
                         for std_path in standard_paths:
-                            if os.path.exists(std_path) and os.path.getsize(std_path) > 0:
-                                std_path_str = std_path.replace('\\', '/')
+                            std_path_str = str(std_path).replace('\\', '/') # Ensure correct format for URL
+                            if os.path.exists(std_path_str) and os.path.getsize(std_path_str) > 0:
                                 placeholder_url = f"file:///{std_path_str}"
                                 return {
-                                    'url': placeholder_url, 
-                                    'local_path': std_path, 
-                                    'original_path': img_value, 
+                                    'url': placeholder_url,
+                                    'local_path': std_path_str,
+                                    'original_path': img_value, # Keep original value as original_path
                                     'source': 'haoreum'
                                 }
                     except Exception:
@@ -1062,25 +1110,39 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
     df = df[existing_cols_in_order]
     logger.debug(f"Columns after reordering: {df.columns.tolist()}")
 
-    # For upload file, remove image data columns
+    # Apply renaming based on COLUMN_RENAME_MAP *before* preparing for excel
+    # This ensures the DataFrame passed to _prepare_data has the target column names
+    df.rename(columns=COLUMN_RENAME_MAP, inplace=True, errors='ignore') # Ignore errors if a column to rename doesn't exist
+    # Ensure columns are still in the FINAL_COLUMN_ORDER after renaming
+    # Add missing columns and reorder
+    missing_cols = [col for col in FINAL_COLUMN_ORDER if col not in df.columns]
+    for col in missing_cols:
+        df[col] = '' # Add missing columns with empty string
+        logger.debug(f"Added missing column '{col}' with empty values")
+    df = df[FINAL_COLUMN_ORDER] # Enforce final order
+
+    # For upload file, modify image column values to be web URLs or empty
     if skip_images:
-        image_columns = [col for col in df.columns if '이미지' in col]
+        # Image columns now use new names from FINAL_COLUMN_ORDER
+        image_columns = [col for col in df.columns if col in IMAGE_COLUMNS]
         for col in image_columns:
-            # Replace image dict/path with empty string for upload file
+            # Replace image dict/path with web URL or empty string for upload file
             df[col] = df[col].apply(
-                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
-                    '' if isinstance(x, dict) or 
-                    (isinstance(x, str) and ('/' in x or '\\' in x) and 
-                    not (x.startswith('http://') or x.startswith('https://')))
-                    else x
-                )
+                lambda x:
+                    # Case 1: Input is a dictionary
+                    x['url'] if isinstance(x, dict) and 'url' in x and isinstance(x['url'], str) and x['url'].startswith(('http://', 'https://'))
+                    # Case 2: Input is a string that is already a web URL
+                    else (x if isinstance(x, str) and x.startswith(('http://', 'https://'))
+                    # Case 3: Anything else (dict without web URL, local path, file://, other types, None)
+                    else '')
+                if pd.notna(x) else ''
             )
-        logger.debug(f"Cleared image data for upload file from columns: {image_columns}")
-    
-    # Format numeric columns (prices, quantities)
-    numeric_keywords = ['단가', '가격', '수량']
+        logger.debug(f"Processed image columns for upload file, keeping only web URLs: {image_columns}")
+
+    # Format numeric columns (prices, quantities) using new names
+    # numeric_keywords removed, using specific lists instead
     for col in df.columns:
-        if any(keyword in col for keyword in numeric_keywords):
+        if any(keyword in col for keyword in ['단가', '가격', '수량']):
             try:
                 # Attempt conversion, handle errors gracefully
                 original_dtype = df[col].dtype
@@ -1140,12 +1202,24 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
     logging.info(f"Result file path (with images): {result_path}")
     logging.info(f"Upload file path (links only): {upload_path}")
     
+    # --- Rename Columns Early --- #
+    # Apply renaming based on COLUMN_RENAME_MAP to the original DataFrame
+    # This ensures filtering uses the correct, final column names
+    df_renamed = df.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
+    # Add any missing columns from FINAL_COLUMN_ORDER before filtering
+    for col in FINAL_COLUMN_ORDER:
+        if col not in df_renamed.columns:
+            df_renamed[col] = ''
+            logger.debug(f"Added missing column '{col}' before filtering")
+    df_renamed = df_renamed[FINAL_COLUMN_ORDER] # Ensure order before filtering
+
     # Check if either file is locked
     if os.path.exists(result_path):
         try:
-            with open(result_path, 'a'):
-                pass
-        except PermissionError:
+            # Try to open file for append/binary to check lock without modifying
+            with open(result_path, 'a+b'):
+                pass  # Just checking if we can open it for writing
+        except (IOError, PermissionError):
             logging.error(f"Result file is locked: {result_path}")
             return False, False, result_path, upload_path
     
@@ -1160,89 +1234,123 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(result_path), exist_ok=True)
     
-    # Copy the DataFrame to avoid modifying the original
-    df_result = df.copy()
-    df_upload = df.copy()
-    
-    # Process data for both files
-    result_success = False
-    upload_success = False
-    
-    try:
-        # 1. Create the result file (with images)
-        result_success = create_final_output_excel(df_result, result_path)
-        
-        # 2. Create the upload file (links only)
-        if result_success:
-            # Create the upload file without images
-            upload_success = _create_upload_excel(df_upload, upload_path)
-    
-    except Exception as e:
-        logging.error(f"Error creating split Excel outputs: {str(e)}", exc_info=True)
-        return False, False, result_path, upload_path
-    
-    # Return the results
-    if result_success and upload_success:
-        logging.info(f"Successfully created both result and upload Excel files")
-    else:
-        if not result_success:
-            logging.error(f"Failed to create result Excel file")
-        if not upload_success:
-            logging.error(f"Failed to create upload Excel file")
-    
-    return result_success, upload_success, result_path, upload_path
+    # --- Row Filtering Logic --- #
+    # Use the renamed DataFrame (df_renamed) for filtering
+    df_filtered = df_renamed.copy()
+    initial_rows = len(df_filtered)
 
-def _create_upload_excel(df: pd.DataFrame, output_path: str) -> bool:
-    """
-    Internal function to create the upload Excel file (with links only, no images)
-    
-    Args:
-        df (pd.DataFrame): The DataFrame to save to Excel
-        output_path (str): Path where to save the Excel file
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    logging.info(f"Creating upload Excel file (links only): {output_path}")
-    
-    try:
-        # Prepare data for Excel (similar to create_final_output_excel but without images)
-        df = _prepare_data_for_excel(df, skip_images=True)
-        
-        # Format URLs in link columns (keep as plain text, don't format as hyperlinks)
-        for col_name in df.columns:
-            if col_name in LINK_COLUMNS_FOR_HYPERLINK or '링크' in col_name:
-                df[col_name] = df[col_name].apply(
-                    lambda x: str(x) if pd.notna(x) and (
-                        isinstance(x, str) and (
-                            x.startswith('http://') or 
-                            x.startswith('https://')
-                        )
-                    ) else ''
-                )
-                logging.debug(f"Validated URLs in column '{col_name}' (as plain text)")
-        
-        # Create a Pandas Excel writer
-        writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
-        
-        # Convert the DataFrame to an Excel object
-        df.to_excel(writer, sheet_name='Sheet1', index=False)
-        
+    # Define columns relevant to Kogift and Naver based on FINAL_COLUMN_ORDER
+    kogift_cols = [
+        '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드',
+        '카테고리(중분류)', '상품명', '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
+        '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크'
+    ]
+    naver_cols = [
+        '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)',
+        '네이버 공급사명', '네이버 링크', '네이버쇼핑(이미지링크)'
+    ]
+
+    # Ensure these columns exist in the DataFrame before filtering
+    actual_kogift_cols = [col for col in kogift_cols if col in df_filtered.columns]
+    actual_naver_cols = [col for col in naver_cols if col in df_filtered.columns]
+
+    if not actual_kogift_cols or not actual_naver_cols:
+        logging.warning("Cannot perform row filtering: Missing key Kogift or Naver columns.")
+    else:
+        logging.info(f"Filtering rows where both Kogift ({len(actual_kogift_cols)} cols) and Naver ({len(actual_naver_cols)} cols) data are missing...")
+
+        # Function to check if a value is considered "empty"
+        # Handles None, NaN, empty strings, '-', and checks dictionary image values
+        def is_empty(value, col_name):
+            if pd.isna(value): return True
+            if isinstance(value, str) and value.strip() in ['', '-']: return True
+            # For image columns, check if the dictionary has a valid local_path or web url
+            if col_name in IMAGE_COLUMNS and isinstance(value, dict):
+                has_local = 'local_path' in value and value['local_path'] and os.path.exists(value['local_path'])
+                has_web_url = 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://'))
+                return not (has_local or has_web_url)
+            # Check for empty image strings (non-URLs)
+            if col_name in IMAGE_COLUMNS and isinstance(value, str) and not value.startswith(('http://', 'https://')):
+                 return value.strip() in ['', '-']
+            return False
+
+        # Identify rows to drop
+        rows_to_drop = []
+        for index, row in df_filtered.iterrows():
+            # Check if all Kogift columns are empty
+            # Pass column name to is_empty for specific image checks
+            kogift_empty = all(is_empty(row[col], col) for col in actual_kogift_cols)
+            # Check if all Naver columns are empty
+            naver_empty = all(is_empty(row[col], col) for col in actual_naver_cols)
+
+            if kogift_empty and naver_empty:
+                rows_to_drop.append(index)
+
+        # Drop rows with empty Kogift and Naver data
+        df_filtered = df_filtered.drop(rows_to_drop)
+        logging.info(f"Filtered out {initial_rows - len(df_filtered)} rows with empty Kogift and Naver data")
+
+    # Create a Pandas Excel writer using openpyxl engine for better style support
+    # Use context manager for automatic saving/closing
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+
+        # Write DataFrame to Excel
+        df_filtered.to_excel(writer, sheet_name='Sheet1', index=False, na_rep='') # Use empty string for NaN
+
         # Get workbook and worksheet objects
         workbook = writer.book
         worksheet = writer.sheets['Sheet1']
+
+        # Apply formatting using openpyxl (consistent with result file)
+        _apply_excel_formatting(workbook, worksheet, df_filtered, include_images=True)
+
+        # --- Apply Formatting AFTER data is written ---
+        try:
+            # 3. Apply Column Widths and Cell Styles
+            _apply_column_widths(worksheet, df_filtered)
+            _apply_cell_styles_and_alignment(worksheet, df_filtered)
+        except Exception as e:
+            logger.error(f"Error during formatting: {e}")
+
+        try:
+            # 4. Apply Conditional Formatting
+            _apply_conditional_formatting(worksheet, df_filtered)
+        except Exception as e:
+            logger.error(f"Error during conditional formatting: {e}")
+
+        try:
+            # 5. Handle Images (Embedding)
+            _process_image_columns(worksheet, df_filtered)
+        except Exception as e:
+            logger.error(f"Error during image processing: {e}")
         
-        # Apply basic formatting (headers, column widths, etc.)
-        _apply_excel_formatting(workbook, worksheet, df, include_images=False)
-        
-        # Save the Excel file
-        writer.close()
-        logging.info(f"Successfully created upload Excel file at: {output_path}")
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error creating upload Excel file: {str(e)}", exc_info=True)
-        return False
+        try:
+            # 6. Adjust dimensions for image cells
+            _adjust_image_cell_dimensions(worksheet, df_filtered)
+        except Exception as e:
+            logger.error(f"Error adjusting image cell dimensions: {e}")
+
+        try:
+            # 7. Add Hyperlinks
+            _add_hyperlinks_to_worksheet(worksheet, df_filtered)
+        except Exception as e:
+            logger.error(f"Error adding hyperlinks: {e}")
+
+        try:
+            # 8. Page Setup and Header/Footer
+            _setup_page_layout(worksheet)
+            _add_header_footer(worksheet)
+        except Exception as e:
+            logger.error(f"Error setting up page layout: {e}")
+
+        try:
+            # 9. Apply Table Format (Apply last after other formatting)
+            _apply_table_format(worksheet)
+        except Exception as e:
+            logger.error(f"Error applying table format: {e}")
+
+    logger.info(f"Successfully created and formatted Excel file: {output_path}")
+    return True, True, result_path, upload_path
 
 def _apply_excel_formatting(workbook, worksheet, df, include_images=True):
     """
@@ -1341,7 +1449,7 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
                     if col not in df_temp.columns:
                         df_temp[col] = '-'
                 # Basic formatting only - just fill NaN and convert to string
-                df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('-').astype(str)
+                df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('').astype(str)
             else:
                 raise
 
@@ -1366,7 +1474,7 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
 
         # 2. Save prepared data to Excel using openpyxl engine
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df_prepared.to_excel(writer, index=False, sheet_name='Results', na_rep='-')
+            df_prepared.to_excel(writer, index=False, sheet_name='Results', na_rep='') # Use empty string for NaN
             worksheet = writer.sheets['Results']
             logger.debug(f"DataFrame written to sheet 'Results'. Max Row: {worksheet.max_row}, Max Col: {worksheet.max_column}")
 
@@ -1438,11 +1546,11 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
                         if col not in df_temp.columns:
                             df_temp[col] = '-'
                     # Basic formatting only
-                    df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('-').astype(str)
+                    df_prepared = df_temp[FINAL_COLUMN_ORDER].fillna('').astype(str)
                 else:
                     raise
 
-            df_prepared.to_excel(alternative_path, index=False, engine='openpyxl', sheet_name='Results', na_rep='-')
+            df_prepared.to_excel(alternative_path, index=False, engine='openpyxl', sheet_name='Results', na_rep='') # Use empty string for NaN
             logger.info(f"Successfully saved data to alternative path (without formatting): {alternative_path}")
             return True
         except Exception as alt_err:
