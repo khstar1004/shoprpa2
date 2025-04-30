@@ -28,12 +28,13 @@ class WorkerThread(QThread):
     progress = pyqtSignal(str, str)  # (type, message)
     finished = pyqtSignal(bool, str)  # (success, output_path)
     
-    def __init__(self, config_path, input_file=None, process_type=None, batch_size=None):
+    def __init__(self, config_path, input_file=None, process_type=None, batch_size=None, current_file_index=None):
         super().__init__()
         self.config_path = config_path
         self.input_file = input_file
         self.process_type = process_type
         self.batch_size = batch_size
+        self.current_file_index = current_file_index
         self.running = False
         self.output_path = None
         
@@ -128,9 +129,10 @@ class MainWindow(QMainWindow):
         self.current_file_index = -1
         self.last_upload_path = None
         self.dark_mode = False
-        self.file_start_times = {}  # 각 파일 처리 시작 시간 저장
-        self.total_start_time = None  # 전체 처리 시작 시간
-        self.file_durations = {}  # 각 파일 처리 소요 시간 저장
+        self.file_start_times = {}
+        self.file_durations = {}
+        self.total_start_time = None
+        self.file_success_status = {}
         
         # Create status bar
         self.statusBar = QStatusBar()
@@ -1074,6 +1076,7 @@ class MainWindow(QMainWindow):
             self.file_start_times = {}
             self.file_durations = {}
             self.total_start_time = datetime.now()
+            self.file_success_status = {} # Clear success status too
             
             # 전체 처리 시작 메시지
             self.status_text.append(f"<span style='color:#2196F3;'>전체 처리 시작: {self.total_start_time.strftime('%Y-%m-%d %H:%M:%S')} ({len(self.input_files)}개 파일)</span>")
@@ -1114,7 +1117,8 @@ class MainWindow(QMainWindow):
                 self.config_path,
                 current_file,
                 selected_process_type,
-                selected_batch_size
+                selected_batch_size,
+                self.current_file_index
             )
             # Disconnect previous connections if any (important for sequential runs)
             try:
@@ -1311,6 +1315,9 @@ class MainWindow(QMainWindow):
                 
                 # 소요 시간 출력
                 duration_str = self._format_duration(duration)
+                # Store success status
+                self.file_success_status[file_index] = success
+                
                 if success:
                     self.status_text.append(f"<span style='color:#4CAF50;'>{file_info} 처리 완료: 소요 시간 {duration_str}</span>")
                 else:
@@ -1340,14 +1347,14 @@ class MainWindow(QMainWindow):
                 self.status_text.append("<span style='color:#2196F3;'>----- 파일별 처리 시간 요약 -----</span>")
                 for idx, duration in sorted(self.file_durations.items()):
                     file_name = os.path.basename(self.input_files[idx])
-                    status = "성공" if idx in self.file_durations else "실패"
+                    status = "성공" if self.file_success_status.get(idx, False) else "실패"
                     duration_str = self._format_duration(duration)
                     color = "#4CAF50" if status == "성공" else "#FF9800"
-                    self.status_text.append(f"<span style='color:{color};'>[파일 {idx + 1}] {file_name}: {duration_str}</span>")
+                    self.status_text.append(f"<span style='color:{color};'>[파일 {idx + 1}] {file_name}: {duration_str} ({status})</span>")
                 
                 # 전체 소요 시간 출력
                 total_files = len(self.input_files)
-                success_files = len([f for f in self.file_durations.values() if f])
+                success_files = sum(1 for status in self.file_success_status.values() if status)
                 self.status_text.append("<span style='color:#2196F3;'>-------------------------------</span>")
                 total_duration_str = self._format_duration(total_duration)
                 self.status_text.append(f"<span style='color:#4CAF50;'>전체 처리 완료: 총 {total_files}개 파일 중 {success_files}개 성공, 소요 시간 {total_duration_str}</span>")
