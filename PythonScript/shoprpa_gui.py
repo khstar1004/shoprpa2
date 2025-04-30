@@ -126,6 +126,9 @@ class MainWindow(QMainWindow):
         self.current_file_index = -1
         self.last_upload_path = None
         self.dark_mode = False
+        self.file_start_times = {}  # 각 파일 처리 시작 시간 저장
+        self.total_start_time = None  # 전체 처리 시작 시간
+        self.file_durations = {}  # 각 파일 처리 소요 시간 저장
         
         # Create status bar
         self.statusBar = QStatusBar()
@@ -1064,6 +1067,14 @@ class MainWindow(QMainWindow):
             self.status_text.clear()
             self.progress_bar.setValue(0)
             self.last_upload_path = None # Reset last path for the new sequence
+            
+            # 시간 측정 초기화
+            self.file_start_times = {}
+            self.file_durations = {}
+            self.total_start_time = datetime.now()
+            
+            # 전체 처리 시작 메시지
+            self.status_text.append(f"<span style='color:#2196F3;'>전체 처리 시작: {self.total_start_time.strftime('%Y-%m-%d %H:%M:%S')} ({len(self.input_files)}개 파일)</span>")
 
             # Start with the first file
             self.current_file_index = 0
@@ -1084,8 +1095,12 @@ class MainWindow(QMainWindow):
             num_files = len(self.input_files)
             file_info = f"[파일 {self.current_file_index + 1}/{num_files}]"
 
+            # 파일 처리 시작 시간 기록
+            self.file_start_times[self.current_file_index] = datetime.now()
+            start_time_str = self.file_start_times[self.current_file_index].strftime('%H:%M:%S')
+
             # Add status update for starting the specific file
-            self.status_text.append(f"{file_info} 처리 시작: {os.path.basename(current_file)}")
+            self.status_text.append(f"<span style='color:#2196F3;'>{file_info} 처리 시작: {start_time_str} - {os.path.basename(current_file)}</span>")
             self.progress_bar.setValue(0) # Reset progress bar for each file
 
             # Get current settings from UI (needed for each file)
@@ -1128,8 +1143,22 @@ class MainWindow(QMainWindow):
 
                 if reply == QMessageBox.StandardButton.Yes:
                     self.worker.stop()
-                    self.status_text.append(f"[파일 {self.current_file_index + 1}/{len(self.input_files)}] 작업이 사용자에 의해 중단되었습니다.")
-                    self.status_text.append("전체 파일 처리가 중단되었습니다.")
+                    
+                    # 중단 시간과 처리 소요 시간 계산
+                    if self.current_file_index in self.file_start_times:
+                        stop_time = datetime.now()
+                        duration = stop_time - self.file_start_times[self.current_file_index]
+                        self.status_text.append(f"<span style='color:#FF9800;'>[파일 {self.current_file_index + 1}/{len(self.input_files)}] 작업이 사용자에 의해 중단되었습니다. (처리 시간: {self._format_duration(duration)})</span>")
+                    else:
+                        self.status_text.append(f"<span style='color:#FF9800;'>[파일 {self.current_file_index + 1}/{len(self.input_files)}] 작업이 사용자에 의해 중단되었습니다.</span>")
+                    
+                    # 전체 처리 중단 메시지와 소요 시간
+                    if self.total_start_time:
+                        total_duration = datetime.now() - self.total_start_time
+                        self.status_text.append(f"<span style='color:#FF9800;'>전체 파일 처리가 중단되었습니다. (총 소요 시간: {self._format_duration(total_duration)})</span>")
+                    else:
+                        self.status_text.append("<span style='color:#FF9800;'>전체 파일 처리가 중단되었습니다.</span>")
+                    
                     # Reset state
                     self.current_file_index = -1
                     self.start_btn.setEnabled(True)
@@ -1245,10 +1274,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"Progress update error: {str(e)}", exc_info=True)
 
+    def _format_duration(self, duration):
+        """시간을 읽기 쉬운 형식으로 변환"""
+        total_seconds = duration.total_seconds()
+        
+        # 시간, 분, 초 계산
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        # 적절한 형식으로 포맷팅
+        if hours > 0:
+            return f"{int(hours)}시간 {int(minutes)}분 {int(seconds)}초"
+        elif minutes > 0:
+            return f"{int(minutes)}분 {int(seconds)}초"
+        else:
+            return f"{int(seconds)}초"
+
     def processing_finished(self, success, output_path):
         """Handle completion of a single file processing, then start next or finish all."""
         try:
-            file_info = f"[파일 {self.current_file_index + 1}/{len(self.input_files)}]"
+            file_index = self.current_file_index
+            file_info = f"[파일 {file_index + 1}/{len(self.input_files)}]"
+            
+            # 현재 처리한 파일의 소요 시간 계산
+            if file_index in self.file_start_times:
+                end_time = datetime.now()
+                duration = end_time - self.file_start_times[file_index]
+                self.file_durations[file_index] = duration
+                
+                # 소요 시간 출력
+                duration_str = self._format_duration(duration)
+                if success:
+                    self.status_text.append(f"<span style='color:#4CAF50;'>{file_info} 처리 완료: 소요 시간 {duration_str}</span>")
+                else:
+                    self.status_text.append(f"<span style='color:#FF9800;'>{file_info} 처리 실패: 소요 시간 {duration_str}</span>")
+            
             if success:
                 logging.info(f"{file_info} processing finished successfully. Output: {output_path}")
                 # output_path is now the upload_path due to previous changes
@@ -1266,9 +1326,33 @@ class MainWindow(QMainWindow):
                 # More files to process, start the next one
                 self.start_next_file_processing()
             else:
-                # All files processed
-                self.status_text.append("--------- 모든 파일 처리 완료 ---------")
-                self.statusBar.showMessage("모든 파일 처리가 완료되었습니다.", 5000)
+                # All files processed - 전체 처리 시간 계산
+                total_duration = datetime.now() - self.total_start_time
+                
+                # 각 파일별 소요 시간 요약
+                self.status_text.append("<span style='color:#2196F3;'>----- 파일별 처리 시간 요약 -----</span>")
+                for idx, duration in sorted(self.file_durations.items()):
+                    file_name = os.path.basename(self.input_files[idx])
+                    status = "성공" if idx in self.file_durations else "실패"
+                    duration_str = self._format_duration(duration)
+                    color = "#4CAF50" if status == "성공" else "#FF9800"
+                    self.status_text.append(f"<span style='color:{color};'>[파일 {idx + 1}] {file_name}: {duration_str}</span>")
+                
+                # 전체 소요 시간 출력
+                total_files = len(self.input_files)
+                success_files = len([f for f in self.file_durations.values() if f])
+                self.status_text.append("<span style='color:#2196F3;'>-------------------------------</span>")
+                total_duration_str = self._format_duration(total_duration)
+                self.status_text.append(f"<span style='color:#4CAF50;'>전체 처리 완료: 총 {total_files}개 파일 중 {success_files}개 성공, 소요 시간 {total_duration_str}</span>")
+                
+                # 평균 처리 시간 계산 및 출력
+                if success_files > 0:
+                    avg_seconds = sum(d.total_seconds() for d in self.file_durations.values()) / success_files
+                    avg_duration = datetime.timedelta(seconds=avg_seconds)
+                    avg_duration_str = self._format_duration(avg_duration)
+                    self.status_text.append(f"<span style='color:#2196F3;'>파일당 평균 처리 시간: {avg_duration_str}</span>")
+                
+                self.statusBar.showMessage(f"모든 파일 처리 완료: {total_files}개 중 {success_files}개 성공, 총 소요 시간 {total_duration_str}", 5000)
 
                 # Reset state and buttons
                 self.start_btn.setEnabled(True)
@@ -1295,10 +1379,9 @@ class MainWindow(QMainWindow):
                 self.open_file_btn.setEnabled(self.last_upload_path is not None)
 
                 if self.last_upload_path:
-                     QMessageBox.information(self, "완료", f"모든 파일 처리가 완료되었습니다.\n마지막 성공 업로드 파일: {self.last_upload_path}")
+                     QMessageBox.information(self, "완료", f"모든 파일 처리가 완료되었습니다.\n총 {total_files}개 파일 중 {success_files}개 성공, 총 소요 시간 {total_duration_str}\n마지막 성공 업로드 파일: {self.last_upload_path}")
                 else:
                      QMessageBox.warning(self, "완료", "모든 파일 처리가 완료되었지만, 성공적으로 생성된 업로드 파일이 없습니다.")
-
 
         except Exception as e:
             logging.error(f"Processing finished handler error: {str(e)}", exc_info=True)

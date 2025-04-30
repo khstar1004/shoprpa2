@@ -755,21 +755,29 @@ if __name__ == "__main__":
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
     config.read(config_path, encoding='utf-8')
     
-    # 테스트 데이터 생성
+    # 테스트 데이터 생성 (웹 URL 포함)
     test_df = pd.DataFrame({
-        '번호': [1, 2],
-        '상품명': ['테스트 상품 1', '테스트 상품 2'],
-        '본사 이미지': [None, None],
-        '고려기프트 이미지': [None, None],
-        '네이버 이미지': [None, None],
-        '이미지_유사도': [0.6, 0.8]
+        '번호': [1, 2, 3],
+        '상품명': ['테스트 상품 1', '테스트 상품 2', '해오름 테스트'],
+        '본사 이미지': [None, None, 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg'],
+        '고려기프트 이미지': [None, {'url': 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', 'local_path': None}, None],
+        '네이버 이미지': [{'url': 'https://shop-phinf.pstatic.net/20240101_1/image.jpg', 'local_path': '/path/to/naver/local.jpg'}, None, None],
+        '이미지_유사도': [0.6, 0.8, 0.9],
+        '해오름이미지URL': [None, None, 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg'],
+        '고려기프트 URL': [None, 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', None],
+        '네이버이미지 URL': ['https://shop-phinf.pstatic.net/20240101_1/image.jpg', None, None],
     })
+    
+    # 필요한 최종 컬럼 추가
+    test_df['해오름(이미지링크)'] = None
+    test_df['고려기프트(이미지링크)'] = None
+    test_df['네이버쇼핑(이미지링크)'] = None
     
     # 이미지 통합 및 필터링 테스트
     result_df = integrate_and_filter_images(test_df, config, save_excel_output=True)
     
-    # 결과 출력
+    # 결과 출력 (최종 컬럼명으로 수정)
     logging.info(f"테스트 결과 DataFrame 형태: {result_df.shape}")
-    logging.info(f"본사 이미지 열 데이터: {result_df['본사 이미지'].tolist()}")
-    logging.info(f"고려기프트 이미지 열 데이터: {result_df['고려기프트 이미지'].tolist()}")
-    logging.info(f"네이버 이미지 열 데이터: {result_df['네이버 이미지'].tolist()}") 
+    logging.info(f"해오름(이미지링크) 열 데이터: {result_df['해오름(이미지링크)'].tolist()}")
+    logging.info(f"고려기프트(이미지링크) 열 데이터: {result_df['고려기프트(이미지링크)'].tolist()}")
+    logging.info(f"네이버쇼핑(이미지링크) 열 데이터: {result_df['네이버쇼핑(이미지링크)'].tolist()}") 
