@@ -122,7 +122,9 @@ class MainWindow(QMainWindow):
         
         # Initialize instance variables
         self.worker = None
-        self.input_file = None
+        self.input_files = []
+        self.current_file_index = -1
+        self.last_upload_path = None
         self.dark_mode = False
         
         # Create status bar
@@ -363,6 +365,8 @@ class MainWindow(QMainWindow):
                 color: #666666;
             }
         """)
+        self.open_file_btn.setToolTip("마지막으로 성공적으로 생성된 업로드 파일을 엽니다.")
+        self.open_file_btn.setText("업로드 파일 열기")
         self.open_file_btn.clicked.connect(self.open_result_file)
         
         file_buttons.addWidget(browse_btn)
@@ -1017,57 +1021,54 @@ class MainWindow(QMainWindow):
         self.statusBar.showMessage(f"글꼴 크기가 {size}로 변경되었습니다.", 3000)
     
     def browse_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(
+        # Allow selecting multiple files
+        file_names, _ = QFileDialog.getOpenFileNames(
             self,
-            "엑셀 파일 선택",
+            "엑셀 파일 선택 (여러 개 선택 가능)",
             "",
             "Excel Files (*.xlsx *.xls)"
         )
-        if file_name:
-            self.file_label.setText(f"선택된 파일: {os.path.basename(file_name)}")
-            self.input_file = file_name
-            
+        if file_names:
+            self.input_files = file_names
+            if len(file_names) == 1:
+                self.file_label.setText(f"선택된 파일: {os.path.basename(file_names[0])}")
+            else:
+                self.file_label.setText(f"{len(file_names)}개 파일 선택됨")
+            # Disable open file button when new files are selected, until processing is complete
+            self.open_file_btn.setEnabled(False)
+            self.last_upload_path = None
+
     def start_processing(self):
-        """Start the RPA process"""
+        """Start the RPA process for the list of files sequentially"""
         try:
-            if not hasattr(self, 'input_file') or not self.input_file:
-                QMessageBox.warning(self, "경고", "입력 파일을 선택해주세요.")
+            # Check if files are selected
+            if not self.input_files:
+                QMessageBox.warning(self, "경고", "입력 파일을 먼저 선택해주세요.")
                 return
-                
+
+            # Check if already processing
+            if self.worker is not None and self.worker.isRunning():
+                QMessageBox.warning(self, "알림", "현재 다른 파일 처리 중입니다.")
+                return
+
             # Disable start button and enable stop button
             self.start_btn.setEnabled(False)
             if hasattr(self, 'stop_btn'):
                 self.stop_btn.setEnabled(True)
-            
+
             # Disable open file button during processing
             if hasattr(self, 'open_file_btn'):
                 self.open_file_btn.setEnabled(False)
-            
-            # Clear status text and reset progress bar
+
+            # Clear status text and reset progress bar for the sequence
             self.status_text.clear()
             self.progress_bar.setValue(0)
-            
-            # Add initial status
-            self.status_text.append(f"상태: 처리 시작 - {os.path.basename(self.input_file)}")
-            
-            # Get current settings from UI
-            selected_process_type = self.process_type.currentText()
-            selected_batch_size = self.batch_size.value()
-            
-            # Create and start worker thread
-            if self.worker is not None and self.worker.isRunning():
-                self.worker.stop()
-                
-            self.worker = WorkerThread(
-                self.config_path, 
-                self.input_file,
-                selected_process_type,
-                selected_batch_size
-            )
-            self.worker.progress.connect(self.update_progress)
-            self.worker.finished.connect(self.processing_finished)
-            self.worker.start()
-            
+            self.last_upload_path = None # Reset last path for the new sequence
+
+            # Start with the first file
+            self.current_file_index = 0
+            self.start_next_file_processing()
+
         except Exception as e:
             error_msg = f"처리 시작 중 오류 발생: {str(e)}\n{traceback.format_exc()}"
             QMessageBox.critical(self, "오류", error_msg)
@@ -1075,105 +1076,211 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'stop_btn'):
                 self.stop_btn.setEnabled(False)
             logging.error(error_msg)
-    
+
+    def start_next_file_processing(self):
+        """Initiates processing for the file at self.current_file_index."""
+        if 0 <= self.current_file_index < len(self.input_files):
+            current_file = self.input_files[self.current_file_index]
+            num_files = len(self.input_files)
+            file_info = f"[파일 {self.current_file_index + 1}/{num_files}]"
+
+            # Add status update for starting the specific file
+            self.status_text.append(f"{file_info} 처리 시작: {os.path.basename(current_file)}")
+            self.progress_bar.setValue(0) # Reset progress bar for each file
+
+            # Get current settings from UI (needed for each file)
+            selected_process_type = self.process_type.currentText()
+            selected_batch_size = self.batch_size.value()
+
+            # Create and start worker thread for the current file
+            self.worker = WorkerThread(
+                self.config_path,
+                current_file,
+                selected_process_type,
+                selected_batch_size
+            )
+            # Disconnect previous connections if any (important for sequential runs)
+            try:
+                self.worker.progress.disconnect()
+                self.worker.finished.disconnect()
+            except TypeError: # Raised if no connection exists
+                pass
+            # Connect signals for the current worker
+            self.worker.progress.connect(self.update_progress)
+            self.worker.finished.connect(self.processing_finished)
+            self.worker.start()
+        else:
+            # Should not happen if logic is correct, but good to handle
+            logging.error("Invalid current_file_index in start_next_file_processing")
+            self.processing_finished(False, "") # Treat as overall failure
+
     def stop_processing(self):
-        """Stop the RPA process"""
+        """Stop the RPA process (stops current file, cancels sequence)"""
         try:
             if self.worker and self.worker.isRunning():
                 reply = QMessageBox.question(
-                    self, 
-                    '처리 중단', 
-                    '현재 실행 중인 작업을 중단하시겠습니까?',
+                    self,
+                    '처리 중단',
+                    '현재 파일 처리를 중단하고 남은 파일 처리를 취소하시겠습니까?',
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No
                 )
-                
+
                 if reply == QMessageBox.StandardButton.Yes:
                     self.worker.stop()
-                    self.status_text.append("작업이 사용자에 의해 중단되었습니다.")
+                    self.status_text.append(f"[파일 {self.current_file_index + 1}/{len(self.input_files)}] 작업이 사용자에 의해 중단되었습니다.")
+                    self.status_text.append("전체 파일 처리가 중단되었습니다.")
+                    # Reset state
+                    self.current_file_index = -1
                     self.start_btn.setEnabled(True)
                     if hasattr(self, 'stop_btn'):
                         self.stop_btn.setEnabled(False)
+                    # Consider enabling open file button if a previous file succeeded
+                    self.open_file_btn.setEnabled(self.last_upload_path is not None)
+
         except Exception as e:
             error_msg = f"작업 중단 중 오류 발생: {str(e)}"
             QMessageBox.critical(self, "오류", error_msg)
             logging.error(error_msg)
-    
+
     def update_progress(self, type, message):
-        """Update progress and status"""
+        """Update progress and status, prepending current file info"""
         try:
+            # Prepend file progress info if processing multiple files
+            file_info = ""
+            if len(self.input_files) > 1 and self.current_file_index >= 0:
+                file_info = f"[파일 {self.current_file_index + 1}/{len(self.input_files)}] "
+
             if type == "status":
                 # Format timestamp
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                self.status_text.append(f"[{timestamp}] ℹ️ {message}")
-                
+                self.status_text.append(f"[{timestamp}] ℹ️ {file_info}{message}")
+
                 # Update status indicator
                 self.status_indicator.setText("처리 중")
                 self.status_indicator.setStyleSheet("font-weight: bold; color: #2196F3; padding: 5px;")
-                
+
                 # Update status icon
                 status_icon_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     'assets', 'status-processing.svg'
                 )
                 if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
                     old_icon = self.status_layout.itemAt(0).widget()
                     if old_icon:
-                        new_icon = QSvgWidget(status_icon_path)
-                        new_icon.setFixedSize(24, 24)
-                        self.status_layout.replaceWidget(old_icon, new_icon)
-                        old_icon.deleteLater()
-                
-                # Reset progress bar if it's at 100%
-                if self.progress_bar.value() >= 100:
-                    self.progress_bar.setValue(0)
-                # Pulse the progress bar
-                current_value = self.progress_bar.value()
-                new_value = min(current_value + 5, 95)  # Never reach 100 except for completion
-                self.progress_bar.setValue(new_value)
-                
+                        # Check if the icon needs changing
+                        if 'status-processing' not in old_icon.renderer().defaultSize().toString(): # Basic check
+                           new_icon = QSvgWidget(status_icon_path)
+                           new_icon.setFixedSize(24, 24)
+                           self.status_layout.replaceWidget(old_icon, new_icon)
+                           old_icon.deleteLater()
+
+                # Pulse the progress bar for the current file
+                if self.progress_bar.value() < 95: # Avoid hitting 100 prematurely
+                    current_value = self.progress_bar.value()
+                    # Simple pulse, might need refinement based on actual steps
+                    new_value = min(current_value + 5, 95)
+                    self.progress_bar.setValue(new_value)
+
                 # Update status bar
-                self.statusBar.showMessage(f"상태: {message}", 3000)
-                
+                self.statusBar.showMessage(f"상태: {file_info}{message}", 3000)
+
             elif type == "error":
                 # Format timestamp with error styling
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                self.status_text.append(f"<span style='color:#f44336;'>[{timestamp}] ❌ 오류: {message}</span>")
-                
-                # Update status indicator to show error
-                self.status_indicator.setText("오류")
+                self.status_text.append(f"<span style='color:#f44336;'>[{timestamp}] ❌ 오류: {file_info}{message}</span>")
+
+                # Update status indicator to show error (temporary, will be reset on next file or finish)
+                self.status_indicator.setText("오류 발생")
                 self.status_indicator.setStyleSheet("font-weight: bold; color: #f44336; padding: 5px;")
-                
+
                 # Update status icon
                 status_icon_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     'assets', 'status-error.svg'
                 )
                 if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
                     old_icon = self.status_layout.itemAt(0).widget()
                     if old_icon:
-                        new_icon = QSvgWidget(status_icon_path)
-                        new_icon.setFixedSize(24, 24)
-                        self.status_layout.replaceWidget(old_icon, new_icon)
-                        old_icon.deleteLater()
-                
+                        if 'status-error' not in old_icon.renderer().defaultSize().toString(): # Basic check
+                            new_icon = QSvgWidget(status_icon_path)
+                            new_icon.setFixedSize(24, 24)
+                            self.status_layout.replaceWidget(old_icon, new_icon)
+                            old_icon.deleteLater()
+
                 # Show error message in status bar
-                self.statusBar.showMessage(f"오류: {message}", 5000)
-                
-                QMessageBox.warning(self, "오류", message)
-                
+                self.statusBar.showMessage(f"오류: {file_info}{message}", 5000)
+                QMessageBox.warning(self, f"오류 ({file_info.strip()})", message)
+
             elif type == "finished":
-                # Format timestamp with success styling
+                # This 'finished' signal comes from main_rpa for *one file*
+                # We handle the final completion logic in processing_finished
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                self.status_text.append(f"<span style='color:#4CAF50;'>[{timestamp}] ✅ 처리 완료</span>")
-                
-                # Update status indicator to show completion
-                self.status_indicator.setText("완료")
+                # Determine if it finished successfully based on the message content
+                success = message.lower() == "true"
+                if success:
+                    self.status_text.append(f"<span style='color:#4CAF50;'>[{timestamp}] ✅ {file_info}처리 완료</span>")
+                    self.progress_bar.setValue(100) # Mark current file as 100%
+                else:
+                    # Error likely occurred, already logged via 'error' signal
+                     self.status_text.append(f"<span style='color:#f44336;'>[{timestamp}] ⚠️ {file_info}처리 중 오류 발생 또는 결과 없음</span>")
+                     self.progress_bar.setValue(0) # Reset progress on failure? Or leave as is? Resetting.
+
+                # Don't update overall status indicator here, wait for processing_finished
+
+            elif type == "final_path":
+                # Handle the output file path for the *current* file
+                if message and not message.startswith("Error:"):
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    self.status_text.append(f"[{timestamp}] 📄 {file_info}출력 파일 (업로드용): {message}")
+                    # Store this path as the *potential* last successful path
+                    self.last_upload_path = message
+                    # Enable the button immediately if desired, or wait until all files finish
+                    # self.open_file_btn.setEnabled(True) # Option 1: Enable now
+                    logging.info(f"Upload path for file {self.current_file_index + 1} received: {message}")
+                elif message.startswith("Error:"):
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    self.status_text.append(f"<span style='color:#f44336;'>[{timestamp}] ❌ {file_info}출력 파일 생성 실패: {message}</span>")
+
+        except Exception as e:
+            logging.error(f"Progress update error: {str(e)}", exc_info=True)
+
+    def processing_finished(self, success, output_path):
+        """Handle completion of a single file processing, then start next or finish all."""
+        try:
+            file_info = f"[파일 {self.current_file_index + 1}/{len(self.input_files)}]"
+            if success:
+                logging.info(f"{file_info} processing finished successfully. Output: {output_path}")
+                # output_path is now the upload_path due to previous changes
+                if output_path:
+                    self.last_upload_path = output_path # Update last known good path
+            else:
+                logging.warning(f"{file_info} processing failed or produced no output.")
+                # Optionally add a specific log message here if not already covered by 'error' signals
+                # self.status_text.append(f"<span style='color:#f44336;'>{file_info} 처리 실패 또는 결과 없음</span>")
+
+            # Move to the next file
+            self.current_file_index += 1
+
+            if self.current_file_index < len(self.input_files):
+                # More files to process, start the next one
+                self.start_next_file_processing()
+            else:
+                # All files processed
+                self.status_text.append("--------- 모든 파일 처리 완료 ---------")
+                self.statusBar.showMessage("모든 파일 처리가 완료되었습니다.", 5000)
+
+                # Reset state and buttons
+                self.start_btn.setEnabled(True)
+                if hasattr(self, 'stop_btn'):
+                    self.stop_btn.setEnabled(False)
+                self.current_file_index = -1 # Reset index
+
+                # Update final status indicator and icon
+                self.status_indicator.setText("준비됨")
                 self.status_indicator.setStyleSheet("font-weight: bold; color: #4CAF50; padding: 5px;")
-                
-                # Update status icon
                 status_icon_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     'assets', 'status-ready.svg'
                 )
                 if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
@@ -1183,70 +1290,44 @@ class MainWindow(QMainWindow):
                         new_icon.setFixedSize(24, 24)
                         self.status_layout.replaceWidget(old_icon, new_icon)
                         old_icon.deleteLater()
-                
-                self.progress_bar.setValue(100)  # Set to 100% on completion
-                self.start_btn.setEnabled(True)
-                if hasattr(self, 'stop_btn'):
-                    self.stop_btn.setEnabled(False)
-                    
-                # Update status bar
-                self.statusBar.showMessage("처리가 완료되었습니다", 5000)
-                
-            elif type == "final_path":
-                # Handle the output file path
-                if message and not message.startswith("Error:"):
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    self.status_text.append(f"[{timestamp}] 📄 출력 파일: {message}")
-                    
-                    # Store the last output path for "Open File" functionality
-                    self.last_output_path = message
-                    # Enable the "Open File" button
-                    if hasattr(self, 'open_file_btn'):
-                        self.open_file_btn.setEnabled(True)
-                    
-                    # Log the path for debugging
-                    logging.info(f"Final path received in GUI: {message}")
+
+                # Enable the "Open File" button ONLY if a successful path was recorded
+                self.open_file_btn.setEnabled(self.last_upload_path is not None)
+
+                if self.last_upload_path:
+                     QMessageBox.information(self, "완료", f"모든 파일 처리가 완료되었습니다.\n마지막 성공 업로드 파일: {self.last_upload_path}")
+                else:
+                     QMessageBox.warning(self, "완료", "모든 파일 처리가 완료되었지만, 성공적으로 생성된 업로드 파일이 없습니다.")
+
+
         except Exception as e:
-            logging.error(f"Progress update error: {str(e)}", exc_info=True)
-    
-    def processing_finished(self, success, output_path):
-        """Handle processing completion"""
-        try:
+            logging.error(f"Processing finished handler error: {str(e)}", exc_info=True)
+            # Attempt to reset state partially on error
             self.start_btn.setEnabled(True)
             if hasattr(self, 'stop_btn'):
                 self.stop_btn.setEnabled(False)
-                
-            if success:
-                msg = f"처리가 완료되었습니다."
-                if output_path:
-                    msg += f"\n출력 파일: {output_path}"
-                    # Store the output path and enable the open file button
-                    self.last_output_path = output_path
-                    if hasattr(self, 'open_file_btn'):
-                        self.open_file_btn.setEnabled(True)
-                QMessageBox.information(self, "완료", msg)
-            else:
-                QMessageBox.warning(self, "오류", "처리 중 오류가 발생했습니다.")
-        except Exception as e:
-            logging.error(f"Processing finished handler error: {str(e)}")
+            self.current_file_index = -1
 
     def open_result_file(self):
-        """Open the result file"""
+        """Open the last successfully generated upload file"""
         try:
-            if hasattr(self, 'last_output_path') and self.last_output_path:
+            # Use self.last_upload_path which stores the path from the last successful run
+            if self.last_upload_path and os.path.exists(self.last_upload_path):
                 if sys.platform == 'win32':
-                    os.startfile(self.last_output_path)
+                    os.startfile(self.last_upload_path)
                 elif sys.platform == 'darwin':  # macOS
                     import subprocess
-                    subprocess.call(('open', self.last_output_path))
+                    subprocess.call(('open', self.last_upload_path))
                 else:  # Linux
                     import subprocess
-                    subprocess.call(('xdg-open', self.last_output_path))
+                    subprocess.call(('xdg-open', self.last_upload_path))
+            elif self.last_upload_path:
+                 QMessageBox.warning(self, "파일 열기 오류", f"파일을 찾을 수 없습니다: {self.last_upload_path}")
             else:
-                QMessageBox.warning(self, "경고", "출력 파일이 없습니다.")
+                QMessageBox.warning(self, "경고", "성공적으로 생성된 업로드 파일이 없습니다.")
         except Exception as e:
             logging.error(f"Error opening result file: {str(e)}")
-            QMessageBox.warning(self, "오류", f"출력 파일을 열 수 없습니다: {str(e)}")
+            QMessageBox.warning(self, "오류", f"업로드 파일을 열 수 없습니다: {str(e)}")
 
 if __name__ == "__main__":
     try:

@@ -719,7 +719,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if progress_queue: 
                         progress_queue.emit("status", "Output file saved successfully")
                         # Make sure to emit the final path for GUI to capture
-                        progress_queue.emit("final_path", result_path)
+                        progress_queue.emit("final_path", upload_path)
                 else:
                     raise Exception("Failed to create one or both Excel files")
                 
@@ -738,17 +738,20 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         total_time = time.time() - main_start_time
         logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
         if progress_queue:
-            # First send the result path if available
-            if output_path:
-                # Double check that the output path exists
-                if os.path.exists(output_path):
-                    logging.info(f"Emitting final output path: {output_path}")
-                    progress_queue.emit("final_path", output_path)
+            # First send the result path (which is now upload_path) if available
+            if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
+                # Check if the specifically emitted upload_path exists
+                final_emitted_path = upload_path # Use the variable we know holds the upload path
+                if final_emitted_path and os.path.exists(final_emitted_path):
+                    logging.info(f"Emitting final upload path: {final_emitted_path}")
+                    # Ensure final_path signal emission logic remains consistent (already done above)
+                    # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
                 else:
-                    logging.warning(f"Output path does not exist: {output_path}")
-                    progress_queue.emit("final_path", f"Error: Output file not found at {output_path}")
+                    logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
+                    progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
             else:
-                logging.warning("No output path available")
+                # If output_path wasn't even determined (earlier error maybe)
+                logging.warning("No base output path available, cannot check for upload file.")
                 progress_queue.emit("final_path", "Error: No output file created")
             
             # Then mark the process as finished
