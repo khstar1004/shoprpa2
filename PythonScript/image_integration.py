@@ -477,7 +477,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'url': web_url, # Store the web URL (or fallback file URL)
                     'original_path': str(img_path) # Keep original local path info if needed
                 }
-                result_df.loc[idx, target_col_haereum] = image_data # Use new target column name
+                result_df.at[idx, target_col_haereum] = image_data # Use .at for scalar assignment
             else:
                  # Ensure the column exists before assigning
                  if target_col_haereum in result_df.columns:
@@ -501,7 +501,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'url': web_url,
                     'original_path': str(img_path)
                 }
-                result_df.loc[idx, target_col_kogift] = image_data # Use new target column name
+                result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
                  if target_col_kogift in result_df.columns:
                      result_df.loc[idx, target_col_kogift] = '-'
@@ -524,7 +524,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'url': web_url,
                     'original_path': str(img_path)
                 }
-                result_df.loc[idx, target_col_naver] = image_data # Use new target column name
+                result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
             else:
                  if target_col_naver in result_df.columns:
                      result_df.loc[idx, target_col_naver] = '-'

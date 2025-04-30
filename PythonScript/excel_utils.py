@@ -400,11 +400,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
         # Process each image column
         for col_name, col_idx in image_column_indices.items():
+            # --- Robustness Check for Indices --- 
+            current_row_idx = int(row_idx) # Ensure row_idx is a standard int
+            current_col_idx = int(col_idx) # Ensure col_idx is a standard int
+            if current_row_idx < 1 or current_col_idx < 1:
+                logger.warning(f"Invalid index detected for cell: R{current_row_idx}C{current_col_idx} ({col_name}). Skipping cell processing.")
+                continue
+            # -------------------------------------
+            
             image_path_to_embed = None # Reset for each cell
             cell = None # Ensure cell is defined
             try:
                 # Get the cell value (image path or dictionary)
-                cell = worksheet.cell(row=row_idx, column=col_idx)
+                cell = worksheet.cell(row=current_row_idx, column=current_col_idx)
                 original_value = cell.value
                 
                 logger.debug(f"Processing cell {cell.coordinate} ({col_name}). Value type: {type(original_value)}, Value: '{str(original_value)[:100]}...'")
@@ -817,13 +825,25 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                         cell.value = "이미지 처리 오류"
             
             except Exception as e:
-                logger.error(f"Error processing image cell {cell.coordinate if cell else f'R{row_idx}C{col_idx}'} ({col_name}): {e}", exc_info=True)
+                # Use validated indices in error message if cell object wasn't created
+                cell_coord_str = cell.coordinate if cell else f'R{current_row_idx}C{current_col_idx}'
+                logger.error(f"Error processing image cell {cell_coord_str} ({col_name}): {e}", exc_info=True)
                 try:
                     # Ensure cell exists before setting error message
+                    if not cell:
+                        # Attempt to get the cell again if it failed initially
+                        try:
+                            cell = worksheet.cell(row=current_row_idx, column=current_col_idx)
+                        except Exception:
+                            # If getting cell still fails, cannot set value
+                            logger.error(f"Failed to get cell {cell_coord_str} to write error message.")
+                            cell = None # Ensure cell is None
+                        
                     if cell:
                         cell.value = "이미지 처리 오류 (전역)"
+                # This except block needs to align with the 'try' at line 832
                 except Exception as final_err:
-                    logger.error(f"Failed to set error message for cell R{row_idx}C{col_idx}: {final_err}")
+                    logger.error(f"Failed to set error message for cell {cell_coord_str}: {final_err}")
 
     logger.debug("Finished processing image columns")
 
@@ -1213,6 +1233,10 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
               was successfully created, and the paths to both files
     """
     logging.info(f"Starting creation of split Excel outputs (result and upload files)")
+    
+    # Initialize success flags
+    result_success = True 
+    upload_success = True
     
     # Generate the upload file path by adding _upload before the extension
     base_name, ext = os.path.splitext(output_path)
