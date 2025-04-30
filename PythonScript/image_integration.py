@@ -376,7 +376,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         result_df = df.copy()
         
         # 이미지 디렉토리 경로
-        main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'))
+        main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\\\RPA\\\\Image\\\\Main'))
         haereum_dir = main_img_dir / 'Haereum'
         kogift_dir = main_img_dir / 'Kogift'
         naver_dir = main_img_dir / 'Naver'
@@ -445,52 +445,96 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             config=config
         )
         
-        # 매칭 결과 통계
-        haereum_matched = sum(1 for m in best_matches if m[0] is not None)
-        kogift_matched = sum(1 for m in best_matches if m[1] is not None)
-        naver_matched = sum(1 for m in best_matches if m[2] is not None)
-        
-        logging.info(f"1차 매칭 결과 - 해오름: {haereum_matched}/{len(product_names)}개, 고려기프트: {kogift_matched}/{len(product_names)}개, 네이버: {naver_matched}/{len(product_names)}개")
-        
         # 결과를 DataFrame에 적용
+        # Assuming columns like '해오름이미지URL', '고려기프트 URL', '네이버이미지 URL' exist from scraping
+        # These names might need verification based on actual scraper output
+        assumed_url_cols = {
+            'haereum': '해오름이미지URL', # Source URL for Haoreum images
+            'kogift': '고려기프트 URL', # Source URL for Kogift images
+            'naver': '네이버이미지 URL'   # Source URL for Naver images
+        }
+
         for idx, (haereum_path, kogift_path, naver_path) in enumerate(best_matches):
-            # 해오름 이미지
+            # Check index bounds
+            if idx >= len(result_df):
+                logging.warning(f"Index {idx} out of bounds for result_df (length {len(result_df)}). Skipping image assignment.")
+                continue
+            row_data = result_df.iloc[idx] # Get the current row's data to access scraped URLs
+
+            # 해오름 이미지 - Target Column: '본사 이미지' (New Target Name)
+            target_col_haereum = '본사 이미지'
             if haereum_path:
                 img_path = haereum_images[haereum_path]['path']
+                # Get original web URL from the DataFrame
+                web_url_col_name = assumed_url_cols['haereum']
+                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
+                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
+                    logging.debug(f"Row {idx}: Using fallback file URL for Haereum (Original URL not found/invalid in '{web_url_col_name}': {web_url})")
+                    web_url = f"file:///{str(img_path).replace(os.sep, '/')}" # Fallback to file URL
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'haereum',
-                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
-                    'original_path': str(img_path)
+                    'url': web_url, # Store the web URL (or fallback file URL)
+                    'original_path': str(img_path) # Keep original local path info if needed
                 }
-                result_df.at[idx, '본사 이미지'] = image_data
-            
-            # 고려기프트 이미지
+                result_df.loc[idx, target_col_haereum] = image_data # Use new target column name
+            else:
+                 # Ensure the column exists before assigning
+                 if target_col_haereum in result_df.columns:
+                     result_df.loc[idx, target_col_haereum] = '-' # Use consistent placeholder
+                 else:
+                     logging.warning(f"Target column '{target_col_haereum}' not found at index {idx}.")
+
+            # 고려기프트 이미지 - Target Column: '고려기프트 이미지' (New Target Name)
+            target_col_kogift = '고려기프트 이미지'
             if kogift_path:
                 img_path = kogift_images[kogift_path]['path']
+                # Get original web URL
+                web_url_col_name = assumed_url_cols['kogift']
+                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
+                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
+                    logging.debug(f"Row {idx}: Using fallback file URL for Kogift (Original URL not found/invalid in '{web_url_col_name}': {web_url})")
+                    web_url = f"file:///{str(img_path).replace(os.sep, '/')}"
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'kogift',
-                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                    'url': web_url,
                     'original_path': str(img_path)
                 }
-                result_df.at[idx, '고려기프트 이미지'] = image_data
-            
-            # 네이버 이미지
+                result_df.loc[idx, target_col_kogift] = image_data # Use new target column name
+            else:
+                 if target_col_kogift in result_df.columns:
+                     result_df.loc[idx, target_col_kogift] = '-'
+                 else:
+                     logging.warning(f"Target column '{target_col_kogift}' not found at index {idx}.")
+
+            # 네이버 이미지 - Target Column: '네이버 이미지' (New Target Name)
+            target_col_naver = '네이버 이미지'
             if naver_path:
                 img_path = naver_images[naver_path]['path']
+                 # Get original web URL
+                web_url_col_name = assumed_url_cols['naver']
+                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
+                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
+                    logging.debug(f"Row {idx}: Using fallback file URL for Naver (Original URL not found/invalid in '{web_url_col_name}': {web_url})")
+                    web_url = f"file:///{str(img_path).replace(os.sep, '/')}"
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'naver',
-                    'url': f"file:///{str(img_path).replace(os.sep, '/')}",
+                    'url': web_url,
                     'original_path': str(img_path)
                 }
-                result_df.at[idx, '네이버 이미지'] = image_data
-        
-        # 매칭 결과 요약
-        haereum_count = sum(1 for m in best_matches if m[0] is not None)
-        kogift_count = sum(1 for m in best_matches if m[1] is not None)
-        naver_count = sum(1 for m in best_matches if m[2] is not None)
+                result_df.loc[idx, target_col_naver] = image_data # Use new target column name
+            else:
+                 if target_col_naver in result_df.columns:
+                     result_df.loc[idx, target_col_naver] = '-'
+                 else:
+                     logging.warning(f"Target column '{target_col_naver}' not found at index {idx}.")
+
+        # 매칭 결과 요약 - Use new target column names
+        haereum_count = result_df['본사 이미지'].apply(lambda x: isinstance(x, dict)).sum() if '본사 이미지' in result_df else 0
+        kogift_count = result_df['고려기프트 이미지'].apply(lambda x: isinstance(x, dict)).sum() if '고려기프트 이미지' in result_df else 0
+        naver_count = result_df['네이버 이미지'].apply(lambda x: isinstance(x, dict)).sum() if '네이버 이미지' in result_df else 0
         
         logging.info(f"통합: 이미지 매칭 완료 - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
         
@@ -539,18 +583,18 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         for i in range(len(result_df)):
             # 이미지 열별 존재 카운트
             if '본사 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['본사 이미지']) and result_df.iloc[i]['본사 이미지'] is not None:
+                if pd.notna(result_df.iloc[i]['본사 이미지']) and result_df.iloc[i]['본사 이미지'] not in [None, '-']:
                     haereum_count += 1
                     
             if '고려기프트 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['고려기프트 이미지']) and result_df.iloc[i]['고려기프트 이미지'] is not None:
+                if pd.notna(result_df.iloc[i]['고려기프트 이미지']) and result_df.iloc[i]['고려기프트 이미지'] not in [None, '-']:
                     kogift_count += 1
                     
             if '네이버 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['네이버 이미지']) and result_df.iloc[i]['네이버 이미지'] is not None:
+                if pd.notna(result_df.iloc[i]['네이버 이미지']) and result_df.iloc[i]['네이버 이미지'] not in [None, '-']:
                     naver_count += 1
         
-        logging.info(f"통합: 이미지 현황 - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
+        logging.info(f"통합: 이미지 현황 (필터링 후) - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
         return result_df
     
     except Exception as e:
@@ -577,7 +621,7 @@ def create_excel_with_images(df, output_file):
         available_columns = df.columns.tolist()
         logging.info(f"엑셀 생성: 사용 가능한 컬럼: {available_columns}")
         
-        # 기본 헤더 및 데이터 컬럼 정의
+        # 기본 헤더 및 데이터 컬럼 정의 (Use new column names)
         base_headers = ['번호', '상품명']
         optional_headers = ['파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
         
@@ -629,6 +673,7 @@ def create_excel_with_images(df, output_file):
             
             # 이미지 데이터 처리
             image_columns = {}
+            # Use new image column names
             for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
                 if col_name in available_columns:
                     image_columns[col_name] = row.get(col_name)
@@ -759,25 +804,30 @@ if __name__ == "__main__":
     test_df = pd.DataFrame({
         '번호': [1, 2, 3],
         '상품명': ['테스트 상품 1', '테스트 상품 2', '해오름 테스트'],
+        # Use the actual target column names for testing input
         '본사 이미지': [None, None, 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg'],
-        '고려기프트 이미지': [None, {'url': 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', 'local_path': None}, None],
-        '네이버 이미지': [{'url': 'https://shop-phinf.pstatic.net/20240101_1/image.jpg', 'local_path': '/path/to/naver/local.jpg'}, None, None],
+        '고려기프트 이미지': [None, {'url': 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', 'local_path': None, 'source': 'kogift'}, None],
+        '네이버 이미지': [{'url': 'https://shop-phinf.pstatic.net/20240101_1/image.jpg', 'local_path': '/path/to/naver/local.jpg', 'source': 'naver'}, None, None],
         '이미지_유사도': [0.6, 0.8, 0.9],
+        # Assumed source URL columns from scraping
         '해오름이미지URL': [None, None, 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg'],
         '고려기프트 URL': [None, 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', None],
         '네이버이미지 URL': ['https://shop-phinf.pstatic.net/20240101_1/image.jpg', None, None],
+        # Add other necessary columns from FINAL_COLUMN_ORDER for the test
+        '구분': 'A', '담당자': 'Test', '업체명': 'Test', '업체코드': '123', 'Code': 'T01', '중분류카테고리': 'Test',
+        '기본수량(1)': 100, '판매단가(V포함)': 1000, '본사상품링크': 'http://example.com/1',
+        '기본수량(2)': 100, '판매가(V포함)(2)': 1100, '가격차이(2)': 100, '가격차이(2)(%)': 10, '고려기프트 상품링크': 'http://example.com/2',
+        '기본수량(3)': 100, '판매단가(V포함)(3)': 900, '가격차이(3)': -100, '가격차이(3)(%)': -10, '공급사명': 'Test', '네이버 쇼핑 링크': 'http://example.com/3', '공급사 상품링크': 'http://example.com/supplier'
     })
     
-    # 필요한 최종 컬럼 추가
-    test_df['해오름(이미지링크)'] = None
-    test_df['고려기프트(이미지링크)'] = None
-    test_df['네이버쇼핑(이미지링크)'] = None
+    # Ensure all FINAL_COLUMN_ORDER columns exist in test_df
+    # (Already added above for this example)
     
     # 이미지 통합 및 필터링 테스트
     result_df = integrate_and_filter_images(test_df, config, save_excel_output=True)
     
-    # 결과 출력 (최종 컬럼명으로 수정)
+    # 결과 출력 (using the new final column names)
     logging.info(f"테스트 결과 DataFrame 형태: {result_df.shape}")
-    logging.info(f"해오름(이미지링크) 열 데이터: {result_df['해오름(이미지링크)'].tolist()}")
-    logging.info(f"고려기프트(이미지링크) 열 데이터: {result_df['고려기프트(이미지링크)'].tolist()}")
-    logging.info(f"네이버쇼핑(이미지링크) 열 데이터: {result_df['네이버쇼핑(이미지링크)'].tolist()}") 
+    logging.info(f"본사 이미지 열 데이터: {result_df['본사 이미지'].tolist()}")
+    logging.info(f"고려기프트 이미지 열 데이터: {result_df['고려기프트 이미지'].tolist()}")
+    logging.info(f"네이버 이미지 열 데이터: {result_df['네이버 이미지'].tolist()}") 

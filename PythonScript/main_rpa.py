@@ -29,6 +29,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         main_start_time = time.time()
         logging.info("========= RPA Process Starting ========")
 
+        # Add logging here
+        logging.info(f"main_rpa.py: Received config. Input file path: {config.get('Paths', 'input_file', fallback='Not Set')}")
+
         # Add debug mode check
         debug_mode = config.getboolean('Debug', 'enabled', fallback=False)
         if debug_mode:

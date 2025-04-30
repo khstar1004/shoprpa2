@@ -88,6 +88,8 @@ class WorkerThread(QThread):
                 self.progress.emit("status", f"Batch size: {self.batch_size}")
 
             # Run RPA process
+            # Add logging here
+            logging.info(f"WorkerThread: Preparing to process file index {self.current_file_index} with path: {CONFIG.get('Paths', 'input_file', fallback='Not Set')}")
             asyncio.run(main(config=CONFIG, gpu_available=gpu_available_detected, progress_queue=self.progress_handler))
             
             # Determine if successful based on presence of output_path
@@ -1197,12 +1199,14 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
                     old_icon = self.status_layout.itemAt(0).widget()
                     if old_icon:
-                        # Check if the icon needs changing
-                        if 'status-processing' not in old_icon.renderer().defaultSize().toString(): # Basic check
-                           new_icon = QSvgWidget(status_icon_path)
-                           new_icon.setFixedSize(24, 24)
-                           self.status_layout.replaceWidget(old_icon, new_icon)
-                           old_icon.deleteLater()
+                        # Check if the icon needs changing by comparing the current icon's path
+                        current_icon_path = getattr(old_icon, '_icon_path', '')
+                        if current_icon_path != status_icon_path:
+                            new_icon = QSvgWidget(status_icon_path)
+                            new_icon._icon_path = status_icon_path  # Store the path for future comparison
+                            new_icon.setFixedSize(24, 24)
+                            self.status_layout.replaceWidget(old_icon, new_icon)
+                            old_icon.deleteLater()
 
                 # Pulse the progress bar for the current file
                 if self.progress_bar.value() < 95: # Avoid hitting 100 prematurely
@@ -1231,8 +1235,11 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'status_layout') and self.status_layout.count() > 0:
                     old_icon = self.status_layout.itemAt(0).widget()
                     if old_icon:
-                        if 'status-error' not in old_icon.renderer().defaultSize().toString(): # Basic check
+                        # Check if the icon needs changing by comparing the current icon's path
+                        current_icon_path = getattr(old_icon, '_icon_path', '')
+                        if current_icon_path != status_icon_path:
                             new_icon = QSvgWidget(status_icon_path)
+                            new_icon._icon_path = status_icon_path  # Store the path for future comparison
                             new_icon.setFixedSize(24, 24)
                             self.status_layout.replaceWidget(old_icon, new_icon)
                             old_icon.deleteLater()

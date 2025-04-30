@@ -59,88 +59,99 @@ except Exception as e:
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
-# Column Rename Mapping (Update based on 엑셀골든_upload and potential variations)
-# Ensure keys cover variations, values match FINAL_COLUMN_ORDER_UPLOAD
+# Column Rename Mapping (Ensure keys cover variations, values match FINAL_COLUMN_ORDER)
+# Updated to map TO the desired "엑셀 골든" column names
 COLUMN_RENAME_MAP = {
-    # 구분
+    # 구분 -> 구분
     '구분': '구분',
-    '구분(승인관리:A/가격관리:P)': '구분',
-    # 담당자
+    '구분(승인관리:A/가격관리:P)': '구분', # Map the formatted version back to simple
+    # 담당자 -> 담당자
     '담당자': '담당자',
-    # 공급사명 (Input source? 네이버 공급사명 is separate)
-    '업체명': '공급사명', # Assuming '업체명' from input maps to '공급사명' in output
-    # 공급처코드
-    '업체코드': '공급처코드',
-    # 상품코드
-    'Code': '상품코드',
-    '상품코드': '상품코드',
-    # 카테고리(중분류)
-    '중분류카테고리': '카테고리(중분류)',
-    '카테고리(중분류)': '카테고리(중분류)',
-    # 상품명
+    # 업체명 -> 업체명
+    '업체명': '업체명',
+    '공급사명': '업체명', # If input has '공급사명' but output needs '업체명'
+    # 업체코드 -> 업체코드
+    '업체코드': '업체코드',
+    '공급처코드': '업체코드',
+    # Code -> Code
+    'Code': 'Code',
+    '상품코드': 'Code',
+    # 중분류카테고리 -> 중분류카테고리
+    '중분류카테고리': '중분류카테고리',
+    '카테고리(중분류)': '중분류카테고리',
+    # 상품명 -> 상품명
     '상품명': '상품명',
     'name': '상품명',
-    # 본사 기본수량
-    '기본수량(1)': '본사 기본수량',
-    '본사 기본수량': '본사 기본수량',
-    # 판매단가1(VAT포함)
-    '판매단가(V포함)': '판매단가1(VAT포함)',
-    '판매단가1(VAT포함)': '판매단가1(VAT포함)',
-    # 본사링크
-    '본사상품링크': '본사링크',
-    '본사링크': '본사링크',
-    # 고려 기본수량
-    '기본수량(2)': '고려 기본수량',
-    '고려 기본수량': '고려 기본수량',
-    # 판매단가2(VAT포함)
-    '판매가(V포함)(2)': '판매단가2(VAT포함)',
-    '판매단가(V포함)(2)': '판매단가2(VAT포함)',
-    '판매단가2(VAT포함)': '판매단가2(VAT포함)',
-    # 고려 가격차이
-    '가격차이(2)': '고려 가격차이',
-    # 고려 가격차이(%)
-    '가격차이(2)(%)': '고려 가격차이(%)',
-    # 고려 링크
-    '고려기프트 상품링크': '고려 링크',
-    '고려 링크': '고려 링크',
-    # 네이버 기본수량
-    '기본수량(3)': '네이버 기본수량',
-    '네이버 기본수량': '네이버 기본수량',
-    # 판매단가3 (VAT포함)
-    '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
-    '판매단가3 (VAT포함)': '판매단가3 (VAT포함)',
-    # 네이버 가격차이
-    '가격차이(3)': '네이버 가격차이',
-    # 네이버가격차이(%)
-    '가격차이(3)(%)': '네이버가격차이(%)',
-    # 네이버 공급사명
-    '공급사명': '네이버 공급사명', # Note: Input '공급사명' maps to '네이버 공급사명' here? Review logic if needed.
-    '네이버 공급사명': '네이버 공급사명',
-    # 네이버 링크 (Input '공급사 상품링크' might map here?)
-    '네이버 쇼핑 링크': '네이버 링크',
-    '네이버 링크': '네이버 링크',
-    '공급사 상품링크': '네이버 링크', # Check if this mapping is correct
-    # 해오름(이미지링크)
-    '본사 이미지': '해오름(이미지링크)',
-    '해오름이미지경로': '해오름(이미지링크)',
-    # 고려기프트(이미지링크)
-    '고려기프트 이미지': '고려기프트(이미지링크)',
-    '고려기프트(이미지링크)': '고려기프트(이미지링크)',
-    # 네이버쇼핑(이미지링크)
-    '네이버 이미지': '네이버쇼핑(이미지링크)',
-    '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)'
+    # 기본수량(1) -> 기본수량(1)
+    '기본수량(1)': '기본수량(1)',
+    '본사 기본수량': '기본수량(1)',
+    # 판매단가(V포함) -> 판매단가(V포함)
+    '판매단가(V포함)': '판매단가(V포함)',
+    '판매단가1(VAT포함)': '판매단가(V포함)',
+    # 본사상품링크 -> 본사상품링크
+    '본사상품링크': '본사상품링크',
+    '본사링크': '본사상품링크',
+    # 기본수량(2) -> 기본수량(2)
+    '기본수량(2)': '기본수량(2)',
+    '고려 기본수량': '기본수량(2)',
+    # 판매가(V포함)(2) -> 판매가(V포함)(2)
+    '판매가(V포함)(2)': '판매가(V포함)(2)',
+    '판매단가(V포함)(2)': '판매가(V포함)(2)', # Handle potential input variation
+    '판매단가2(VAT포함)': '판매가(V포함)(2)',
+    # 가격차이(2) -> 가격차이(2)
+    '가격차이(2)': '가격차이(2)',
+    '고려 가격차이': '가격차이(2)',
+    # 가격차이(2)(%) -> 가격차이(2)(%)
+    '가격차이(2)(%)': '가격차이(2)(%)',
+    '고려 가격차이(%)': '가격차이(2)(%)',
+    # 고려기프트 상품링크 -> 고려기프트 상품링크
+    '고려기프트 상품링크': '고려기프트 상품링크',
+    '고려 링크': '고려기프트 상품링크',
+    # 기본수량(3) -> 기본수량(3)
+    '기본수량(3)': '기본수량(3)',
+    '네이버 기본수량': '기본수량(3)',
+    # 판매단가(V포함)(3) -> 판매단가(V포함)(3)
+    '판매단가(V포함)(3)': '판매단가(V포함)(3)',
+    '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
+    # 가격차이(3) -> 가격차이(3)
+    '가격차이(3)': '가격차이(3)',
+    '네이버 가격차이': '가격차이(3)',
+    # 가격차이(3)(%) -> 가격차이(3)(%)
+    '가격차이(3)(%)': '가격차이(3)(%)',
+    '네이버가격차이(%)': '가격차이(3)(%)',
+    # 공급사명 -> 공급사명 (for Naver - assuming second 공급사명 is Naver's)
+    # This assumes the input might have a second '공급사명' or '네이버 공급사명'
+    # Be careful with this mapping if input only has one '공급사명'
+    # Let's rely on the specific Naver column name if available from input
+    '네이버 공급사명': '공급사명', # Map specific Naver source to the target '공급사명'
+    # '공급사명': '공급사명', # Avoid mapping the general '공급사명' twice
+    # 네이버 쇼핑 링크 -> 네이버 쇼핑 링크
+    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
+    '네이버 링크': '네이버 쇼핑 링크',
+    # 공급사 상품링크 -> 공급사 상품링크
+    '공급사 상품링크': '공급사 상품링크',
+    # '네이버 링크': '공급사 상품링크', # Avoid ambiguous mapping if possible
+    # 본사 이미지 -> 본사 이미지
+    '본사 이미지': '본사 이미지',
+    '해오름이미지경로': '본사 이미지',
+    '해오름(이미지링크)': '본사 이미지',
+    # 고려기프트 이미지 -> 고려기프트 이미지
+    '고려기프트 이미지': '고려기프트 이미지',
+    '고려기프트(이미지링크)': '고려기프트 이미지',
+    # 네이버 이미지 -> 네이버 이미지
+    '네이버 이미지': '네이버 이미지',
+    '네이버쇼핑(이미지링크)': '네이버 이미지'
 }
 
-# Final Target Column Order (Based on "엑셀골든_upload") - Use this for both files now?
-# Let's define two orders: one for upload, one for result? Or just use upload for both?
-# For now, update FINAL_COLUMN_ORDER to match the upload format strictly.
+# Final Target Column Order (Based on "엑셀 골든" sample)
+# THIS IS THE STRICT ORDER AND NAMING FOR THE OUTPUT FILE
 FINAL_COLUMN_ORDER = [
-    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드',
-    '카테고리(중분류)', '상품명', '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
-    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
-    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)',
-    '네이버 공급사명', '네이버 링크',
-    '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', # Note: Single '공급사명' here
+    '네이버 쇼핑 링크', '공급사 상품링크',
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
 
 # Columns that must be present in the input file for processing
@@ -153,21 +164,25 @@ REQUIRED_INPUT_COLUMNS = [
 ]
 
 # --- Column Type Definitions for Formatting ---
-# Update these lists based on the new FINAL_COLUMN_ORDER names
+# Update these lists based on the NEW FINAL_COLUMN_ORDER names ("엑셀 골든")
 PRICE_COLUMNS = [
-    '판매단가1(VAT포함)', '판매단가2(VAT포함)', '판매단가3 (VAT포함)',
-    '고려 가격차이', '네이버 가격차이'
+    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)',
+    '가격차이(2)', '가격차이(3)'
 ]
-QUANTITY_COLUMNS = ['본사 기본수량', '고려 기본수량', '네이버 기본수량']
-PERCENTAGE_COLUMNS = ['고려 가격차이(%)', '네이버가격차이(%)']
-TEXT_COLUMNS = ['구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명', '네이버 공급사명']
+QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
+PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
+TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
 LINK_COLUMNS_FOR_HYPERLINK = {
-    '본사링크': '본사링크',
-    '고려 링크': '고려 링크',
-    '네이버 링크': '네이버 링크'
+    # Map final column names used for links
+    '본사상품링크': '본사상품링크',
+    '고려기프트 상품링크': '고려기프트 상품링크',
+    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
+    '공급사 상품링크': '공급사 상품링크'
     # Image columns handled separately
 }
-IMAGE_COLUMNS = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+# Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
+# IMAGE_COLUMNS = [col for col in FINAL_COLUMN_ORDER if '이미지' in col and '링크' not in col] # More robust check
+IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지'] # Explicitly define based on new order
 
 # Error Messages Constants (Can be used for conditional formatting or checks)
 ERROR_MESSAGES = {
@@ -207,7 +222,6 @@ INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red fo
 NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff < -1
 
 # Image Processing Constants
-IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 IMAGE_MAX_SIZE = (1200, 1200)  # Excel 2021 maximum supported image size
 IMAGE_STANDARD_SIZE = (200, 200)  # Standard display size in Excel
 IMAGE_QUALITY = 85  # JPEG compression quality
@@ -303,9 +317,9 @@ def _apply_column_widths(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: 
              width = width_hints['quantity']
         elif 'Code' in col_name_str or '코드' in col_name_str:
             width = width_hints['code']
-        elif '카테고리' in col_name_str:
+        elif '카테고리' in col_name_str or '분류' in col_name_str: # Added '분류'
             width = width_hints['category']
-        elif col_name_str in ['구분', '담당자']:
+        elif col_name_str in ['구분', '담당자']: # Use new '구분' name
             width = width_hints['text_short']
         # Add more specific rules if needed
 
@@ -350,7 +364,7 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
             if is_pct_col or ((col_name_str in PRICE_COLUMNS or col_name_str in QUANTITY_COLUMNS) and is_numeric_value):
                 cell.alignment = RIGHT_ALIGNMENT
             # Update checks for center alignment based on new names
-            elif col_name_str in IMAGE_COLUMNS or '코드' in col_name_str or col_name_str == '구분(승인관리:A/가격관리:P)':
+            elif col_name_str in IMAGE_COLUMNS or '코드' in col_name_str or 'Code' in col_name_str or col_name_str == '구분': # Use new '구분', added 'Code'
                  cell.alignment = CENTER_ALIGNMENT
             else:
                 cell.alignment = LEFT_ALIGNMENT # Default left align for text/links/errors
@@ -360,16 +374,22 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     """Processes image columns and embeds images into the worksheet."""
     logger.debug("Processing image columns...")
     
-    # Get indices of image columns
+    # Get indices of image columns using final names from IMAGE_COLUMNS constant
     image_column_indices = {}
+    # IMAGE_COLUMNS is now defined near the top based on FINAL_COLUMN_ORDER
     for col_name in IMAGE_COLUMNS:
         if col_name in df.columns:
-            idx = list(df.columns).index(col_name) + 1  # Excel is 1-indexed
-            image_column_indices[col_name] = idx
-            logger.debug(f"Found image column: {col_name} at index {idx}")
+            # Get the 0-based index from DataFrame columns for data access
+            df_col_idx_0based = df.columns.get_loc(col_name)
+            # Get the 1-based index for openpyxl cell access
+            excel_col_idx_1based = df_col_idx_0based + 1
+            image_column_indices[col_name] = excel_col_idx_1based
+            logger.debug(f"Found image column: '{col_name}' at Excel index {excel_col_idx_1based}")
+        else:
+            logger.warning(f"Expected image column not found in DataFrame: '{col_name}'")
 
     if not image_column_indices:
-        logger.debug("No image columns found in DataFrame")
+        logger.debug("No image columns found in DataFrame using final names")
         return
 
     # Image size settings - increased for better visibility
@@ -814,7 +834,7 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Find price difference columns (non-percentage) using new names
     price_diff_cols = [
         col for col in df.columns
-        if col in ['고려 가격차이', '네이버 가격차이']
+        if col in ['가격차이(2)', '가격차이(3)'] # Use new names
     ]
 
     if not price_diff_cols:
@@ -1123,8 +1143,10 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
 
     # For upload file, modify image column values to be web URLs or empty
     if skip_images:
-        # Image columns now use new names from FINAL_COLUMN_ORDER
-        image_columns = [col for col in df.columns if col in IMAGE_COLUMNS]
+        # Image columns now use new names from FINAL_COLUMN_ORDER / IMAGE_COLUMNS constant
+        # final_image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'] # Already defined
+        image_columns = [col for col in df.columns if col in IMAGE_COLUMNS] # Use the constant
+
         for col in image_columns:
             # Replace image dict/path with web URL or empty string for upload file
             df[col] = df[col].apply(
@@ -1290,127 +1312,63 @@ def create_split_excel_outputs(df: pd.DataFrame, output_path: str) -> tuple:
         df_filtered = df_filtered.drop(rows_to_drop)
         logging.info(f"Filtered out {initial_rows - len(df_filtered)} rows with empty Kogift and Naver data")
 
-    # Create a Pandas Excel writer using openpyxl engine for better style support
-    # Use context manager for automatic saving/closing
-    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    logger.info(f"Creating split Excel outputs. Result file: {result_path}, Upload file: {upload_path}")
 
-        # Write DataFrame to Excel
-        df_filtered.to_excel(writer, sheet_name='Sheet1', index=False, na_rep='') # Use empty string for NaN
-
-        # Get workbook and worksheet objects
-        workbook = writer.book
-        worksheet = writer.sheets['Sheet1']
-
-        # Apply formatting using openpyxl (consistent with result file)
-        _apply_excel_formatting(workbook, worksheet, df_filtered, include_images=True)
-
-        # --- Apply Formatting AFTER data is written ---
-        try:
-            # 3. Apply Column Widths and Cell Styles
+    # --- Create Result File (with images) ---
+    try:
+        with pd.ExcelWriter(result_path, engine='openpyxl') as writer: # Reverted engine to openpyxl
+            df_filtered.to_excel(writer, sheet_name='Sheet1', index=False, na_rep='')
+            workbook = writer.book
+            worksheet = writer.sheets['Sheet1']
+            # Apply openpyxl formatting functions directly
             _apply_column_widths(worksheet, df_filtered)
             _apply_cell_styles_and_alignment(worksheet, df_filtered)
-        except Exception as e:
-            logger.error(f"Error during formatting: {e}")
-
-        try:
-            # 4. Apply Conditional Formatting
-            _apply_conditional_formatting(worksheet, df_filtered)
-        except Exception as e:
-            logger.error(f"Error during conditional formatting: {e}")
-
-        try:
-            # 5. Handle Images (Embedding)
             _process_image_columns(worksheet, df_filtered)
-        except Exception as e:
-            logger.error(f"Error during image processing: {e}")
-        
-        try:
-            # 6. Adjust dimensions for image cells
             _adjust_image_cell_dimensions(worksheet, df_filtered)
-        except Exception as e:
-            logger.error(f"Error adjusting image cell dimensions: {e}")
-
-        try:
-            # 7. Add Hyperlinks
-            _add_hyperlinks_to_worksheet(worksheet, df_filtered)
-        except Exception as e:
-            logger.error(f"Error adding hyperlinks: {e}")
-
-        try:
-            # 8. Page Setup and Header/Footer
+            _add_hyperlinks_to_worksheet(worksheet, df_filtered) # Keep links as text
+            _apply_conditional_formatting(worksheet, df_filtered)
             _setup_page_layout(worksheet)
             _add_header_footer(worksheet)
-        except Exception as e:
-            logger.error(f"Error setting up page layout: {e}")
+            # _apply_table_format(worksheet) # Commented out as it might conflict
 
-        try:
-            # 9. Apply Table Format (Apply last after other formatting)
-            _apply_table_format(worksheet)
-        except Exception as e:
-            logger.error(f"Error applying table format: {e}")
+            # Remove this incorrect call - formatting handled above
+            # _apply_excel_formatting(workbook, worksheet, df_filtered, include_images=True)
 
-    logger.info(f"Successfully created and formatted Excel file: {output_path}")
-    return True, True, result_path, upload_path
+    except Exception as e:
+        logger.error(f"Failed to create result file '{result_path}': {e}")
+        logger.error(traceback.format_exc())
+        result_success = False
 
-def _apply_excel_formatting(workbook, worksheet, df, include_images=True):
-    """
-    Apply Excel formatting including headers, column widths, and cell styles.
-    
-    Args:
-        workbook: xlsxwriter workbook object
-        worksheet: xlsxwriter worksheet object
-        df: DataFrame being written
-        include_images: Whether to include image formatting
-    """
-    # Define formats
-    header_format = workbook.add_format({
-        'bold': True, 
-        'text_wrap': True,
-        'valign': 'top',
-        'border': 1
-    })
-    
-    # Define a regular cell format (not hyperlink)
-    text_format = workbook.add_format({
-        'text_wrap': True
-    })
-    
-    # Write column headers with the defined format
-    for col_num, value in enumerate(df.columns.values):
-        worksheet.write(0, col_num, value, header_format)
-    
-    # Set column widths based on content
-    for col_num, column in enumerate(df.columns):
-        column_width = max(
-            df[column].astype(str).map(len).max(),
-            len(str(column))
-        ) + 2  # Add a little extra space
-        
-        # Limit column width to reasonable size
-        column_width = min(column_width, 50)
-        
-        # For image columns, set specific width when including images
-        if include_images and '이미지' in column:
-            column_width = 22  # IMAGE_CELL_WIDTH
-        
-        # For link columns, ensure they're wide enough but don't create hyperlinks
-        if column in LINK_COLUMNS_FOR_HYPERLINK or '링크' in column:
-            column_width = max(column_width, 35)  # Ensure links have enough width
-            
-            # Write URLs as plain text
-            for row_num, value in enumerate(df[column], start=1):
-                if pd.notna(value) and isinstance(value, str):
-                    # Write the cell with regular format (not a hyperlink)
-                    worksheet.write(row_num, col_num, value, text_format)
-        
-        worksheet.set_column(col_num, col_num, column_width)
-    
-    # If not including images, we're done
-    if not include_images:
-        return
-    
-    # Add images to cells if include_images is True
-    # (This would be handled by the image insertion functions in create_final_output_excel)
+    # --- Create Upload File (links only) ---
+    try:
+        # Prepare data for upload file (select specific columns)
+        upload_cols = ['구분', '담당자', '업체명', '업체코드', 'Code', '상품명', '본사상품링크', '고려기프트 상품링크', '네이버 쇼핑 링크', '공급사 상품링크']
+        # Select existing columns only to avoid KeyError
+        upload_cols_exist = [col for col in upload_cols if col in df_filtered.columns]
+        df_upload = df_filtered[upload_cols_exist].copy()
+
+        # Save upload file without extensive formatting
+        with pd.ExcelWriter(upload_path, engine='openpyxl') as writer: # Use openpyxl for upload file too
+             df_upload.to_excel(writer, sheet_name='Sheet1', index=False, na_rep='')
+             # Apply minimal formatting using openpyxl helpers
+             workbook_upload = writer.book
+             worksheet_upload = writer.sheets['Sheet1']
+             _apply_column_widths(worksheet_upload, df_upload)
+             _apply_cell_styles_and_alignment(worksheet_upload, df_upload)
+             _add_hyperlinks_to_worksheet(worksheet_upload, df_upload) # Keep links as text
+
+    except Exception as e:
+        logger.error(f"Failed to create upload file '{upload_path}': {e}")
+        logger.error(traceback.format_exc())
+        upload_success = False
+
+    # Final logging
+    if result_success and upload_success:
+        logger.info(f"Successfully created split output files: {result_path} and {upload_path}")
+    else:
+        logger.warning(f"Failed to create one or both output files. Result success: {result_success}, Upload success: {upload_success}")
+
+    return result_success, upload_success, result_path if result_success else None, upload_path if upload_success else None
 
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
@@ -1571,12 +1529,12 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     """Adjusts row heights and column widths for cells containing images."""
     logger.debug("Adjusting dimensions for image cells...")
     
-    # Get image column indices
+    # Get image column indices using the IMAGE_COLUMNS constant
     image_cols = {col: idx for idx, col in enumerate(df.columns, 1) if col in IMAGE_COLUMNS}
     
     if not image_cols:
         return
-        
+
     # Increase column widths for image columns to accommodate larger images
     for col_name, col_idx in image_cols.items():
         try:
