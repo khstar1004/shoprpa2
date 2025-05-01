@@ -880,89 +880,129 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         logging.error(f"Error in _match_single_product for index {i}: {e}", exc_info=True)
         return i, None
 
-def _find_best_match(haoreum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
+def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
     """
     Find the best matching product from a list of candidates.
-    Returns the best match with additional info or None if no match found.
+    
+    Args:
+        haereum_product: The reference product (Haereum)
+        candidates: List of candidate products to match against
+        matcher: The ProductMatcher instance to use
+        source: Source of candidates ('kogift' or 'naver')
+        
+    Returns:
+        Dict with match data and similarity scores, or None if no match found
     """
-    if not candidates or not haoreum_product:
+    if not candidates or not haereum_product:
         return None
         
+    # Get product name
+    product_name = haereum_product.get('name', '')
+    if not product_name:
+        return None
+        
+    logging.debug(f"Finding best match for '{product_name}' from {len(candidates)} {source} candidates")
+    
     best_match = None
-    best_score = 0
-    best_text_similarity = 0
-    best_image_similarity = 0
+    best_text_sim = 0
+    best_img_sim = 0
+    best_combined = 0
     
-    # Get product details
-    haoreum_name = haoreum_product.get('상품명', '')
-    haoreum_image = haoreum_product.get('해오름이미지경로', None)
+    # Get thresholds based on category
+    category = haereum_product.get('중분류카테고리') or haereum_product.get('카테고리(중분류)')
+    text_threshold, img_threshold = matcher.get_thresholds_for_category(category)
     
-    # Apply text pre-filtering to reduce candidates (if many)
-    if len(candidates) > 10:
-        candidates = _filter_candidates_by_text(haoreum_name, candidates, matcher)
+    # FIXED: Add stricter thresholds for Naver matches since they tend to be less reliable
+    if source == 'naver':
+        text_threshold = max(text_threshold, 0.5)  # Use at least 0.5 for Naver text matching
+        img_threshold = max(img_threshold, 0.3)    # Use at least 0.3 for Naver image matching
     
-    # Process each candidate
     for candidate in candidates:
-        # Get candidate details
-        candidate_name = candidate.get('상품명', candidate.get('name', ''))
-        
-        # Check for exact name match (optional boost)
-        exact_match = haoreum_name == candidate_name
-        
-        # Calculate text similarity
-        text_similarity = matcher.calculate_text_similarity(haoreum_name, candidate_name)
-        
-        # Calculate image similarity if both images available
-        image_similarity = 0.0
-        if haoreum_image and 'image_path' in candidate and candidate['image_path']:
-            image_similarity = matcher.calculate_image_similarity(haoreum_image, candidate['image_path'])
-        
-        # Combine similarities (with tunable weights)
-        combined_score = (matcher.text_weight * text_similarity) + (matcher.image_weight * image_similarity)
-        
-        # Apply exact match bonus if applicable
-        if exact_match:
-            combined_score = min(1.0, combined_score + matcher.exact_match_bonus)
-        
-        # Get category-specific thresholds if applicable
-        category = haoreum_product.get('중분류카테고리', None)
-        text_threshold, image_threshold = matcher.get_thresholds_for_category(category)
-        
-        # Update best match if score is higher
-        if combined_score > best_score:
-            best_score = combined_score
-            best_text_similarity = text_similarity
-            best_image_similarity = image_similarity
+        candidate_name = candidate.get('name', '')
+        if not candidate_name:
+            continue
             
-            # Create match result with additional info
-            best_match = candidate.copy()
-            best_match.update({
-                'source': source,  # Ensure source is properly set
-                'combined_score': combined_score,
-                'text_similarity': text_similarity,
-                'image_similarity': image_similarity
-            })
-    
-    # Apply final filtering based on category-specific thresholds
+        # Calculate text similarity
+        text_sim = matcher.calculate_text_similarity(product_name, candidate_name)
+        
+        # Skip candidates with very low text similarity early
+        # FIXED: Higher minimum text similarity to filter out bad matches
+        min_text_threshold = 0.2 if source == 'kogift' else 0.3
+        if text_sim < min_text_threshold:
+            logging.debug(f"Skipping {source} candidate '{candidate_name[:30]}...' due to low text similarity: {text_sim:.3f}")
+            continue
+            
+        # Calculate image similarity if images are available
+        img_sim = 0
+        haereum_img_path = haereum_product.get('image_path')
+        candidate_img_path = candidate.get('image_path')
+        
+        if haereum_img_path and candidate_img_path:
+            img_sim = matcher.calculate_image_similarity(haereum_img_path, candidate_img_path)
+            
+        # Calculate combined score with adjustable weights
+        # FIXED: Adjust weights based on source
+        if source == 'kogift':
+            # Kogift: Balanced weights
+            text_weight = 0.6
+            img_weight = 0.4
+        else:
+            # Naver: More weight on text similarity since images are less reliable
+            text_weight = 0.7
+            img_weight = 0.3
+            
+        combined_score = (text_sim * text_weight) + (img_sim * img_weight)
+        
+        # Track best match
+        if combined_score > best_combined:
+            best_combined = combined_score
+            best_text_sim = text_sim
+            best_img_sim = img_sim
+            best_match = candidate
+            
+    # Log the best match found
     if best_match:
-        # Default thresholds
-        default_text_threshold = matcher.text_similarity_threshold
-        default_combined_threshold = matcher.combined_threshold
+        name_snippet = best_match.get('name', '')[:30]
+        logging.debug(f"Best {source} match for '{product_name[:30]}': '{name_snippet}' (Text: {best_text_sim:.3f}, Image: {best_img_sim:.3f}, Combined: {best_combined:.3f})")
         
-        # Apply category-specific thresholds if available
-        category = haoreum_product.get('중분류카테고리', None)
-        category_text_threshold, _ = matcher.get_thresholds_for_category(category)
+        # FIXED: Additional verification for Naver matches
+        if source == 'naver':
+            # Set minimum combined score threshold for Naver
+            min_combined_threshold = 0.35
+            
+            # If combined score is too low, reject the match
+            if best_combined < min_combined_threshold:
+                logging.warning(f"Rejecting Naver match '{name_snippet}' due to low combined score: {best_combined:.3f} < {min_combined_threshold:.3f}")
+                return None
+                
+            # If text similarity is too low but combined score is ok, ensure image similarity is high enough
+            if best_text_sim < text_threshold and best_img_sim < 0.5:
+                logging.warning(f"Rejecting Naver match with low text similarity ({best_text_sim:.3f}) and insufficient image similarity ({best_img_sim:.3f})")
+                return None
+                
+            # Check for price consistency if available
+            haereum_price = haereum_product.get('price', 0)
+            match_price = best_match.get('price', 0)
+            
+            if haereum_price > 0 and match_price > 0:
+                # Calculate price difference percentage
+                price_diff_pct = abs(match_price - haereum_price) / haereum_price * 100
+                
+                # If price difference is too large and similarity is borderline, reject match
+                if price_diff_pct > 70 and best_combined < 0.55:
+                    logging.warning(f"Rejecting Naver match with large price difference ({price_diff_pct:.1f}%) and borderline similarity ({best_combined:.3f})")
+                    return None
         
-        # Final threshold determination 
-        final_text_threshold = category_text_threshold if matcher.use_category_thresholds else default_text_threshold
-        
-        # Only return match if it meets the thresholds
-        if (best_text_similarity >= final_text_threshold and best_score >= default_combined_threshold):
-            # Check that source is never None
-            if best_match.get('source') is None:
-                best_match['source'] = source
-            return best_match
+        # Return match info including scores
+        return {
+            'match_data': best_match,
+            'text_similarity': best_text_sim,
+            'image_similarity': best_img_sim,
+            'combined_score': best_combined
+        }
     
+    # Return None if no suitable match found
+    logging.debug(f"No suitable {source} match found for '{product_name}'")
     return None
 
 # Wrapper for ProcessPoolExecutor compatibility

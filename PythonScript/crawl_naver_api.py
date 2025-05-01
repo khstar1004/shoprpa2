@@ -75,11 +75,11 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
     # Get initial similarity threshold from config
     try:
-        # FIXED: Increased default threshold from 0.1 to 0.4 for better matching
-        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.4)
+        # FIXED: Increased default threshold from 0.4 to 0.6 for better matching
+        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.6)
     except (configparser.Error, ValueError):
-        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.4.")
-        initial_sim_threshold = 0.4
+        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.6.")
+        initial_sim_threshold = 0.6
     logger.info(f"Using initial Naver result similarity threshold: {initial_sim_threshold}")
 
     # Tokenize the original query once
@@ -602,7 +602,51 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
 
     logger.info(f"🟢 Naver crawl finished. Processed {len(results)} valid results out of {total_products} rows.")
     
-    return results
+    # FIXED: Add validation for results to ensure image paths are properly set
+    validated_results = []
+    for result in results:
+        try:
+            # Skip invalid results
+            if not isinstance(result, dict) or 'original_product_name' not in result:
+                logger.warning(f"Skipping invalid Naver result: {result}")
+                continue
+            
+            # Ensure image_data exists and is properly formatted
+            if 'image_data' in result and isinstance(result['image_data'], dict):
+                # Make sure image_data has required fields
+                image_data = result['image_data']
+                if 'local_path' not in image_data or not image_data['local_path']:
+                    # Check if we have image_url but no local_path
+                    if 'image_url' in result and result['image_url']:
+                        # Try to download image again
+                        try:
+                            local_path = await download_naver_image(
+                                result['image_url'], naver_image_dir, 
+                                result['original_product_name'], config
+                            )
+                            if local_path:
+                                image_data['local_path'] = local_path
+                                logger.info(f"Fixed missing local_path for {result['original_product_name']}")
+                        except Exception as e:
+                            logger.error(f"Failed to download image during validation: {e}")
+                
+                # Ensure URL is present
+                if 'url' not in image_data and 'image_url' in result:
+                    image_data['url'] = result['image_url']
+                
+                # Ensure source is present
+                if 'source' not in image_data:
+                    image_data['source'] = 'naver'
+                
+                # Update result
+                result['image_data'] = image_data
+            
+            validated_results.append(result)
+        except Exception as e:
+            logger.error(f"Error validating Naver result: {e}")
+    
+    logger.info(f"Validation complete. {len(validated_results)} valid results (removed {len(results) - len(validated_results)} invalid)")
+    return validated_results
 
 # Helper function to process a single row for crawl_naver_products
 async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir):
@@ -631,10 +675,25 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         )
 
     if not naver_data:
+        logger.warning(f"🟢 No Naver results found for '{product_name}' after trying all keyword variations.")
         return None  # No Naver data found
 
-    # Return the first Naver result with the original product name
+    # FIXED: Add additional similarity check before returning result
+    # Get the threshold from config or use a default
+    try:
+        min_similarity = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.4)
+    except:
+        min_similarity = 0.4
+    
+    # Check the first item's similarity
     first_item = naver_data[0]
+    similarity = first_item.get('initial_similarity', 0)
+    
+    if similarity < min_similarity:
+        logger.warning(f"🟢 Skipping Naver result for '{product_name}' due to low similarity score: {similarity:.3f} < {min_similarity:.3f}")
+        return None
+    
+    # Return the first Naver result with the original product name
     result_data = {
         'original_product_name': product_name,
         'name': first_item.get('name'),
@@ -642,7 +701,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'seller_name': first_item.get('mallName'),
         'link': first_item.get('link'),
         'seller_link': first_item.get('mallProductUrl'),
-        'source': 'naver'  # 공급사 정보 명시 (Kogift 방식을 따라)
+        'source': 'naver',  # 공급사 정보 명시 (Kogift 방식을 따라)
+        'initial_similarity': similarity  # Keep track of similarity score
     }
 
     # Process image if available
@@ -662,7 +722,9 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                 'local_path': local_path,
                 'original_path': local_path,
                 'source': 'naver',
-                'image_url': image_url  # FIXED: Explicitly add image_url to the dictionary
+                'image_url': image_url,  # FIXED: Explicitly add image_url to the dictionary
+                'product_name': product_name,  # FIXED: Add product name for better traceability
+                'similarity': similarity  # FIXED: Add similarity score to image data
             }
     
     return result_data

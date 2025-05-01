@@ -26,4 +26,4 @@ chardet>=5.1.0
 xlsxwriter>=3.1.2 
 aiohttp>=3.8.5
 h2
-
+python-Levenshtein
