@@ -832,32 +832,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
                                 result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
                                 
-                                # <<< 추가: 가격 하이라이팅 적용 >>>
-                                if result_success or upload_success:
-                                    logging.info("엑셀 파일 생성 후 가격차이 하이라이팅 적용 시작")
-                                    try:
-                                        success_count, total_files = apply_price_highlighting_to_files(
-                                            result_path=result_path, 
-                                            upload_path=upload_path, 
-                                            threshold=-1
-                                        )
-                                        logging.info(f"가격차이 하이라이팅 결과: {success_count}/{total_files} 파일 처리 완료")
-                                    except Exception as highlight_err:
-                                        logging.error(f"가격차이 하이라이팅 중 오류 발생: {highlight_err}", exc_info=True)
-                                # <<< 추가 코드 종료 >>>
-                                
-                                # --- Result Excel File Verification ---
-                                if result_success and result_path and os.path.exists(result_path):
-                                    try:
-                                        wb_verify = openpyxl.load_workbook(result_path)
-                                        ws_verify = wb_verify.active
-                                        embedded_image_count = len(ws_verify._images)
-                                        logging.info(f"검증: 결과 엑셀 파일 '{os.path.basename(result_path)}' 검증 완료. {embedded_image_count}개 이미지 포함됨.")
-                                    except Exception as verify_err:
-                                        logging.error(f"검증: 결과 엑셀 파일 '{os.path.basename(result_path)}' 검증 중 오류 발생: {verify_err}")
-                                elif result_success:
-                                    logging.warning(f"검증: 결과 엑셀 파일 경로가 유효하지 않거나 파일이 존재하지 않아 검증을 건너뛰었습니다: {result_path}")
-
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
                                     logging.info("Successfully created both Excel files:")
@@ -865,7 +839,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.info(f"- Upload file (links only): {upload_path}")
                                     if progress_queue:
                                         progress_queue.emit("status", "Output files saved successfully")
-                                        progress_queue.emit("final_path", upload_path)
+                                        if isinstance(upload_path, str) and os.path.exists(upload_path):
+                                            progress_queue.emit("final_path", upload_path)
+                                        else:
+                                            logging.warning("Upload path is invalid or does not exist, skipping final_path emit")
                                 else:
                                     logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
                                     if progress_queue:

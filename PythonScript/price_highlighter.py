@@ -125,26 +125,15 @@ def highlight_negative_price_differences(excel_path, threshold=-1):
 
 
 def apply_price_highlighting_to_files(result_path=None, upload_path=None, threshold=-1):
-    """
-    생성된 결과 엑셀 파일들에 가격차이 하이라이팅을 적용합니다.
-    
-    Args:
-        result_path (str, optional): 결과 엑셀 파일 경로
-        upload_path (str, optional): 업로드용 엑셀 파일 경로
-        threshold (float, optional): 하이라이팅 적용 기준값. 기본값은 -1.
-        
-    Returns:
-        tuple: (성공한 파일 수, 총 파일 수)
-    """
+    """Apply price difference highlighting to both result and upload Excel files"""
     success_count = 0
-    total_files = 0
-    
-    # 유효한 경로만 처리
     paths_to_process = []
-    if result_path and os.path.exists(result_path):
-        paths_to_process.append(("결과 파일", result_path))
-    if upload_path and os.path.exists(upload_path):
-        paths_to_process.append(("업로드 파일", upload_path))
+    
+    # Validate and collect paths to process
+    if result_path and isinstance(result_path, str) and os.path.exists(result_path):
+        paths_to_process.append(("결과", result_path))
+    if upload_path and isinstance(upload_path, str) and os.path.exists(upload_path):
+        paths_to_process.append(("업로드", upload_path))
     
     total_files = len(paths_to_process)
     
