@@ -352,15 +352,15 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             try:
                 sample_indices = df[df['판매단가(V포함)(2)'].notna()].index[:3] # Get first 3 rows with Kogift price
                 if not sample_indices.empty:
-                    logger.info("[DEBUG] Sample Kogift Price Data after processing:")
+                    logging.info("[DEBUG] Sample Kogift Price Data after processing:")
                     for idx in sample_indices:
                         product_name = df.at[idx, '상품명']
                         kogift_price = df.at[idx, '판매단가(V포함)(2)']
-                        logger.info(f"  - Product: '{product_name}', Kogift Price ('판매단가(V포함)(2)'): {kogift_price}")
+                        logging.info(f"  - Product: '{product_name}', Kogift Price ('판매단가(V포함)(2)'): {kogift_price}")
                 else:
-                    logger.info("[DEBUG] No Kogift price data found in samples after processing, even though update count > 0.")
+                    logging.info("[DEBUG] No Kogift price data found in samples after processing, even though update count > 0.")
             except Exception as log_err:
-                 logger.warning(f"[DEBUG] Error logging sample Kogift data: {log_err}")
+                 logging.warning(f"[DEBUG] Error logging sample Kogift data: {log_err}")
         # === DEBUG LOGGING END ===
 
     # Add Naver data from crawl results if available
