@@ -202,7 +202,7 @@ def get_image_path(url: str) -> str:
     
     return str(image_path)
 
-async def download_image(session: aiohttp.ClientSession, url: str, retry_count: int = 0) -> Tuple[str, bool, Union[Dict[str, str], str]]:
+async def download_image(session: aiohttp.ClientSession, url: str, retry_count: int = 0) -> Tuple[str, bool, str]:
     """Download an image from a URL and save it locally.
     
     Args:
@@ -211,7 +211,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         retry_count: Current retry attempt (used internally for recursion).
         
     Returns:
-        Tuple of (url, success_bool, dictionary {url, local_path, source} or error_message)
+        Tuple of (url, success_bool, local_path or error_message)
     """
     if not url:
         return url, False, "Empty URL"
@@ -303,7 +303,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     # Check if file already exists and is of sufficient size
     if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:  # 1KB minimum
         logger.debug(f"Image already exists: {image_path}")
-        return url, True, {'url': url, 'local_path': str(image_path), 'source': source_prefix}
+        return url, True, str(image_path)
     
     # Process source-specific headers
     headers = {}
@@ -408,10 +408,10 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                             await f.write(data)
                         
                         # Return the Main path to use for images
-                        return url, True, {'url': url, 'local_path': str(main_path), 'source': source_prefix}
+                        return url, True, str(main_path)
                 
                 # Return success with the path to the saved image
-                return url, True, {'url': url, 'local_path': str(image_path), 'source': source_prefix}
+                return url, True, str(image_path)
                 
             except Exception as img_err:
                 logger.warning(f"Invalid image data for {url}: {img_err}")
@@ -434,14 +434,14 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         logger.error(f"Unexpected error downloading {url}: {e}")
         return url, False, f"Unexpected error: {e}"
 
-async def download_images(image_urls: List[str]) -> Dict[str, Optional[Dict[str, str]]]:
+async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     """Download multiple images asynchronously.
     
     Args:
         image_urls: List of image URLs to download.
         
     Returns:
-        Dictionary mapping original URLs to local file path dictionaries or None.
+        Dictionary mapping original URLs to local file paths.
     """
     if not image_urls:
         return {}
@@ -525,15 +525,28 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[Dict[str,
                 failed += 1
             elif isinstance(result, tuple) and len(result) == 3:
                 _, success, path_or_error = result
-                if success and isinstance(path_or_error, dict): # Check if it's the expected dictionary
+                if success:
                     successful += 1
-                    # MODIFIED: Store the returned dictionary directly
-                    result_dict[original_url] = path_or_error 
+                    # Store both the image path and additional metadata to aid in Excel embedding
+                    if "jclgift" in original_url.lower():
+                        source = "haereum"
+                    elif "kogift" in original_url.lower() or "koreagift" in original_url.lower() or "adpanchok" in url.lower():
+                        source = "kogift" 
+                    elif "pstatic" in original_url.lower() or "naver" in original_url.lower():
+                        source = "naver"
+                    else:
+                        source = "other"
+                    
+                    # Include additional metadata for image in result
+                    result_dict[original_url] = {
+                        'url': original_url,
+                        'local_path': path_or_error,
+                        'source': source
+                    }
                 else:
                     result_dict[original_url] = None
                     failed += 1
-                    error_msg = path_or_error if isinstance(path_or_error, str) else "Download failed or returned unexpected format"
-                    logger.warning(f"Failed to download {original_url}: {error_msg}")
+                    logger.warning(f"Failed to download {original_url}: {path_or_error}")
             else:
                 result_dict[original_url] = None
                 failed += 1
@@ -544,8 +557,8 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[Dict[str,
     
     return result_dict
 
-async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optional[Dict[str, str]]]:
-    """고려기프트 제품 이미지를 미리 다운로드. Returns map of original URL to image data dict."""
+async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optional[str]]:
+    """고려기프트 제품 이미지를 미리 다운로드"""
     if not PREDOWNLOAD_KOGIFT_IMAGES:
         logger.info("Pre-downloading of 고려기프트 images is disabled in config")
         return {}
@@ -628,16 +641,16 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
                     logger.error(f"More than 50% of Kogift image URLs are problematic! Consider checking the source.")
     
     # 이미지 다운로드
-    image_paths_dict = await download_images(unique_urls)
+    image_paths = await download_images(unique_urls)
     
     # 성공적으로 다운로드한 이미지 수 계산
-    success_count = sum(1 for data in image_paths_dict.values() if data is not None and data.get('local_path'))
+    success_count = sum(1 for path in image_paths.values() if path is not None)
     logger.info(f"Pre-downloaded {success_count}/{len(unique_urls)} 고려기프트 images")
     
-    return image_paths_dict
+    return image_paths
 
-async def download_all_images(products: List[Dict]) -> Dict[str, Optional[Dict[str, str]]]:
-    """모든 제품의 이미지를 다운로드하는 함수. Returns map of URL to image data dict."""
+async def download_all_images(products: List[Dict]) -> Dict[str, Optional[str]]:
+    """모든 제품의 이미지를 다운로드하는 함수"""
     image_urls = []
     
     # 제품 목록에서 이미지 URL 추출
@@ -696,22 +709,21 @@ async def main():
     result = await download_images(test_urls)
     
     # 결과 출력
-    success_count = sum(1 for path_dict in result.values() if path_dict)
+    success_count = sum(1 for path in result.values() if path)
     logger.info(f"Successfully downloaded {success_count}/{len(test_urls)} images")
     
-    for url, path_dict in result.items():
-        status = f"-> {path_dict}" if path_dict else "-> Failed" # Log the whole dict
+    for url, path in result.items():
+        status = f"-> {path}" if path else "-> Failed"
         logger.info(f"{url} {status}")
     
     # 저장된 이미지 파일 존재 확인
     logger.info("\nVerifying downloaded image files...")
-    for url, path_dict in result.items():
-        if path_dict and path_dict.get('local_path'):
-            local_path = path_dict['local_path']
-            file_exists = os.path.exists(local_path)
-            file_size = os.path.getsize(local_path) if file_exists else 0
+    for url, path in result.items():
+        if path:
+            file_exists = os.path.exists(path)
+            file_size = os.path.getsize(path) if file_exists else 0
             status = f"Exists ({file_size} bytes)" if file_exists else "Missing"
-            logger.info(f"{local_path}: {status}")
+            logger.info(f"{path}: {status}")
 
 # 스크립트가 직접 실행될 때만 메인 함수 호출
 if __name__ == "__main__":

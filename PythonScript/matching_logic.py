@@ -49,22 +49,16 @@ except Exception as e:
 try:
     from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
     ENHANCED_MATCHER_AVAILABLE = True
-    logging.info("Enhanced image matcher imported successfully (package import)")
+    logging.info("Enhanced image matcher imported successfully")
 except ImportError:
     try:
-        # Try relative import
-        from .enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+        # Try direct import without PythonScript prefix
+        from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
         ENHANCED_MATCHER_AVAILABLE = True
-        logging.info("Enhanced image matcher imported successfully (relative import)")
+        logging.info("Enhanced image matcher imported successfully")
     except ImportError:
-        try:
-            # Try direct import without PythonScript prefix
-            from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
-            ENHANCED_MATCHER_AVAILABLE = True
-            logging.info("Enhanced image matcher imported successfully (direct import)")
-        except ImportError:
-            ENHANCED_MATCHER_AVAILABLE = False
-            logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
+        ENHANCED_MATCHER_AVAILABLE = False
+        logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
 
 # --- Global variable for ProcessPoolExecutor worker ---
 # This needs careful handling during refactoring. It might be better managed
@@ -702,7 +696,7 @@ class ProductMatcher:
             
         return self.category_thresholds[category]
 
-def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict], naver_data: List[Dict], product_type: str, matcher: ProductMatcher, input_file_image_map: Dict[Any, Dict[str, str]]) -> Tuple[int, Optional[Dict]]:
+def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict], naver_data: List[Dict], product_type: str, matcher: ProductMatcher, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
     """Matches a single Haoreum product against Kogift and Naver data."""
     if not matcher:
         logging.error(f"Matcher object missing for index {i}.")
@@ -728,19 +722,12 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         
         # Validate and prepare Haoreum product data
         try:
-            # --- Get Haoreum image data ---
-            haoreum_code = haoreum_row_dict.get('Code')
-            # Changed: Get the dictionary from input_file_image_map
-            haoreum_img_data = input_file_image_map.get(haoreum_code) if input_file_image_map else None 
-            # -----------------------------
-
             haoreum_product = {
                 'name': product_name,
                 'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
                 'link': haoreum_row_dict.get('본사상품링크'),
-                # 'image_path': haoreum_img_path, # Deprecated
-                'image_data': haoreum_img_data, # Store the dictionary
-                'code': haoreum_code,
+                'image_path': haoreum_img_path,
+                'code': haoreum_row_dict.get('Code'),
                 '담당자': haoreum_row_dict.get('담당자'),
                 '업체명': haoreum_row_dict.get('업체명'),
                 '업체코드': haoreum_row_dict.get('업체코드'),
@@ -765,63 +752,98 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         
         try:
             if kogift_data:  # Only attempt matching if we have candidates
-                # Pass the Haoreum product dictionary (which now contains image_data)
                 best_kogift_match = _find_best_match(haoreum_product, kogift_data, matcher, 'kogift')
         except Exception as e:
             logging.error(f"Error finding Kogift match for product {haoreum_product['name']}: {e}")
             
         try:
             if naver_data:  # Only attempt matching if we have candidates
-                 # Pass the Haoreum product dictionary (which now contains image_data)
                 best_naver_match = _find_best_match(haoreum_product, naver_data, matcher, 'naver')
         except Exception as e:
             logging.error(f"Error finding Naver match for product {haoreum_product['name']}: {e}")
 
         # Combine results if matches found
-        result = {**haoreum_row_dict}  # Start with original fields
-        # Add temporary image data columns, initialize to None
-        result['_temp_haoreum_image_data'] = haoreum_img_data
-        result['_temp_kogift_image_data'] = None
-        result['_temp_naver_image_data'] = None
-
         if best_kogift_match or best_naver_match:
             try:
-                # Update common fields first
+                result = {**haoreum_row_dict}  # Copy all original fields
+                
+                # Add or update fields
                 result.update({
                     '구분(승인관리:A/가격관리:P)': product_type,
                     'name': haoreum_product['name'],
                     '본사링크': haoreum_product['link'],
                     '판매단가(V포함)': haoreum_product['price'],
-                    # '해오름이미지경로': haoreum_product['image_data'], # Keep original haoreum_row_dict value if exists
+                    '해오름이미지경로': haoreum_product['image_path'],
                 })
 
                 # Add Kogift data if available
                 if best_kogift_match:
-                    kogift_match_data = best_kogift_match['match_data'] # This is the full candidate dict
                     result.update({
-                        '고려 링크': kogift_match_data.get('link'),
-                        # Store the full image dictionary for Kogift
-                        '_temp_kogift_image_data': kogift_match_data.get('image_data'), 
-                        '판매단가2(VAT포함)': kogift_match_data.get('price'),
+                        '고려 링크': best_kogift_match['match_data'].get('link'),
+                        '고려기프트(이미지링크)': best_kogift_match['match_data'].get('image_path'),
+                        '판매단가2(VAT포함)': best_kogift_match['match_data'].get('price'),
                         '_고려_TextSim': best_kogift_match['text_similarity'],
                         '_해오름_고려_ImageSim': best_kogift_match['image_similarity'],
                         '_고려_Combined': best_kogift_match['combined_score'],
-                        '고려 기본수량': kogift_match_data.get('quantity', '-')
+                        '고려 기본수량': best_kogift_match['match_data'].get('quantity', '-')
                     })
-                # else: _temp_kogift_image_data remains None
+                else:
+                    result.update({
+                        '고려 링크': None,
+                        '고려기프트(이미지링크)': None,
+                        '판매단가2(VAT포함)': None,
+                        '_고려_TextSim': 0.0,
+                        '_해오름_고려_ImageSim': 0.0,
+                        '_고려_Combined': None,
+                        '고려 기본수량': '-'
+                    })
 
                 # Add Naver data if available
                 if best_naver_match:
-                    naver_match_data = best_naver_match['match_data'] # This is the full candidate dict
-                    naver_image_data = naver_match_data.get('image_data') # Should be dict 
+                    # Extract image data from best match
+                    naver_image_data = None
+                    naver_match_data = best_naver_match['match_data']
                     
+                    # Create proper dictionary format for image data
+                    if 'image_path' in naver_match_data:
+                        img_path = naver_match_data.get('image_path')
+                        img_url = naver_match_data.get('image_url') or naver_match_data.get('link')
+                        
+                        if img_path and img_url:
+                            # Create dictionary with both URL and local path
+                            naver_image_data = {
+                                'url': img_url,
+                                'local_path': img_path,
+                                'source': 'naver'
+                            }
+                        elif img_path:
+                            # Only have local path
+                            if isinstance(img_path, str) and img_path.startswith('http'):
+                                # It's actually a URL
+                                naver_image_data = {
+                                    'url': img_path,
+                                    'source': 'naver'
+                                }
+                            else:
+                                # It's a local path
+                                naver_image_data = {
+                                    'local_path': img_path,
+                                    'source': 'naver'
+                                }
+                        elif img_url:
+                            # Only have URL
+                            naver_image_data = {
+                                'url': img_url,
+                                'source': 'naver'
+                            }
+                    
+                    # Update result with Naver data
                     result.update({
                         '매칭_사이트': 'Naver',
                         '공급사명': naver_match_data.get('mallName', naver_match_data.get('seller', '')),
                         '네이버 쇼핑 링크': naver_match_data.get('link'),
                         '공급사 상품링크': naver_match_data.get('mallProductUrl', naver_match_data.get('originallink')),
-                        # Store the full image dictionary for Naver
-                        '_temp_naver_image_data': naver_image_data, 
+                        '네이버 이미지': naver_image_data, # Use the dictionary format
                         '판매단가(V포함)(3)': naver_match_data.get('price'),
                         '텍스트_유사도': best_naver_match['text_similarity'],
                         '이미지_유사도': best_naver_match['image_similarity'],
@@ -830,36 +852,161 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
                         '매칭_여부': 'Y',
                         '매칭_품질': '상' if best_naver_match['combined_score'] > 0.8 else '중' if best_naver_match['combined_score'] > 0.6 else '하'
                     })
-                # else: _temp_naver_image_data remains None
-                
-                # Update match status if only Kogift matched
-                if best_kogift_match and not best_naver_match:
-                     result['매칭_여부'] = 'Y'
-                     # Optionally set Kogift specific quality if needed
+                else:
+                    result.update({
+                        '공급사명': None,
+                        '네이버 쇼핑 링크': None,
+                        '공급사 상품링크': None,
+                        '네이버 이미지': None,
+                        '판매단가(V포함)(3)': None,
+                        '텍스트_유사도': 0.0 if best_kogift_match else None,
+                        '이미지_유사도': 0.0 if best_kogift_match else None,
+                        '매칭_정확도': None,
+                        '기본수량(3)': None,
+                        '매칭_여부': 'Y' if best_kogift_match else 'N',
+                        '매칭_품질': '실패'
+                    })
 
                 logging.debug(f"Successfully matched product {haoreum_product['name']}")
                 return i, result
             except Exception as e:
                 logging.error(f"Error combining match results for product {haoreum_product['name']}: {e}")
-                # Return original row data + None for temp image cols on error during combination
-                return i, result # result already initialized with original + None temp cols
+                return i, None
         else:
-            # No match found
             logging.debug(f"No sufficient match found for product {haoreum_product['name']}")
-            result['매칭_여부'] = 'N' # Explicitly set to N
-            return i, result # Return original data + None temp cols
+            return i, None
 
     except Exception as e:
         logging.error(f"Error in _match_single_product for index {i}: {e}", exc_info=True)
-        # Return original data + None temp cols on major error
-        result = {**haoreum_row_dict} 
-        result['_temp_haoreum_image_data'] = None
-        result['_temp_kogift_image_data'] = None
-        result['_temp_naver_image_data'] = None
-        return i, result
+        return i, None
+
+def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
+    """
+    Find the best matching product from a list of candidates.
+    
+    Args:
+        haereum_product: The reference product (Haereum)
+        candidates: List of candidate products to match against
+        matcher: The ProductMatcher instance to use
+        source: Source of candidates ('kogift' or 'naver')
+        
+    Returns:
+        Dict with match data and similarity scores, or None if no match found
+    """
+    if not candidates or not haereum_product:
+        return None
+        
+    # Get product name
+    product_name = haereum_product.get('name', '')
+    if not product_name:
+        return None
+        
+    logging.debug(f"Finding best match for '{product_name}' from {len(candidates)} {source} candidates")
+    
+    best_match = None
+    best_text_sim = 0
+    best_img_sim = 0
+    best_combined = 0
+    
+    # Get thresholds based on category
+    category = haereum_product.get('중분류카테고리') or haereum_product.get('카테고리(중분류)')
+    text_threshold, img_threshold = matcher.get_thresholds_for_category(category)
+    
+    # FIXED: Add stricter thresholds for Naver matches since they tend to be less reliable
+    if source == 'naver':
+        text_threshold = max(text_threshold, 0.5)  # Use at least 0.5 for Naver text matching
+        img_threshold = max(img_threshold, 0.3)    # Use at least 0.3 for Naver image matching
+    
+    for candidate in candidates:
+        candidate_name = candidate.get('name', '')
+        if not candidate_name:
+            continue
+            
+        # Calculate text similarity
+        text_sim = matcher.calculate_text_similarity(product_name, candidate_name)
+        
+        # Skip candidates with very low text similarity early
+        # FIXED: Higher minimum text similarity to filter out bad matches
+        min_text_threshold = 0.2 if source == 'kogift' else 0.3
+        if text_sim < min_text_threshold:
+            logging.debug(f"Skipping {source} candidate '{candidate_name[:30]}...' due to low text similarity: {text_sim:.3f}")
+            continue
+            
+        # Calculate image similarity if images are available
+        img_sim = 0
+        haereum_img_path = haereum_product.get('image_path')
+        candidate_img_path = candidate.get('image_path')
+        
+        if haereum_img_path and candidate_img_path:
+            img_sim = matcher.calculate_image_similarity(haereum_img_path, candidate_img_path)
+            
+        # Calculate combined score with adjustable weights
+        # FIXED: Adjust weights based on source
+        if source == 'kogift':
+            # Kogift: Balanced weights
+            text_weight = 0.6
+            img_weight = 0.4
+        else:
+            # Naver: More weight on text similarity since images are less reliable
+            text_weight = 0.7
+            img_weight = 0.3
+            
+        combined_score = (text_sim * text_weight) + (img_sim * img_weight)
+        
+        # Track best match
+        if combined_score > best_combined:
+            best_combined = combined_score
+            best_text_sim = text_sim
+            best_img_sim = img_sim
+            best_match = candidate
+            
+    # Log the best match found
+    if best_match:
+        name_snippet = best_match.get('name', '')[:30]
+        logging.debug(f"Best {source} match for '{product_name[:30]}': '{name_snippet}' (Text: {best_text_sim:.3f}, Image: {best_img_sim:.3f}, Combined: {best_combined:.3f})")
+        
+        # FIXED: Additional verification for Naver matches
+        if source == 'naver':
+            # Set minimum combined score threshold for Naver
+            min_combined_threshold = 0.35
+            
+            # If combined score is too low, reject the match
+            if best_combined < min_combined_threshold:
+                logging.warning(f"Rejecting Naver match '{name_snippet}' due to low combined score: {best_combined:.3f} < {min_combined_threshold:.3f}")
+                return None
+                
+            # If text similarity is too low but combined score is ok, ensure image similarity is high enough
+            if best_text_sim < text_threshold and best_img_sim < 0.5:
+                logging.warning(f"Rejecting Naver match with low text similarity ({best_text_sim:.3f}) and insufficient image similarity ({best_img_sim:.3f})")
+                return None
+                
+            # Check for price consistency if available
+            haereum_price = haereum_product.get('price', 0)
+            match_price = best_match.get('price', 0)
+            
+            if haereum_price > 0 and match_price > 0:
+                # Calculate price difference percentage
+                price_diff_pct = abs(match_price - haereum_price) / haereum_price * 100
+                
+                # If price difference is too large and similarity is borderline, reject match
+                if price_diff_pct > 70 and best_combined < 0.55:
+                    logging.warning(f"Rejecting Naver match with large price difference ({price_diff_pct:.1f}%) and borderline similarity ({best_combined:.3f})")
+                    return None
+        
+        # Return match info including scores
+        return {
+            'match_data': best_match,
+            'text_similarity': best_text_sim,
+            'image_similarity': best_img_sim,
+            'combined_score': best_combined
+        }
+    
+    # Return None if no suitable match found
+    logging.debug(f"No suitable {source} match found for '{product_name}'")
+    return None
 
 # Wrapper for ProcessPoolExecutor compatibility
-def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: Optional[List[Dict]], naver_data: Optional[List[Dict]], product_type: str, input_file_image_map: Dict[Any, Dict[str, str]]) -> Tuple[int, Optional[Dict]]:
+def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: Optional[List[Dict]], naver_data: Optional[List[Dict]], product_type: str, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
     """Wrapper to call _match_single_product using the global worker instance."""
     global worker_matcher_instance
     if worker_matcher_instance is None:
@@ -891,7 +1038,7 @@ def _match_single_product_wrapper(i: int, haoreum_row_dict: Dict, kogift_data: O
         # Call the actual matching logic
         return _match_single_product(
             i, haoreum_row_dict, kogift_data, naver_data, 
-            product_type, worker_matcher_instance, input_file_image_map
+            product_type, worker_matcher_instance, haoreum_img_path
         )
     except Exception as e:
         logging.error(f"Error in _match_single_product_wrapper for index {i}: {e}", exc_info=True)
@@ -901,8 +1048,7 @@ def process_matching(
     haoreum_df: pd.DataFrame,
     kogift_map: Dict[str, List[Dict]],
     naver_map: Dict[str, List[Dict]],
-    # Changed: Expect dictionary values here
-    input_file_image_map: Dict[Any, Dict[str, str]], 
+    input_file_image_map: Dict[Any, str],
     config: configparser.ConfigParser,
     gpu_available: bool,
     progress_queue=None,
@@ -912,8 +1058,7 @@ def process_matching(
     Process product matching using multiple workers and enhanced matching logic
     """
     start_time = time.time()
-    debug_mode = config.getboolean('Debug', 'enabled', fallback=False)
-
+    
     # Validate input data
     if not isinstance(haoreum_df, pd.DataFrame) or haoreum_df.empty:
         logging.error("Invalid or empty Haoreum DataFrame")
@@ -921,12 +1066,8 @@ def process_matching(
         
     if not isinstance(kogift_map, dict) or not isinstance(naver_map, dict):
         logging.error("Invalid Kogift or Naver map")
-        return haoreum_df # Return original df if maps are invalid
+        return haoreum_df
         
-    # Validate input_file_image_map structure (optional, basic check)
-    if input_file_image_map and not all(isinstance(v, dict) for v in input_file_image_map.values() if v is not None):
-         logging.warning("input_file_image_map contains non-dictionary values. Image data might be incomplete.")
-
     # Determine the number of CPU cores to use
     if max_workers is None:
         max_workers = config.getint('Concurrency', 'max_match_workers', 
@@ -938,244 +1079,369 @@ def process_matching(
     
     # Initialize matcher and multiprocessing
     total_products = len(haoreum_df)
-    # Create a copy of the DataFrame to avoid modifying the original
-    result_df = haoreum_df.copy()
-    results = []
+    
+    # Download all images before starting matching process
+    # if progress_queue:
+    #     progress_queue.emit("status", "이미지 다운로드 시작...")
+    # 
+    # try:
+    #     import asyncio
+    #     from image_downloader import download_all_images
+    #     
+    #     # Create event loop for async operations
+    #     loop = asyncio.new_event_loop()
+    #     asyncio.set_event_loop(loop)
+    #     
+    #     # Collect all image URLs from all sources
+    #     all_products = []
+    #     
+    #     # Add Haoreum products
+    #     for _, row in haoreum_df.iterrows():
+    #         product = row.to_dict()
+    #         if 'Code' in product and product['Code'] in input_file_image_map:
+    #             product['해오름이미지경로'] = input_file_image_map[product['Code']]
+    #         elif '상품코드' in product and product['상품코드'] in input_file_image_map:
+    #             product['해오름이미지경로'] = input_file_image_map[product['상품코드']]
+    #         all_products.append(product)
+    #     
+    #     # Add Kogift products
+    #     for product_name, products in kogift_map.items():
+    #         for product in products:
+    #             if isinstance(product, dict):
+    #                 all_products.append(product)
+    #     
+    #     # Add Naver products
+    #     for product_name, products in naver_map.items():
+    #         for product in products:
+    #             if isinstance(product, dict):
+    #                 all_products.append(product)
+    #     
+    #     # Download all images
+    #     image_paths = loop.run_until_complete(download_all_images(all_products))
+    #     loop.close()
+    #     
+    #     if progress_queue:
+    #         progress_queue.emit("status", f"이미지 다운로드 완료 ({len(image_paths)}개)")
+    # except Exception as e:
+    #     logging.error(f"Error downloading images: {e}")
+    #     if progress_queue:
+    #         progress_queue.emit("status", "이미지 다운로드 중 오류 발생")
+    # 
+    # # --- IMPORTANT: Update candidate maps with downloaded local paths --- 
+    # logging.info("Updating candidate data with local image paths...")
+    # # Update Kogift map
+    # for product_name, products in kogift_map.items():
+    #     if isinstance(products, list):
+    #         for product_dict in products:
+    #             if isinstance(product_dict, dict):
+    #                 # Get original URL (might be under different keys)
+    #                 original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src')
+    #                 if original_url and original_url in image_paths:
+    #                     product_dict['image_path'] = image_paths[original_url]
+    #                 elif original_url:
+    #                      logging.warning(f"Kogift image URL {original_url} not found in downloaded paths map.")
+    # 
+    # # Update Naver map
+    # for product_name, products in naver_map.items():
+    #     if isinstance(products, list):
+    #         for product_dict in products:
+    #             if isinstance(product_dict, dict):
+    #                 # Get original URL (might be under different keys)
+    #                 original_url = product_dict.get('image_url') or product_dict.get('image') or product_dict.get('src') or product_dict.get('네이버 이미지')
+    #                 if original_url and original_url in image_paths:
+    #                     product_dict['image_path'] = image_paths[original_url]
+    #                 elif original_url:
+    #                      logging.warning(f"Naver image URL {original_url} not found in downloaded paths map.")
+    # logging.info("Finished updating candidate data with local image paths.")
+    # ----------------------------------------------------------------
 
-    # --- Prepare arguments for workers --- 
-    args_list = []
-    for i, row in haoreum_df.iterrows():
-        product_name = row.get('상품명')
-        if not product_name:
-            logging.warning(f"Skipping row index {i} due to missing 상품명")
-            continue
-
-        # Get candidate lists
-        kogift_candidates = kogift_map.get(product_name, [])
-        naver_candidates = naver_map.get(product_name, [])
-
-        # Assign product type (logic might need adjustment)
-        product_type = 'A' # Default or determine based on row data
-        
-        # Convert row to dictionary
-        haoreum_row_dict = row.to_dict()
-        
-        # Add arguments for the worker function
-        # Changed: Pass input_file_image_map instead of haoreum_img_path
-        args_list.append((
-            i, 
-            haoreum_row_dict, 
-            kogift_candidates, 
-            naver_candidates, 
-            product_type, 
-            input_file_image_map # Pass the whole map
-        ))
-
-    # --- Run matching in parallel --- 
-    processed_count = 0
-    timeout_seconds = config.getint('Concurrency', 'match_timeout_per_product', fallback=300) # 5 minutes default
-
+    # Initialize a multiprocessing pool
     try:
-        # Initialize worker pool with the initializer function and config path
-        config_path = config.get('Paths', 'config_file_path', fallback='config.ini') # Get config path
+        logging.info(f"Initializing process pool for matching with {max_workers} workers")
+        pool = multiprocessing.Pool(
+            processes=max_workers,
+            initializer=_init_worker_matcher,
+            initargs=(config,)
+        )
         
-        # Select appropriate executor context based on OS and needs
-        # Note: 'fork' context is generally faster but less safe, not available on Windows.
-        # 'spawn' is safer and works cross-platform.
-        mp_context = multiprocessing.get_context('spawn') 
+        # Get product type
+        product_type = config.get('Processing', 'product_type', fallback='default')
 
-        with ProcessPoolExecutor(max_workers=max_workers, 
-                                 mp_context=mp_context, # Use spawn context
-                                 initializer=_init_worker_matcher, 
-                                 initargs=(config_path,)) as executor:
+        # Prepare arguments for parallel processing
+        tasks = []
+        for i, row in enumerate(haoreum_df.to_dict('records')):
+            product_name = row.get('상품명', '')
             
-            # Submit tasks
-            # Changed: _match_single_product_wrapper now takes input_file_image_map
-            futures = {executor.submit(_match_single_product_wrapper, *args): args[0] for args in args_list} # Map future to index
+            # Skip empty product names
+            if not product_name:
+                logging.warning(f"Skipping row {i} due to empty product name")
+                continue
+                
+            # Get lists of candidates with validation
+            kogift_candidates = []
+            if product_name in kogift_map:
+                candidates = kogift_map[product_name]
+                if isinstance(candidates, list):
+                    kogift_candidates = [c for c in candidates if isinstance(c, dict)]
+                else:
+                    logging.warning(f"Invalid Kogift candidates format for product {product_name}")
             
-            for future in as_completed(futures):
-                processed_count += 1
-                original_index = futures[future] # Get the original DataFrame index
-                try:
-                    # Timeout argument removed from future.result() as it's handled by future itself or as_completed
-                    result_index, result_data = future.result() 
-                    # Ensure the result index matches the original index
-                    if result_index != original_index:
-                        logging.warning(f"Worker result index ({result_index}) mismatch with submission index ({original_index}). Attempting to use submission index.")
-                        result_index = original_index
-                    results.append((result_index, result_data))
-                except TimeoutError:
-                    logging.error(f"Timeout occurred processing product index {original_index}")
-                    results.append((original_index, {'매칭_오류메시지': "Timeout"})) # Store error info
-                except Exception as e:
-                    logging.error(f"Error processing product index {original_index}: {e}", exc_info=True)
-                    results.append((original_index, {'매칭_오류메시지': f"Worker Error: {str(e)[:100]}"})) # Store error info
+            naver_candidates = []
+            if product_name in naver_map:
+                candidates = naver_map[product_name]
+                if isinstance(candidates, list):
+                    naver_candidates = [c for c in candidates if isinstance(c, dict)]
+                else:
+                    logging.warning(f"Invalid Naver candidates format for product {product_name}")
+            
+            # Get Haoreum image path
+            haoreum_img_path = None
+            if 'Code' in row and row['Code'] in input_file_image_map:
+                haoreum_img_path = input_file_image_map[row['Code']]
+            elif '상품코드' in row and row['상품코드'] in input_file_image_map:
+                haoreum_img_path = input_file_image_map[row['상품코드']]
+                
+            # Log task details
+            logging.debug(f"Task {i+1}/{total_products}: '{product_name}' - " 
+                        f"Kogift: {len(kogift_candidates)}, Naver: {len(naver_candidates)}, "
+                        f"Image: {'Yes' if haoreum_img_path else 'No'}")
+                
+            tasks.append((i, row, kogift_candidates, naver_candidates, product_type, haoreum_img_path))
+        
+        # Process in batches to avoid overwhelming the queue
+        batch_size = min(100, total_products)  # Adjust batch size based on total
+        results = []
 
-                # Update progress
-                if progress_queue and processed_count % 10 == 0:
-                    progress = (processed_count / total_products) * 100
-                    progress_queue.emit("progress", int(progress))
-                    progress_queue.emit("status", f"상품 매칭 중... ({processed_count}/{total_products})")
+        for batch_start in range(0, total_products, batch_size):
+            batch_end = min(batch_start + batch_size, total_products)
+            batch_tasks = tasks[batch_start:batch_end]
             
-            # Final progress update
+            if not batch_tasks:
+                continue
+                
+            logging.info(f"Processing batch {batch_start//batch_size + 1}: items {batch_start+1}-{batch_end} of {total_products}")
+            
+            # Use optimized wrapper function to reduce memory overhead
+            batch_results = pool.starmap(_match_single_product_wrapper, batch_tasks)
+            results.extend([r for r in batch_results if r[1] is not None])
+            
+            # Update progress
+            progress_pct = min(100, int((batch_end / total_products) * 100))
             if progress_queue:
-                progress_queue.emit("progress", 100)
-                progress_queue.emit("status", "상품 매칭 완료. 결과 집계 중...")
-
-    except Exception as pool_error:
-        logging.error(f"Error during parallel matching execution: {pool_error}", exc_info=True)
-        if progress_queue:
-            progress_queue.emit("error", f"매칭 풀 실행 오류: {pool_error}")
-        # Return the original DataFrame if pool fails catastrophically
-        return haoreum_df 
-
-    logging.info(f"Parallel matching finished. Aggregating {len(results)} results...")
-
-    # --- Aggregate results --- 
-    if not results:
-        logging.warning("No results returned from matching workers.")
-        return result_df # Return the copied df with no matches
+                progress_queue.emit("status", f"상품 매칭 진행 중: {progress_pct}% ({batch_end}/{total_products})")
+            
+            logging.info(f"Batch {batch_start//batch_size + 1} completed: {len([r for r in batch_results if r[1] is not None])} matches found")
+            
+        # Close pool
+        pool.close()
+        pool.join()
         
-    try:
-        # Ensure all required columns exist before aggregation
-        # These include the new temporary image data columns
-        required_cols = [
-            '_temp_haoreum_image_data', '_temp_kogift_image_data', '_temp_naver_image_data',
-            '매칭_여부', '매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_사이트', '매칭_품질', '매칭_오류메시지',
-            '기본수량(2)', '판매단가(V포함)(2)', '고려기프트 상품링크', 
-            '기본수량(3)', '판매단가(V포함)(3)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-        ]
-        for col in required_cols:
-             if col not in result_df.columns:
-                  # Initialize object type for dictionaries, others with None/NA
-                  dtype = object if '_temp_' in col else None
-                  result_df[col] = pd.Series(dtype=dtype) 
+        # Create DataFrame from results
+        result_df = haoreum_df.copy()
+        
+        # Initialize new columns
+        result_df['매칭_여부'] = 'N'
+        result_df['매칭_정확도'] = 0.0
+        result_df['텍스트_유사도'] = 0.0
+        result_df['이미지_유사도'] = 0.0
+        result_df['제안_가격'] = None
+        result_df['매칭_URL'] = None
+        result_df['매칭_이미지'] = None
+        result_df['매칭_상품명'] = None
+        result_df['매칭_사이트'] = None
+        result_df['가격차이'] = None
+        result_df['매칭_품질'] = None
+
+        # --- Add columns for detailed match results --- 
+        # Kogift
+        result_df['기본수량(2)'] = None
+        result_df['판매단가(V포함)(2)'] = None
+        result_df['고려기프트 상품링크'] = None
+        result_df['고려기프트 이미지'] = None
+        result_df['가격차이(2)'] = None # Calculated later if possible
+        result_df['가격차이(2)(%)'] = None # Calculated later
+        # Naver
+        result_df['기본수량(3)'] = None
+        result_df['판매단가(V포함)(3)'] = None
+        result_df['공급사명'] = None
+        result_df['네이버 쇼핑 링크'] = None
+        result_df['공급사 상품링크'] = None
+        result_df['네이버 이미지'] = None
+        result_df['가격차이(3)'] = None # Calculated later
+        result_df['가격차이(3)(%)'] = None # Calculated later
+
+        # Placeholder for specific error messages if needed
+        result_df['매칭_오류메시지'] = None 
 
         # Update matched products
-        match_found_count = 0
-        error_count = 0
-        for idx, result_data in results:
-            # Basic validation of the result tuple structure
-            if idx is None:
-                logging.warning("Skipping invalid result from worker (None index)")
-                error_count += 1
-                continue
-            
-            if result_data is None:
-                logging.warning(f"Received None data for index {idx} from worker. Marking as no match.")
-                result_data = {'매칭_여부': 'N', '매칭_품질': '실패', '매칭_오류메시지': 'Worker returned None'}
-                error_count += 1
-            elif not isinstance(result_data, dict):
-                logging.warning(f"Skipping invalid result format for index {idx}: type {type(result_data)}")
-                result_data = {'매칭_여부': 'N', '매칭_품질': '실패', '매칭_오류메시지': f"Invalid Worker Result Type: {type(result_data)}"}
-                error_count += 1
+        for idx, result in results:
+            if result and isinstance(result, dict):
+                result_df.at[idx, '매칭_여부'] = 'Y' # Mark as potentially matched
 
-            # Check if index exists in the DataFrame
-            if idx not in result_df.index:
-                logging.warning(f"Index {idx} from worker result not found in DataFrame. Skipping.")
-                error_count += 1
-                continue
+                # Copy basic matching metadata
+                for field in ['매칭_정확도', '텍스트_유사도', '이미지_유사도', '매칭_사이트', '매칭_품질']:
+                    if field in result:
+                        result_df.at[idx, field] = result.get(field)
 
-            # Update row using .loc for potentially multiple columns
-            # Only update columns present in the result_data AND the DataFrame
-            update_dict = {k: v for k, v in result_data.items() if k in result_df.columns}
-            if update_dict:
-                 try:
-                     # Use loc for robust assignment, especially with mixed types
-                     for k, v in update_dict.items():
-                          result_df.loc[idx, k] = v 
-                     if update_dict.get('매칭_여부') == 'Y':
-                          match_found_count += 1
-                 except Exception as update_err:
-                      logging.error(f"Error updating DataFrame at index {idx} with data {update_dict}: {update_err}")
-                      result_df.loc[idx, '매칭_오류메시지'] = f"Update Error: {update_err}"
-                      error_count += 1
+                # --- Populate detailed match information based on source --- 
+                match_source = result.get('매칭_사이트')
+                is_error_message = isinstance(result.get('price'), str) # Check if price is an error string
+
+                if match_source == 'Kogift':
+                    if not is_error_message:
+                        result_df.at[idx, '기본수량(2)'] = result.get('수량') # Assuming '수량' is the key
+                        result_df.at[idx, '판매단가(V포함)(2)'] = result.get('price')
+                        result_df.at[idx, '고려기프트 상품링크'] = result.get('link')
+                        result_df.at[idx, '고려기프트 이미지'] = result.get('image_path')
+                    else:
+                        # Store error message
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price') # Or dedicated error field
+                        # Optionally clear other Kogift fields or leave as None
+                        result_df.at[idx, '고려기프트 상품링크'] = result.get('link') # Keep link if available
+                        result_df.at[idx, '고려기프트 이미지'] = result.get('image_path') # Keep image if available
+
+                elif match_source == 'Naver':
+                    if not is_error_message:
+                        result_df.at[idx, '기본수량(3)'] = result.get('수량') # Assuming '수량' is the key
+                        result_df.at[idx, '판매단가(V포함)(3)'] = result.get('price')
+                        result_df.at[idx, '공급사명'] = result.get('mallName') # Assuming 'mallName' is the key
+                        result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Assuming 'link' is the key
+                        result_df.at[idx, '공급사 상품링크'] = result.get('originallink') # Check actual key
+                        
+                        # Handle Naver image data - ensure it's in dictionary format
+                        image_data = result.get('image_path')
+                        if isinstance(image_data, dict):
+                            # Already in dictionary format, use as is
+                            result_df.at[idx, '네이버 이미지'] = image_data
+                        elif isinstance(image_data, str):
+                            # Convert string path to dictionary format
+                            if image_data.startswith('http'):
+                                # It's a URL
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'url': image_data,
+                                    'source': 'naver'
+                                }
+                            else:
+                                # It's a local path
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'local_path': image_data,
+                                    'source': 'naver'
+                                }
+                        else:
+                            # No valid image data
+                            result_df.at[idx, '네이버 이미지'] = None
+                    else:
+                         # Store error message
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price')
+                        # Optionally clear other Naver fields or leave as None
+                        result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Keep link if available
+                        
+                        # Handle Naver image data even in error case
+                        image_data = result.get('image_path')
+                        if isinstance(image_data, dict):
+                            result_df.at[idx, '네이버 이미지'] = image_data
+                        elif isinstance(image_data, str):
+                            if image_data.startswith('http'):
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'url': image_data,
+                                    'source': 'naver'
+                                }
+                            else:
+                                result_df.at[idx, '네이버 이미지'] = {
+                                    'local_path': image_data,
+                                    'source': 'naver'
+                                }
+                        else:
+                            result_df.at[idx, '네이버 이미지'] = None
+                else:
+                    # Handle cases where source is missing or different
+                    logging.warning(f"Row {idx}: Match found but source ('{match_source}') is unknown or missing.")
+                    if is_error_message:
+                        result_df.at[idx, '매칭_오류메시지'] = result.get('price', '알 수 없는 매칭 오류')
+
             else:
-                 logging.warning(f"No columns to update for index {idx} from result: {list(result_data.keys())}")
-                 # Ensure default 'N' and '실패' are set if no match info came back
-                 if '매칭_여부' not in result_data:
-                      result_df.loc[idx, '매칭_여부'] = 'N'
-                 if '매칭_품질' not in result_data:
-                      result_df.loc[idx, '매칭_품질'] = '실패'
+                # Handle cases where matching failed entirely for the product
+                result_df.at[idx, '매칭_여부'] = 'N'
+                result_df.at[idx, '매칭_품질'] = '실패'
+                result_df.at[idx, '매칭_오류메시지'] = '매칭 결과 없음' # Or a more specific error if available
 
-        logging.info(f"Result aggregation complete. Found matches for {match_found_count} products. Errors/Timeouts: {error_count}")
-
-        # --- Post-processing: Calculate Price Differences --- 
-        # (This part seems okay, ensure columns exist)
-        if '판매단가(V포함)' in result_df.columns:
+        # --- Post-processing: Calculate Price Differences ---
+        # Ensure base price column exists and is numeric
+        if '판매단가(V포함)' in result_df.columns:  # Check if the base column exists
             base_price_col = pd.to_numeric(result_df['판매단가(V포함)'], errors='coerce')
 
             # Calculate for Kogift
             if '판매단가(V포함)(2)' in result_df.columns:
                 kogift_price_col = pd.to_numeric(result_df['판매단가(V포함)(2)'], errors='coerce')
+                # Only calculate if base price is valid
                 valid_base = base_price_col.notna() & (base_price_col != 0)
                 valid_kogift = kogift_price_col.notna()
                 calculate_mask = valid_base & valid_kogift
 
-                if calculate_mask.any():
-                    diff = kogift_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
-                    result_df['가격차이(2)'] = diff
-                    # Use np.rint for rounding to nearest int, then safely convert
-                    percent_diff = ((diff / base_price_col.where(calculate_mask)) * 100)
-                    # Use loc for assignment to handle potential index alignment issues
-                    result_df.loc[calculate_mask, '가격차이(2)(%)'] = np.rint(percent_diff[calculate_mask]).astype(pd.Int64Dtype()) 
-                    result_df.loc[~calculate_mask, '가격차이(2)(%)'] = pd.NA
+                if calculate_mask.any(): # Proceed only if there are valid prices to compare
+                   diff = kogift_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
+                   result_df['가격차이(2)'] = diff
+                   result_df['가격차이(2)(%)'] = np.where(
+                       calculate_mask, # Use the combined mask
+                       np.rint((diff / base_price_col.where(calculate_mask)) * 100).astype(int),
+                       None
+                   )
                 else:
-                    logging.debug("No valid base or Kogift prices found for difference calculation.")
-                    if '가격차이(2)' not in result_df.columns: result_df['가격차이(2)'] = pd.NA
-                    if '가격차이(2)(%)' not in result_df.columns: result_df['가격차이(2)(%)'] = pd.NA
+                   logging.debug("No valid base or Kogift prices found for difference calculation (Kogift).")
+                   # Ensure columns exist even if calculation is skipped
+                   if '가격차이(2)' not in result_df.columns: result_df['가격차이(2)'] = None
+                   if '가격차이(2)(%)' not in result_df.columns: result_df['가격차이(2)(%)'] = None
+
 
             # Calculate for Naver
             if '판매단가(V포함)(3)' in result_df.columns:
                 naver_price_col = pd.to_numeric(result_df['판매단가(V포함)(3)'], errors='coerce')
+                 # Only calculate if base price is valid
                 valid_base = base_price_col.notna() & (base_price_col != 0)
                 valid_naver = naver_price_col.notna()
                 calculate_mask = valid_base & valid_naver
 
-                if calculate_mask.any():
-                    diff = naver_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
-                    result_df['가격차이(3)'] = diff
-                    percent_diff = ((diff / base_price_col.where(calculate_mask)) * 100)
-                    # Use loc for assignment
-                    result_df.loc[calculate_mask, '가격차이(3)(%)'] = np.rint(percent_diff[calculate_mask]).astype(pd.Int64Dtype()) 
-                    result_df.loc[~calculate_mask, '가격차이(3)(%)'] = pd.NA
+                if calculate_mask.any(): # Proceed only if there are valid prices to compare
+                   diff = naver_price_col.where(calculate_mask) - base_price_col.where(calculate_mask)
+                   result_df['가격차이(3)'] = diff
+                   result_df['가격차이(3)(%)'] = np.where(
+                       calculate_mask, # Use the combined mask
+                       np.rint((diff / base_price_col.where(calculate_mask)) * 100).astype(int),
+                       None
+                   )
                 else:
-                    logging.debug("No valid base or Naver prices found for difference calculation.")
-                    if '가격차이(3)' not in result_df.columns: result_df['가격차이(3)'] = pd.NA
-                    if '가격차이(3)(%)' not in result_df.columns: result_df['가격차이(3)(%)'] = pd.NA
+                   logging.debug("No valid base or Naver prices found for difference calculation (Naver).")
+                   # Ensure columns exist even if calculation is skipped
+                   if '가격차이(3)' not in result_df.columns: result_df['가격차이(3)'] = None
+                   if '가격차이(3)(%)' not in result_df.columns: result_df['가격차이(3)(%)'] = None
+
         else:
-            logging.warning("Base price column '판매단가(V포함)' not found. Skipping price difference calculations.")
-            result_df['가격차이(2)'] = pd.NA
-            result_df['가격차이(2)(%)'] = pd.NA
-            result_df['가격차이(3)'] = pd.NA
-            result_df['가격차이(3)(%)'] = pd.NA
+            # This case is hit if '판매단가(V포함)' is missing entirely
+            logging.warning("Base price column '판매단가(V포함)' not found in input haoreum_df. Skipping all price difference calculations.")
+            # Ensure difference columns still exist, filled with None
+            result_df['가격차이(2)'] = None
+            result_df['가격차이(2)(%)'] = None
+            result_df['가격차이(3)'] = None
+            result_df['가격차이(3)(%)'] = None
 
         # Log completion
         elapsed_time = time.time() - start_time
-        logging.info(f"Product matching process completed in {elapsed_time:.2f} seconds")
-        logging.info(f"Total rows processed: {len(haoreum_df)}, Matches found: {match_found_count}")
+        logging.info(f"Product matching completed in {elapsed_time:.2f} seconds")
+        logging.info(f"Total matches processed: {len(results)}")
         
-        # Log sample of the final result_df including temp image columns
-        if not result_df.empty and debug_mode:
-             temp_cols = ['_temp_haoreum_image_data', '_temp_kogift_image_data', '_temp_naver_image_data']
-             cols_to_log = [col for col in temp_cols if col in result_df.columns]
-             if cols_to_log:
-                  logging.debug(f"Sample result_df with temp image data (first 5 rows):")
-                  # Handle potential errors during logging complex objects
-                  try:
-                       log_str = result_df[cols_to_log].head().to_string()
-                       logging.debug(log_str)
-                  except Exception as log_ex:
-                       logging.warning(f"Could not fully log sample data due to error: {log_ex}")
+        # Clean up the final DataFrame (replace NaN with suitable placeholders like '-')
+        # result_df.fillna('-', inplace=True) # Apply this before formatting in excel_utils
 
         return result_df
 
-    except Exception as agg_err:
-        logging.error(f"Error during result aggregation: {agg_err}", exc_info=True)
+    except Exception as e:
+        logging.error(f"Error in product matching: {str(e)}", exc_info=True)
         if progress_queue:
-            progress_queue.emit("error", f"결과 집계 중 오류 발생: {agg_err}")
-        # Return the DataFrame state before the error if possible, or original
-        return result_df if 'result_df' in locals() else haoreum_df
+            progress_queue.emit("error", f"상품 매칭 중 오류 발생: {str(e)}")
+        
+        # Return original dataframe if error occurs
+        result_df = haoreum_df.copy()
+        return result_df
 
 def _filter_candidates_by_text(product_name: str, candidates: List[Dict], matcher: Optional[ProductMatcher] = None, config: Optional[configparser.ConfigParser] = None) -> List[Dict]:
     """텍스트 유사도로 후보군 필터링"""
@@ -1452,96 +1718,3 @@ def post_process_matching_results(df, config):
         logging.error(f"Error in filter_dataframe: {e}", exc_info=True)
         # Return original DataFrame on error to ensure no data loss
         return df
-
-def _find_best_match(haoreum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
-    """
-    Find the best matching product from a list of candidates.
-    
-    Args:
-        haoreum_product: The reference product (Haereum), expected to have image_data dict
-        candidates: List of candidate products to match against, expected to have image data dicts
-        matcher: The ProductMatcher instance to use
-        source: Source of candidates ('kogift' or 'naver')
-        
-    Returns:
-        Dict with match data (including image data dict) and similarity scores, or None
-    """
-    if not candidates or not haoreum_product:
-        return None
-
-    # Get product name and category for thresholds
-    product_name = haoreum_product.get('name')
-    category = haoreum_product.get('카테고리(중분류)')
-    
-    if not product_name:
-        logging.warning(f"Haoreum product missing name")
-        return None
-        
-    # Get appropriate thresholds (may be category-specific)
-    text_threshold, image_threshold = matcher.get_thresholds_for_category(category)
-    
-    best_match = None
-    best_text_sim = 0.0
-    best_image_sim = 0.0
-    best_combined = 0.0
-    
-    # First filter by text similarity to reduce candidates
-    filtered_candidates = _filter_candidates_by_text(product_name, candidates, matcher)
-    
-    # Get Haoreum image data
-    haoreum_img_data = haoreum_product.get('image_data')
-    
-    for candidate in filtered_candidates:
-        try:
-            # Calculate text similarity
-            candidate_name = candidate.get('name', '')
-            if not candidate_name:
-                continue
-                
-            text_sim = matcher.calculate_text_similarity(product_name, candidate_name)
-            
-            # Skip if text similarity is too low
-            if text_sim < text_threshold:
-                continue
-                
-            # Calculate image similarity if we have both images
-            image_sim = 0.0
-            if haoreum_img_data and candidate.get('image_data'):
-                image_sim = matcher.calculate_image_similarity(
-                    haoreum_img_data,  # Should be dict with local_path
-                    candidate['image_data']  # Should be dict with local_path
-                )
-            
-            # Calculate combined score
-            # Weight text similarity more heavily for Naver matches
-            text_weight = 0.7 if source == 'naver' else 0.6
-            image_weight = 1.0 - text_weight
-            
-            combined_score = (text_sim * text_weight) + (image_sim * image_weight)
-            
-            # Update best match if this is better
-            if combined_score > best_combined:
-                best_match = {
-                    'match_data': candidate,  # Store the full candidate dict
-                    'text_similarity': text_sim,
-                    'image_similarity': image_sim,
-                    'combined_score': combined_score
-                }
-                best_text_sim = text_sim
-                best_image_sim = image_sim
-                best_combined = combined_score
-                
-        except Exception as e:
-            logging.error(f"Error matching {product_name} with candidate {candidate.get('name', 'Unknown')}: {e}")
-            continue
-    
-    # Log match details
-    if best_match:
-        match_name = best_match['match_data'].get('name', 'Unknown')
-        logging.debug(f"Best {source} match for {product_name}: {match_name} "
-                     f"(Text: {best_text_sim:.3f}, Image: {best_image_sim:.3f}, "
-                     f"Combined: {best_combined:.3f})")
-    else:
-        logging.debug(f"No suitable {source} match found for {product_name}")
-    
-    return best_match
