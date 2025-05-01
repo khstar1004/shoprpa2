@@ -1499,36 +1499,155 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         # Default to empty string (not "-") to avoid showing placeholders in cells
                         image_url = ""
                         
-                        # Handle dictionary format
+                        # FIX: Improved image URL extraction logic
                         if isinstance(value, dict):
-                            # If URL exists in the dictionary, use it
-                            if 'url' in value and isinstance(value['url'], str) and value['url'].strip():
-                                url = value['url'].strip()
-                                # Verify it's a web URL and an image URL
-                                if url.startswith(('http://', 'https://')):
-                                    is_likely_image = (
-                                        any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) or
-                                        '/upload/' in url or 'simg' in url or 
-                                        'pstatic.net' in url or 'phinf' in url
-                                    )
-                                    
-                                    if is_likely_image:
-                                        image_url = url
-                                        logger.debug(f"Found image URL in {img_col} at idx {idx}: {url[:50]}...")
-                        
-                        # Handle string format (some cells might already contain URLs as strings)
-                        elif isinstance(value, str) and value.strip() and value.strip() != '-':
+                            # Try multiple keys to find a usable URL
+                            for url_key in ['url', 'original_url', 'image_url']:
+                                if url_key in value and isinstance(value[url_key], str) and value[url_key].strip() and value[url_key].startswith(('http://', 'https://')):
+                                    image_url = value[url_key].strip()
+                                    logger.debug(f"Found URL in {img_col} at idx {idx} using key '{url_key}': {image_url[:50]}...")
+                                    break
+                            
+                            # If no URL found but there's source info, try to extract from known patterns
+                            if not image_url and 'source' in value:
+                                source = value.get('source', '').lower()
+                                
+                                # Handle known source formats
+                                if source == 'haereum' and 'product_name' in value:
+                                    # Construct a jclgift URL if possible
+                                    if 'p_idx' in value:
+                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{value['p_idx']}.gif"
+                                        logger.debug(f"Constructed Haereum URL: {image_url}")
+                                elif source == 'kogift' and 'product_name' in value:
+                                    # For Kogift, check if we can extract from original_path
+                                    if 'original_path' in value and 'koreagift.com' in str(value.get('original_path', '')):
+                                        orig_path = str(value['original_path'])
+                                        if 'upload' in orig_path:
+                                            # Try to extract the filename part
+                                            parts = orig_path.split('upload/')
+                                            if len(parts) > 1:
+                                                image_url = f"https://koreagift.com/ez/upload/{parts[1]}"
+                                                logger.debug(f"Constructed Kogift URL from original_path: {image_url}")
+                                elif source == 'naver' and 'product_id' in value:
+                                    # For Naver, construct URL from product_id if available
+                                    image_url = f"https://shopping-phinf.pstatic.net/main_{value['product_id']}/{value['product_id']}.jpg"
+                                    logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                            
+                        # Handle string URL format
+                        elif isinstance(value, str) and value.strip() and value != '-':
                             url = value.strip()
                             if url.startswith(('http://', 'https://')):
-                                is_likely_image = (
-                                    any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) or
-                                    '/upload/' in url or 'simg' in url or 
-                                    'pstatic.net' in url or 'phinf' in url
-                                )
+                                # Check if it's an image URL
+                                image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+                                image_identifiers = ['upload/', 'simg', 'pstatic.net', 'phinf', '/image/', 'thumb']
                                 
-                                if is_likely_image:
+                                if any(url.lower().endswith(ext) for ext in image_extensions) or any(ident in url.lower() for ident in image_identifiers):
                                     image_url = url
-                                    logger.debug(f"Found string image URL in {img_col} at idx {idx}: {url[:50]}...")
+                                    logger.debug(f"Found image URL string in {img_col} at idx {idx}: {url[:50]}...")
+                        
+                        # Additional logic to handle complex nested structures
+                        if not image_url and isinstance(value, (dict, str)) and str(value).find('http') >= 0:
+                            # Attempt to extract URLs from complex string representations
+                            try:
+                                str_value = str(value)
+                                url_start = str_value.find('http')
+                                if url_start >= 0:
+                                    url_end = min(x for x in [str_value.find(' ', url_start), 
+                                                              str_value.find('"', url_start), 
+                                                              str_value.find("'", url_start), 
+                                                              str_value.find(')', url_start),
+                                                              str_value.find(',', url_start),
+                                                              len(str_value)] if x > url_start)
+                                    
+                                    potential_url = str_value[url_start:url_end]
+                                    if potential_url.startswith(('http://', 'https://')) and ('jclgift.com' in potential_url or 
+                                                                                             'koreagift.com' in potential_url or 
+                                                                                             'pstatic.net' in potential_url):
+                                        image_url = potential_url
+                                        logger.debug(f"Extracted URL from string representation: {image_url[:50]}...")
+                            except Exception as e:
+                                logger.warning(f"Error extracting URL from complex value: {e}")
+                        
+                        # Special case handling for each source type
+                        if not image_url:
+                            if '본사 이미지' == img_col:
+                                # Try to extract Haereum URLs based on indicators
+                                if isinstance(value, dict) and ('product_name' in value or 'haereum' in str(value).lower()):
+                                    # Check for p_idx in the data or URLs
+                                    p_idx = None
+                                    if 'p_idx' in value:
+                                        p_idx = value['p_idx']
+                                    elif 'url' in value and 'p_idx=' in value['url']:
+                                        try:
+                                            p_idx = value['url'].split('p_idx=')[1].split('&')[0]
+                                        except:
+                                            pass
+                                    
+                                    if p_idx:
+                                        # Construct standard Haereum image URL
+                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{p_idx}.gif"
+                                        logger.debug(f"Constructed Haereum URL from p_idx: {image_url}")
+                                    else:
+                                        # If product name exists, construct a more generic URL pattern
+                                        product_name = value.get('product_name', '')
+                                        if product_name:
+                                            clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
+                                            image_url = f"https://www.jclgift.com/upload/product/simg3/{clean_name}.gif"
+                                            logger.debug(f"Constructed approximate Haereum URL: {image_url}")
+                                
+                                # Look for jclgift.com links in any string
+                                elif isinstance(value, str) and ('jclgift' in value.lower()):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+jclgift[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted jclgift URL from string: {image_url}")
+                            
+                            elif '고려기프트 이미지' == img_col:
+                                # Try to extract Kogift URLs
+                                if isinstance(value, dict) and ('kogift' in str(value).lower() or 'koreagift' in str(value).lower()):
+                                    # Standard Kogift image URL pattern
+                                    image_url = "https://koreagift.com/ez/upload/mall/shop_default.jpg"  # Default fallback
+                                    
+                                    # Try to find any URL with koreagift in the dictionary
+                                    for k, v in value.items():
+                                        if isinstance(v, str) and 'koreagift' in v.lower() and 'http' in v.lower():
+                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift)[^"\'\s,)]*', v)
+                                            if matches:
+                                                image_url = matches[0]
+                                                logger.debug(f"Extracted Kogift URL from dict value: {image_url}")
+                                                break
+                                
+                                # Look for koreagift.com links in any string
+                                elif isinstance(value, str):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift|adpanchok)[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted Kogift URL from string: {image_url}")
+                            
+                            elif '네이버 이미지' == img_col:
+                                # Try to extract Naver URLs
+                                if isinstance(value, dict) and ('naver' in str(value).lower() or 'pstatic' in str(value).lower()):
+                                    # Look for standard Naver image URL patterns
+                                    for k, v in value.items():
+                                        if isinstance(v, str) and ('pstatic.net' in v.lower() or 'shopping.naver' in v.lower()):
+                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', v)
+                                            if matches:
+                                                image_url = matches[0]
+                                                logger.debug(f"Extracted Naver URL from dict value: {image_url}")
+                                                break
+                                    
+                                    # If product_id is available, construct a standard URL
+                                    if not image_url and 'product_id' in value:
+                                        product_id = value['product_id']
+                                        image_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                        logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                                
+                                # Look for pstatic.net links in any string
+                                elif isinstance(value, str):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted Naver URL from string: {image_url}")
                         
                         # Update the value in the intermediate DataFrame
                         df_with_image_urls.at[idx, img_col] = image_url
