@@ -112,7 +112,10 @@ COLUMN_RENAME_MAP = {
     '공급사 상품링크': '공급사 상품링크',
     '본사 이미지': '본사 이미지',
     '고려기프트 이미지': '고려기프트 이미지',
-    '네이버 이미지': '네이버 이미지'
+    '네이버 이미지': '네이버 이미지',
+    '판매단가2(VAT포함)': '판매가(V포함)(2)',
+    '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
+    '판매단가1(VAT포함)': '판매단가(V포함)'
 }
 
 # Final Target Column Order (Based on "엑셀 골든" sample)
@@ -120,7 +123,7 @@ COLUMN_RENAME_MAP = {
 FINAL_COLUMN_ORDER = [
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
     '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
     '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', 
     '네이버 쇼핑 링크', '공급사 상품링크',
     '본사 이미지', '고려기프트 이미지', '네이버 이미지'
@@ -137,7 +140,7 @@ REQUIRED_INPUT_COLUMNS = [
 # --- Column Type Definitions for Formatting ---
 # Update these lists based on the FINAL_COLUMN_ORDER names
 PRICE_COLUMNS = [
-    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)',
+    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '판매단가(V포함)(3)',
     '가격차이(2)', '가격차이(3)'
 ]
 QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
@@ -165,7 +168,7 @@ UPLOAD_COLUMN_ORDER = [
 # Mapping between FINAL_COLUMN_ORDER and UPLOAD_COLUMN_ORDER
 COLUMN_MAPPING_FINAL_TO_UPLOAD = {
     '구분': '구분(승인관리:A/가격관리:P)',
-    '담당자': '담당자',  
+    '담당자': '담당자',
     '업체명': '공급사명',
     '업체코드': '공급처코드',
     'Code': '상품코드',
@@ -1671,68 +1674,31 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     logger.debug(f"Input columns: {df.columns.tolist()}")
 
     # --- Column Mapping for final output (inverse of FINAL_TO_UPLOAD) --- 
-    # Needed if input df uses upload-style names
     COLUMN_UPLOAD_TO_FINAL_MAP = {v: k for k, v in COLUMN_MAPPING_FINAL_TO_UPLOAD.items()}
+
+    # --- Create output DataFrame with all required columns ---
+    output_df = pd.DataFrame(index=df.index)
     
-    # --- Final Image Columns (no longer need temporary map) ---
-    # final_image_columns = IMAGE_COLUMNS # Use constant defined above
-
-    # --- Deduplicate Columns --- 
-    duplicate_cols = df.columns[df.columns.duplicated()].tolist()
-    if duplicate_cols:
-        logger.warning(f"Found {len(duplicate_cols)} duplicate column names: {duplicate_cols}")
-        df = df.loc[:, ~df.columns.duplicated(keep='first')]
-        logger.info(f"Removed duplicate columns. New shape: {df.shape}")
-
-    df_processed = df.copy()
-
-    # --- Rename columns to FINAL names (handle both possible input conventions) ---
-    # First, try renaming from potential UPLOAD names to FINAL names
-    df_processed = df_processed.rename(columns=COLUMN_UPLOAD_TO_FINAL_MAP, errors='ignore')
-    # Then, ensure any original FINAL names are kept (self-map)
-    df_processed = df_processed.rename(columns=COLUMN_RENAME_MAP, errors='ignore') 
-    logger.debug(f"Columns after renaming: {df_processed.columns.tolist()}")
-
-    # --- Create final DataFrame with FINAL_COLUMN_ORDER --- 
-    output_df = pd.DataFrame()
-    processed_cols = df_processed.columns
-
+    # First, ensure all required columns exist
     for col in FINAL_COLUMN_ORDER:
-        if col in processed_cols:
-            # Directly copy the column, including final image columns which should have dicts
-            output_df[col] = df_processed[col]
-        else:
-            # Column from FINAL_COLUMN_ORDER is missing entirely
-            logger.warning(f"Final required column '{col}' is missing from processed data. Adding as None.")
+        if col not in output_df.columns:
             output_df[col] = None
 
-    # --- Consolidate Price Columns (using df_processed as source) --- 
-    price_alternates = {
-        '판매가(V포함)(2)': ['판매단가2(VAT포함)', '판매단가(V포함)(2)'],
-        '판매단가(V포함)(3)': ['판매단가3 (VAT포함)', '판매단가(V포함)(3)']
-    }
-    logger.info("Consolidating data from alternate price columns...")
-    for target_col, alt_cols in price_alternates.items():
-        if target_col in output_df.columns:
-            target_is_empty = output_df[target_col].isnull().all()
-            if target_is_empty:
-                logger.debug(f"Target column '{target_col}' is currently empty.")
-                # Find the first available alternate column in df_processed with data
-                for alt_col in alt_cols:
-                    if alt_col in df_processed.columns and not df_processed[alt_col].isnull().all():
-                        logger.info(f"Found data in alternate column '{alt_col}'. Copying to '{target_col}'.")
-                        try:
-                             output_df[target_col] = pd.to_numeric(df_processed[alt_col], errors='coerce')
-                        except Exception as copy_err:
-                             logger.error(f"Error coercing/copying from {alt_col} to {target_col}: {copy_err}")
-                             output_df[target_col] = df_processed[alt_col] # Fallback copy
-                        break # Stop after finding the first alternate with data
+    # Copy data from input DataFrame, handling column mapping
+    for col in FINAL_COLUMN_ORDER:
+        if col in df.columns:
+            output_df[col] = df[col]
+        elif col in COLUMN_UPLOAD_TO_FINAL_MAP and COLUMN_UPLOAD_TO_FINAL_MAP[col] in df.columns:
+            output_df[col] = df[COLUMN_UPLOAD_TO_FINAL_MAP[col]]
+        else:
+            logger.warning(f"Column '{col}' not found in input data, using None")
+            output_df[col] = None
 
     # --- Format Numeric Columns --- 
-    # Use the constant IMAGE_COLUMNS directly
     logger.info("Applying numeric formatting...")
     for col in output_df.columns:
-        if col in IMAGE_COLUMNS: continue # Skip final image columns (contain dicts)
+        if col in IMAGE_COLUMNS:
+            continue  # Skip image columns (contain dicts)
         
         is_numeric_col = (
             col in PRICE_COLUMNS or
@@ -1747,42 +1713,18 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                 logger.warning(f"Could not convert column '{col}' to numeric: {e}")
 
     # --- Handle Missing Values --- 
-    # Replace specific pandas NA types with None for broader compatibility (like JSON, Excel writers)
-    # Important: Convert nullable integers/floats AFTER numeric conversion
     for col in output_df.columns:
-         if pd.api.types.is_integer_dtype(output_df[col].dtype) and output_df[col].isnull().any():
-              # For nullable integer columns, keep pd.NA or convert to float then None if needed
-              # output_df[col] = output_df[col].astype(float).replace({np.nan: None}) # Option 1: Convert to float
-              pass # Option 2: Keep as nullable int (pd.NA), Excel writer should handle
-         elif pd.api.types.is_float_dtype(output_df[col].dtype):
-              output_df[col] = output_df[col].replace({np.nan: None})
-         elif output_df[col].dtype == object:
-              # Replace pd.NA and np.nan in object columns
-              output_df[col] = output_df[col].replace({pd.NA: None, np.nan: None})
-         
-    # Set default '-' for remaining None/empty strings in non-image columns
-    logger.info("Setting default values for empty cells ('-')...")
-    for col in output_df.columns:
-        if col not in IMAGE_COLUMNS:
-            output_df[col] = output_df[col].apply(
-                lambda x: '-' if (x is None or x == '') else x
-            )
+        if col in IMAGE_COLUMNS:
+            continue  # Skip image columns
+        elif pd.api.types.is_numeric_dtype(output_df[col]):
+            output_df[col] = output_df[col].replace({pd.NA: None, np.nan: None})
+        else:
+            output_df[col] = output_df[col].fillna('-')
 
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
     logger.debug(f"Final columns: {output_df.columns.tolist()}")
-    
-    # --- Final Verification (Optional) ---
-    # Example: Check image columns contain dictionaries or '-'
-    for img_col in IMAGE_COLUMNS:
-         if img_col in output_df.columns:
-              # Allow None/NaN in addition to dict and '-'
-              invalid_types = output_df[img_col].apply(
-                  lambda x: not isinstance(x, dict) and pd.notna(x) and x != '-'
-              ).sum()
-              if invalid_types > 0:
-                   logger.warning(f"Column '{img_col}' contains {invalid_types} entries that are not dict, None/NA, or '-'")
 
-    return output_df
+    return output_df[FINAL_COLUMN_ORDER]  # Ensure columns are in the correct order
 
 def _apply_basic_excel_formatting(worksheet, column_list):
     """
