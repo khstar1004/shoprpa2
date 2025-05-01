@@ -19,8 +19,6 @@ from pathlib import Path
 import traceback
 import uuid
 import tempfile
-import requests
-from typing import Optional
 import numpy as np
 
 # Check Python/PIL version for proper resampling constant
