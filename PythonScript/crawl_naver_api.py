@@ -72,6 +72,10 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
     # Get delay between API calls
     api_delay = config.getfloat('ScraperSettings', 'naver_api_delay', fallback=1.0)
+    # Increase default delay to 1.5 seconds to be more conservative
+    if api_delay < 1.5:
+        api_delay = 1.5
+        logger.info(f"🟢 Adjusted Naver API delay to {api_delay:.1f}s for better rate limiting")
 
     # Get initial similarity threshold from config
     try:
@@ -118,37 +122,43 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                 logger.debug(f"Reached max_items ({max_items}) limit for keyword '{query}', stopping API calls for this keyword.")
                 break
 
-            api_display_count = 100 # Max allowed by Naver API
-            start_index = (page - 1) * api_display_count + 1
-            # Calculate how many more items we need, respecting max_items overall
-            effective_display_count = min(api_display_count, max_items - len(current_keyword_results))
-            if effective_display_count <= 0:
-                 logger.debug(f"Effective display count is zero or less for keyword '{query}', page {page}. Breaking page loop.")
-                 break
-
-            params = {"query": query, "display": effective_display_count, "start": start_index, "sort": "sim", "exclude": "used:rental"} # Sort by similarity
-            logger.debug(f"🟢 Naver API Request (Keyword: '{query}', Page {page}, Sort: 'sim'): Params={params}")
-
             # Add delay before API call to avoid hitting rate limits
             if page > 1 or keyword_idx > 0:
-                logger.debug(f"🟢 Adding delay of {api_delay:.2f} seconds before Naver API request (Page: {page}, Keyword Attempt: {keyword_idx+1})")
-                await asyncio.sleep(api_delay)
+                # Increase delay between pages and keywords
+                current_delay = api_delay * (1.2 if page > 1 else 1.0)  # Longer delay between pages
+                logger.debug(f"🟢 Adding delay of {current_delay:.2f} seconds before Naver API request (Page: {page}, Keyword Attempt: {keyword_idx+1})")
+                await asyncio.sleep(current_delay)
 
             try:
+                # Log headers just before the request
+                # Mask secret for safety, though it's fetched locally in this function scope.
+                headers_to_log = headers.copy()
+                if "X-Naver-Client-Secret" in headers_to_log:
+                    headers_to_log["X-Naver-Client-Secret"] = headers_to_log["X-Naver-Client-Secret"][:4] + "..."
+                # Use pprint for potentially large headers, limit length if necessary
+                log_headers_str = pprint.pformat(headers_to_log, width=120)
+                logger.debug(f"🟢 Preparing Naver API request. Headers: {log_headers_str}")
+
                 logger.info(f"🟢 Sending Naver API request for '{query}' (Page {page})")
                 start_time = time.monotonic()
                 response = await client.get(api_url, headers=headers, params=params)
                 response_time = time.monotonic() - start_time
                 status_code = response.status_code
+                response_text = response.text # Get text immediately for potential logging
+
                 logger.info(f"🟢 Naver API response status: {status_code} (took {response_time:.2f}s)")
 
+                # Enhanced error logging: Check status code first
                 if status_code != 200:
-                    error_text = response.text[:200] + "..." if len(response.text) > 200 else response.text
-                    logger.error(f"🟢 Naver API error response (Status: {status_code}, Keyword: '{query}', Page: {page}): {error_text}")
+                    error_text_snippet = response_text[:200] + "..." if len(response_text) > 200 else response_text
+                    logger.error(f"🟢 Naver API error response (Status: {status_code}, Keyword: '{query}', Page: {page}): Snippet: {error_text_snippet}")
+                    # Log full text for non-200 errors for detailed debugging
+                    logger.debug(f"🟢 Full Naver API error response text (Status {status_code}): {response_text}")
+
                     if status_code == 401: # Unauthorized
                          logger.error("Naver API authentication failed (401). Check credentials.")
                          # Stop trying immediately if credentials are bad
-                         return []
+                         return [] # Return empty list, signalling fatal auth error
                     elif status_code == 429: # Rate limit
                         wait_time = api_delay * 3
                         logger.error(f"🟢 Rate limit exceeded (429). Waiting {wait_time:.2f} seconds before next request.")
@@ -158,34 +168,79 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                     # Continue to next page or keyword for other errors for now
                     continue
 
-                response.raise_for_status() # Raise exception for non-200 after specific handling
-                data = response.json()
+                # --- Status code IS 200 ---
+                # Now try to parse JSON and check for embedded errors
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as json_err:
+                    # Handle cases where status is 200 but body is not valid JSON
+                    logger.error(f"🟢 Failed to decode JSON from Naver API (Status 200, Keyword: '{query}', Page: {page}): {json_err}")
+                    logger.error(f"🟢 Full Naver API response text (Status 200, JSON decode failed): {response_text}")
+                    # Check if the raw text contains the specific auth error message
+                    if "Not Exist Client ID" in response_text:
+                         logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                         logger.error("!!! Detected 'Not Exist Client ID' error in response body despite Status 200!")
+                         logger.error("!!! This indicates an API inconsistency or header issue. Check credentials/headers.")
+                         logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                         # Consider stopping if auth error appears even with 200 status
+                         # return [] # Option: Treat as fatal auth error
+                    break # Stop processing pages for this keyword due to bad response
+
+                # --- JSON decoded successfully (Status 200) ---
                 total_items_api = data.get('total', 0)
                 api_items_on_page = len(data.get('items', []))
                 logger.info(f"🟢 Naver API Response (Keyword: '{query}', Page {page}): Found {total_items_api} total items, received {api_items_on_page} on this page.")
 
+                # Check for 'errorMessage' key within the successfully decoded JSON
+                if 'errorMessage' in data:
+                    api_error_message = data.get('errorMessage')
+                    logger.error(f"🟢 Naver API error message found in JSON (Status 200): {api_error_message}")
+                    if "Not Exist Client ID" in str(api_error_message):
+                         logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                         logger.error("!!! Detected 'Not Exist Client ID' error in JSON response body despite Status 200!")
+                         logger.error("!!! Check API Key/Secret and API application settings in Naver Developer portal.")
+                         logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                         # Consider stopping if auth error appears even with 200 status
+                         # return [] # Option: Treat as fatal auth error
+                    # If there's an error message, even if items exist, treat page as problematic
+                    break # Stop fetching pages for this keyword
+
                 if 'items' not in data or not data.get('items'):
-                    logger.warning(f"🟢 Naver API returned no items for '{query}' (Page {page}).")
-                    if 'errorMessage' in data:
-                        logger.error(f"🟢 Naver API error message: {data.get('errorMessage')}")
+                    # Logged 'errorMessage' above if present. Now handle case of no items AND no error message.
+                    logger.warning(f"🟢 Naver API returned Status 200 but no items for '{query}' (Page {page}).")
                     # Log the full response for debugging if no items found
-                    logger.debug(f"🟢 Full Naver API response (no items): {json.dumps(data, ensure_ascii=False)[:500]}")
+                    logger.debug(f"🟢 Full Naver API response (Status 200, no items/no error msg): {json.dumps(data, ensure_ascii=False)[:500]}")
                     break # No items on this page, stop fetching for this keyword
 
             except httpx.TimeoutException as timeout_err:
-                 wait_time = api_delay * 2
+                 wait_time = api_delay * 3  # Increase wait time on timeout
                  logger.error(f"🟢 Timeout during Naver API request (Keyword: '{query}', Page {page}): {timeout_err}. Waiting {wait_time:.2f}s.")
                  await asyncio.sleep(wait_time) # Wait longer on timeout
                  continue # Retry this page/keyword after delay
             except httpx.RequestError as req_err:
                  logger.error(f"🟢 HTTPX Request Error during Naver API request (Keyword: '{query}', Page {page}): {req_err}", exc_info=True)
+                 # Log response text if available
+                 try:
+                     if response and response.text:
+                         logger.error(f"🟢 Response text during HTTPX Request Error: {response.text[:500]}...")
+                         # Check for rate limit error in response
+                         if "rate limit" in response.text.lower() or "429" in response.text:
+                             wait_time = api_delay * 4  # Even longer wait on rate limit
+                             logger.error(f"🟢 Detected rate limit error. Waiting {wait_time:.2f}s before retry.")
+                             await asyncio.sleep(wait_time)
+                             continue  # Retry after longer wait
+                 except NameError: pass # response might not be defined
                  await asyncio.sleep(api_delay) # Basic delay and continue
                  break # Assume persistent issue with this keyword/page
-            except json.JSONDecodeError as json_err:
-                 logger.error(f"🟢 Error decoding JSON response from Naver API (Keyword: '{query}', Page {page}): {json_err}. Response text: {response.text[:200]}...", exc_info=True)
-                 break # Malformed response, stop processing for this keyword
+            # except json.JSONDecodeError handled above for status 200 case
             except Exception as e:
-                logger.error(f"🟢 Unexpected error during Naver API request (Keyword: '{query}', Page {page}): {e}", exc_info=True)
+                logger.error(f"🟢 Unexpected error processing Naver API response (Keyword: '{query}', Page {page}): {e}", exc_info=True)
+                # Log response text if available
+                try:
+                     if response and response.text:
+                         logger.error(f"🟢 Response text during unexpected error: {response.text[:500]}...")
+                except NameError: pass # response might not be defined
+
                 if isinstance(e, RuntimeError) and "client has been closed" in str(e):
                     logger.error(f"🟢 HTTPX client has been closed. Cannot continue with API requests.")
                     return best_result_list # Return whatever we have so far
