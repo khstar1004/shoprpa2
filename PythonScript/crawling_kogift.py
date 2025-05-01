@@ -1463,7 +1463,7 @@ def test_kogift_scraper():
 
 if __name__ == "__main__":
     # If this file is run directly, run the test
-    if os.path.basename(__file__) == "crowling_kogift.py":
+    if os.path.basename(__file__) == "crawling_kogift.py":
         # Setup basic logging FOR THE TEST ONLY
         # In production, logging is set up by initialize_environment
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')

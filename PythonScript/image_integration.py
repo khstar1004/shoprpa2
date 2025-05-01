@@ -646,13 +646,13 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         
         # 임계값 설정 - 설정 파일에서 가져오거나 기본값 사용
         try:
-            # 이미지 표시 임계값을 더 낮게 설정 - 0.3에서 0.1로 추가 인하
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.1)
+            # 이미지 표시 임계값을 더 낮게 설정 - 0.3에서 0.01로 대폭 인하하여 거의 모든 매칭 유지
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
             # 필터링이 사실상 비활성화되어 있음을 표시
-            logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (낮은 임계값으로 대부분의 매칭을 유지)")
+            logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (매우 낮은 임계값으로 대부분의 매칭을 유지)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.1을 사용합니다.")
-            similarity_threshold = 0.1
+            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.01을 사용합니다.")
+            similarity_threshold = 0.01
         
         # -------------------------------------------------------------
         # 이미지 유사도 필터링

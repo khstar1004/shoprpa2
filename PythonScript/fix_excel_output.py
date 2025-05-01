@@ -66,8 +66,25 @@ def fix_excel_output(input_file, output_dir=None):
     # Log the finalized column names
     logger.info(f"Finalized columns: {df_finalized.columns.tolist()}")
     
+    # Get a proper name for the output file
+    source_name = "상품관리"  # Default name instead of "Unknown"
+    if '구분' in df_finalized.columns and not df_finalized.empty:
+        if df_finalized['구분'].iloc[0] == 'A':
+            source_name = "승인관리"
+        elif df_finalized['구분'].iloc[0] == 'P':
+            source_name = "가격관리"
+            
+    # If there's a filename in the input, use that as part of the name
+    if isinstance(input_file, str):
+        input_basename = os.path.basename(input_file)
+        input_name = os.path.splitext(input_basename)[0]
+        if input_name and input_name.lower() not in ['temp', 'output', 'result', 'unknown']:
+            source_name = f"{source_name}_{input_name}"
+    
     # Create the output files
     logger.info(f"Creating Excel output files in directory: {output_dir}")
+    # Set a custom source_name in the environment variable for excel_utils to use
+    os.environ['EXCEL_SOURCE_NAME'] = source_name
     result_success, upload_success, result_path, upload_path = create_split_excel_outputs(
         df_finalized, output_dir)
     

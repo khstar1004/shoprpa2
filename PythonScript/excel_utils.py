@@ -153,6 +153,43 @@ LINK_COLUMNS_FOR_HYPERLINK = {
 # Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
 IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
+# Upload file columns (based on '엑셀골든_upload' notepad)
+UPLOAD_COLUMN_ORDER = [
+    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
+    '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
+    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
+    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', 
+    '네이버 링크', '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+]
+
+# Mapping between FINAL_COLUMN_ORDER and UPLOAD_COLUMN_ORDER
+COLUMN_MAPPING_FINAL_TO_UPLOAD = {
+    '구분': '구분(승인관리:A/가격관리:P)',
+    '담당자': '담당자',  
+    '업체명': '공급사명',
+    '업체코드': '공급처코드',
+    'Code': '상품코드',
+    '중분류카테고리': '카테고리(중분류)',
+    '상품명': '상품명',
+    '기본수량(1)': '본사 기본수량',
+    '판매단가(V포함)': '판매단가1(VAT포함)',
+    '본사상품링크': '본사링크',
+    '기본수량(2)': '고려 기본수량',
+    '판매가(V포함)(2)': '판매단가2(VAT포함)',
+    '가격차이(2)': '고려 가격차이',
+    '가격차이(2)(%)': '고려 가격차이(%)',
+    '고려기프트 상품링크': '고려 링크',
+    '기본수량(3)': '네이버 기본수량',
+    '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
+    '가격차이(3)': '네이버 가격차이',
+    '가격차이(3)(%)': '네이버가격차이(%)',
+    '공급사명': '네이버 공급사명',
+    '네이버 쇼핑 링크': '네이버 링크',
+    '본사 이미지': '해오름(이미지링크)',
+    '고려기프트 이미지': '고려기프트(이미지링크)',
+    '네이버 이미지': '네이버쇼핑(이미지링크)'
+}
+
 # Error Messages Constants (Can be used for conditional formatting or checks)
 ERROR_MESSAGES = {
     'no_match': '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음',
@@ -999,16 +1036,39 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         
         # Get file source info for naming
         source_info = "Unknown"
+        mgmt_type = "승인관리"  # Default type
+        row_count = len(df_finalized)
+        
         try:
-            if '구분(승인관리:A/가격관리:P)' in df_finalized.columns:
+            # Check the appropriate column based on format (use both old and new column names)
+            if '구분' in df_finalized.columns:
                 # Get the most common value to use in naming
+                source_val = df_finalized['구분'].iloc[0]
+                if source_val == 'A':
+                    mgmt_type = "승인관리"
+                elif source_val == 'P':
+                    mgmt_type = "가격관리"
+                else:
+                    mgmt_type = str(source_val)
+            elif '구분(승인관리:A/가격관리:P)' in df_finalized.columns:
                 source_val = df_finalized['구분(승인관리:A/가격관리:P)'].iloc[0]
                 if source_val == 'A':
-                    source_info = "승인관리"
+                    mgmt_type = "승인관리"
                 elif source_val == 'P':
-                    source_info = "가격관리"
+                    mgmt_type = "가격관리"
                 else:
-                    source_info = str(source_val)
+                    mgmt_type = str(source_val)
+                    
+            # Get company name for filename
+            if '업체명' in df_finalized.columns:
+                # Use the most common company name or the first one
+                company_counts = df_finalized['업체명'].value_counts()
+                if not company_counts.empty:
+                    source_info = company_counts.index[0]
+            elif '공급사명' in df_finalized.columns:
+                company_counts = df_finalized['공급사명'].value_counts()
+                if not company_counts.empty:
+                    source_info = company_counts.index[0]
         except Exception as e:
             logger.warning(f"Error getting source name: {e}")
             source_info = "Mixed"
@@ -1016,11 +1076,10 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         # Create timestamped filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         date_part = datetime.now().strftime("%Y%m%d")
-        prev_date = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
         
-        # Format: {source}-{date_range}_{timestamp}_{type}.xlsx
-        result_filename = f"{source_info}-{prev_date}_{date_part}_{timestamp}_result.xlsx"
-        upload_filename = f"{source_info}-{prev_date}_{date_part}_{timestamp}_upload.xlsx"
+        # Format: {company}({count})-{mgmt_type}-{date}_{type}_{timestamp}.xlsx
+        result_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_result_{timestamp}.xlsx"
+        upload_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_upload_{timestamp}.xlsx"
         
         # Make sure output_path_base is a directory, not a file
         # If it ends with .xlsx, use its directory instead
@@ -1164,90 +1223,79 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             result_success = False
         
         # -----------------------------------------
-        # 2. Create Upload File (with links only)
+        # 2. Create Upload File (with links only and different column names)
         # -----------------------------------------
         try:
             logger.info(f"Preparing data for upload file: {upload_path}")
             
-            # Convert image data to URL strings for the upload file
-            df_upload = df_finalized.copy()
+            # Convert result dataframe to upload format with different column names
+            df_upload = pd.DataFrame()
             
-            # Process image URLs: Extract URLs from image dictionaries
-            image_columns = [col for col in df_upload.columns if '이미지' in col or 'image' in col.lower()]
-            for col in image_columns:
-                try:
-                    # Convert dictionaries to URL strings in each cell
-                    for idx in df_upload.index:
-                        value = df_upload.loc[idx, col]
-                        
-                        # Handle different types of image data
-                        if isinstance(value, dict) and 'url' in value:
-                            # Extract URL from dictionary and ensure it's a web URL
-                            url = value['url']
-                            if isinstance(url, str) and url.startswith(('http://', 'https://')):
-                                df_upload.at[idx, col] = url
-                            elif isinstance(url, str) and url.startswith('file:///'):
-                                # Try to find a web URL in other fields if available
-                                if 'source' in value and value['source'] == 'haereum' and '본사링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '본사링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                                        continue
-                                elif 'source' in value and value['source'] == 'kogift' and '고려 링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '고려 링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                                        continue
-                                elif 'source' in value and value['source'] == 'naver' and '네이버 링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '네이버 링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                                        continue
+            # Map columns from result format to upload format
+            for target_col in UPLOAD_COLUMN_ORDER:
+                # Find corresponding result column
+                source_col = None
+                for result_col, upload_col in COLUMN_MAPPING_FINAL_TO_UPLOAD.items():
+                    if upload_col == target_col and result_col in df_finalized.columns:
+                        source_col = result_col
+                        break
+                
+                if source_col:
+                    df_upload[target_col] = df_finalized[source_col]
+                else:
+                    # If no matching column found, add an empty column
+                    df_upload[target_col] = None
+            
+            # Process image columns: convert dictionaries to URL strings
+            for upload_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+                if upload_col in df_upload.columns:
+                    # Get corresponding result column
+                    result_col = None
+                    for rc, uc in COLUMN_MAPPING_FINAL_TO_UPLOAD.items():
+                        if uc == upload_col:
+                            result_col = rc
+                            break
+                    
+                    if result_col and result_col in df_finalized.columns:
+                        # Process each cell
+                        for idx in df_upload.index:
+                            value = df_finalized.loc[idx, result_col]
+                            
+                            # Handle different types of image data
+                            if isinstance(value, dict) and 'url' in value:
+                                # Extract URL from dictionary and ensure it's a web URL
+                                url = value['url']
+                                if isinstance(url, str) and url.startswith(('http://', 'https://')):
+                                    df_upload.at[idx, upload_col] = url
+                                elif isinstance(url, str) and url.startswith('file:///'):
+                                    # Try to find a web URL in other fields if available
+                                    web_url_col = None
+                                    if '본사상품링크' in df_finalized.columns and upload_col == '해오름(이미지링크)':
+                                        web_url_col = '본사상품링크'
+                                    elif '고려기프트 상품링크' in df_finalized.columns and upload_col == '고려기프트(이미지링크)':
+                                        web_url_col = '고려기프트 상품링크'
+                                    elif '네이버 쇼핑 링크' in df_finalized.columns and upload_col == '네이버쇼핑(이미지링크)':
+                                        web_url_col = '네이버 쇼핑 링크'
                                         
-                                # If we can't find a web URL, use the file URL (not ideal but better than nothing)
-                                df_upload.at[idx, col] = url
+                                    if web_url_col:
+                                        web_url = df_finalized.loc[idx, web_url_col]
+                                        if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                            df_upload.at[idx, upload_col] = web_url
+                                            continue
+                                    
+                                    # If we can't find a web URL, use the file URL or leave blank
+                                    df_upload.at[idx, upload_col] = '-'
+                                else:
+                                    df_upload.at[idx, upload_col] = '-'
+                            elif isinstance(value, str) and value != '-' and ('http' in value or 'file:/' in value):
+                                # Handle URL strings
+                                if value.startswith(('http://', 'https://')):
+                                    df_upload.at[idx, upload_col] = value
+                                else:
+                                    df_upload.at[idx, upload_col] = '-'
                             else:
-                                df_upload.at[idx, col] = '-'
-                        elif isinstance(value, str) and value != '-' and ('http' in value or 'file:/' in value):
-                            # Keep web URL strings as-is, but replace file URLs if possible
-                            if value.startswith(('http://', 'https://')):
-                                # Keep web URLs as is
-                                pass
-                            elif value.startswith('file:///'):
-                                # Try to find a web URL in other fields if available
-                                if col == '해오름(이미지링크)' and '본사링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '본사링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                                elif col == '고려기프트(이미지링크)' and '고려 링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '고려 링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                                elif col == '네이버쇼핑(이미지링크)' and '네이버 링크' in df_upload.columns:
-                                    web_url = df_upload.loc[idx, '네이버 링크']
-                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                        df_upload.at[idx, col] = web_url
-                            else:
-                                # Not a URL, just keep as is
-                                pass
-                        elif isinstance(value, pd.Series):
-                            # For Series objects, find first non-empty value
-                            for item in value:
-                                if pd.notna(item) and item not in ['-', '']:
-                                    if isinstance(item, dict) and 'url' in item:
-                                        df_upload.at[idx, col] = item['url']
-                                    elif isinstance(item, str) and ('http' in item or 'file:/' in item):
-                                        df_upload.at[idx, col] = item
-                                    else:
-                                        df_upload.at[idx, col] = str(item)
-                                    break
-                            else:
-                                df_upload.at[idx, col] = '-'
-                        else:
-                            # For other types, convert to string
-                            df_upload.at[idx, col] = str(value) if pd.notna(value) else '-'
-                except Exception as e:
-                    logger.error(f"Error processing image URLs for column '{col}': {e}")
+                                # For other types or empty values, use a placeholder
+                                df_upload.at[idx, upload_col] = '-'
             
             # Create new workbook for upload file
             workbook_upload = openpyxl.Workbook()
