@@ -368,160 +368,238 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
     logger.debug("Finished applying cell styles.")
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
-    """Processes image columns and embeds images into the worksheet."""
+    """Process image columns in the DataFrame and add images to the worksheet.
+    Handle various image data formats (dictionaries, strings, URLs, paths).
+    """
     logger.debug("Processing image columns...")
-    logger.debug(f"DataFrame columns passed to _process_image_columns: {df.columns.tolist()}") # Log columns
-    
-    # Get indices of image columns using final names from IMAGE_COLUMNS constant
-    image_column_indices = {}
-    
-    # Create a mapping of column name to DataFrame index (0-based) and Excel column index (1-based)
-    for col_name in IMAGE_COLUMNS:
-        if col_name in df.columns:
-            try:
-                # Get the 0-based index from DataFrame columns for data access
-                df_col_idx_0based = df.columns.get_loc(col_name)
-                
-                # Handle multiple columns with the same name
-                if isinstance(df_col_idx_0based, (np.ndarray, pd.Series)) and df_col_idx_0based.dtype == bool:
-                    # Find the first True value in the boolean mask
-                    true_indices = np.where(df_col_idx_0based)[0]
-                    if len(true_indices) > 0:
-                        df_col_idx_0based = true_indices[0]
-                        logger.warning(f"Found column '{col_name}' at multiple positions, using first: {df_col_idx_0based}")
-                    else:
-                        logger.error(f"Boolean array for '{col_name}' doesn't contain any True values.")
-                        continue
-                
-                # Ensure it's an integer now
-                df_col_idx_0based = int(df_col_idx_0based)
-
-                # Get the 1-based index for openpyxl cell access
-                excel_col_idx_1based = df_col_idx_0based + 1
-                image_column_indices[col_name] = excel_col_idx_1based
-                logger.debug(f"Found image column: '{col_name}' at Excel index {excel_col_idx_1based}")
-            except Exception as e:
-                logger.error(f"Error getting index for column '{col_name}': {e}")
-        else:
-            logger.warning(f"Expected image column not found in DataFrame: '{col_name}'")
-
-    if not image_column_indices:
-        logger.debug("No image columns found in DataFrame using final names")
+    if worksheet is None or df is None or df.empty:
+        logger.warning("Cannot process images: Worksheet or DataFrame is empty/None")
         return
-
-    # Image size settings
-    img_width = 150  # Increased from 120
-    img_height = 150  # Increased from 120
     
-    # Log the number of rows we'll be processing
-    df_row_count = len(df)
-    worksheet_row_count = worksheet.max_row
-    logger.debug(f"Processing images for DataFrame with {df_row_count} rows, Worksheet has {worksheet_row_count} rows")
-
-    # Process each row in the DataFrame (offset by 1 for Excel header row)
-    for df_idx in range(df_row_count):
-        row_idx = df_idx + 2  # Excel is 1-indexed and we have a header row
-        
-        # Process each image column
-        for col_name, col_idx in image_column_indices.items():
-            # Verify cell access will be valid
-            try:
-                current_row_idx = int(row_idx)
-                current_col_idx = int(col_idx)
-                
-                if current_row_idx < 1 or current_col_idx < 1:
-                    logger.warning(f"Invalid index for cell: R{current_row_idx}C{current_col_idx}. Skipping.")
-                    continue
-            except (ValueError, TypeError) as e:
-                logger.error(f"Invalid index conversion: {e}")
+    # Determine which columns might contain images
+    image_cols = []
+    for col_name in df.columns:
+        if (('이미지' in col_name or 'image' in col_name.lower()) and 
+            '링크' not in col_name):  # Exclude pure link columns
+            image_cols.append((df.columns.get_loc(col_name) + 1, col_name))
+    
+    # Special handling for standard image columns
+    for std_col in IMAGE_COLUMNS:
+        if std_col in df.columns and (df.columns.get_loc(std_col) + 1, std_col) not in image_cols:
+            image_cols.append((df.columns.get_loc(std_col) + 1, std_col))
+    
+    if not image_cols:
+        logger.debug("No suitable image columns found in DataFrame")
+        return
+    
+    # Count successful image embeddings
+    successful_embeddings = 0
+    attempted_embeddings = 0
+    
+    # Define fallback image if needed
+    fallback_img_path = None
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        fallback_img_path = os.path.join(script_dir, '..', 'assets', 'no_image.png')
+        if not os.path.exists(fallback_img_path):
+            # Try to create minimal fallback image
+            from PIL import Image, ImageDraw
+            img_dir = os.path.join(script_dir, '..', 'assets')
+            os.makedirs(img_dir, exist_ok=True)
+            img = Image.new('RGB', (100, 100), color = (240, 240, 240))
+            d = ImageDraw.Draw(img)
+            d.text((20, 40), "No Image", fill=(0, 0, 0))
+            fallback_img_path = os.path.join(img_dir, 'no_image.png')
+            img.save(fallback_img_path)
+    except Exception as e:
+        logger.warning(f"Failed to create fallback image: {e}")
+        fallback_img_path = None
+    
+    # Process each row of the DataFrame
+    for row_idx, (_, row) in enumerate(df.iterrows(), 2):  # Start from row 2 (after header)
+        for col_idx, col_name in image_cols:
+            # Check if there's a value in this cell
+            cell_value = row[col_name]
+            if pd.isna(cell_value) or cell_value in [None, '-', '']:
                 continue
-
-            # Get the image data from the DataFrame directly to avoid issues with cell value conversion
+            
+            # Determine image path based on data type
+            img_path = None
+            
+            # Handle dictionary format (most complete info)
+            if isinstance(cell_value, dict):
+                logger.debug(f"Processing dictionary image data in row {row_idx}, column {col_name}")
+                # Try local path first, then URL
+                if 'local_path' in cell_value and cell_value['local_path']:
+                    img_path = cell_value['local_path']
+                elif 'url' in cell_value and cell_value['url'] and cell_value['url'].startswith(('http', 'https', 'file:')):
+                    # For URLs, we need to find corresponding downloaded file
+                    url = cell_value['url']
+                    # Try to use URL as path directly
+                    if url.startswith('file:///'):
+                        # Convert file URL to actual path
+                        img_path = url.replace('file:///', '').replace('/', os.sep)
+                    else:
+                        # Try to deduce local path from related data
+                        logger.debug(f"URL-only image data, attempting to find local file: {url[:50]}...")
+                        
+                        # Recognize standard image paths based on domain
+                        if 'jclgift.com' in url:
+                            # Try to find corresponding downloaded file
+                            filename = os.path.basename(url)
+                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                            
+                            # Common image locations
+                            possible_locations = [
+                                os.path.join(base_img_dir, 'Main', 'Haereum', filename),
+                                os.path.join(base_img_dir, 'Main', 'Haereum', f"haereum_{filename}"),
+                                os.path.join(base_img_dir, 'Target', 'Haereum', filename),
+                                os.path.join(base_img_dir, 'Target', 'Haereum', f"haereum_{filename}")
+                            ]
+                            
+                            for loc in possible_locations:
+                                if os.path.exists(loc):
+                                    img_path = loc
+                                    logger.debug(f"Found local file for URL: {img_path}")
+                                    break
+                        elif 'koreagift.com' in url:
+                            # Similar pattern for Kogift
+                            filename = os.path.basename(url)
+                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                            
+                            possible_locations = [
+                                os.path.join(base_img_dir, 'Main', 'Kogift', filename),
+                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
+                                os.path.join(base_img_dir, 'Target', 'Kogift', filename),
+                                os.path.join(base_img_dir, 'Target', 'Kogift', f"kogift_{filename}")
+                            ]
+                            
+                            for loc in possible_locations:
+                                if os.path.exists(loc):
+                                    img_path = loc
+                                    logger.debug(f"Found local file for URL: {img_path}")
+                                    break
+                        elif 'pstatic.net' in url or 'naver.com' in url:
+                            # Similar pattern for Naver
+                            filename = os.path.basename(url)
+                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                            
+                            possible_locations = [
+                                os.path.join(base_img_dir, 'Main', 'Naver', filename),
+                                os.path.join(base_img_dir, 'Main', 'Naver', f"naver_{filename}"),
+                                os.path.join(base_img_dir, 'Target', 'Naver', filename),
+                                os.path.join(base_img_dir, 'Target', 'Naver', f"naver_{filename}")
+                            ]
+                            
+                            for loc in possible_locations:
+                                if os.path.exists(loc):
+                                    img_path = loc
+                                    logger.debug(f"Found local file for URL: {img_path}")
+                                    break
+            
+            # Handle string path
+            elif isinstance(cell_value, str) and cell_value not in ['-', '']:
+                if cell_value.startswith(('http://', 'https://')):
+                    # Web URL - we would need a downloaded version
+                    logger.debug(f"String URL in row {row_idx}, column {col_name}: {cell_value[:50]}...")
+                    # Skip - URLs should be processed through image downloader first
+                elif cell_value.startswith('file:///'):
+                    # Local file URL
+                    img_path = cell_value.replace('file:///', '').replace('/', os.sep)
+                elif os.path.exists(cell_value):
+                    # Direct file path
+                    img_path = cell_value
+                elif '\\' in cell_value or '/' in cell_value:
+                    # Looks like a path but might not exist
+                    logger.debug(f"Path-like string in cell but file not found: {cell_value[:50]}...")
+                    
+                    # Try to find similar file by name
+                    filename = os.path.basename(cell_value)
+                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                    
+                    # Search in common locations
+                    found = False
+                    for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target')]:
+                        if os.path.exists(root_dir):
+                            for subdir, _, files in os.walk(root_dir):
+                                for file in files:
+                                    if filename in file:
+                                        img_path = os.path.join(subdir, file)
+                                        found = True
+                                        logger.debug(f"Found similar file by name: {img_path}")
+                                        break
+                                if found:
+                                    break
+                        if found:
+                            break
+            
+            # If no image path could be determined, use fallback
+            if not img_path and fallback_img_path:
+                img_path = fallback_img_path
+                logger.debug(f"Using fallback image for row {row_idx}, column {col_name}")
+            
+            # Skip if no valid path was found
+            if not img_path:
+                logger.debug(f"No valid image path found for row {row_idx}, column {col_name}")
+                continue
+            
+            # Add image to worksheet if file exists and has content
             try:
-                # Extract the cell value directly from DataFrame
-                img_data = df.iloc[df_idx][col_name]
+                attempted_embeddings += 1
                 
-                # Skip empty cells, None, NaN, or placeholder values
-                if img_data is None or pd.isna(img_data) or img_data == '' or img_data == '-':
+                # Verify file exists and is not empty
+                if not os.path.exists(img_path):
+                    logger.warning(f"Image file not found: {img_path}")
                     continue
                 
-                # Get the corresponding Excel cell
-                cell = worksheet.cell(row=current_row_idx, column=current_col_idx)
-                cell_coordinate = cell.coordinate
-                
-                # Handle different image data formats
-                image_path_to_embed = None
-                
-                # Case 1: Dictionary format with local_path
-                if isinstance(img_data, dict) and 'local_path' in img_data:
-                    local_path = img_data['local_path']
-                    if isinstance(local_path, str) and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                        image_path_to_embed = local_path
-                        logger.debug(f"Using local_path from dict for cell {cell_coordinate}: {image_path_to_embed}")
-                
-                # Case 2: String that is a file path
-                elif isinstance(img_data, str) and os.path.exists(img_data) and os.path.isfile(img_data):
-                    image_path_to_embed = img_data
-                    logger.debug(f"Using direct file path for cell {cell_coordinate}: {image_path_to_embed}")
-                
-                # Case 3: Dictionary-like string that needs parsing
-                elif isinstance(img_data, str) and img_data.startswith('{') and img_data.endswith('}'):
-                    try:
-                        import ast
-                        parsed_dict = ast.literal_eval(img_data)
-                        if isinstance(parsed_dict, dict) and 'local_path' in parsed_dict:
-                            path = parsed_dict['local_path']
-                            if os.path.exists(path) and os.path.isfile(path):
-                                image_path_to_embed = path
-                                logger.debug(f"Using local_path from parsed string for cell {cell_coordinate}: {image_path_to_embed}")
-                    except Exception as e:
-                        logger.warning(f"Failed to parse dictionary-like string for cell {cell_coordinate}: {e}")
-                
-                # Skip if no valid image path found
-                if not image_path_to_embed:
-                    logger.warning(f"No valid image path found for cell {cell_coordinate}")
-                    # For URL-only data, display the URL
-                    if isinstance(img_data, dict) and 'url' in img_data:
-                        cell.value = img_data['url']
+                if os.path.getsize(img_path) == 0:
+                    logger.warning(f"Image file is empty: {img_path}")
                     continue
                 
-                # Add image to worksheet
+                # Create and resize the image
                 try:
-                    logger.info(f"Adding image to Excel: Path='{image_path_to_embed}', Cell='{cell_coordinate}'")
-                    img = openpyxl.drawing.image.Image(image_path_to_embed)
-                    img.width = img_width
-                    img.height = img_height
-                    img.anchor = cell_coordinate
+                    img = openpyxl.drawing.image.Image(img_path)
+                    
+                    # Set image size - make cell large enough
+                    img.width = 80  # pixels
+                    img.height = 80  # pixels
+                    
+                    # Position image in the cell
+                    img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
+                    
+                    # Add image to worksheet
                     worksheet.add_image(img)
                     
-                    # Clear cell value after adding image
+                    # Clear text in cell to avoid showing both image and text
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
                     cell.value = ""
                     
-                    # Apply styling
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    successful_embeddings += 1
                     
-                except Exception as e:
-                    logger.error(f"Error adding image to cell {cell_coordinate}: {e}")
-                    # Fallback to URL if available
-                    if isinstance(img_data, dict) and 'url' in img_data:
-                        cell.value = img_data['url']
-                    else:
-                        cell.value = f"이미지 추가 실패"
-            
+                except Exception as img_err:
+                    logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
+                    # Don't clear the cell value here - keep text as fallback
+                    
             except Exception as e:
-                logger.error(f"Error processing image for DataFrame row {df_idx}, column {col_name}: {e}")
-                # Try to update the cell with an error message
-                try:
-                    worksheet.cell(row=current_row_idx, column=current_col_idx).value = "이미지 처리 오류"
-                except:
-                    pass  # Silently fail if we can't even set the error message
+                logger.warning(f"Error processing image at row {row_idx}, column {col_idx}: {e}")
+                # Keep cell value as is for reference
     
-    # Log completion
-    logger.info(f"Finished processing image columns. Added images to worksheet.")
+    logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
     
-    # Check if images were added successfully
-    image_count = len(worksheet._images) if hasattr(worksheet, '_images') else 0
-    logger.info(f"Total images added to worksheet: {image_count}")
+    # Adjust row heights where images are embedded
+    for row_idx in range(2, worksheet.max_row + 1):
+        has_image = False
+        for col_idx, _ in image_cols:
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            if cell.value == "": # Cell was cleared for image
+                has_image = True
+                break
+        
+        if has_image:
+            # Set row height to accommodate images
+            worksheet.row_dimensions[row_idx].height = 90
+    
+    return successful_embeddings
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for price difference < -1)."""
@@ -935,7 +1013,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         # Validate the DataFrame
         if df_finalized is None or df_finalized.empty:
             logger.error("Input DataFrame is None or empty. Cannot create Excel files.")
-            return None, False, None, False
+            return False, False, None, None
         
         # Ensure columns are properly ordered (defense against the caller passing mal-formed data)
         if not all(col in FINAL_COLUMN_ORDER for col in df_finalized.columns):
@@ -1155,12 +1233,12 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             except Exception as verify_err:
                 logger.error(f"Error verifying result file: {verify_err}")
         
-        return result_path, result_success, upload_path, upload_success
+        return result_success, upload_success, result_path, upload_path
         
     except Exception as main_error:
         logger.error(f"Unexpected error in create_split_excel_outputs: {main_error}")
         logger.debug(traceback.format_exc())
-        return None, False, None, False
+        return False, False, None, None
 
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
@@ -1371,93 +1449,142 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
         df = df[unique_cols]
         logger.info(f"Removed duplicate columns. New shape: {df.shape}")
     
-    # Step 1: Ensure all required columns exist with custom mapping
+    # Step 1: Create a new DataFrame to avoid modifying the original
+    df_final = df.copy()
+    
+    # Step 2: Map columns from input DataFrame to expected output columns
     column_mapping = {
-        # Map common input columns to standardized output columns
-        '공급처': '공급사명',
-        '공급업체명': '공급사명',
-        '공급처명': '공급사명',
-        '상품 코드': '상품코드',
-        '상품코드(A SKU)': '상품코드',
-        '품번': '상품코드',
-        '중분류': '카테고리(중분류)',
-        '카테고리': '카테고리(중분류)',
-        '기본수량': '본사 기본수량',
-        '수량': '본사 기본수량',
-        '단가': '판매단가1(VAT포함)',
-        '판매단가': '판매단가1(VAT포함)',
-        '판매가': '판매단가1(VAT포함)',
-        '링크': '본사링크',
-        '상품링크': '본사링크',
-        # Keep any standardized columns as-is
-        # Mapping for image columns can be direct or URL/filename based
+        # Core mapping for required columns
+        '구분': '구분(승인관리:A/가격관리:P)',
+        '업체명': '공급사명',
+        '업체코드': '공급처코드',
+        'Code': '상품코드',
+        '중분류카테고리': '카테고리(중분류)',
+        '상품명': '상품명',
+        '기본수량(1)': '본사 기본수량',
+        '판매단가(V포함)': '판매단가1(VAT포함)',
+        '본사상품링크': '본사링크',
+        '기본수량(2)': '고려 기본수량',
+        '판매단가(V포함)(2)': '판매단가2(VAT포함)',
+        '가격차이(2)': '고려 가격차이',
+        '가격차이(2)(%)': '고려 가격차이(%)',
+        '고려기프트 상품링크': '고려 링크',
+        '기본수량(3)': '네이버 기본수량',
+        '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
+        '가격차이(3)': '네이버 가격차이',
+        '가격차이(3)(%)': '네이버가격차이(%)',
+        '공급사명': '네이버 공급사명',
+        '네이버 쇼핑 링크': '네이버 링크',
+        
+        # Ensure image columns are preserved
+        '해오름(이미지링크)': '해오름(이미지링크)',
+        '고려기프트(이미지링크)': '고려기프트(이미지링크)',
+        '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)',
+        
+        # Alternate names that might be used
+        '본사 기본수량': '본사 기본수량',
+        '판매단가1(VAT포함)': '판매단가1(VAT포함)',
+        '본사링크': '본사링크',
+        '고려 기본수량': '고려 기본수량',
+        '판매단가2(VAT포함)': '판매단가2(VAT포함)',
+        '고려 가격차이': '고려 가격차이',
+        '고려 가격차이(%)': '고려 가격차이(%)',
+        '고려 링크': '고려 링크',
+        '네이버 기본수량': '네이버 기본수량',
+        '판매단가3 (VAT포함)': '판매단가3 (VAT포함)',
+        '네이버 가격차이': '네이버 가격차이',
+        '네이버가격차이(%)': '네이버가격차이(%)',
+        '네이버 공급사명': '네이버 공급사명',
+        '네이버 링크': '네이버 링크',
+        
+        # Map internal image columns if necessary
+        '본사 이미지': '해오름(이미지링크)',
+        '고려기프트 이미지': '고려기프트(이미지링크)',
+        '네이버 이미지': '네이버쇼핑(이미지링크)',
     }
     
-    # Step 2: Rename columns using our mapping
-    df = df.rename(columns=column_mapping, errors='ignore')
-    logger.info(f"Columns AFTER renaming (errors ignored): {df.columns.tolist()}")
+    # Create a new DataFrame with the desired columns
+    output_df = pd.DataFrame()
     
-    # Step 3: Add any missing columns in FINAL_COLUMN_ORDER that don't exist yet
-    missing_columns = [col for col in FINAL_COLUMN_ORDER if col not in df.columns]
-    if missing_columns:
-        logger.warning(f"Added missing columns expected in FINAL_COLUMN_ORDER: {missing_columns}")
-        # Add with None values
-        for col in missing_columns:
-            df[col] = None
-    logger.info(f"Columns AFTER adding missing: {df.columns.tolist()}")
-    
-    # Step 4: Ensure proper column order by creating a new DataFrame with only the needed columns
-    final_df = pd.DataFrame()
-    for col in FINAL_COLUMN_ORDER:
-        if col in df.columns:
-            final_df[col] = df[col]
-    
-    # Log the reordered columns
-    logger.info(f"Columns after enforcing FINAL_COLUMN_ORDER: {final_df.columns.tolist()}")
-    
-    # Step 5: Basic type formatting - convert numeric columns where appropriate
-    numeric_columns = [
-        '공급처코드', '상품코드', '본사 기본수량', '판매단가1(VAT포함)',
-        '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)',
-        '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)'
-    ]
-    
-    # Try to convert numeric columns to appropriate types
-    for col in numeric_columns:
-        if col in final_df.columns:
-            try:
-                # Only process non-image columns
-                if 'image' not in col.lower() and '이미지' not in col.lower():
-                    # First convert to string to handle mixed types
-                    final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
-            except Exception as e:
-                logger.warning(f"Error during numeric conversion attempt for column '{col}': {e}. Keeping original values.")
-    
-    # Step 6: Process image columns and ensure they are in proper format for Excel
-    image_columns = [col for col in final_df.columns if '이미지' in col or 'image' in col.lower()]
-    for col in image_columns:
-        try:
-            # Fix Series objects in image columns
-            for idx in final_df.index:
-                value = final_df.loc[idx, col]
+    # First, map columns using our mapping
+    for target_col in FINAL_COLUMN_ORDER:
+        # First priority: check if the target column already exists
+        if target_col in df_final.columns:
+            output_df[target_col] = df_final[target_col]
+            continue
+            
+        # Second priority: try to find a source column that maps to this target
+        mapped = False
+        for source_col, dest_col in column_mapping.items():
+            if dest_col == target_col and source_col in df_final.columns:
+                logger.debug(f"Mapping column: '{source_col}' to '{target_col}'")
+                output_df[target_col] = df_final[source_col]
+                mapped = True
+                break
                 
-                # Handle Series objects (from duplicate columns)
-                if isinstance(value, pd.Series):
-                    # Take the first non-empty value in the series
-                    for item in value:
-                        if pd.notna(item) and item not in ['-', '']:
-                            final_df.at[idx, col] = item
-                            break
-                    else:
-                        # If no valid value found, use empty string
-                        final_df.at[idx, col] = '-'
-                    
-        except Exception as e:
-            logger.warning(f"Could not process image column '{col}': {e}")
+        # If no mapping found, add empty column
+        if not mapped:
+            logger.debug(f"No data for column '{target_col}', adding empty column")
+            output_df[target_col] = None
     
-    logger.info(f"DataFrame finalized. Output shape: {final_df.shape}")
+    # Preserve image data dictionaries
+    for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+        # Try to get image data from the original image columns first
+        if img_col in df_final.columns:
+            output_df[img_col] = df_final[img_col]
+        # Then try alternate image column names
+        elif img_col == '해오름(이미지링크)' and '본사 이미지' in df_final.columns:
+            output_df[img_col] = df_final['본사 이미지']
+        elif img_col == '고려기프트(이미지링크)' and '고려기프트 이미지' in df_final.columns:
+            output_df[img_col] = df_final['고려기프트 이미지']
+        elif img_col == '네이버쇼핑(이미지링크)' and '네이버 이미지' in df_final.columns:
+            output_df[img_col] = df_final['네이버 이미지']
     
-    return final_df
+    # Ensure we didn't lose any image data in the column mapping
+    for idx in range(len(output_df)):
+        for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+            # If the column is empty but we have data in the source DF
+            if (pd.isna(output_df.loc[idx, img_col]) or output_df.loc[idx, img_col] == '-' or output_df.loc[idx, img_col] == '') and img_col in df_final.columns:
+                corresponding_col = ''
+                if img_col == '해오름(이미지링크)':
+                    corresponding_col = '본사 이미지'
+                elif img_col == '고려기프트(이미지링크)':
+                    corresponding_col = '고려기프트 이미지'
+                elif img_col == '네이버쇼핑(이미지링크)':
+                    corresponding_col = '네이버 이미지'
+                
+                if corresponding_col in df_final.columns:
+                    value = df_final.loc[idx, corresponding_col]
+                    if pd.notna(value) and value != '-' and value != '':
+                        output_df.loc[idx, img_col] = value
+                        logger.debug(f"Recovered image data for {img_col} from {corresponding_col} at index {idx}")
+    
+    # Ensure data is in correct format for Excel
+    for col in output_df.columns:
+        # Exclude image columns from this transformation
+        if col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+            continue
+            
+        # For numeric columns
+        if col in ['본사 기본수량', '판매단가1(VAT포함)', '고려 기본수량', '판매단가2(VAT포함)', 
+                  '고려 가격차이', '고려 가격차이(%)', '네이버 기본수량', '판매단가3 (VAT포함)', 
+                  '네이버 가격차이', '네이버가격차이(%)']:
+            try:
+                # Convert to numeric, coercing errors to NaN
+                output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
+            except Exception as e:
+                logger.warning(f"Error converting column '{col}' to numeric: {e}")
+                # If conversion fails, keep as is
+                pass
+    
+    # Replace NaN values with None for proper Excel output
+    output_df = output_df.replace({pd.NA: None, np.nan: None})
+    
+    # Log the final column structure
+    logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
+    logger.debug(f"Final columns: {output_df.columns.tolist()}")
+    
+    return output_df
 
 def _apply_basic_excel_formatting(worksheet, column_list):
     """
