@@ -122,6 +122,25 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                 logger.debug(f"Reached max_items ({max_items}) limit for keyword '{query}', stopping API calls for this keyword.")
                 break
 
+            # Calculate API request parameters
+            api_display_count = 100  # Max allowed by Naver API
+            start_index = (page - 1) * api_display_count + 1
+            # Calculate how many more items we need, respecting max_items overall
+            effective_display_count = min(api_display_count, max_items - len(current_keyword_results))
+            if effective_display_count <= 0:
+                logger.debug(f"Effective display count is zero or less for keyword '{query}', page {page}. Breaking page loop.")
+                break
+
+            # Set up request parameters
+            params = {
+                "query": query,
+                "display": effective_display_count,
+                "start": start_index,
+                "sort": "sim",
+                "exclude": "used:rental"
+            }
+            logger.debug(f"🟢 Naver API Request (Keyword: '{query}', Page {page}, Sort: 'sim'): Params={params}")
+
             # Add delay before API call to avoid hitting rate limits
             if page > 1 or keyword_idx > 0:
                 # Increase delay between pages and keywords
