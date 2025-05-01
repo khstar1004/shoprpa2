@@ -630,26 +630,42 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Process each row
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
         highlight_row = False # Flag to highlight the row
+        
+        # Check both price difference columns
         for price_diff_col in price_diff_cols:
-            if price_diff_col not in df.columns: # Check if column exists in df
+            if price_diff_col not in df.columns: # Skip if column doesn't exist
                 continue
-            col_idx = df.columns.get_loc(price_diff_col) + 1  # 1-based index for openpyxl
+                
+            col_idx = list(df.columns).index(price_diff_col) + 1  # Get 1-based column index for openpyxl
             cell = worksheet.cell(row=row_idx, column=col_idx)
 
             # Get cell value and check if it's < -1
             try:
                 if cell.value not in ['-', '', None]:  # Skip empty or placeholder values
-                    # Remove commas and convert to float
+                    # Try to convert to float - handle both direct values and formatted strings
                     value_str = str(cell.value).replace(',', '')
-                    value = float(value_str)
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        # Try getting from DataFrame directly as a fallback
+                        idx = row_idx - 2  # Adjust for 0-based indexing and header row
+                        if 0 <= idx < len(df):
+                            df_value = df.iloc[idx][price_diff_col]
+                            if pd.notna(df_value) and df_value not in ['-', '']:
+                                try:
+                                    value = float(str(df_value).replace(',', ''))
+                                except ValueError:
+                                    continue
+                            else:
+                                continue
+                        else:
+                            continue
 
                     # Highlight if value is less than -1
                     if value < -1:
                         highlight_row = True
-                        break # Found a reason to highlight, no need to check other diff cols for this row
-            except ValueError:
-                # Skip if value cannot be converted to float (e.g., error messages)
-                continue
+                        logger.debug(f"Row {row_idx}: Price difference {value} < -1. Highlighting row.")
+                        break # Found a reason to highlight, no need to check other diff cols
             except Exception as e:
                 logger.error(f"Error processing cell {cell.coordinate} for conditional formatting: {e}")
                 continue
@@ -660,8 +676,7 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
                 try:
                     worksheet.cell(row=row_idx, column=col).fill = yellow_fill
                 except Exception as e:
-                     logger.error(f"Error applying fill to cell R{row_idx}C{col}: {e}")
-
+                    logger.error(f"Error applying fill to cell R{row_idx}C{col}: {e}")
 
     logger.debug("Finished applying conditional formatting for price differences < -1.")
 

@@ -433,12 +433,24 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         elif 'quantity' in item:
                             df.at[idx, '기본수량(2)'] = item['quantity']
                     
+                    # 기본수량 칼럼도 동일하게 기본수량(1)에서 복사 (요구사항)
+                    if '기본수량' in df.columns:
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량'] = row['기본수량(1)']
+                    
                     # Use price_with_vat instead of price when available (VAT included)
                     if '판매단가(V포함)(2)' in df.columns:
                         if 'price_with_vat' in item and item['price_with_vat']:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
                         elif 'price' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                    
+                    # 판매가 칼럼에도 동일한 가격 정보 복사 (요구사항)
+                    if '판매가' in df.columns:
+                        if 'price_with_vat' in item and item['price_with_vat']:
+                            df.at[idx, '판매가'] = item['price_with_vat']
+                        elif 'price' in item:
+                            df.at[idx, '판매가'] = item['price']
                     
                     if '고려기프트 상품링크' in df.columns and 'link' in item:
                         df.at[idx, '고려기프트 상품링크'] = item['link']
@@ -459,6 +471,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Add Naver data from crawl results if available
     if naver_results:
         naver_update_count = 0
+        naver_matched_count = 0
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
             if product_name in naver_results:
@@ -467,71 +480,78 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                 if naver_data and len(naver_data) > 0:
                     item = naver_data[0]  # Use the first match
                     
-                    # Update Naver related columns
-                    # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
-                    if '기본수량(3)' in df.columns:
-                        # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
-                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                            df.at[idx, '기본수량(3)'] = row['기본수량(1)']
-                        else:
-                            df.at[idx, '기본수량(3)'] = 1  # 기본값
+                    # 네이버 매칭 여부 확인 - 링크나 가격 정보가 있어야 매칭으로 간주
+                    is_matched = ('link' in item and item['link']) or ('price' in item and item['price'])
                     
-                    # 판매단가 정보 업데이트
-                    if '판매단가(V포함)(3)' in df.columns and 'price' in item:
-                        df.at[idx, '판매단가(V포함)(3)'] = item['price']
-                    
-                    # 링크 정보 업데이트
-                    if '네이버 쇼핑 링크' in df.columns and 'link' in item:
-                        df.at[idx, '네이버 쇼핑 링크'] = item['link']
-                    if '공급사 상품링크' in df.columns and 'seller_link' in item:
-                        df.at[idx, '공급사 상품링크'] = item['seller_link']
-                    if '공급사명' in df.columns and 'seller_name' in item:
-                        df.at[idx, '공급사명'] = item['seller_name']
-                    
-                    # Handle Naver image data properly - 통일된 형식으로 처리
-                    if '네이버 이미지' in df.columns:
-                        # Kogift와 동일한 방식으로 이미지 데이터 처리
-                        if 'image_data' in item and isinstance(item['image_data'], dict):
-                            # 이미 올바른 형식으로 준비된 이미지 데이터 사용
-                            df.at[idx, '네이버 이미지'] = item['image_data']
-                        elif 'image_path' in item and 'image_url' in item:
-                            # URL과 로컬 경로가 모두 있는 경우
-                            image_data = {
-                                'url': item['image_url'],
-                                'local_path': item['image_path'],
-                                'source': 'naver',
-                                'original_path': item.get('original_path', item['image_path'])
-                            }
-                            df.at[idx, '네이버 이미지'] = image_data
-                        elif 'image_path' in item:
-                            # 로컬 경로만 있는 경우
-                            image_path = item['image_path']
-                            if isinstance(image_path, str):
-                                # URL 생성 (파일 경로인 경우 file:// 형식으로)
-                                url = item.get('image_url', None)
-                                if not url and os.path.exists(image_path):
-                                    url = f"file:///{image_path.replace(os.sep, '/')}"
-                                
+                    # 매칭된 경우에만 데이터 추가
+                    if is_matched:
+                        naver_matched_count += 1
+                        
+                        # Update Naver related columns
+                        # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
+                        if '기본수량(3)' in df.columns:
+                            # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
+                            if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                                df.at[idx, '기본수량(3)'] = row['기본수량(1)']
+                            else:
+                                df.at[idx, '기본수량(3)'] = 1  # 기본값
+                        
+                        # 판매단가 정보 업데이트
+                        if '판매단가(V포함)(3)' in df.columns and 'price' in item:
+                            df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                        
+                        # 링크 정보 업데이트
+                        if '네이버 쇼핑 링크' in df.columns and 'link' in item:
+                            df.at[idx, '네이버 쇼핑 링크'] = item['link']
+                        if '공급사 상품링크' in df.columns and 'seller_link' in item:
+                            df.at[idx, '공급사 상품링크'] = item['seller_link']
+                        if '공급사명' in df.columns and 'seller_name' in item:
+                            df.at[idx, '공급사명'] = item['seller_name']
+                        
+                        # Handle Naver image data properly - 통일된 형식으로 처리
+                        if '네이버 이미지' in df.columns:
+                            # Kogift와 동일한 방식으로 이미지 데이터 처리
+                            if 'image_data' in item and isinstance(item['image_data'], dict):
+                                # 이미 올바른 형식으로 준비된 이미지 데이터 사용
+                                df.at[idx, '네이버 이미지'] = item['image_data']
+                            elif 'image_path' in item and 'image_url' in item:
+                                # URL과 로컬 경로가 모두 있는 경우
                                 image_data = {
-                                    'url': url if url else '',
-                                    'local_path': image_path,
+                                    'url': item['image_url'],
+                                    'local_path': item['image_path'],
                                     'source': 'naver',
-                                    'original_path': item.get('original_path', image_path)
+                                    'original_path': item.get('original_path', item['image_path'])
                                 }
                                 df.at[idx, '네이버 이미지'] = image_data
-                        elif 'image_url' in item:
-                            # URL만 있는 경우
-                            image_data = {
-                                'url': item['image_url'],
-                                'source': 'naver'
-                            }
-                            df.at[idx, '네이버 이미지'] = image_data
-                        else:
-                            df.at[idx, '네이버 이미지'] = '-'  # 이미지 정보 없음
-                    
-                    naver_update_count += 1
+                            elif 'image_path' in item:
+                                # 로컬 경로만 있는 경우
+                                image_path = item['image_path']
+                                if isinstance(image_path, str):
+                                    # URL 생성 (파일 경로인 경우 file:// 형식으로)
+                                    url = item.get('image_url', None)
+                                    if not url and os.path.exists(image_path):
+                                        url = f"file:///{image_path.replace(os.sep, '/')}"
+                                    
+                                    image_data = {
+                                        'url': url if url else '',
+                                        'local_path': image_path,
+                                        'source': 'naver',
+                                        'original_path': item.get('original_path', image_path)
+                                    }
+                                    df.at[idx, '네이버 이미지'] = image_data
+                            elif 'image_url' in item:
+                                # URL만 있는 경우
+                                image_data = {
+                                    'url': item['image_url'],
+                                    'source': 'naver'
+                                }
+                                df.at[idx, '네이버 이미지'] = image_data
+                            else:
+                                df.at[idx, '네이버 이미지'] = '-'  # 이미지 정보 없음
+                        
+                        naver_update_count += 1
         
-        logging.info(f"Updated {naver_update_count} rows with Naver data")
+        logging.info(f"Updated {naver_update_count} rows with Naver data ({naver_matched_count} matched products)")
     
     # Add additional logic to ensure Haereum images are included correctly
     # This focuses on filling gaps if '본사 이미지' is missing but path data exists

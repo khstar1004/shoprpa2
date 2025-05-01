@@ -9,6 +9,7 @@ from openpyxl.drawing.image import Image
 from openpyxl.utils import get_column_letter
 import shutil
 import sys
+import re
 
 # Import enhanced image matcher
 try:
@@ -176,6 +177,34 @@ def find_best_image_matches(product_names: List[str],
             logging.error(f"향상된 이미지 매처 초기화 실패: {e}")
             enhanced_matcher = None
     
+    # 개선된 이미지 매칭 알고리즘 - 파일명에서 상품 식별자 추출
+    def extract_product_id_from_filename(filename):
+        # 파일명에서 ID 부분 추출 (예: haereum_목쿠션_메모리폼_목베개_여행용목베개_bda60bd016.jpg에서 bda60bd016 추출)
+        match = re.search(r'_([a-f0-9]{10})(?:\.jpg|\.png|_nobg\.png)?$', filename)
+        if match:
+            return match.group(1)
+        return None
+    
+    # 파일명 기반 매칭을 위한 이미지 ID 맵 생성
+    haereum_id_map = {}
+    kogift_id_map = {}
+    naver_id_map = {}
+    
+    for img_path, info in haereum_images.items():
+        product_id = extract_product_id_from_filename(img_path)
+        if product_id:
+            haereum_id_map[product_id] = img_path
+    
+    for img_path, info in kogift_images.items():
+        product_id = extract_product_id_from_filename(img_path)
+        if product_id:
+            kogift_id_map[product_id] = img_path
+    
+    for img_path, info in naver_images.items():
+        product_id = extract_product_id_from_filename(img_path)
+        if product_id:
+            naver_id_map[product_id] = img_path
+    
     # 모든 이미지 소스를 한번에 처리하여 일관된 매칭 보장
     for product_name in product_names:
         product_tokens = tokenize_product_name(product_name)
@@ -184,31 +213,70 @@ def find_best_image_matches(product_names: List[str],
         haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold)
         if haereum_best:
             used_haereum.add(haereum_best[0]) # Add path to used set
-        
+            
+            # 해오름 이미지에서 제품 ID 추출
+            haereum_path, haereum_score = haereum_best
+            haereum_id = extract_product_id_from_filename(haereum_path)
+            
+            # ID 매칭을 통한 고려기프트, 네이버 이미지 찾기
+            kogift_best = None
+            naver_best = None
+            
+            # ID 기반 정확한 매칭 시도
+            if haereum_id:
+                # 고려기프트 매칭
+                if haereum_id in kogift_id_map and kogift_id_map[haereum_id] not in used_kogift:
+                    kogift_path = kogift_id_map[haereum_id]
+                    kogift_best = (kogift_path, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
+                    used_kogift.add(kogift_path)
+                    
+                # 네이버 매칭
+                if haereum_id in naver_id_map and naver_id_map[haereum_id] not in used_naver:
+                    naver_path = naver_id_map[haereum_id]
+                    naver_best = (naver_path, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
+                    used_naver.add(naver_path)
+        else:
+            # 해오름 이미지가 없는 경우 다음 단계로 진행
+            pass
+            
+        # ID 기반 매칭이 실패한 경우, 기존 방식으로 매칭 시도    
         # 이미 매칭된 해오름 이미지가 있다면, 그 이미지를 기준으로 다른 소스 매칭 시도
         if haereum_best:
-            # 해오름 이미지 이름에서 토큰 추출
-            haereum_path, haereum_score = haereum_best
-            haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
+            # 고려기프트 매칭이 없는 경우에만 기존 방식 시도
+            if not kogift_best:
+                # 해오름 이미지 이름에서 토큰 추출
+                haereum_path, haereum_score = haereum_best
+                haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
+                
+                # 향상된 이미지 매처 사용 시 이미지 기반 매칭
+                if enhanced_matcher:
+                    kogift_best = find_best_match_with_enhanced_matcher(
+                        str(haereum_images[haereum_path]['path']),
+                        kogift_images,
+                        used_kogift,
+                        enhanced_matcher
+                    )
+                else:
+                    # 텍스트 기반 매칭 (use haereum tokens as base)
+                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.05) # Lower threshold for secondary match
             
-            # 향상된 이미지 매처 사용 시 이미지 기반 매칭
-            if enhanced_matcher:
-                kogift_best = find_best_match_with_enhanced_matcher(
-                    str(haereum_images[haereum_path]['path']),
-                    kogift_images,
-                    used_kogift,
-                    enhanced_matcher
-                )
-                naver_best = find_best_match_with_enhanced_matcher(
-                    str(haereum_images[haereum_path]['path']),
-                    naver_images,
-                    used_naver,
-                    enhanced_matcher
-                )
-            else:
-                # 텍스트 기반 매칭 (use haereum tokens as base)
-                kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.05) # Lower threshold for secondary match
-                naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.05) # Lower threshold for secondary match
+            # 네이버 매칭이 없는 경우에만 기존 방식 시도
+            if not naver_best:
+                # 해오름 이미지 이름에서 토큰 추출
+                haereum_path, haereum_score = haereum_best
+                haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
+                
+                # 향상된 이미지 매처 사용 시 이미지 기반 매칭
+                if enhanced_matcher:
+                    naver_best = find_best_match_with_enhanced_matcher(
+                        str(haereum_images[haereum_path]['path']),
+                        naver_images,
+                        used_naver,
+                        enhanced_matcher
+                    )
+                else:
+                    # 텍스트 기반 매칭 (use haereum tokens as base)
+                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.05) # Lower threshold for secondary match
         else:
             # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
             kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, similarity_threshold)
@@ -391,6 +459,115 @@ def find_best_match_with_enhanced_matcher(
     
     return best_match
 
+def verify_image_matches(best_matches, product_names, haereum_images, kogift_images, naver_images):
+    """
+    이미지 매칭 결과를 검증하는 함수입니다.
+    프로덕트 이름과 파일 이름 간의 공통 토큰을 확인하여 매칭 품질을 검증합니다.
+    
+    Args:
+        best_matches: find_best_image_matches 함수의 결과
+        product_names: 상품명 목록
+        haereum_images: 해오름 이미지 정보
+        kogift_images: 고려기프트 이미지 정보
+        naver_images: 네이버 이미지 정보
+        
+    Returns:
+        검증된 매칭 결과
+    """
+    verified_matches = []
+    
+    # ID 기반 매칭에 사용되는 정규 표현식
+    id_pattern = re.compile(r'_([a-f0-9]{10})(?:\.jpg|\.png|_nobg\.png)?$')
+    
+    for idx, (product_name, match_set) in enumerate(zip(product_names, best_matches)):
+        haereum_match, kogift_match, naver_match = match_set
+        product_tokens = set(tokenize_product_name(product_name))
+        
+        # 매칭 품질 기록
+        match_quality = {
+            'haereum': {'score': 0, 'match': haereum_match},
+            'kogift': {'score': 0, 'match': kogift_match},
+            'naver': {'score': 0, 'match': naver_match}
+        }
+        
+        # 해오름 매칭 검증
+        if haereum_match:
+            haereum_path, haereum_score = haereum_match
+            haereum_filename = os.path.basename(haereum_path)
+            
+            # 파일명에서 ID 추출
+            haereum_id = None
+            id_match = id_pattern.search(haereum_filename)
+            if id_match:
+                haereum_id = id_match.group(1)
+            
+            # 파일명에서 토큰 추출
+            haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path]['clean_name']))
+            
+            # 토큰 중복 확인
+            common_tokens = product_tokens & haereum_tokens
+            token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+            
+            # 품질 점수 계산
+            match_quality['haereum']['score'] = haereum_score * (1 + token_ratio)
+            match_quality['haereum']['id'] = haereum_id
+        
+        # 고려기프트 매칭 검증
+        if kogift_match:
+            kogift_path, kogift_score = kogift_match
+            kogift_filename = os.path.basename(kogift_path)
+            
+            # 파일명에서 ID 추출
+            kogift_id = None
+            id_match = id_pattern.search(kogift_filename)
+            if id_match:
+                kogift_id = id_match.group(1)
+            
+            # 해오름 ID와 비교
+            if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == kogift_id:
+                # ID가 일치하면 점수 증가
+                match_quality['kogift']['score'] = max(kogift_score, 0.8) * 1.5
+            else:
+                # 토큰 비교
+                kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path]['clean_name']))
+                common_tokens = product_tokens & kogift_tokens
+                token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+                match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
+        
+        # 네이버 매칭 검증
+        if naver_match:
+            naver_path, naver_score = naver_match
+            naver_filename = os.path.basename(naver_path)
+            
+            # 파일명에서 ID 추출
+            naver_id = None
+            id_match = id_pattern.search(naver_filename)
+            if id_match:
+                naver_id = id_match.group(1)
+            
+            # 해오름 ID와 비교
+            if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == naver_id:
+                # ID가 일치하면 점수 증가
+                match_quality['naver']['score'] = max(naver_score, 0.8) * 1.5
+            else:
+                # 토큰 비교
+                naver_tokens = set(tokenize_product_name(naver_images[naver_path]['clean_name']))
+                common_tokens = product_tokens & naver_tokens
+                token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+                match_quality['naver']['score'] = naver_score * (1 + token_ratio)
+        
+        # 검증 결과를 로그로 출력
+        logging.debug(f"Product: '{product_name}' - Verification scores: Haereum={match_quality['haereum']['score']:.2f}, Kogift={match_quality['kogift']['score']:.2f}, Naver={match_quality['naver']['score']:.2f}")
+        
+        # 최종 검증된 매칭 결과 추가
+        verified_matches.append((
+            match_quality['haereum']['match'],
+            match_quality['kogift']['match'],
+            match_quality['naver']['match']
+        ))
+    
+    return verified_matches
+
 def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     세 가지 이미지 소스(해오름, 고려기프트, 네이버)의 이미지를 DataFrame에 통합합니다.
@@ -482,6 +659,16 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             config=config
         )
         
+        # 매칭 결과 검증
+        logging.info(f"이미지 매칭 검증 중...")
+        verified_matches = verify_image_matches(
+            best_matches,
+            product_names,
+            haereum_images,
+            kogift_images,
+            naver_images
+        )
+        
         # 결과를 DataFrame에 적용
         # Map for matching web URL columns with their correct names in the dataframe
         assumed_url_cols = {
@@ -490,7 +677,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             'naver': '네이버 쇼핑 링크'     # Changed from '네이버 링크'
         }
 
-        for idx, (haereum_match, kogift_match, naver_match) in enumerate(best_matches):
+        for idx, (haereum_match, kogift_match, naver_match) in enumerate(verified_matches):
             # Check index bounds
             if idx >= len(result_df):
                 logging.warning(f"Index {idx} out of bounds for result_df (length {len(result_df)}). Skipping image assignment.")
@@ -526,7 +713,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'source': 'haereum',
                     'url': web_url, # Store the web URL (or fallback file URL)
                     'original_path': str(img_path), # Keep original local path info if needed
-                    'score': haereum_score
+                    'score': haereum_score,
+                    'product_name': product_names[idx] # 상품명 추가
                 }
                 result_df.at[idx, target_col_haereum] = image_data # Use .at for scalar assignment
             else:
@@ -565,7 +753,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'source': 'kogift',
                     'url': web_url,
                     'original_path': str(img_path),
-                    'score': kogift_score
+                    'score': kogift_score,
+                    'product_name': product_names[idx] # 상품명 추가
                 }
                 result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
@@ -603,7 +792,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'source': 'naver',
                     'url': web_url,
                     'original_path': str(img_path),
-                    'score': naver_score
+                    'score': naver_score,
+                    'product_name': product_names[idx] # 상품명 추가
                 }
                 result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
             else:
