@@ -49,16 +49,22 @@ except Exception as e:
 try:
     from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
     ENHANCED_MATCHER_AVAILABLE = True
-    logging.info("Enhanced image matcher imported successfully")
+    logging.info("Enhanced image matcher imported successfully (package import)")
 except ImportError:
     try:
-        # Try direct import without PythonScript prefix
-        from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+        # Try relative import
+        from .enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
         ENHANCED_MATCHER_AVAILABLE = True
-        logging.info("Enhanced image matcher imported successfully")
+        logging.info("Enhanced image matcher imported successfully (relative import)")
     except ImportError:
-        ENHANCED_MATCHER_AVAILABLE = False
-        logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
+        try:
+            # Try direct import without PythonScript prefix
+            from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+            ENHANCED_MATCHER_AVAILABLE = True
+            logging.info("Enhanced image matcher imported successfully (direct import)")
+        except ImportError:
+            ENHANCED_MATCHER_AVAILABLE = False
+            logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
 
 # --- Global variable for ProcessPoolExecutor worker ---
 # This needs careful handling during refactoring. It might be better managed

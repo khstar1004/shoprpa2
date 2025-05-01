@@ -1376,7 +1376,7 @@ def match_naver_product_images(haoreum_image_data: List[Dict[str, Optional[str]]
                 missing_or_invalid_images += 1
 
         except Exception as e:
-            logger.error(f"Error processing Naver result row index {_} for product '{original_product_name or "Unknown"}': {e}", exc_info=True)
+            logger.error(f"Error processing Naver result row index {_} for product '{original_product_name or 'Unknown'}': {e}", exc_info=True)
             missing_or_invalid_images += 1
             continue
 
