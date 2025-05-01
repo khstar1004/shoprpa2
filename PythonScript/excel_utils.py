@@ -20,6 +20,7 @@ import traceback
 import uuid
 import tempfile
 import numpy as np
+from typing import Optional
 
 # Check Python/PIL version for proper resampling constant
 try:
