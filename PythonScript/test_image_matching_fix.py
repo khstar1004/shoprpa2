@@ -72,7 +72,7 @@ def test_image_matching_fix():
     config.set('Matching', 'image_threshold', '0.1')
     config.set('Matching', 'image_display_threshold', '0.05')
     
-    # Create test DataFrame with product names
+    # Create test DataFrame with product names and initialize image columns
     test_df = pd.DataFrame({
         '구분': ['A'] * 5,
         '담당자': ['테스트'] * 5,
@@ -89,7 +89,11 @@ def test_image_matching_fix():
         ],
         '기본수량(1)': [100, 100, 100, 100, 100],
         '판매단가(V포함)': [5000, 4000, 3000, 2000, 5500],
-        '본사상품링크': ['http://example.com'] * 5
+        '본사상품링크': ['http://example.com'] * 5,
+        # 미리 이미지 열 생성
+        '본사 이미지': [None] * 5,
+        '고려기프트 이미지': [None] * 5,
+        '네이버 이미지': [None] * 5
     })
     
     # Create simulated haereum images dictionary for testing
@@ -112,6 +116,7 @@ def test_image_matching_fix():
                     'confidence': 1.0,
                     'original_name': img_name
                 }
+                logging.info(f"Row {idx}: 본사 이미지 correctly matches product name '{product_name}'")
     
     # Test Kogift data formatting
     logging.info("Testing Kogift data formatting...")
