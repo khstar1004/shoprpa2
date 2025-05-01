@@ -7,9 +7,9 @@ from openpyxl.styles import PatternFill, Alignment, Border, Side, Font
 from openpyxl.utils import get_column_letter
 from PythonScript.excel_utils import (
     create_final_output_excel, 
-    add_hyperlinks,
-    process_image_cells,
-    LINK_COLUMN_MAP
+    _add_hyperlinks_to_worksheet as add_hyperlinks,
+    _process_image_columns as process_image_cells,
+    LINK_COLUMNS_FOR_HYPERLINK as LINK_COLUMN_MAP
 )
 
 # Configure logging
@@ -72,13 +72,13 @@ def test_excel_basic_writing():
     
     # Call the Excel writing function
     try:
-        output_file = create_final_output_excel(
+        output_file = os.path.join(output_dir, "excel_test_basic.xlsx")
+        success = create_final_output_excel(
             df, 
-            output_dir=output_dir, 
-            output_filename="excel_test_basic.xlsx"
+            output_file
         )
     
-        if output_file and os.path.exists(output_file):
+        if success and os.path.exists(output_file):
             print(f"Excel file successfully created: {output_file}")
             print(f"File size: {os.path.getsize(output_file)} bytes")
             return output_file

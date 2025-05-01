@@ -217,7 +217,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     
     # Add columns for Kogift results if they don't exist yet
     # FIXED: Ensure 판매단가(V포함)(2) column exists explicitly for kogift prices
-    for col in ['기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']:
+    for col in ['기본수량(2)', '판매단가(V포함)(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']:
         if col not in df.columns:
             df[col] = None
             logging.debug(f"Adding column for Kogift data: {col}")
@@ -269,6 +269,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Add Kogift data from crawl results if available
     if kogift_results:
         kogift_update_count = 0
+        kogift_img_count = 0
+        kogift_price_count = 0
+        
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
             if product_name in kogift_results:
@@ -292,60 +295,117 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
                             df.at[idx, '기본수량'] = row['기본수량(1)']
                     
-                    # FIXED: Improved price data handling for Kogift price
-                    # Use price_with_vat instead of price when available (VAT included)
+                    # IMPROVED: 가격 데이터 처리 개선 (Kogift 가격)
+                    # tax_included 가격을 우선적으로 사용하고, 없으면 price_with_vat를 사용
                     if '판매단가(V포함)(2)' in df.columns:
-                        # Check for price_with_vat first (priority)
-                        if 'price_with_vat' in item and item['price_with_vat'] is not None:
-                            # Convert to numeric and ensure it's an integer to match typical format
-                            try:
-                                price_val = float(item['price_with_vat'])
-                                df.at[idx, '판매단가(V포함)(2)'] = int(price_val)
-                                logging.debug(f"Set Kogift price for '{product_name}': {int(price_val)} (from price_with_vat)")
-                            except (ValueError, TypeError):
-                                logging.warning(f"Invalid price_with_vat value: {item['price_with_vat']} for '{product_name}'")
-                        # Fall back to price if price_with_vat is not available
-                        elif 'price' in item and item['price'] is not None:
-                            try:
-                                price_val = float(item['price'])
-                                df.at[idx, '판매단가(V포함)(2)'] = int(price_val)
-                                logging.debug(f"Set Kogift price for '{product_name}': {int(price_val)} (from price)")
-                            except (ValueError, TypeError):
-                                logging.warning(f"Invalid price value: {item['price']} for '{product_name}'")
+                        kogift_price = None
+                        
+                        # 가격 정보 소스 우선순위 설정
+                        price_fields = [
+                            ('tax_included', '세금포함가격'),
+                            ('price_with_vat', 'VAT포함가격'),
+                            ('price', '기본가격')
+                        ]
+                        
+                        # 우선순위 높은 것부터 확인하여 가격 추출
+                        for field_name, field_desc in price_fields:
+                            if field_name in item and item[field_name] is not None:
+                                try:
+                                    price_val = float(item[field_name])
+                                    kogift_price = int(price_val)
+                                    df.at[idx, '판매단가(V포함)(2)'] = kogift_price
+                                    logging.debug(f"Kogift 가격 설정 '{product_name}': {kogift_price} ({field_desc}에서 추출)")
+                                    kogift_price_count += 1
+                                    break
+                                except (ValueError, TypeError):
+                                    logging.warning(f"유효하지 않은 Kogift {field_desc}: {item[field_name]} (상품명: '{product_name}')")
+                        
+                        # 가격이 설정되지 않았으면 로그 남김
+                        if kogift_price is None:
+                            logging.warning(f"Kogift 상품 '{product_name}'에 유효한 가격 정보가 없습니다.")
                     
-                    # 판매가 칼럼에도 동일한 가격 정보 복사 (요구사항)
-                    if '판매가' in df.columns:
-                        if 'price_with_vat' in item and item['price_with_vat']:
-                            df.at[idx, '판매가'] = item['price_with_vat']
-                        elif 'price' in item:
-                            df.at[idx, '판매가'] = item['price']
+                    # 판매가(V포함)(2) 칼럼에도 동일한 가격 추가 (일관성 유지)
+                    if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns:
+                        if pd.notna(df.at[idx, '판매단가(V포함)(2)']):
+                            df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
                     
+                    # 링크 정보 업데이트
                     if '고려기프트 상품링크' in df.columns and 'link' in item:
                         df.at[idx, '고려기프트 상품링크'] = item['link']
+                    
+                    # IMPROVED: 이미지 처리 개선
                     if '고려기프트 이미지' in df.columns:
-                        # IMPROVEMENT: 실제 이미지 URL을 우선적으로 사용
                         image_url = None
                         
                         # 이미지 URL 찾기 (순서대로 시도)
-                        if 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
-                            image_url = item['image_url']
-                        elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path'].startswith(('http://', 'https://')):
-                            image_url = item['image_path']
-                        elif 'src' in item and item['src'] and item['src'].startswith(('http://', 'https://')):
-                            image_url = item['src']
+                        image_fields = [
+                            'image_url', 'image_path', 'img_url', 'src', 'thumbnail'
+                        ]
+                        
+                        for field in image_fields:
+                            if field in item and item[field] and isinstance(item[field], str) and item[field].startswith(('http://', 'https://')):
+                                image_url = item[field]
+                                break
                             
                         # 이미지 데이터 사전 생성
                         if image_url:
-                            # Store as proper dictionary instead of string
-                            df.at[idx, '고려기프트 이미지'] = {'url': image_url, 'source': '고려기프트'}
-                            logging.debug(f"Found Kogift image URL for '{product_name}': {image_url[:50]}...")
+                            # 이미지 URL 확인 (확장자 검증)
+                            is_valid_img = any(ext in image_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp'])
+                            
+                            if is_valid_img:
+                                # 로컬 경로 추정 (다운로드된 이미지가 있을 경우)
+                                filename = os.path.basename(image_url)
+                                base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                                
+                                # 가능한 로컬 경로 목록 생성
+                                possible_local_paths = [
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', filename),
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', filename),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
+                                    os.path.join(base_img_dir, 'Kogift', filename),
+                                    os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}")
+                                ]
+                                
+                                # 존재하는 로컬 파일 확인
+                                local_path = None
+                                for path in possible_local_paths:
+                                    if os.path.exists(path):
+                                        local_path = path
+                                        break
+                                
+                                # 이미지 데이터 사전 생성
+                                img_dict = {
+                                    'url': image_url,
+                                    'source': '고려기프트',
+                                    'product_name': product_name
+                                }
+                                
+                                # 로컬 경로가 있으면 추가
+                                if local_path:
+                                    img_dict['local_path'] = local_path
+                                
+                                df.at[idx, '고려기프트 이미지'] = img_dict
+                                kogift_img_count += 1
+                                logging.debug(f"Kogift 이미지 URL 추가: '{product_name}': {image_url[:50]}...")
+                            else:
+                                logging.warning(f"유효하지 않은 Kogift 이미지 URL: {image_url[:50]}...")
                         elif 'image_path' in item and not isinstance(item['image_path'], str) and item['image_path']:
                             # 이미지 경로가 문자열이 아닌 객체인 경우 (이미 사전 형태일 수 있음)
-                            df.at[idx, '고려기프트 이미지'] = item['image_path']
+                            img_dict = item['image_path']
+                            if isinstance(img_dict, dict):
+                                if 'source' not in img_dict:
+                                    img_dict['source'] = '고려기프트'
+                                if 'product_name' not in img_dict:
+                                    img_dict['product_name'] = product_name
+                                df.at[idx, '고려기프트 이미지'] = img_dict
+                                kogift_img_count += 1
                     
                     kogift_update_count += 1
         
-        logging.info(f"Updated {kogift_update_count} rows with Kogift data")
+        logging.info(f"업데이트된 행 수: {kogift_update_count} (Kogift 데이터)")
+        logging.info(f"Kogift 이미지 추가: {kogift_img_count}개")
+        logging.info(f"Kogift 가격 추가: {kogift_price_count}개")
 
         # === DEBUG LOGGING START ===
         if kogift_update_count > 0 and '판매단가(V포함)(2)' in df.columns:
@@ -356,11 +416,21 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     for idx in sample_indices:
                         product_name = df.at[idx, '상품명']
                         kogift_price = df.at[idx, '판매단가(V포함)(2)']
-                        logging.info(f"  - Product: '{product_name}', Kogift Price ('판매단가(V포함)(2)'): {kogift_price}")
+                        kogift_img_data = df.at[idx, '고려기프트 이미지'] if '고려기프트 이미지' in df.columns else 'N/A'
+                        
+                        # 이미지 데이터 로깅 형식 개선
+                        img_info = "이미지 없음"
+                        if isinstance(kogift_img_data, dict):
+                            img_info = f"이미지 정보: {{url: '{kogift_img_data.get('url', '없음')[:30]}...'"
+                            if 'local_path' in kogift_img_data:
+                                img_info += f", local_path: '{kogift_img_data.get('local_path', '없음')[-30:]}...'"
+                            img_info += "}"
+                        
+                        logging.info(f"  - 상품: '{product_name}', Kogift 가격: {kogift_price}, {img_info}")
                 else:
-                    logging.info("[DEBUG] No Kogift price data found in samples after processing, even though update count > 0.")
+                    logging.info("[DEBUG] 처리 후에도 Kogift 가격 데이터가 없습니다 (kogift_update_count > 0 에도 불구하고).")
             except Exception as log_err:
-                 logging.warning(f"[DEBUG] Error logging sample Kogift data: {log_err}")
+                logging.warning(f"[DEBUG] Kogift 샘플 데이터 로깅 중 오류: {log_err}")
         # === DEBUG LOGGING END ===
 
     # Add Naver data from crawl results if available

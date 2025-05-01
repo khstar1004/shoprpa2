@@ -404,6 +404,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     # Count successful image embeddings
     successful_embeddings = 0
     attempted_embeddings = 0
+    kogift_attempted = 0
+    kogift_successful = 0
     
     # Define fallback image if needed
     fallback_img_path = None
@@ -435,12 +437,23 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             # Determine image path based on data type
             img_path = None
             
+            # FIXED: Additional logging for Kogift images
+            is_kogift_image = '고려' in col_name or 'kogift' in col_name.lower()
+            if is_kogift_image:
+                logger.debug(f"Processing KOGIFT image in row {row_idx}, column {col_name}, value type: {type(cell_value)}")
+                if isinstance(cell_value, dict):
+                    logger.debug(f"Kogift dict content: {cell_value}")
+                else:
+                    logger.debug(f"Kogift value: {cell_value}")
+                kogift_attempted += 1
+            
             # Handle dictionary format (most complete info)
             if isinstance(cell_value, dict):
-                logger.debug(f"Processing dictionary image data in row {row_idx}, column {col_name}")
                 # Try local path first, then URL
                 if 'local_path' in cell_value and cell_value['local_path']:
                     img_path = cell_value['local_path']
+                    if is_kogift_image:
+                        logger.debug(f"Found Kogift local_path: {img_path}")
                 elif 'url' in cell_value and cell_value['url'] and cell_value['url'].startswith(('http', 'https', 'file:')):
                     # For URLs, we need to find corresponding downloaded file
                     url = cell_value['url']
@@ -448,9 +461,12 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     if url.startswith('file:///'):
                         # Convert file URL to actual path
                         img_path = url.replace('file:///', '').replace('/', os.sep)
+                        if is_kogift_image:
+                            logger.debug(f"Converted Kogift file URL to path: {img_path}")
                     else:
                         # Try to deduce local path from related data
-                        logger.debug(f"URL-only image data, attempting to find local file: {url[:50]}...")
+                        if is_kogift_image:
+                            logger.debug(f"Kogift URL-only image data, attempting to find local file: {url[:50]}...")
                         
                         # Recognize standard image paths based on domain
                         if 'jclgift.com' in url:
@@ -471,23 +487,52 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                     img_path = loc
                                     logger.debug(f"Found local file for URL: {img_path}")
                                     break
-                        elif 'koreagift.com' in url:
+                        elif 'koreagift.com' in url or 'kogift.com' in url:  # FIXED: Added 'kogift.com'
                             # Similar pattern for Kogift
                             filename = os.path.basename(url)
                             base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
                             
+                            # FIXED: More extensive search patterns for Kogift images
                             possible_locations = [
                                 os.path.join(base_img_dir, 'Main', 'Kogift', filename),
                                 os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
                                 os.path.join(base_img_dir, 'Target', 'Kogift', filename),
-                                os.path.join(base_img_dir, 'Target', 'Kogift', f"kogift_{filename}")
+                                os.path.join(base_img_dir, 'Target', 'Kogift', f"kogift_{filename}"),
+                                # Add more variations - lowercased directory
+                                os.path.join(base_img_dir, 'Main', 'kogift', filename),
+                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
+                                os.path.join(base_img_dir, 'Target', 'kogift', filename),
+                                os.path.join(base_img_dir, 'Target', 'kogift', f"kogift_{filename}"),
+                                # Check in the root image directories too
+                                os.path.join(base_img_dir, 'Kogift', filename),
+                                os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}"),
+                                os.path.join(base_img_dir, 'kogift', filename),
+                                os.path.join(base_img_dir, 'kogift', f"kogift_{filename}")
                             ]
                             
                             for loc in possible_locations:
                                 if os.path.exists(loc):
                                     img_path = loc
-                                    logger.debug(f"Found local file for URL: {img_path}")
+                                    logger.debug(f"Found local Kogift file for URL: {img_path}")
                                     break
+                                    
+                            # If still not found, try broader search
+                            if not img_path and is_kogift_image:
+                                logger.debug("Performing broader search for Kogift image...")
+                                for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
+                                    if os.path.exists(root_dir):
+                                        for subdir, _, files in os.walk(root_dir):
+                                            if 'kogift' in subdir.lower():
+                                                for file in files:
+                                                    # Check for partial filename match
+                                                    if filename.lower() in file.lower():
+                                                        img_path = os.path.join(subdir, file)
+                                                        logger.debug(f"Found Kogift file via broad search: {img_path}")
+                                                        break
+                                            if img_path:
+                                                break
+                                    if img_path:
+                                        break
                         elif 'pstatic.net' in url or 'naver.com' in url:
                             # Similar pattern for Naver
                             filename = os.path.basename(url)
@@ -505,51 +550,122 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                     img_path = loc
                                     logger.debug(f"Found local file for URL: {img_path}")
                                     break
+                # FIXED: Try 'original_path' for Kogift images if local_path and URL don't work
+                elif is_kogift_image and 'original_path' in cell_value and cell_value['original_path']:
+                    orig_path = cell_value['original_path']
+                    logger.debug(f"Checking Kogift original_path: {orig_path}")
+                    
+                    if os.path.exists(orig_path):
+                        img_path = orig_path
+                        logger.debug(f"Using Kogift original_path directly: {img_path}")
+                    else:
+                        # Try to find the file by basename
+                        base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                        filename = os.path.basename(orig_path)
+                        
+                        # FIXED: Search for the file in Kogift directories
+                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
+                            if os.path.exists(root_dir):
+                                for subdir, _, files in os.walk(root_dir):
+                                    if 'kogift' in subdir.lower():
+                                        for file in files:
+                                            if filename.lower() in file.lower():
+                                                img_path = os.path.join(subdir, file)
+                                                logger.debug(f"Found Kogift file from original_path: {img_path}")
+                                                break
+                                    if img_path:
+                                        break
+                            if img_path:
+                                break
             
             # Handle string path
             elif isinstance(cell_value, str) and cell_value not in ['-', '']:
                 if cell_value.startswith(('http://', 'https://')):
                     # Web URL - we would need a downloaded version
-                    logger.debug(f"String URL in row {row_idx}, column {col_name}: {cell_value[:50]}...")
-                    # Skip - URLs should be processed through image downloader first
+                    if is_kogift_image:
+                        logger.debug(f"Kogift string URL (needs downloaded version): {cell_value[:50]}...")
+                    # For Kogift, try to find downloaded version
+                    if is_kogift_image and ('koreagift.com' in cell_value or 'kogift.com' in cell_value):
+                        filename = os.path.basename(cell_value)
+                        base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                        
+                        # Look for downloaded versions
+                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
+                            if os.path.exists(root_dir):
+                                for subdir, _, files in os.walk(root_dir):
+                                    if 'kogift' in subdir.lower():
+                                        for file in files:
+                                            if filename.lower() in file.lower():
+                                                img_path = os.path.join(subdir, file)
+                                                logger.debug(f"Found Kogift downloaded file: {img_path}")
+                                                break
+                                    if img_path:
+                                        break
+                            if img_path:
+                                break
                 elif cell_value.startswith('file:///'):
                     # Local file URL
                     img_path = cell_value.replace('file:///', '').replace('/', os.sep)
+                    if is_kogift_image:
+                        logger.debug(f"Converted Kogift file URL to path: {img_path}")
                 elif os.path.exists(cell_value):
                     # Direct file path
                     img_path = cell_value
+                    if is_kogift_image:
+                        logger.debug(f"Using direct Kogift file path: {img_path}")
                 elif '\\' in cell_value or '/' in cell_value:
                     # Looks like a path but might not exist
-                    logger.debug(f"Path-like string in cell but file not found: {cell_value[:50]}...")
+                    if is_kogift_image:
+                        logger.debug(f"Kogift path-like string but file not found: {cell_value[:50]}...")
                     
                     # Try to find similar file by name
                     filename = os.path.basename(cell_value)
                     base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
                     
-                    # Search in common locations
-                    found = False
-                    for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target')]:
-                        if os.path.exists(root_dir):
-                            for subdir, _, files in os.walk(root_dir):
-                                for file in files:
-                                    if filename in file:
-                                        img_path = os.path.join(subdir, file)
-                                        found = True
-                                        logger.debug(f"Found similar file by name: {img_path}")
+                    # Special handling for Kogift
+                    if is_kogift_image:
+                        # FIXED: More extensive search for Kogift images
+                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
+                            if os.path.exists(root_dir):
+                                for subdir, _, files in os.walk(root_dir):
+                                    if 'kogift' in subdir.lower():
+                                        for file in files:
+                                            if filename.lower() in file.lower():
+                                                img_path = os.path.join(subdir, file)
+                                                logger.debug(f"Found Kogift file via path search: {img_path}")
+                                                break
+                                    if img_path:
                                         break
-                                if found:
-                                    break
-                        if found:
-                            break
+                            if img_path:
+                                break
+                    
+                    # General search if not found yet
+                    if not img_path:
+                        found = False
+                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target')]:
+                            if os.path.exists(root_dir):
+                                for subdir, _, files in os.walk(root_dir):
+                                    for file in files:
+                                        if filename in file:
+                                            img_path = os.path.join(subdir, file)
+                                            found = True
+                                            logger.debug(f"Found similar file by name: {img_path}")
+                                            break
+                                    if found:
+                                        break
+                            if found:
+                                break
             
             # If no image path could be determined, use fallback
             if not img_path and fallback_img_path:
                 img_path = fallback_img_path
-                logger.debug(f"Using fallback image for row {row_idx}, column {col_name}")
+                if is_kogift_image:
+                    logger.debug(f"Using fallback image for Kogift row {row_idx}")
             
             # Skip if no valid path was found
             if not img_path:
-                logger.debug(f"No valid image path found for row {row_idx}, column {col_name}")
+                if is_kogift_image:
+                    logger.debug(f"No valid image path found for Kogift row {row_idx}")
                 continue
             
             # Add image to worksheet if file exists and has content
@@ -558,11 +674,17 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 
                 # Verify file exists and is not empty
                 if not os.path.exists(img_path):
-                    logger.warning(f"Image file not found: {img_path}")
+                    if is_kogift_image:
+                        logger.warning(f"Kogift image file not found: {img_path}")
+                    else:
+                        logger.warning(f"Image file not found: {img_path}")
                     continue
                 
                 if os.path.getsize(img_path) == 0:
-                    logger.warning(f"Image file is empty: {img_path}")
+                    if is_kogift_image:
+                        logger.warning(f"Kogift image file is empty: {img_path}")
+                    else:
+                        logger.warning(f"Image file is empty: {img_path}")
                     continue
                 
                 # Create and resize the image
@@ -584,16 +706,27 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     cell.value = ""
                     
                     successful_embeddings += 1
+                    if is_kogift_image:
+                        kogift_successful += 1
+                        logger.debug(f"Successfully added Kogift image at row {row_idx}, column {col_idx}")
                     
                 except Exception as img_err:
-                    logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
+                    if is_kogift_image:
+                        logger.warning(f"Failed to add Kogift image at row {row_idx}, column {col_idx}: {img_err}")
+                    else:
+                        logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
                     # Don't clear the cell value here - keep text as fallback
                     
             except Exception as e:
-                logger.warning(f"Error processing image at row {row_idx}, column {col_idx}: {e}")
+                if is_kogift_image:
+                    logger.warning(f"Error processing Kogift image at row {row_idx}, column {col_idx}: {e}")
+                else:
+                    logger.warning(f"Error processing image at row {row_idx}, column {col_idx}: {e}")
                 # Keep cell value as is for reference
     
     logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
+    if kogift_attempted > 0:
+        logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
     
     # Adjust row heights where images are embedded
     for row_idx in range(2, worksheet.max_row + 1):
@@ -634,17 +767,21 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
         else:
             logger.warning(f"Conditional formatting: Column '{col}' not found in DataFrame.")
 
-    # FIXED: Add detailed logging for debugging
-    logger.info(f"Applying conditional formatting for price differences in columns: {price_diff_cols}")
-    logger.info(f"Total rows to check: {worksheet.max_row - 1}")  # Subtract 1 for header row
+    # Add detailed logging for debugging
+    logger.info(f"가격차이 조건부 서식 적용 (음수 강조): {price_diff_cols}")
+    logger.info(f"총 확인할 행 수: {worksheet.max_row - 1}")  # Subtract 1 for header row
     
     rows_highlighted = 0
+    rows_checked = 0
+    errors = 0
 
     # Process each row - Rely PRIMARILY on DataFrame values for consistency
     for df_row_idx in range(len(df)):
         excel_row_idx = df_row_idx + 2 # Adjust for 1-based indexing and header row
         highlight_row = False # Flag to highlight the row
+        rows_checked += 1
         
+        # 먼저 DataFrame에서 확인 - 더 신뢰할 수 있는 데이터
         for price_diff_col in price_diff_cols:
             if price_diff_col not in df.columns: # Skip if column doesn't exist
                 continue
@@ -656,22 +793,69 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
                 # Check if the value is numeric and less than -1
                 if pd.notna(value) and value not in ['-', '']:
                     try:
-                        numeric_value = float(str(value).replace(',', '')) # Convert robustly
+                        # 다양한 형식 처리
+                        if isinstance(value, (int, float)):
+                            numeric_value = float(value)
+                        elif isinstance(value, str) and value.strip():
+                            # 문자열 처리 - 콤마 및 기타 문자 제거
+                            cleaned_value = value.replace(',', '').replace(' ', '')
+                            # 음수 표시 처리 ("(100)" 형식을 "-100"으로 변환)
+                            if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
+                                cleaned_value = '-' + cleaned_value[1:-1]
+                            numeric_value = float(cleaned_value)
+                        else:
+                            # 변환 불가능한 값
+                            continue
 
-                        # Apply highlight if value is less than -1
+                        # FIXED: Apply highlight if value is less than -1 (negative)
                         if numeric_value < -1:
                             highlight_row = True
-                            logger.debug(f"Row {excel_row_idx}: Price difference {numeric_value} < -1 in column {price_diff_col}. Highlighting.")
+                            logger.debug(f"행 {excel_row_idx}: 가격차이 {numeric_value} < -1 (컬럼 {price_diff_col}). 하이라이팅 적용.")
                             break  # Found a reason to highlight this row
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError) as e:
                         # Log if conversion fails, but don't highlight
-                        logger.debug(f"Row {excel_row_idx}: Could not convert value '{value}' in column {price_diff_col} to numeric.")
+                        logger.debug(f"행 {excel_row_idx}: 숫자 변환 실패 '{value}' (컬럼 {price_diff_col}): {e}")
+                        # 변환 오류는 무시하고 계속 진행
             except IndexError:
-                 logger.warning(f"IndexError accessing DataFrame row {df_row_idx} for conditional formatting.")
+                 logger.warning(f"인덱스 오류: DataFrame 행 {df_row_idx} 접근 실패 (조건부 서식 적용 중)")
                  continue # Skip this row if index is out of bounds
             except Exception as e:
-                logger.error(f"Error processing DataFrame row {df_row_idx}, column {price_diff_col} for conditional formatting: {e}")
-                continue
+                 logger.error(f"DataFrame 행 {df_row_idx}, 컬럼 {price_diff_col} 처리 중 오류: {e}")
+                 errors += 1
+
+        # 이제 실제 Excel 워크시트에서 확인 (데이터프레임에서 찾지 못한 경우)
+        if not highlight_row:
+            try:
+                # Excel columns are 1-indexed
+                for col_idx in range(1, worksheet.max_column + 1):
+                    # Get header to identify price difference columns
+                    header = worksheet.cell(row=1, column=col_idx).value
+                    
+                    if header in price_diff_cols:
+                        cell = worksheet.cell(row=excel_row_idx, column=col_idx)
+                        if cell.value and cell.value != '-':
+                            try:
+                                # Similar conversion logic as above
+                                if isinstance(cell.value, (int, float)):
+                                    numeric_value = float(cell.value)
+                                elif isinstance(cell.value, str) and cell.value.strip():
+                                    cleaned_value = cell.value.replace(',', '').replace(' ', '')
+                                    if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
+                                        cleaned_value = '-' + cleaned_value[1:-1]
+                                    numeric_value = float(cleaned_value)
+                                else:
+                                    continue
+                                    
+                                if numeric_value < -1:
+                                    highlight_row = True
+                                    logger.debug(f"Excel에서 직접 찾음: 행 {excel_row_idx}, 컬럼 {header} 값 {numeric_value} < -1")
+                                    break
+                            except (ValueError, TypeError):
+                                # Invalid value, just continue
+                                pass
+            except Exception as excel_err:
+                logger.warning(f"Excel 확인 중 오류 발생 (행 {excel_row_idx}): {excel_err}")
+                # Continue to use the DataFrame result
 
         # If the flag is set, highlight the entire row in Excel
         if highlight_row:
@@ -679,12 +863,17 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
             for col_idx_excel in range(1, worksheet.max_column + 1):
                 try:
                     cell_to_fill = worksheet.cell(row=excel_row_idx, column=col_idx_excel)
+                    # 현재 값 및 서식 보존
+                    current_value = cell_to_fill.value
+                    
+                    # 기존 서식에 노란색 배경 추가
                     cell_to_fill.fill = yellow_fill
                 except Exception as e:
-                    logger.error(f"Error applying fill to cell R{excel_row_idx}C{col_idx_excel}: {e}")
+                    logger.error(f"셀 서식 적용 오류 R{excel_row_idx}C{col_idx_excel}: {e}")
+                    errors += 1
 
     # Log summary of highlighting results
-    logger.info(f"Conditional formatting complete: {rows_highlighted} rows highlighted for price differences < -1")
+    logger.info(f"조건부 서식 적용 완료: {rows_highlighted}개 행에 가격차이 < -1 하이라이팅 적용됨 (검사 행: {rows_checked}, 오류: {errors})")
 
 def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Sets up page orientation, print area, freeze panes, etc."""
