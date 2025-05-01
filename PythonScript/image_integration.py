@@ -336,8 +336,8 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    high_confidence_threshold = 0.65  # 높은 신뢰도 임계값 (원래 값 유지)
-    min_confidence_threshold = 0.30   # 최소 신뢰도 임계값 (0.45에서 0.30으로 낮춤)
+    high_confidence_threshold = 0.40  # 높은 신뢰도 임계값 (0.65에서 0.40으로 낮춤)
+    min_confidence_threshold = 0.10   # 최소 신뢰도 임계값 (0.30에서 0.10으로 낮춤)
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -378,14 +378,12 @@ def find_best_match_with_enhanced_matcher(
         best_match_name = target_images[best_match]['clean_name']
         logging.info(f"  --> Best Match Selected: {best_match_name} (Score: {best_score:.3f})")
         
-        # 높은 신뢰도 임계값보다 낮은 점수는 매칭 안함 (신뢰도 없음)
-        if best_score < min_confidence_threshold:
-            logging.debug(f"신뢰도가 너무 낮아 매칭하지 않습니다 (점수: {best_score:.3f} < {min_confidence_threshold})")
-            return None
-            
-        # 경고 로그 - 낮은 신뢰도 매칭
+        # 높은 신뢰도 임계값보다 낮은 점수는 경고 로그 출력만 하고 매칭은 유지
         if best_score < high_confidence_threshold:
-            logging.warning(f"낮은 신뢰도로 매칭되었습니다: {target_images[best_match]['clean_name']} (점수: {best_score:.3f})")
+            logging.warning(f"낮은 신뢰도로 매칭되었습니다: {best_match_name} (점수: {best_score:.3f})")
+        
+        # 모든 점수에 대해 매칭 유지 (매우 낮은 신뢰도 점수에도 매칭)
+        # 기존 최소 임계값 아래인 경우에도 매칭 결과 반환
         return best_match, best_score
     else:
         logging.debug("이미지 매치 없음")
@@ -613,13 +611,13 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         
         # 임계값 설정 - 설정 파일에서 가져오거나 기본값 사용
         try:
-            # 이미지 표시 임계값을 더 낮게 설정 (0.7 -> 0.3)
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.3)
+            # 이미지 표시 임계값을 더 낮게 설정 - 0.3에서 0.1로 추가 인하
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.1)
             # 필터링이 사실상 비활성화되어 있음을 표시
             logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (낮은 임계값으로 대부분의 매칭을 유지)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 낮은 기본값 0.3을 사용합니다.")
-            similarity_threshold = 0.3
+            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.1을 사용합니다.")
+            similarity_threshold = 0.1
         
         # -------------------------------------------------------------
         # 이미지 유사도 필터링
@@ -636,9 +634,10 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         # The filtering is now done based on the 'score' key in the image dictionary below.
         logging.debug("Skipping obsolete filtering based on '이미지_유사도' column.")
 
+        # 너무 낮은 점수에만 필터링 적용 (대부분 유지)
         filtered_count = 0
         rows_affected = set() # Track unique rows affected
-        # Define Haoreum column name
+        # Define Haereum column name
         haoreum_col_name = '해오름(이미지링크)'
 
         for idx, row in result_df.iterrows():
@@ -647,9 +646,9 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 if col_name not in result_df.columns:
                     continue
                 
-                # Explicitly skip Haoreum column if it somehow gets included here (redundant safety check)
+                # Explicitly skip Haereum column if it somehow gets included here (redundant safety check)
                 if col_name == haoreum_col_name:
-                    logging.debug(f"Skipping Haoreum column '{haoreum_col_name}' in similarity filtering loop at index {idx}")
+                    logging.debug(f"Skipping Haereum column '{haoreum_col_name}' in similarity filtering loop at index {idx}")
                     continue
 
                 img_data = row[col_name]
@@ -658,8 +657,9 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 if isinstance(img_data, dict) and 'score' in img_data:
                     try:
                         score = float(img_data['score'])
+                        # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
                         if score < similarity_threshold:
-                            result_df.at[idx, col_name] = '-' # Filter out low-score image
+                            result_df.at[idx, col_name] = '-' # Filter out very low-score image
                             filtered_count += 1
                             rows_affected.add(idx)
                     except (ValueError, TypeError):
@@ -680,15 +680,15 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         for i in range(len(result_df)):
             # 이미지 열별 존재 카운트
             if '해오름(이미지링크)' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['해오름(이미지링크)']) and result_df.iloc[i]['해오름(이미지링크)'] not in [None, '-']:
+                if pd.notna(result_df.iloc[i]['해오름(이미지링크)']) and result_df.iloc[i]['해오름(이미지링크)'] not in [None, '-', '']:
                     haereum_count += 1
                     
             if '고려기프트(이미지링크)' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['고려기프트(이미지링크)']) and result_df.iloc[i]['고려기프트(이미지링크)'] not in [None, '-']:
+                if pd.notna(result_df.iloc[i]['고려기프트(이미지링크)']) and result_df.iloc[i]['고려기프트(이미지링크)'] not in [None, '-', '']:
                     kogift_count += 1
                     
             if '네이버쇼핑(이미지링크)' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['네이버쇼핑(이미지링크)']) and result_df.iloc[i]['네이버쇼핑(이미지링크)'] not in [None, '-']:
+                if pd.notna(result_df.iloc[i]['네이버쇼핑(이미지링크)']) and result_df.iloc[i]['네이버쇼핑(이미지링크)'] not in [None, '-', '']:
                     naver_count += 1
         
         logging.info(f"통합: 이미지 현황 (필터링 후) - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")

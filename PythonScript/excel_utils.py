@@ -1554,10 +1554,27 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
                     corresponding_col = '네이버 이미지'
                 
                 if corresponding_col in df_final.columns:
-                    value = df_final.loc[idx, corresponding_col]
-                    if pd.notna(value) and value != '-' and value != '':
-                        output_df.loc[idx, img_col] = value
-                        logger.debug(f"Recovered image data for {img_col} from {corresponding_col} at index {idx}")
+                    try:
+                        value = df_final.loc[idx, corresponding_col]
+                        
+                        # Fix for Series objects - Get the first non-NA value from the Series
+                        if isinstance(value, pd.Series):
+                            logger.debug(f"Found pd.Series value at idx {idx}, {corresponding_col}. Converting to scalar.")
+                            # Get first non-NA value from Series
+                            for item in value:
+                                if pd.notna(item) and item not in ['-', '']:
+                                    value = item
+                                    break
+                            else:
+                                # If no valid value found, use empty string
+                                value = '-'
+                        
+                        if pd.notna(value) and value not in ['-', '']:
+                            output_df.at[idx, img_col] = value  # Use .at for scalar assignment
+                            logger.debug(f"Recovered image data for {img_col} from {corresponding_col} at index {idx}")
+                    except Exception as e:
+                        logger.warning(f"Error recovering image data at idx {idx}: {e}")
+                        # Skip this value on error
     
     # Ensure data is in correct format for Excel
     for col in output_df.columns:
@@ -1579,6 +1596,12 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     
     # Replace NaN values with None for proper Excel output
     output_df = output_df.replace({pd.NA: None, np.nan: None})
+    
+    # Set default values for any empty cells
+    for col in output_df.columns:
+        if col not in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+            # Set empty cells to '-' for non-image columns
+            output_df[col] = output_df[col].apply(lambda x: '-' if pd.isna(x) or x == '' else x)
     
     # Log the final column structure
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
