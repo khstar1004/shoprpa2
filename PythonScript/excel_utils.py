@@ -62,124 +62,96 @@ except Exception as e:
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
 # Column Rename Mapping (Ensure keys cover variations, values match FINAL_COLUMN_ORDER)
-# Updated to map TO the desired "엑셀 골든" column names
 COLUMN_RENAME_MAP = {
-    # 구분 -> 구분(승인관리:A/가격관리:P)
-    '구분': '구분(승인관리:A/가격관리:P)',
-    '구분(승인관리:A/가격관리:P)': '구분(승인관리:A/가격관리:P)', # Keep self-map
-    # 담당자 -> 담당자
+    # Standard column renames - map FROM old names TO new names
+    '구분(승인관리:A/가격관리:P)': '구분',
+    '공급사명': '업체명',
+    '공급처코드': '업체코드',
+    '상품코드': 'Code',
+    '카테고리(중분류)': '중분류카테고리',
+    '본사 기본수량': '기본수량(1)',
+    '판매단가1(VAT포함)': '판매단가(V포함)',
+    '본사링크': '본사상품링크',
+    '고려 기본수량': '기본수량(2)',
+    '판매단가2(VAT포함)': '판매가(V포함)(2)',
+    '고려 가격차이': '가격차이(2)',
+    '고려 가격차이(%)': '가격차이(2)(%)',
+    '고려 링크': '고려기프트 상품링크',
+    '네이버 기본수량': '기본수량(3)',
+    '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
+    '네이버 가격차이': '가격차이(3)',
+    '네이버가격차이(%)': '가격차이(3)(%)',
+    '네이버 공급사명': '공급사명',
+    '네이버 링크': '네이버 쇼핑 링크',
+    '해오름(이미지링크)': '본사 이미지',
+    '고려기프트(이미지링크)': '고려기프트 이미지',
+    '네이버쇼핑(이미지링크)': '네이버 이미지',
+    
+    # Self-maps (columns that already have correct names)
+    '구분': '구분',
     '담당자': '담당자',
-    # 업체명 -> 공급사명
-    '업체명': '공급사명',
-    '공급사명': '공급사명', # Keep self-map (for first supplier)
-    # 업체코드 -> 공급처코드
-    '업체코드': '공급처코드',
-    '공급처코드': '공급처코드', # Keep self-map
-    # Code -> 상품코드
-    'Code': '상품코드',
-    '상품코드': '상품코드', # Keep self-map
-    # 중분류카테고리 -> 카테고리(중분류)
-    '중분류카테고리': '카테고리(중분류)',
-    '카테고리(중분류)': '카테고리(중분류)', # Keep self-map
-    # 상품명 -> 상품명
+    '업체명': '업체명',
+    '업체코드': '업체코드',
+    'Code': 'Code',
+    '중분류카테고리': '중분류카테고리',
     '상품명': '상품명',
-    'name': '상품명',
-    # 기본수량(1) -> 본사 기본수량
-    '기본수량(1)': '본사 기본수량',
-    '본사 기본수량': '본사 기본수량', # Keep self-map
-    # 판매단가(V포함) -> 판매단가1(VAT포함)
-    '판매단가(V포함)': '판매단가1(VAT포함)',
-    '판매단가1(VAT포함)': '판매단가1(VAT포함)', # Keep self-map
-    # 본사상품링크 -> 본사링크
-    '본사상품링크': '본사링크',
-    '본사링크': '본사링크', # Keep self-map
-    # 기본수량(2) -> 고려 기본수량
-    '기본수량(2)': '고려 기본수량', # Corrected Target
-    '고려 기본수량': '고려 기본수량', # Keep self-map
-    # 판매가(V포함)(2) -> 판매단가2(VAT포함)
-    '판매가(V포함)(2)': '판매단가2(VAT포함)', # Corrected Target
-    '판매단가(V포함)(2)': '판매단가2(VAT포함)', # Handle potential input variation
-    '판매단가2(VAT포함)': '판매단가2(VAT포함)', # Keep self-map
-    # 가격차이(2) -> 고려 가격차이
-    '가격차이(2)': '고려 가격차이', # Corrected Target
-    '고려 가격차이': '고려 가격차이', # Keep self-map
-    # 가격차이(2)(%) -> 고려 가격차이(%)
-    '가격차이(2)(%)': '고려 가격차이(%)', # Corrected Target
-    '고려 가격차이(%)': '고려 가격차이(%)', # Keep self-map
-    # 고려기프트 상품링크 -> 고려 링크
-    '고려기프트 상품링크': '고려 링크', # Corrected Target
-    '고려 링크': '고려 링크', # Keep self-map
-    # 기본수량(3) -> 네이버 기본수량
-    '기본수량(3)': '네이버 기본수량', # Corrected Target
-    '네이버 기본수량': '네이버 기본수량', # Keep self-map
-    # 판매단가(V포함)(3) -> 판매단가3 (VAT포함)
-    '판매단가(V포함)(3)': '판매단가3 (VAT포함)', # Corrected Target
-    '판매단가3 (VAT포함)': '판매단가3 (VAT포함)', # Keep self-map
-    # 가격차이(3) -> 네이버 가격차이
-    '가격차이(3)': '네이버 가격차이', # Corrected Target
-    '네이버 가격차이': '네이버 가격차이', # Keep self-map
-    # 가격차이(3)(%) -> 네이버가격차이(%)
-    '가격차이(3)(%)': '네이버가격차이(%)', # Corrected Target
-    '네이버가격차이(%)': '네이버가격차이(%)', # Keep self-map
-    # 네이버 공급사명 -> 네이버 공급사명 (Target column name)
-    '네이버 공급사명': '네이버 공급사명', # Corrected: Map specific Naver source to the target '네이버 공급사명'
-    # Avoid mapping a generic second '공급사명' if input isn't guaranteed unique
-    # 네이버 쇼핑 링크 -> 네이버 링크
-    '네이버 쇼핑 링크': '네이버 링크', # Corrected Target
-    '네이버 링크': '네이버 링크', # Keep self-map
-    # 공급사 상품링크 -> 공급사 상품링크 (This column isn't in FINAL_COLUMN_ORDER, can remove mapping or keep if needed for intermediate steps)
-    # '공급사 상품링크': '공급사 상품링크',
-    # '네이버 링크': '공급사 상품링크', # Avoid ambiguous mapping
-    # 본사 이미지 -> 해오름(이미지링크)
-    '본사 이미지': '해오름(이미지링크)', # Corrected Target
-    '해오름이미지경로': '해오름(이미지링크)', # Corrected Target
-    '해오름(이미지링크)': '해오름(이미지링크)', # Keep self-map
-    # 고려기프트 이미지 -> 고려기프트(이미지링크)
-    '고려기프트 이미지': '고려기프트(이미지링크)', # Corrected Target
-    '고려기프트(이미지링크)': '고려기프트(이미지링크)', # Keep self-map
-    # 네이버 이미지 -> 네이버쇼핑(이미지링크)
-    '네이버 이미지': '네이버쇼핑(이미지링크)', # Corrected Target
-    '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)' # Keep self-map
+    '기본수량(1)': '기본수량(1)',
+    '판매단가(V포함)': '판매단가(V포함)',
+    '본사상품링크': '본사상품링크',
+    '기본수량(2)': '기본수량(2)',
+    '판매가(V포함)(2)': '판매가(V포함)(2)',
+    '가격차이(2)': '가격차이(2)',
+    '가격차이(2)(%)': '가격차이(2)(%)',
+    '고려기프트 상품링크': '고려기프트 상품링크',
+    '기본수량(3)': '기본수량(3)',
+    '판매단가(V포함)(3)': '판매단가(V포함)(3)',
+    '가격차이(3)': '가격차이(3)',
+    '가격차이(3)(%)': '가격차이(3)(%)',
+    '공급사명': '공급사명',
+    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
+    '공급사 상품링크': '공급사 상품링크',
+    '본사 이미지': '본사 이미지',
+    '고려기프트 이미지': '고려기프트 이미지',
+    '네이버 이미지': '네이버 이미지'
 }
 
 # Final Target Column Order (Based on "엑셀 골든" sample)
 # THIS IS THE STRICT ORDER AND NAMING FOR THE OUTPUT FILE
 FINAL_COLUMN_ORDER = [
-    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
-    '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
-    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크', # Corrected: Removed leading space
-    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', # Corrected: Removed trailing space
-    '네이버 링크',
-    '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', 
+    '네이버 쇼핑 링크', '공급사 상품링크',
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
 ]
 
 # Columns that must be present in the input file for processing
 # Update this based on the new FINAL_COLUMN_ORDER if necessary,
 # focusing on the absolutely essential input fields needed.
-# Let's assume the core identifier columns remain crucial, using the NEW names
 REQUIRED_INPUT_COLUMNS = [
     '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리',
     '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
 ]
 
 # --- Column Type Definitions for Formatting ---
-# Update these lists based on the NEW FINAL_COLUMN_ORDER names ("엑셀 골든")
+# Update these lists based on the FINAL_COLUMN_ORDER names
 PRICE_COLUMNS = [
-    '판매단가1(VAT포함)', '판매단가2(VAT포함)', '판매단가3 (VAT포함)',
-    '고려 가격차이', '네이버 가격차이'
+    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)',
+    '가격차이(2)', '가격차이(3)'
 ]
-QUANTITY_COLUMNS = ['본사 기본수량', '고려 기본수량', '네이버 기본수량']
-PERCENTAGE_COLUMNS = ['고려 가격차이(%)', '네이버가격차이(%)']
-TEXT_COLUMNS = ['구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명', '네이버 공급사명']
+QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
+PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
+TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
 LINK_COLUMNS_FOR_HYPERLINK = {
     # Map final column names used for links
-    '본사링크': '본사링크',
-    '고려 링크': '고려 링크',
-    '네이버 링크': '네이버 링크'
-    # Image columns are handled separately but have '링크' in name
+    '본사상품링크': '본사상품링크',
+    '고려기프트 상품링크': '고려기프트 상품링크',
+    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
+    '공급사 상품링크': '공급사 상품링크'
 }
 # Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
-IMAGE_COLUMNS = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
 # Error Messages Constants (Can be used for conditional formatting or checks)
 ERROR_MESSAGES = {
@@ -1120,16 +1092,71 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             _add_hyperlinks_to_worksheet(worksheet_result, df_for_excel, hyperlinks_as_formulas=False)
             _add_header_footer(worksheet_result)
             
-            # Save the result file (without images for now)
+            # Save without images first to ensure we can write to file
             workbook_result.save(result_path)
+            
+            # Now load the saved file to add images
+            # Create a new workbook with images
+            try:
+                logger.info("Adding images to result file...")
+                # Load the workbook
+                workbook_with_images = openpyxl.load_workbook(result_path)
+                worksheet_with_images = workbook_with_images.active
+                
+                # Process image columns
+                image_cols = [col for col in df_finalized.columns if col in IMAGE_COLUMNS]
+                images_added = 0
+                
+                # Adjust row heights to accommodate images
+                for row_idx in range(2, len(df_finalized) + 2):
+                    worksheet_with_images.row_dimensions[row_idx].height = 120  # Adjust row height
+                
+                # Adjust column widths for image columns
+                for img_col in image_cols:
+                    col_idx = df_finalized.columns.get_loc(img_col) + 1
+                    col_letter = get_column_letter(col_idx)
+                    worksheet_with_images.column_dimensions[col_letter].width = 22  # Wider columns for images
+                
+                # Add images to the worksheet
+                for row_idx, (_, row) in enumerate(df_finalized.iterrows(), 2):
+                    for img_col in image_cols:
+                        col_idx = df_finalized.columns.get_loc(img_col) + 1
+                        img_value = row[img_col]
+                        
+                        if isinstance(img_value, dict) and 'local_path' in img_value:
+                            img_path = img_value['local_path']
+                            if os.path.exists(img_path):
+                                try:
+                                    # Create and add the image
+                                    img = openpyxl.drawing.image.Image(img_path)
+                                    img.width = 80  # Set image width
+                                    img.height = 80  # Set image height
+                                    img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
+                                    worksheet_with_images.add_image(img)
+                                    
+                                    # Clear the cell content
+                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                    cell.value = ""
+                                    
+                                    images_added += 1
+                                except Exception as img_err:
+                                    logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
+                                    # Keep the web URL as fallback
+                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                    if 'url' in img_value and img_value['url']:
+                                        cell.value = img_value['url']
+                                    else:
+                                        cell.value = str(img_path)
+                
+                # Save the workbook with images
+                workbook_with_images.save(result_path)
+                logger.info(f"Successfully added {images_added} images to result file")
+            except Exception as img_err:
+                logger.error(f"Error adding images to result file: {img_err}")
+                # Continue with the file without images
+            
             result_success = True
-            
-            # Now embed images
-            # Skip this step for now - images will be processed separately if needed
-            
             logger.info(f"Successfully created result file: {result_path}")
-            
-            # Potentially add a verification step here
             
         except Exception as e:
             logger.error(f"Error creating result file: {e}")
@@ -1155,11 +1182,54 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         
                         # Handle different types of image data
                         if isinstance(value, dict) and 'url' in value:
-                            # Extract URL from dictionary
-                            df_upload.at[idx, col] = value['url']
+                            # Extract URL from dictionary and ensure it's a web URL
+                            url = value['url']
+                            if isinstance(url, str) and url.startswith(('http://', 'https://')):
+                                df_upload.at[idx, col] = url
+                            elif isinstance(url, str) and url.startswith('file:///'):
+                                # Try to find a web URL in other fields if available
+                                if 'source' in value and value['source'] == 'haereum' and '본사링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '본사링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                                        continue
+                                elif 'source' in value and value['source'] == 'kogift' and '고려 링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '고려 링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                                        continue
+                                elif 'source' in value and value['source'] == 'naver' and '네이버 링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '네이버 링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                                        continue
+                                        
+                                # If we can't find a web URL, use the file URL (not ideal but better than nothing)
+                                df_upload.at[idx, col] = url
+                            else:
+                                df_upload.at[idx, col] = '-'
                         elif isinstance(value, str) and value != '-' and ('http' in value or 'file:/' in value):
-                            # Keep URL strings as-is
-                            pass
+                            # Keep web URL strings as-is, but replace file URLs if possible
+                            if value.startswith(('http://', 'https://')):
+                                # Keep web URLs as is
+                                pass
+                            elif value.startswith('file:///'):
+                                # Try to find a web URL in other fields if available
+                                if col == '해오름(이미지링크)' and '본사링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '본사링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                                elif col == '고려기프트(이미지링크)' and '고려 링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '고려 링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                                elif col == '네이버쇼핑(이미지링크)' and '네이버 링크' in df_upload.columns:
+                                    web_url = df_upload.loc[idx, '네이버 링크']
+                                    if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                        df_upload.at[idx, col] = web_url
+                            else:
+                                # Not a URL, just keep as is
+                                pass
                         elif isinstance(value, pd.Series):
                             # For Series objects, find first non-empty value
                             for item in value:
@@ -1204,6 +1274,20 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             _add_hyperlinks_to_worksheet(worksheet_upload, df_upload, hyperlinks_as_formulas=True)
             _add_header_footer(worksheet_upload)
             
+            # Remove filters from the worksheet
+            try:
+                # Remove any autofilter
+                if hasattr(worksheet_upload, 'auto_filter') and worksheet_upload.auto_filter:
+                    worksheet_upload.auto_filter.ref = None
+                
+                # Also check for specific filtered ranges
+                if hasattr(worksheet_upload, '_filters'):
+                    worksheet_upload._filters = {}
+                
+                logger.info("Removed filters from upload Excel file")
+            except Exception as filter_err:
+                logger.warning(f"Could not remove filters: {filter_err}")
+            
             # Save the upload file
             workbook_upload.save(upload_path)
             upload_success = True
@@ -1224,14 +1308,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             logger.warning("Created result file but failed to create upload file.")
         else:
             logger.error("Failed to create both result and upload files.")
-            
-        # Verify result file (if successful)
-        if result_success:
-            try:
-                # Code to verify the result file
-                pass
-            except Exception as verify_err:
-                logger.error(f"Error verifying result file: {verify_err}")
         
         return result_success, upload_success, result_path, upload_path
         
@@ -1437,7 +1513,6 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
         # Create a new DataFrame with deduplicated columns
         # For each duplicate, keep only the first instance
         unique_cols = []
-        renamed_cols = {}
         
         for col in df.columns:
             if col in unique_cols:
@@ -1452,158 +1527,64 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     # Step 1: Create a new DataFrame to avoid modifying the original
     df_final = df.copy()
     
-    # Step 2: Map columns from input DataFrame to expected output columns
-    column_mapping = {
-        # Core mapping for required columns
-        '구분': '구분(승인관리:A/가격관리:P)',
-        '업체명': '공급사명',
-        '업체코드': '공급처코드',
-        'Code': '상품코드',
-        '중분류카테고리': '카테고리(중분류)',
-        '상품명': '상품명',
-        '기본수량(1)': '본사 기본수량',
-        '판매단가(V포함)': '판매단가1(VAT포함)',
-        '본사상품링크': '본사링크',
-        '기본수량(2)': '고려 기본수량',
-        '판매단가(V포함)(2)': '판매단가2(VAT포함)',
-        '가격차이(2)': '고려 가격차이',
-        '가격차이(2)(%)': '고려 가격차이(%)',
-        '고려기프트 상품링크': '고려 링크',
-        '기본수량(3)': '네이버 기본수량',
-        '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
-        '가격차이(3)': '네이버 가격차이',
-        '가격차이(3)(%)': '네이버가격차이(%)',
-        '공급사명': '네이버 공급사명',
-        '네이버 쇼핑 링크': '네이버 링크',
-        
-        # Ensure image columns are preserved
-        '해오름(이미지링크)': '해오름(이미지링크)',
-        '고려기프트(이미지링크)': '고려기프트(이미지링크)',
-        '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)',
-        
-        # Alternate names that might be used
-        '본사 기본수량': '본사 기본수량',
-        '판매단가1(VAT포함)': '판매단가1(VAT포함)',
-        '본사링크': '본사링크',
-        '고려 기본수량': '고려 기본수량',
-        '판매단가2(VAT포함)': '판매단가2(VAT포함)',
-        '고려 가격차이': '고려 가격차이',
-        '고려 가격차이(%)': '고려 가격차이(%)',
-        '고려 링크': '고려 링크',
-        '네이버 기본수량': '네이버 기본수량',
-        '판매단가3 (VAT포함)': '판매단가3 (VAT포함)',
-        '네이버 가격차이': '네이버 가격차이',
-        '네이버가격차이(%)': '네이버가격차이(%)',
-        '네이버 공급사명': '네이버 공급사명',
-        '네이버 링크': '네이버 링크',
-        
-        # Map internal image columns if necessary
-        '본사 이미지': '해오름(이미지링크)',
-        '고려기프트 이미지': '고려기프트(이미지링크)',
-        '네이버 이미지': '네이버쇼핑(이미지링크)',
-    }
+    # Step 2: Rename columns to the target names
+    df_final = df_final.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
     
-    # Create a new DataFrame with the desired columns
+    # Step 3: Create an output DataFrame with columns in the proper order
     output_df = pd.DataFrame()
     
-    # First, map columns using our mapping
+    # Add each column from FINAL_COLUMN_ORDER
     for target_col in FINAL_COLUMN_ORDER:
-        # First priority: check if the target column already exists
         if target_col in df_final.columns:
+            # Column already exists with correct name
             output_df[target_col] = df_final[target_col]
-            continue
-            
-        # Second priority: try to find a source column that maps to this target
-        mapped = False
-        for source_col, dest_col in column_mapping.items():
-            if dest_col == target_col and source_col in df_final.columns:
-                logger.debug(f"Mapping column: '{source_col}' to '{target_col}'")
-                output_df[target_col] = df_final[source_col]
-                mapped = True
-                break
-                
-        # If no mapping found, add empty column
-        if not mapped:
-            logger.debug(f"No data for column '{target_col}', adding empty column")
+        else:
+            # Column doesn't exist - add empty column
             output_df[target_col] = None
+            logger.debug(f"Added missing column '{target_col}' to DataFrame.")
     
-    # Preserve image data dictionaries
-    for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-        # Try to get image data from the original image columns first
-        if img_col in df_final.columns:
-            output_df[img_col] = df_final[img_col]
-        # Then try alternate image column names
-        elif img_col == '해오름(이미지링크)' and '본사 이미지' in df_final.columns:
-            output_df[img_col] = df_final['본사 이미지']
-        elif img_col == '고려기프트(이미지링크)' and '고려기프트 이미지' in df_final.columns:
-            output_df[img_col] = df_final['고려기프트 이미지']
-        elif img_col == '네이버쇼핑(이미지링크)' and '네이버 이미지' in df_final.columns:
-            output_df[img_col] = df_final['네이버 이미지']
+    # Step 4: Handle image columns specifically to ensure proper data transfer
+    # This is important because image data can be in different formats (dictionaries, paths, etc.)
+    image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
     
-    # Ensure we didn't lose any image data in the column mapping
-    for idx in range(len(output_df)):
-        for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-            # If the column is empty but we have data in the source DF
-            if (pd.isna(output_df.loc[idx, img_col]) or output_df.loc[idx, img_col] == '-' or output_df.loc[idx, img_col] == '') and img_col in df_final.columns:
-                corresponding_col = ''
-                if img_col == '해오름(이미지링크)':
-                    corresponding_col = '본사 이미지'
-                elif img_col == '고려기프트(이미지링크)':
-                    corresponding_col = '고려기프트 이미지'
-                elif img_col == '네이버쇼핑(이미지링크)':
-                    corresponding_col = '네이버 이미지'
-                
-                if corresponding_col in df_final.columns:
-                    try:
-                        value = df_final.loc[idx, corresponding_col]
-                        
-                        # Fix for Series objects - Get the first non-NA value from the Series
-                        if isinstance(value, pd.Series):
-                            logger.debug(f"Found pd.Series value at idx {idx}, {corresponding_col}. Converting to scalar.")
-                            # Get first non-NA value from Series
-                            for item in value:
-                                if pd.notna(item) and item not in ['-', '']:
-                                    value = item
-                                    break
-                            else:
-                                # If no valid value found, use empty string
-                                value = '-'
-                        
-                        if pd.notna(value) and value not in ['-', '']:
-                            output_df.at[idx, img_col] = value  # Use .at for scalar assignment
-                            logger.debug(f"Recovered image data for {img_col} from {corresponding_col} at index {idx}")
-                    except Exception as e:
-                        logger.warning(f"Error recovering image data at idx {idx}: {e}")
-                        # Skip this value on error
+    # If image columns are present in the input but not in the output, copy them over
+    old_image_cols = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
     
-    # Ensure data is in correct format for Excel
+    for i, old_col in enumerate(old_image_cols):
+        new_col = image_cols[i]
+        
+        # If new column is empty but old column exists, copy data
+        if old_col in df_final.columns and new_col in output_df.columns:
+            # Check if we need to copy the data (new column is empty)
+            needs_copy = output_df[new_col].isna().all() or (output_df[new_col] == '-').all()
+            if needs_copy:
+                logger.debug(f"Copying image data from '{old_col}' to '{new_col}'")
+                output_df[new_col] = df_final[old_col]
+    
+    # Step 5: Format numeric columns
     for col in output_df.columns:
-        # Exclude image columns from this transformation
-        if col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+        # Skip image columns
+        if col in image_cols:
             continue
             
-        # For numeric columns
-        if col in ['본사 기본수량', '판매단가1(VAT포함)', '고려 기본수량', '판매단가2(VAT포함)', 
-                  '고려 가격차이', '고려 가격차이(%)', '네이버 기본수량', '판매단가3 (VAT포함)', 
-                  '네이버 가격차이', '네이버가격차이(%)']:
+        # For numeric columns (prices, quantities)
+        if any(keyword in col for keyword in ['단가', '가격', '수량']):
             try:
                 # Convert to numeric, coercing errors to NaN
                 output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
             except Exception as e:
                 logger.warning(f"Error converting column '{col}' to numeric: {e}")
-                # If conversion fails, keep as is
-                pass
+                # Keep as is if conversion fails
     
-    # Replace NaN values with None for proper Excel output
+    # Step 6: Replace NaN with None for Excel
     output_df = output_df.replace({pd.NA: None, np.nan: None})
     
-    # Set default values for any empty cells
+    # Step 7: Set default values for empty cells
     for col in output_df.columns:
-        if col not in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+        if col not in image_cols:
             # Set empty cells to '-' for non-image columns
             output_df[col] = output_df[col].apply(lambda x: '-' if pd.isna(x) or x == '' else x)
     
-    # Log the final column structure
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
     logger.debug(f"Final columns: {output_df.columns.tolist()}")
     
