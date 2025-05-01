@@ -326,6 +326,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         image_url = item['image_path']
                     elif 'src' in item and item['src']:
                         image_url = item['src']
+                    elif 'original_image_url' in item and item['original_image_url']:
+                        # 새로 추가: 원본 이미지 URL 사용 (매칭 과정에서 저장됨)
+                        image_url = item['original_image_url']
                     
                     # FIX: Check for 'local_image_path' which is stored by the Kogift image downloader
                     local_image_path = None
@@ -376,6 +379,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                     img_dict['local_path'] = local_path
                                     img_dict['original_path'] = local_path  # Add original_path for better compatibility
                                 
+                                # 새로 추가: 원본 URL 저장
+                                if 'original_image_url' in item and item['original_image_url'] and item['original_image_url'] != image_url:
+                                    img_dict['original_image_url'] = item['original_image_url']
+                                
                                 df.at[idx, '고려기프트 이미지'] = img_dict
                                 kogift_img_count += 1
                                 logging.debug(f"Kogift 이미지 URL 추가: '{product_name}': {image_url[:50]}...")
@@ -393,7 +400,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 # FIX: Explicitly add original_path for better compatibility
                                 if 'local_path' in img_dict and 'original_path' not in img_dict:
                                     img_dict['original_path'] = img_dict['local_path']
-                                    
+                                
+                                # 새로 추가: 원본 URL 저장
+                                if 'original_image_url' in item and item['original_image_url']:
+                                    img_dict['original_image_url'] = item['original_image_url']
+                                
                                 df.at[idx, '고려기프트 이미지'] = img_dict
                                 kogift_img_count += 1
                     
@@ -420,6 +431,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             img_info = f"이미지 정보: {{url: '{kogift_img_data.get('url', '없음')[:30]}...'"
                             if 'local_path' in kogift_img_data:
                                 img_info += f", local_path: '{kogift_img_data.get('local_path', '없음')[-30:]}...'"
+                            if 'original_image_url' in kogift_img_data:
+                                img_info += f", original_url: '{kogift_img_data.get('original_image_url', '없음')[:30]}...'"
                             img_info += "}"
                         
                         logging.info(f"  - 상품: '{product_name}', Kogift 가격: {kogift_price}, {img_info}")
@@ -473,7 +486,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             img_url = None
                             
                             # IMPROVED: 실제 이미지 URL 찾기 (순서대로 시도)
-                            if 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
+                            if 'original_image_url' in item and item['original_image_url']:
+                                # 새로 추가: 원본 이미지 URL 사용 (매칭 과정에서 저장됨)
+                                img_url = item['original_image_url']
+                            elif 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
                                 img_url = item['image_url']
                             elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path'].startswith(('http://', 'https://')):
                                 img_url = item['image_path']
@@ -490,6 +506,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                     if img_path and not isinstance(img_path, dict) and not img_path.startswith(('http://', 'https://')):
                                         img_dict['local_path'] = img_path
                                     
+                                    # 새로 추가: 원본 URL 저장
+                                    if 'original_image_url' in item and item['original_image_url'] and item['original_image_url'] != img_url:
+                                        img_dict['original_image_url'] = item['original_image_url']
+                                    
                                     df.at[idx, '네이버 이미지'] = img_dict
                                     logging.debug(f"Found Naver image URL: {img_url[:50]}...")
                                 elif isinstance(img_path, dict):
@@ -497,13 +517,22 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                     img_dict = img_path.copy()
                                     if 'source' not in img_dict:
                                         img_dict['source'] = '네이버'
+                                    
+                                    # 새로 추가: 원본 URL 저장
+                                    if 'original_image_url' in item and item['original_image_url']:
+                                        img_dict['original_image_url'] = item['original_image_url']
+                                    
                                     df.at[idx, '네이버 이미지'] = img_dict
                                 else:
                                     # 로컬 경로만 있는 경우
-                                    df.at[idx, '네이버 이미지'] = {
-                                        'local_path': img_path,
-                                        'source': '네이버'
-                                    }
+                                    img_dict = {'local_path': img_path, 'source': '네이버'}
+                                    
+                                    # 새로 추가: 원본 URL 저장
+                                    if 'original_image_url' in item and item['original_image_url']:
+                                        img_dict['original_image_url'] = item['original_image_url']
+                                        img_dict['url'] = item['original_image_url']
+                                    
+                                    df.at[idx, '네이버 이미지'] = img_dict
         
         logging.info(f"Updated {naver_matched_count} rows with Naver data")
     
