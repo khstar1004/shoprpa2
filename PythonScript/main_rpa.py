@@ -27,6 +27,7 @@ from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
 from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
 from image_integration import integrate_and_filter_images
+from price_highlighter import apply_price_highlighting_to_files
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -830,6 +831,21 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 # Create Excel files (even if df_to_save is empty, to get headers)
                                 logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
                                 result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                
+                                # <<< 추가: 가격 하이라이팅 적용 >>>
+                                if result_success or upload_success:
+                                    logging.info("엑셀 파일 생성 후 가격차이 하이라이팅 적용 시작")
+                                    try:
+                                        success_count, total_files = apply_price_highlighting_to_files(
+                                            result_path=result_path, 
+                                            upload_path=upload_path, 
+                                            threshold=-1
+                                        )
+                                        logging.info(f"가격차이 하이라이팅 결과: {success_count}/{total_files} 파일 처리 완료")
+                                    except Exception as highlight_err:
+                                        logging.error(f"가격차이 하이라이팅 중 오류 발생: {highlight_err}", exc_info=True)
+                                # <<< 추가 코드 종료 >>>
+                                
                                 # --- Result Excel File Verification ---
                                 if result_success and result_path and os.path.exists(result_path):
                                     try:
