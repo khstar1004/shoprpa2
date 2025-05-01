@@ -51,6 +51,9 @@ DEFAULT_ORB_FEATURES = 2000    # Number of ORB features
 DEFAULT_MIN_MATCH_COUNT = 10   # Minimum number of matches for geometric verification
 DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
 
+# Type hint for image input
+ImageType = Union[str, Dict[str, Optional[str]]]
+
 def _load_config() -> configparser.ConfigParser:
     """Load configuration from config.ini"""
     config = configparser.ConfigParser()
@@ -591,12 +594,33 @@ class EnhancedImageMatcher:
             self.model = None
             self.models = []
     
-    def _load_and_prepare_image(self, image_path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    def _get_local_path(self, img_input: ImageType) -> Optional[str]:
+        """Extracts the local file path from either a string or a dict."""
+        if isinstance(img_input, str):
+            return img_input
+        elif isinstance(img_input, dict) and 'local_path' in img_input and img_input['local_path']:
+            return img_input['local_path']
+        elif isinstance(img_input, dict):
+            # Attempt to find path even if dict structure is slightly off
+            for key in ['path', 'file', 'filePath']:
+                 if key in img_input and img_input[key]:
+                     return img_input[key]
+            logger.warning(f"Could not find 'local_path' in image dictionary: {img_input}")
+            return None
+        else:
+            logger.warning(f"Invalid image input type: {type(img_input)}")
+            return None
+
+    def _load_and_prepare_image(self, image_input: ImageType) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        Load and prepare an image for processing with preprocessing and contrast enhancement
+        Load and prepare an image for processing from path or dict.
         Returns color and grayscale versions
         Uses cv2.imdecode for robust Unicode path handling on Windows.
         """
+        image_path = self._get_local_path(image_input)
+        if not image_path:
+            return None, None
+
         try:
             # Check if image exists
             if not os.path.exists(image_path):
@@ -647,15 +671,20 @@ class EnhancedImageMatcher:
             logger.error(f"Error loading image {image_path}: {e}")
             return None, None
                 
-    def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
+    def calculate_sift_similarity(self, img_input1: ImageType, img_input2: ImageType) -> float:
         """Calculate SIFT feature similarity with geometric verification"""
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return 0.0
+            
         try:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
             if cached_result is not None:
                 return cached_result
             
-            # Load images
+            # Load images using paths
             _, gray1 = self._load_and_prepare_image(img_path1)
             _, gray2 = self._load_and_prepare_image(img_path2)
             
@@ -707,7 +736,7 @@ class EnhancedImageMatcher:
             # Normalize and scale the final score
             final_score = min(1.0, match_score * 1.5)  # Scale up to better differentiate
             
-            # Cache the result
+            # Cache the result using paths
             self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", final_score)
             
             return final_score
@@ -716,15 +745,20 @@ class EnhancedImageMatcher:
             logger.error(f"Error calculating SIFT similarity: {e}")
             return 0.0
     
-    def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
+    def calculate_akaze_similarity(self, img_input1: ImageType, img_input2: ImageType) -> float:
         """Calculate AKAZE feature similarity with geometric verification"""
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return 0.0
+
         try:
-            # Try to get from cache first
+            # Try to get from cache first using paths
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
             if cached_result is not None:
                 return cached_result
             
-            # Load images
+            # Load images using paths
             _, gray1 = self._load_and_prepare_image(img_path1)
             _, gray2 = self._load_and_prepare_image(img_path2)
             
@@ -778,7 +812,7 @@ class EnhancedImageMatcher:
             # Normalize and scale
             final_score = min(1.0, match_score * 1.5)
             
-            # Cache the result
+            # Cache the result using paths
             self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", final_score)
             
             return final_score
@@ -787,15 +821,20 @@ class EnhancedImageMatcher:
             logger.error(f"Error calculating AKAZE similarity: {e}")
             return 0.0
             
-    def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
+    def calculate_orb_similarity(self, img_input1: ImageType, img_input2: ImageType) -> float:
         """Calculate ORB feature similarity with geometric verification"""
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return 0.0
+
         try:
-            # Try to get from cache first
+            # Try to get from cache first using paths
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "orb_similarity")
             if cached_result is not None:
                 return cached_result
             
-            # Load images
+            # Load images using paths
             _, gray1 = self._load_and_prepare_image(img_path1)
             _, gray2 = self._load_and_prepare_image(img_path2)
             
@@ -849,7 +888,7 @@ class EnhancedImageMatcher:
             # Normalize and scale
             final_score = min(1.0, match_score * 1.5)
             
-            # Cache the result
+            # Cache the result using paths
             self.feature_cache.put(f"{img_path1}|{img_path2}", "orb_similarity", final_score)
             
             return final_score
@@ -858,12 +897,17 @@ class EnhancedImageMatcher:
             logger.error(f"Error calculating ORB similarity: {e}")
             return 0.0
     
-    def calculate_deep_similarity(self, img_path1: str, img_path2: str) -> float:
+    def calculate_deep_similarity(self, img_input1: ImageType, img_input2: ImageType) -> float:
         """
         Calculate deep learning feature similarity using ensemble of models
         """
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return 0.0
+
         try:
-            # Try to get from cache first
+            # Try to get from cache first using paths
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
             if cached_result is not None:
                 return cached_result
@@ -988,10 +1032,21 @@ class EnhancedImageMatcher:
                             
                         # Extract features
                         model_features = model.predict(x_model, verbose=0).flatten()
-                        model_features = model_features / np.linalg.norm(model_features)
+                        # Handle potential NaN/Inf values before normalization
+                        if np.any(np.isnan(model_features)) or np.any(np.isinf(model_features)):
+                             logger.warning(f"NaN or Inf detected in {model_name} features for {img_path}. Replacing with zeros.")
+                             model_features = np.nan_to_num(model_features, nan=0.0, posinf=0.0, neginf=0.0)
+                        
+                        # Calculate norm, handle zero norm case
+                        norm = np.linalg.norm(model_features)
+                        if norm > 1e-6: # Avoid division by zero
+                            model_features = model_features / norm
+                        else:
+                            model_features = np.zeros_like(model_features) # Set to zero vector if norm is near zero
+                            
                         ensemble_features[model_name] = model_features
                     except Exception as e:
-                        logger.warning(f"Error extracting {model_name} features: {e}")
+                        logger.warning(f"Error extracting {model_name} features for {img_path}: {e}")
                 
                 result['ensemble'] = ensemble_features
             
@@ -1001,16 +1056,23 @@ class EnhancedImageMatcher:
             logger.error(f"Error extracting deep features: {e}")
             return None
     
-    def calculate_combined_similarity(self, img_path1: str, img_path2: str, 
+    def calculate_combined_similarity(self, img_input1: ImageType, img_input2: ImageType, 
                                       weights: Optional[Dict[str, float]] = None) -> Tuple[float, Dict[str, float]]:
         """
         Calculate combined similarity using all methods
         Returns the weighted score and individual scores
         """
+        # Get local paths for calculations
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            logger.warning("Could not get valid paths for combined similarity calculation.")
+            return 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+
         if not weights:
             weights = SETTINGS['WEIGHTS']
             
-        # Calculate similarities
+        # Calculate similarities using paths
         sift_score = self.calculate_sift_similarity(img_path1, img_path2)
         akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
         deep_score = self.calculate_deep_similarity(img_path1, img_path2)
@@ -1052,23 +1114,29 @@ class EnhancedImageMatcher:
         
         return combined_score, scores
         
-    def calculate_similarity(self, img_path1: str, img_path2: str, 
+    def calculate_similarity(self, img_input1: ImageType, img_input2: ImageType, 
                            weights: Optional[Dict[str, float]] = None) -> float:
         """
         Calculate combined similarity between two images
         This is a wrapper around calculate_combined_similarity that returns just the score
         """
+        # Get local paths for caching and calculation
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return 0.0
+
         try:
-            # Try to get from cache first
+            # Try to get from cache first using paths
             cache_key = f"{img_path1}|{img_path2}"
             cached_result = self.feature_cache.get(cache_key, "combined_similarity")
             if cached_result is not None:
                 return float(cached_result)
                 
-            # Calculate similarity
+            # Calculate similarity using paths
             combined_score, _ = self.calculate_combined_similarity(img_path1, img_path2, weights)
             
-            # Cache the result
+            # Cache the result using paths
             self.feature_cache.put(cache_key, "combined_similarity", combined_score)
             
             return combined_score
@@ -1076,23 +1144,29 @@ class EnhancedImageMatcher:
             logger.error(f"Error calculating similarity between {img_path1} and {img_path2}: {e}")
             return 0.0
             
-    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
+    def is_match(self, img_input1: ImageType, img_input2: ImageType, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
         """
         Determine if two images match based on similarity score
         
         Args:
-            img_path1: Path to first image
-            img_path2: Path to second image
+            img_input1: Path or dict for first image
+            img_input2: Path or dict for second image
             threshold: Similarity threshold (default: from config)
             
         Returns:
             Tuple of (is_match, similarity_score, individual_scores)
         """
+        # Get local paths for calculation
+        img_path1 = self._get_local_path(img_input1)
+        img_path2 = self._get_local_path(img_input2)
+        if not img_path1 or not img_path2:
+            return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+
         if threshold is None:
             threshold = SETTINGS['COMBINED_THRESHOLD']
             
         try:
-            # Calculate combined similarity
+            # Calculate combined similarity using paths
             similarity, scores = self.calculate_combined_similarity(img_path1, img_path2)
             
             # Determine if it's a match
@@ -1120,21 +1194,21 @@ def get_file_extension(path: str) -> str:
     
 
 # Function to match product images with batch processing capability
-def match_product_images(haoreum_paths: List[str], 
-                        kogift_paths: List[str],
+def match_product_images(haoreum_image_data: List[Dict[str, Optional[str]]], 
+                        kogift_image_data: List[Dict[str, Optional[str]]],
                         threshold: float = None,
                         custom_weights: Optional[Dict[str, float]] = None) -> List[Dict]:
     """
     Match Haoreum product images with Kogift product images
     
     Args:
-        haoreum_paths: List of paths to Haoreum product images
-        kogift_paths: List of paths to Kogift product images
+        haoreum_image_data: List of dictionaries for Haoreum product images ({local_path, url, source})
+        kogift_image_data: List of dictionaries for Kogift product images ({local_path, url, source})
         threshold: Similarity threshold for matches (default: from config)
         custom_weights: Optional custom weights for similarity calculations
         
     Returns:
-        List of dictionaries with match results
+        List of dictionaries with match results, containing the full image data dicts.
     """
     # Use threshold from config if not provided
     if threshold is None:
@@ -1147,39 +1221,40 @@ def match_product_images(haoreum_paths: List[str],
     matcher = EnhancedImageMatcher()
     results = []
     
-    # Check all inputs exist
-    haoreum_valid = [p for p in haoreum_paths if os.path.exists(p)]
-    kogift_valid = [p for p in kogift_paths if os.path.exists(p)]
+    # Validate image data dictionaries (check for local_path)
+    haoreum_valid = [data for data in haoreum_image_data if data and data.get('local_path') and os.path.exists(data['local_path'])]
+    kogift_valid = [data for data in kogift_image_data if data and data.get('local_path') and os.path.exists(data['local_path'])]
     
     if len(haoreum_valid) == 0 or len(kogift_valid) == 0:
-        logger.warning(f"No valid images found: Haoreum {len(haoreum_valid)}/{len(haoreum_paths)}, "
-                      f"Kogift {len(kogift_valid)}/{len(kogift_paths)}")
+        logger.warning(f"No valid image data found: Haoreum {len(haoreum_valid)}/{len(haoreum_image_data)}, "
+                      f"Kogift {len(kogift_valid)}/{len(kogift_image_data)}")
         return results
         
     logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(kogift_valid)} Kogift images")
     
     # Process each Haoreum image
-    for h_idx, haoreum_path in enumerate(haoreum_valid):
-        best_match = None
+    for h_idx, h_data in enumerate(haoreum_valid):
+        best_match_data = None
         best_similarity = 0
         best_scores = {}
         
         # Find best matching Kogift image
-        for kogift_path in kogift_valid:
-            is_match, similarity, scores = matcher.is_match(haoreum_path, kogift_path, threshold)
+        for k_data in kogift_valid:
+            # Pass the dictionaries directly to is_match
+            is_match, similarity, scores = matcher.is_match(h_data, k_data, threshold)
             
             if is_match and similarity > best_similarity:
-                best_match = kogift_path
+                best_match_data = k_data # Store the full dictionary
                 best_similarity = similarity
                 best_scores = scores
                 
-        # Add result
+        # Add result, storing the full dictionaries
         result = {
-            'haoreum_image': haoreum_path,
-            'kogift_image': best_match,
+            'haoreum_image_data': h_data,
+            'kogift_image_data': best_match_data, # Can be None if no match
             'similarity': best_similarity,
             'scores': best_scores,
-            'is_match': best_match is not None
+            'is_match': best_match_data is not None
         }
         results.append(result)
         
@@ -1193,21 +1268,21 @@ def match_product_images(haoreum_paths: List[str],
     return results
 
 
-def match_naver_product_images(haoreum_paths: List[str], 
-                             naver_results: pd.DataFrame,
+def match_naver_product_images(haoreum_image_data: List[Dict[str, Optional[str]]], 
+                             naver_results: pd.DataFrame, # Keep as DataFrame for now
                              threshold: Optional[float] = None,
                              custom_weights: Optional[Dict[str, float]] = None) -> Dict[str, Dict]:
     """
     Match Haoreum product images with Naver product images from crawled results
     
     Args:
-        haoreum_paths: List of paths to Haoreum product images
-        naver_results: DataFrame containing Naver crawl results
+        haoreum_image_data: List of Haoreum image data dictionaries
+        naver_results: DataFrame containing Naver crawl results (expected to have image data dicts)
         threshold: Optional similarity threshold (default: from config)
         custom_weights: Optional custom weights for similarity calculations
         
     Returns:
-        Dictionary mapping product names to match results
+        Dictionary mapping product names (from Haoreum data) to match results (containing image data dicts).
     """
     if threshold is None:
         threshold = SETTINGS['COMBINED_THRESHOLD']
@@ -1218,167 +1293,140 @@ def match_naver_product_images(haoreum_paths: List[str],
     matcher = EnhancedImageMatcher()
     results = {}
     
-    # Validate Haoreum paths
-    haoreum_valid = [p for p in haoreum_paths if os.path.exists(p)]
+    # Validate Haoreum image data
+    haoreum_valid = [data for data in haoreum_image_data if data and data.get('local_path') and os.path.exists(data['local_path'])]
     if not haoreum_valid:
-        logger.warning("No valid Haoreum images found")
+        logger.warning("No valid Haoreum image data found for Naver matching")
         return results
     
-    # Extract Naver image paths from results
-    naver_images = []
-    product_names = []
-    missing_images = 0
+    # Extract Naver image data dictionaries and product names from results DataFrame
+    naver_image_data_list = []
+    naver_product_names = []
+    missing_or_invalid_images = 0
     valid_images = 0
-    
+
+    # --- Standardize on 'image_data' column --- 
+    # Assume this column holds the dictionary: {'url': ..., 'local_path': ..., 'source': ...}
+    required_image_col = 'image_data' 
+
     for _, row in naver_results.iterrows():
         try:
+            # --- Get Original Product Name (from potential columns) --- 
+            original_product_name = None
             if isinstance(row.get('original_row'), dict):
-                product_name = row['original_row'].get('상품명')
-                # Check both 네이버 이미지 and 네이버쇼핑(이미지링크) columns
-                image_path = None
-                for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
-                    if col in row and row[col] and row[col] != '-':
-                        image_path = row[col]
-                        break
+                 original_product_name = row['original_row'].get('상품명')
+            if not original_product_name: 
+                 # Try common alternative names
+                 potential_name_cols = ['original_product_name', '상품명', '네이버 상품명']
+                 for name_col in potential_name_cols:
+                      if name_col in row and pd.notna(row[name_col]):
+                           original_product_name = row[name_col]
+                           break
+
+            if not original_product_name:
+                 logger.warning(f"Could not determine original product name for Naver result row index {_}")
+                 missing_or_invalid_images += 1
+                 continue
+
+            # --- Get Image Data Dictionary --- 
+            image_data_dict = None
+            if required_image_col in row and isinstance(row[required_image_col], dict):
+                image_data_dict = row[required_image_col]
+            # Fallback: Check other potential columns if 'image_data' is missing/not a dict
+            elif required_image_col not in row or not isinstance(row.get(required_image_col), dict):
+                 logger.debug(f"Column '{required_image_col}' missing or not a dict for {original_product_name}. Checking alternates.")
+                 fallback_cols = ['네이버 이미지', 'image', '네이버쇼핑(이미지링크)', 'image_path']
+                 for col in fallback_cols:
+                      if col in row and isinstance(row[col], dict):
+                           image_data_dict = row[col]
+                           logger.debug(f"Found image dict in fallback column '{col}'")
+                           break
+                      # Basic check if it's a string representing a dict (less ideal)
+                      elif col in row and isinstance(row[col], str) and row[col].startswith('{'):
+                           try:
+                                potential_dict = eval(row[col]) # Use eval cautiously
+                                if isinstance(potential_dict, dict):
+                                     image_data_dict = potential_dict
+                                     logger.warning(f"Evaluated image dict string from fallback column '{col}'")
+                                     break
+                           except Exception as eval_err:
+                                logger.warning(f"Failed to eval string from '{col}': {eval_err}")
+            
+            # --- Validate the Dictionary and Local Path --- 
+            if isinstance(image_data_dict, dict) and \
+               image_data_dict.get('local_path') and \
+               isinstance(image_data_dict['local_path'], str) and \
+               os.path.exists(image_data_dict['local_path']):
                 
-                # Also check in the original_row
-                if not image_path and 'original_row' in row:
-                    for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
-                        if col in row['original_row'] and row['original_row'][col] and row['original_row'][col] != '-':
-                            image_path = row['original_row'][col]
-                            break
-                
-                if not image_path:
-                    logger.warning(f"No image path found for product: {product_name}")
-                    missing_images += 1
-                    continue
-                
-                # Handle image path which could be a dictionary or string
-                if isinstance(image_path, dict):
-                    # If it's a dictionary (as used by excel_utils.py), extract the local path
-                    if 'local_path' in image_path and image_path['local_path']:
-                        actual_path = image_path['local_path']
-                    elif 'url' in image_path:
-                        # No local path but has URL - try to see if we can find the local file
-                        img_url = image_path['url']
-                        source = image_path.get('source', 'naver')
-                        # Try to find the file by URL hash
-                        try:
-                            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
-                            naver_dir = 'C:\\RPA\\Image\\Main\\Naver'
-                            matching_files = []
-                            
-                            if os.path.exists(naver_dir):
-                                for f in os.listdir(naver_dir):
-                                    if url_hash in f and os.path.isfile(os.path.join(naver_dir, f)):
-                                        matching_files.append(f)
-                            
-                            if matching_files:
-                                # Prefer original jpg over _nobg version
-                                matching_files.sort(key=lambda x: '_nobg' in x)
-                                actual_path = os.path.join(naver_dir, matching_files[0])
-                                logger.debug(f"Found local file for URL by hash: {actual_path}")
-                            else:
-                                # Try both Main and Target directories
-                                alt_dirs = ['C:\\RPA\\Image\\Main\\Naver', 'C:\\RPA\\Image\\Target\\Naver']
-                                found = False
-                                
-                                for alt_dir in alt_dirs:
-                                    if os.path.exists(alt_dir):
-                                        # Try to find by product name in filename
-                                        product_words = product_name.split()
-                                        if product_words:
-                                            for f in os.listdir(alt_dir):
-                                                # Use first word of product in filename (more unique)
-                                                if product_words[0] in f and os.path.isfile(os.path.join(alt_dir, f)):
-                                                    actual_path = os.path.join(alt_dir, f)
-                                                    found = True
-                                                    logger.debug(f"Found local file for URL by product name: {actual_path}")
-                                                    break
-                                    if found:
-                                        break
-                                
-                                if not found:
-                                    logger.warning(f"Image dictionary has URL but no local path: {img_url} for product: {product_name}")
-                                    missing_images += 1
-                                    continue
-                        except Exception as e:
-                            logger.error(f"Error finding local file for URL: {e}")
-                            missing_images += 1
-                            continue
-                    else:
-                        logger.warning(f"Invalid image dictionary format for product: {product_name}")
-                        missing_images += 1
-                        continue
-                else:
-                    # It's a regular string path
-                    actual_path = image_path
-                
-                # Check if the image file exists
-                if os.path.exists(actual_path):
-                    naver_images.append(actual_path)
-                    product_names.append(product_name)
-                    valid_images += 1
-                else:
-                    # Try to find _nobg version
-                    base_path, ext = os.path.splitext(actual_path)
-                    nobg_path = f"{base_path}_nobg.png"
-                    if os.path.exists(nobg_path):
-                        naver_images.append(nobg_path)
-                        product_names.append(product_name)
-                        valid_images += 1
-                        logger.debug(f"Using _nobg version instead: {nobg_path}")
-                    else:
-                        logger.warning(f"Image file does not exist (both original and _nobg): {actual_path} for product: {product_name}")
-                        missing_images += 1
+                # Ensure 'source' is present
+                if 'source' not in image_data_dict:
+                    image_data_dict['source'] = 'naver'
+                    
+                naver_image_data_list.append(image_data_dict)
+                naver_product_names.append(original_product_name)
+                valid_images += 1
+            else:
+                # Log why it was invalid
+                if not isinstance(image_data_dict, dict):
+                     logger.warning(f"No valid image_data dictionary found for Naver product: {original_product_name}")
+                elif not image_data_dict.get('local_path') or not isinstance(image_data_dict.get('local_path'), str):
+                     logger.warning(f"Image dictionary missing or invalid 'local_path' for Naver product: {original_product_name} (Dict: {str(image_data_dict)[:100]}...)")
+                elif not os.path.exists(image_data_dict['local_path']):
+                     logger.warning(f"Naver image local_path does not exist: {image_data_dict['local_path']} for product: {original_product_name}")
+                missing_or_invalid_images += 1
+
         except Exception as e:
-            logger.error(f"Error processing row in naver_results: {e}")
+            logger.error(f"Error processing Naver result row index {_} for product '{original_product_name or "Unknown"}': {e}", exc_info=True)
+            missing_or_invalid_images += 1
             continue
-    
-    logger.info(f"Found {valid_images} valid Naver images, {missing_images} missing or invalid")
-    
-    if not naver_images:
-        logger.warning("No valid Naver images found in results")
+
+    logger.info(f"Found {valid_images} valid Naver image data entries, {missing_or_invalid_images} missing or invalid.")
+
+    if not naver_image_data_list:
+        logger.warning("No valid Naver image data found in results after processing.")
         return results
-    
-    logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(naver_images)} Naver images")
+
+    logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(naver_image_data_list)} Naver images")
     
     # Process each Haoreum image
-    for h_idx, haoreum_path in enumerate(haoreum_valid):
-        best_match = None
+    for h_idx, h_data in enumerate(haoreum_valid):
+        best_match_data = None
         best_similarity = 0
         best_scores = {}
-        matched_product = None
+        matched_product_name = None # Store the name of the matched Naver product
         
-        # Get product name from Haoreum path
-        haoreum_product = os.path.splitext(os.path.basename(haoreum_path))[0]
+        # Get product name from Haoreum data (use 'name' if present, else derive from path)
+        haoreum_product_name = h_data.get('name')
+        if not haoreum_product_name and h_data.get('local_path'):
+            haoreum_product_name = os.path.splitext(os.path.basename(h_data['local_path']))[0]
         
+        if not haoreum_product_name:
+             logger.warning(f"Could not determine Haoreum product name from data: {h_data}")
+             continue # Skip if we can't identify the Haoreum product
+
         # Find best matching Naver image
-        for naver_url, product_name in zip(naver_images, product_names):
+        for n_data, n_product_name in zip(naver_image_data_list, naver_product_names):
             try:
-                if not os.path.exists(naver_url):
-                    logger.warning(f"Skipping non-existent Naver image: {naver_url}")
-                    continue
-                    
-                is_match, similarity, scores = matcher.is_match(haoreum_path, naver_url, threshold)
+                # Pass dictionaries directly to is_match
+                is_match, similarity, scores = matcher.is_match(h_data, n_data, threshold)
                 
                 if is_match and similarity > best_similarity:
-                    best_match = naver_url
+                    best_match_data = n_data # Store the full dictionary
                     best_similarity = similarity
                     best_scores = scores
-                    matched_product = product_name
+                    matched_product_name = n_product_name # Store the associated Naver product name
             except Exception as e:
-                logger.error(f"Error matching {haoreum_path} with {naver_url}: {e}")
+                logger.error(f"Error matching {h_data.get('local_path')} with {n_data.get('local_path')}: {e}")
                 continue
         
-        # Store result
-        results[haoreum_product] = {
-            'haoreum_image': haoreum_path,
-            'naver_image': best_match,
-            'matched_product': matched_product,
+        # Store result using Haoreum product name as key
+        results[haoreum_product_name] = {
+            'haoreum_image_data': h_data,
+            'naver_image_data': best_match_data, # Can be None
+            'matched_product_name': matched_product_name, # Name of the matched Naver product
             'similarity': best_similarity,
             'scores': best_scores,
-            'is_match': best_match is not None
+            'is_match': best_match_data is not None
         }
         
         # Log progress
@@ -1400,47 +1448,61 @@ def main():
     """Test function to demonstrate the enhanced image matcher"""
     import argparse
     import json
-    
+
     parser = argparse.ArgumentParser(description="Enhanced Image Matcher Test")
     parser.add_argument("--haoreum", type=str, help="Path to Haoreum images directory")
     parser.add_argument("--kogift", type=str, help="Path to Kogift images directory")
     parser.add_argument("--output", type=str, default="match_results.json", help="Output JSON file path")
     parser.add_argument("--threshold", type=float, help="Match threshold (default: from config)")
     args = parser.parse_args()
-    
+
+    # Load global config for test paths
+    # Need to ensure CONFIG is loaded globally for the test function
+    global CONFIG
+    if CONFIG is None:
+         CONFIG = _load_config()
+         if CONFIG is None:
+              logger.error("Failed to load config for test function. Exiting.")
+              return
+
     # Use directories from config if not provided
     if args.haoreum is None:
         args.haoreum = CONFIG.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
-    
+
     if args.kogift is None:
         args.kogift = CONFIG.get('Matching', 'images_dir', fallback='C:\\RPA\\Image\\Target')
-    
+
     # Get image lists
     haoreum_images = [os.path.join(args.haoreum, f) for f in os.listdir(args.haoreum) 
                      if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif'))]
     kogift_images = [os.path.join(args.kogift, f) for f in os.listdir(args.kogift) 
                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif'))]
     
+    # Convert paths to dictionaries for testing match_product_images
+    haoreum_data = [{'local_path': p, 'url': Path(p).as_uri(), 'source': 'haoreum'} for p in haoreum_images]
+    kogift_data = [{'local_path': p, 'url': Path(p).as_uri(), 'source': 'kogift'} for p in kogift_images]
+
     # Run matching
-    results = match_product_images(haoreum_images, kogift_images, threshold=args.threshold)
-    
+    results = match_product_images(haoreum_data, kogift_data, threshold=args.threshold)
+
     # Convert to serializable format
     output_results = []
     for r in results:
         if r['is_match']:
             output_results.append({
-                'haoreum_image': os.path.basename(r['haoreum_image']),
-                'kogift_image': os.path.basename(r['kogift_image']),
+                'haoreum_image': os.path.basename(r['haoreum_image_data']['local_path']),
+                'kogift_image': os.path.basename(r['kogift_image_data']['local_path']),
                 'similarity': r['similarity'],
-                'sift_score': r['scores']['sift'],
-                'akaze_score': r['scores']['akaze'],
-                'deep_score': r['scores']['deep'],
+                'sift_score': r['scores'].get('sift', 0.0), # Use .get for safety
+                'akaze_score': r['scores'].get('akaze', 0.0),
+                'deep_score': r['scores'].get('deep', 0.0),
+                'orb_score': r['scores'].get('orb', 0.0)
             })
-    
+
     # Save results
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(output_results, f, indent=2, ensure_ascii=False)
-    
+
     # Print summary
     matched = len([r for r in results if r['is_match']])
     print(f"Results: {matched}/{len(results)} images matched")

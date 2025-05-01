@@ -694,31 +694,17 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 # First ensure that all image URLs are properly included
                 logging.info("Formatting product data with image URLs for output...")
                 
-                # Make sure all crawled images are included in the Excel output
-                formatted_df = format_product_data_for_output(
-                    input_df=filtered_df, 
-                    kogift_results=kogift_map, 
-                    naver_results=naver_map,
-                    input_file_image_map=input_file_image_map
-                )
+                # UPDATED: Call format_product_data_for_output with only the filtered DataFrame
+                formatted_df = format_product_data_for_output(filtered_df)
                 
-                # Create output directory if it doesn't exist
-                output_dir = config.get('Paths', 'output_dir')
-                os.makedirs(output_dir, exist_ok=True)
-                
-                # Generate output filename
-                input_filename_base = input_filename.rsplit('.', 1)[0]
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
-                
-                # --- Moved Image Integration Here ---
+                # --- Moved Image Integration Here (AFTER formatting, BEFORE finalization) ---
                 try:
-                    logging.info("Integrating and filtering images immediately before Excel generation...")
+                    logging.info("Integrating and filtering images before Excel generation...")
                     # Log DataFrame state BEFORE integration
                     logging.info(f"DataFrame shape BEFORE image integration: {formatted_df.shape}")
                     logging.debug(f"DataFrame columns BEFORE image integration: {formatted_df.columns.tolist()}")
-                    if not formatted_df.empty:
-                        logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
+                    # if not formatted_df.empty and debug_mode: # Add debug mode check
+                    #     logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
 
                     # Perform image integration
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
@@ -727,43 +713,45 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     # Log DataFrame state AFTER integration
                     logging.info(f"DataFrame shape AFTER image integration: {integrated_df.shape}")
                     logging.debug(f"DataFrame columns AFTER image integration: {integrated_df.columns.tolist()}")
-                    if not integrated_df.empty:
-                        logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
-                        # Explicitly check image column sample data
-                        from excel_utils import IMAGE_COLUMNS # Import IMAGE_COLUMNS for logging
-                        img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
-                        if img_cols_to_log:
-                             logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
+                    # if not integrated_df.empty and debug_mode: # Add debug mode check
+                    #     logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
+                    #     # Explicitly check image column sample data
+                    #     from excel_utils import IMAGE_COLUMNS # Import IMAGE_COLUMNS for logging
+                    #     img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
+                    #     if img_cols_to_log:
+                    #          logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
 
-                    # --- Image Matching Result Verification ---
+                    # --- Image Matching Result Verification --- 
+                    # (Verification logic moved here as well)
                     logging.info("Verifying image matching results post-integration...")
-                    image_columns_to_check = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
-                    valid_data_count = 0
+                    # Define image link columns used in the *upload* file for verification consistency
+                    image_link_columns_to_check = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+                    # Map them back to the *result* file columns which hold the dictionaries
+                    link_to_data_col_map = {v: k for k, v in COLUMN_MAPPING_FINAL_TO_UPLOAD.items() if v in image_link_columns_to_check}
+                    
                     invalid_rows_details = []
-
-                    for col in image_columns_to_check:
-                        if col in integrated_df.columns: # Check against integrated_df
+                    for link_col, data_col in link_to_data_col_map.items():
+                        if data_col in integrated_df.columns: # Check against integrated_df
                             # Calculate valid matches based on dictionary structure and content
-                            valid_matches = integrated_df[col].apply(lambda x:
+                            valid_matches = integrated_df[data_col].apply(lambda x:
                                 isinstance(x, dict) and (
                                     (x.get('local_path') and isinstance(x.get('local_path'), str) and x.get('local_path').strip() not in ['','-']) or
                                     (x.get('url') and isinstance(x.get('url'), str) and x.get('url').strip().startswith(('http', 'file:')))
                                 )
                             ).sum()
-                            logging.info(f"  - '{col}': {valid_matches} valid image data dictionaries found.")
+                            logging.info(f"  - '{data_col}' (for {link_col}): {valid_matches} valid image data dictionaries found.")
 
                             # Check for invalid data formats
-                            for index, value in integrated_df[col].items():
+                            for index, value in integrated_df[data_col].items():
                                 if pd.notna(value) and value not in ['-', '']: # Check non-empty values
                                     is_valid_dict = isinstance(value, dict) and (
                                         (value.get('local_path') and isinstance(value.get('local_path'), str) and value.get('local_path').strip() not in ['','-']) or
                                         (value.get('url') and isinstance(value.get('url'), str) and value.get('url').strip().startswith(('http', 'file:')))
                                     )
                                     if not is_valid_dict:
-                                        invalid_rows_details.append(f"    - Row {index}, Col '{col}': Invalid format -> {str(value)[:100]}...")
-
+                                        invalid_rows_details.append(f"    - Row {index}, Col '{data_col}': Invalid format -> {str(value)[:100]}...")
                         else:
-                            logging.warning(f"  - '{col}': Column not found in DataFrame post-integration.")
+                            logging.warning(f"  - Data column '{data_col}' (for {link_col}) not found post-integration.")
 
                     if invalid_rows_details:
                          logging.warning(f"Verification: Found {len(invalid_rows_details)} invalid data formats in image columns post-integration:")
@@ -775,10 +763,19 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)
                     # Fallback: use the pre-integration DataFrame if integration fails
-                    integrated_df = formatted_df
+                    integrated_df = formatted_df # Use the result from format_product_data_for_output
                     logging.warning("Proceeding with pre-integration data due to error.")
                 # --- End Image Integration ---
-
+                
+                # Create output directory if it doesn't exist
+                output_dir = config.get('Paths', 'output_dir')
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Generate output filename
+                input_filename_base = input_filename.rsplit('.', 1)[0]
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path_base = os.path.join(output_dir, f"{input_filename_base}") # Use base name for split function
+                
                 # Finalize the DataFrame structure before saving to Excel
                 logging.info("Finalizing DataFrame structure for Excel output...")
                 try:
@@ -830,7 +827,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             try:
                                 # Create Excel files (even if df_to_save is empty, to get headers)
                                 logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path_base)
                                 
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
