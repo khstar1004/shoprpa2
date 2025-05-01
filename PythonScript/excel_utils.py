@@ -153,6 +153,16 @@ LINK_COLUMNS_FOR_HYPERLINK = {
 # Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
 IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
+# Define columns that should be included in the upload file
+UPLOAD_SHEET_COLUMNS = [
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', 
+    '네이버 쇼핑 링크', '공급사 상품링크',
+    '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+]
+
 # Upload file columns (based on '엑셀골든_upload' notepad)
 UPLOAD_COLUMN_ORDER = [
     '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
@@ -1250,6 +1260,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     1. Result file (with images embedded)
     2. Upload file (with image links only)
     """
+    # Use the global UPLOAD_SHEET_COLUMNS constant defined at the module level
+    global UPLOAD_SHEET_COLUMNS
+    
     # Default return values (used in case of error)
     result_path = None
     result_success = False
