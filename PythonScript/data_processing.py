@@ -295,58 +295,45 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
                             df.at[idx, '기본수량'] = row['기본수량(1)']
                     
-                    # IMPROVED: 가격 데이터 처리 개선 (Kogift 가격)
-                    # tax_included 가격을 우선적으로 사용하고, 없으면 price_with_vat를 사용
+                    # Kogift 제품 URL 업데이트
+                    if '고려기프트 상품링크' in df.columns:
+                        if 'link' in item:
+                            df.at[idx, '고려기프트 상품링크'] = item['link']
+                        elif 'href' in item:
+                            df.at[idx, '고려기프트 상품링크'] = item['href']
+                    
+                    # 판매가 정보 업데이트
                     if '판매단가(V포함)(2)' in df.columns:
-                        kogift_price = None
-                        
-                        # 가격 정보 소스 우선순위 설정
-                        price_fields = [
-                            ('tax_included', '세금포함가격'),
-                            ('price_with_vat', 'VAT포함가격'),
-                            ('price', '기본가격')
-                        ]
-                        
-                        # 우선순위 높은 것부터 확인하여 가격 추출
-                        for field_name, field_desc in price_fields:
-                            if field_name in item and item[field_name] is not None:
-                                try:
-                                    price_val = float(item[field_name])
-                                    kogift_price = int(price_val)
-                                    df.at[idx, '판매단가(V포함)(2)'] = kogift_price
-                                    logging.debug(f"Kogift 가격 설정 '{product_name}': {kogift_price} ({field_desc}에서 추출)")
-                                    kogift_price_count += 1
-                                    break
-                                except (ValueError, TypeError):
-                                    logging.warning(f"유효하지 않은 Kogift {field_desc}: {item[field_name]} (상품명: '{product_name}')")
-                        
-                        # 가격이 설정되지 않았으면 로그 남김
-                        if kogift_price is None:
-                            logging.warning(f"Kogift 상품 '{product_name}'에 유효한 가격 정보가 없습니다.")
+                        # 부가세 포함 가격이 먼저 있는지 확인
+                        if 'price_with_vat' in item:
+                            df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
+                            kogift_price_count += 1
+                        # 없으면 일반 가격에 1.1 곱해서 부가세 계산
+                        elif 'price' in item:
+                            df.at[idx, '판매단가(V포함)(2)'] = round(item['price'] * 1.1)
+                            kogift_price_count += 1
                     
-                    # 판매가(V포함)(2) 칼럼에도 동일한 가격 추가 (일관성 유지)
-                    if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns:
-                        if pd.notna(df.at[idx, '판매단가(V포함)(2)']):
-                            df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
-                    
-                    # 링크 정보 업데이트
-                    if '고려기프트 상품링크' in df.columns and 'link' in item:
-                        df.at[idx, '고려기프트 상품링크'] = item['link']
-                    
-                    # IMPROVED: 이미지 처리 개선
-                    if '고려기프트 이미지' in df.columns:
-                        image_url = None
+                    # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
+                    if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns and pd.notna(df.at[idx, '판매단가(V포함)(2)']):
+                        df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
                         
-                        # 이미지 URL 찾기 (순서대로 시도)
-                        image_fields = [
-                            'image_url', 'image_path', 'img_url', 'src', 'thumbnail'
-                        ]
-                        
-                        for field in image_fields:
-                            if field in item and item[field] and isinstance(item[field], str) and item[field].startswith(('http://', 'https://')):
-                                image_url = item[field]
-                                break
-                            
+                    # 이미지 URL 업데이트
+                    # 이미지 URL 파악 (우선순위 순서대로 시도)
+                    image_url = None
+                    if 'image_url' in item and item['image_url']:
+                        image_url = item['image_url']
+                    elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path']:
+                        image_url = item['image_path']
+                    elif 'src' in item and item['src']:
+                        image_url = item['src']
+                    
+                    # FIX: Check for 'local_image_path' which is stored by the Kogift image downloader
+                    local_image_path = None
+                    if 'local_image_path' in item and item['local_image_path']:
+                        local_image_path = item['local_image_path']
+                    
+                    # Add Kogift image information if URL is available
+                    if (image_url or local_image_path) and '고려기프트 이미지' in df.columns:
                         # 이미지 데이터 사전 생성
                         if image_url:
                             # 이미지 URL 확인 (확장자 검증)
@@ -368,22 +355,26 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 ]
                                 
                                 # 존재하는 로컬 파일 확인
-                                local_path = None
-                                for path in possible_local_paths:
-                                    if os.path.exists(path):
-                                        local_path = path
-                                        break
+                                local_path = local_image_path  # FIX: Use the downloaded path if available
+                                
+                                # If local_image_path wasn't available, search for the file 
+                                if not local_path:
+                                    for path in possible_local_paths:
+                                        if os.path.exists(path):
+                                            local_path = path
+                                            break
                                 
                                 # 이미지 데이터 사전 생성
                                 img_dict = {
                                     'url': image_url,
-                                    'source': '고려기프트',
+                                    'source': 'kogift',
                                     'product_name': product_name
                                 }
                                 
                                 # 로컬 경로가 있으면 추가
                                 if local_path:
                                     img_dict['local_path'] = local_path
+                                    img_dict['original_path'] = local_path  # Add original_path for better compatibility
                                 
                                 df.at[idx, '고려기프트 이미지'] = img_dict
                                 kogift_img_count += 1
@@ -395,9 +386,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             img_dict = item['image_path']
                             if isinstance(img_dict, dict):
                                 if 'source' not in img_dict:
-                                    img_dict['source'] = '고려기프트'
+                                    img_dict['source'] = 'kogift'
                                 if 'product_name' not in img_dict:
                                     img_dict['product_name'] = product_name
+                                
+                                # FIX: Explicitly add original_path for better compatibility
+                                if 'local_path' in img_dict and 'original_path' not in img_dict:
+                                    img_dict['original_path'] = img_dict['local_path']
+                                    
                                 df.at[idx, '고려기프트 이미지'] = img_dict
                                 kogift_img_count += 1
                     

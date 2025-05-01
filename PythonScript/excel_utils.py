@@ -378,74 +378,87 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Process image columns in the DataFrame and add images to the worksheet.
-    Handle various image data formats (dictionaries, strings, URLs, paths).
+    
+    This function handles complex nested data structures for images, which may be dictionaries
+    with paths or URLs, or plain string paths. The function will try to find the image files
+    and embed them in the Excel file if they exist.
+    
+    Args:
+        worksheet: The worksheet to add images to
+        df: DataFrame containing the data with image columns
     """
-    logger.debug("Processing image columns...")
-    if worksheet is None or df is None or df.empty:
-        logger.warning("Cannot process images: Worksheet or DataFrame is empty/None")
+    import openpyxl
+    from openpyxl.drawing.image import Image
+    
+    # Only handle these image-specific columns
+    global IMAGE_COLUMNS
+    columns_to_process = [col for col in IMAGE_COLUMNS if col in df.columns]
+    
+    if not columns_to_process:
+        logger.debug("No image columns found in DataFrame")
         return
+        
+    # Fallback image to use if an image file is not found
+    default_img_path = os.environ.get('RPA_DEFAULT_IMAGE', None)
+    default_exists = default_img_path and os.path.exists(default_img_path)
+    if not default_exists and default_img_path:
+        logger.warning(f"Default image not found at {default_img_path}")
+        default_img_path = None
+        
+    # Track if the fallback image was used
+    used_fallback = False
     
-    # Determine which columns might contain images
-    image_cols = []
-    for col_name in df.columns:
-        if (('이미지' in col_name or 'image' in col_name.lower()) and 
-            '링크' not in col_name):  # Exclude pure link columns
-            image_cols.append((df.columns.get_loc(col_name) + 1, col_name))
+    # Note: This is a reference to PIL.Image to avoid confusion with openpyxl.drawing.image.Image
+    from PIL import Image as PILImage
     
-    # Special handling for standard image columns
-    for std_col in IMAGE_COLUMNS:
-        if std_col in df.columns and (df.columns.get_loc(std_col) + 1, std_col) not in image_cols:
-            image_cols.append((df.columns.get_loc(std_col) + 1, std_col))
+    # Function to safely load and resize an image for Excel
+    def safe_load_image(path, max_height=150, max_width=150):
+        try:
+            img = PILImage.open(path)
+            # Calculate new dimensions preserving aspect ratio
+            width, height = img.size
+            if width > max_width or height > max_height:
+                ratio = min(max_width / width, max_height / height)
+                new_width = int(width * ratio)
+                new_height = int(height * ratio)
+                img = img.resize((new_width, new_height), PILImage.LANCZOS)
+                
+                # Save temporary resized version
+                temp_dir = os.environ.get('TEMP_DIR', os.path.join(os.path.dirname(path), 'temp'))
+                os.makedirs(temp_dir, exist_ok=True)
+                temp_path = os.path.join(temp_dir, f"resized_{os.path.basename(path)}")
+                img.save(temp_path)
+                return temp_path
+            return path
+        except Exception as e:
+            logger.warning(f"Error loading/resizing image {path}: {e}")
+            return None
     
-    if not image_cols:
-        logger.debug("No suitable image columns found in DataFrame")
-        return
+    # Track the count of images per column
+    img_counts = {col: 0 for col in columns_to_process}
+    err_counts = {col: 0 for col in columns_to_process}
     
-    # Count successful image embeddings
-    successful_embeddings = 0
-    attempted_embeddings = 0
-    kogift_attempted = 0
-    kogift_successful = 0
+    logger.debug(f"Processing {len(columns_to_process)} image columns")
     
-    # Define fallback image if needed
-    fallback_img_path = None
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        fallback_img_path = os.path.join(script_dir, '..', 'assets', 'no_image.png')
-        if not os.path.exists(fallback_img_path):
-            # Try to create minimal fallback image
-            from PIL import Image, ImageDraw
-            img_dir = os.path.join(script_dir, '..', 'assets')
-            os.makedirs(img_dir, exist_ok=True)
-            img = Image.new('RGB', (100, 100), color = (240, 240, 240))
-            d = ImageDraw.Draw(img)
-            d.text((20, 40), "No Image", fill=(0, 0, 0))
-            fallback_img_path = os.path.join(img_dir, 'no_image.png')
-            img.save(fallback_img_path)
-    except Exception as e:
-        logger.warning(f"Failed to create fallback image: {e}")
-        fallback_img_path = None
-    
-    # Process each row of the DataFrame
-    for row_idx, (_, row) in enumerate(df.iterrows(), 2):  # Start from row 2 (after header)
-        for col_idx, col_name in image_cols:
-            # Check if there's a value in this cell
-            cell_value = row[col_name]
-            if pd.isna(cell_value) or cell_value in [None, '-', '']:
+    # For each image column in the DataFrame
+    for col_idx, column in enumerate(columns_to_process):
+        is_kogift_image = 'kogift' in column.lower() or '고려기프트' in column  # Track whether it's a Kogift column
+        
+        # Excel column letter for this column (e.g., 'A', 'B', ...)
+        excel_col = get_column_letter(df.columns.get_loc(column) + 1)
+        
+        # For each row in the DataFrame
+        for row_idx, cell_value in enumerate(df[column]):
+            img_path = None  # Initialize image path
+            fallback_img_path = default_img_path  # Use default fallback
+            
+            # Skip empty cells (None, NaN, empty strings)
+            if pd.isna(cell_value) or cell_value == "":
                 continue
-            
-            # Determine image path based on data type
-            img_path = None
-            
-            # FIXED: Additional logging for Kogift images
-            is_kogift_image = '고려' in col_name or 'kogift' in col_name.lower()
-            if is_kogift_image:
-                logger.debug(f"Processing KOGIFT image in row {row_idx}, column {col_name}, value type: {type(cell_value)}")
-                if isinstance(cell_value, dict):
-                    logger.debug(f"Kogift dict content: {cell_value}")
-                else:
-                    logger.debug(f"Kogift value: {cell_value}")
-                kogift_attempted += 1
+                
+            # Skip cells with placeholder dash
+            if cell_value == "-":
+                continue
             
             # Handle dictionary format (most complete info)
             if isinstance(cell_value, dict):
@@ -487,7 +500,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                     img_path = loc
                                     logger.debug(f"Found local file for URL: {img_path}")
                                     break
-                        elif 'koreagift.com' in url or 'kogift.com' in url:  # FIXED: Added 'kogift.com'
+                        elif 'koreagift.com' in url or 'kogift.com' in url or 'adpanchok.co.kr' in url:  # FIXED: Added full domain list
                             # Similar pattern for Kogift
                             filename = os.path.basename(url)
                             base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
@@ -496,19 +509,34 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             possible_locations = [
                                 os.path.join(base_img_dir, 'Main', 'Kogift', filename),
                                 os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
-                                os.path.join(base_img_dir, 'Target', 'Kogift', filename),
-                                os.path.join(base_img_dir, 'Target', 'Kogift', f"kogift_{filename}"),
-                                # Add more variations - lowercased directory
                                 os.path.join(base_img_dir, 'Main', 'kogift', filename),
                                 os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
-                                os.path.join(base_img_dir, 'Target', 'kogift', filename),
-                                os.path.join(base_img_dir, 'Target', 'kogift', f"kogift_{filename}"),
+                                # Add more variations - lowercased directory
+                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url.split('/')[-1]}"),
+                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url.split('/')[-1]}"),
                                 # Check in the root image directories too
                                 os.path.join(base_img_dir, 'Kogift', filename),
                                 os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}"),
                                 os.path.join(base_img_dir, 'kogift', filename),
-                                os.path.join(base_img_dir, 'kogift', f"kogift_{filename}")
+                                os.path.join(base_img_dir, 'kogift', f"kogift_{filename}"),
+                                # Check in Shop_* variations
+                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename.replace('shop_', '')}"),
+                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename.replace('shop_', '')}")
                             ]
+                            
+                            # Add MD5 hash pattern searches for kogift URLs
+                            if 'koreagift.com' in url or 'kogift.com' in url or 'adpanchok.co.kr' in url:
+                                import hashlib
+                                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                                # Add hash-based patterns
+                                possible_locations.extend([
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.jpg"),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.jpg"),
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.png"),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.png"),
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}_nobg.png"),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}_nobg.png")
+                                ])
                             
                             for loc in possible_locations:
                                 if os.path.exists(loc):
@@ -525,7 +553,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                             if 'kogift' in subdir.lower():
                                                 for file in files:
                                                     # Check for partial filename match
-                                                    if filename.lower() in file.lower():
+                                                    # Look for similarity in both the URL's filename part and the full basename
+                                                    url_part = url.split('/')[-1].lower()
+                                                    if url_part in file.lower() or (
+                                                        file.lower().startswith('kogift_') and 
+                                                        any(hashed_part in file.lower() for hashed_part in [
+                                                            url_hash[:8] if 'url_hash' in locals() else "", 
+                                                            filename[:8] if len(filename) > 8 else filename
+                                                        ])
+                                                    ):
                                                         img_path = os.path.join(subdir, file)
                                                         logger.debug(f"Found Kogift file via broad search: {img_path}")
                                                         break
@@ -533,23 +569,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                                 break
                                     if img_path:
                                         break
-                        elif 'pstatic.net' in url or 'naver.com' in url:
-                            # Similar pattern for Naver
-                            filename = os.path.basename(url)
-                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-                            
-                            possible_locations = [
-                                os.path.join(base_img_dir, 'Main', 'Naver', filename),
-                                os.path.join(base_img_dir, 'Main', 'Naver', f"naver_{filename}"),
-                                os.path.join(base_img_dir, 'Target', 'Naver', filename),
-                                os.path.join(base_img_dir, 'Target', 'Naver', f"naver_{filename}")
-                            ]
-                            
-                            for loc in possible_locations:
-                                if os.path.exists(loc):
-                                    img_path = loc
-                                    logger.debug(f"Found local file for URL: {img_path}")
-                                    break
+                                        
                 # FIXED: Try 'original_path' for Kogift images if local_path and URL don't work
                 elif is_kogift_image and 'original_path' in cell_value and cell_value['original_path']:
                     orig_path = cell_value['original_path']
@@ -747,10 +767,10 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     """Applies conditional formatting (e.g., yellow fill for price difference < -1)."""
     logger.debug("Applying conditional formatting.")
 
-    # Find price difference columns (non-percentage) using new names
+    # Find price difference columns (both regular and percentage) using new names
     price_diff_cols = [
         col for col in df.columns
-        if col in ['가격차이(2)', '가격차이(3)'] # Use new names
+        if col in ['가격차이(2)', '가격차이(3)', '가격차이(2)(%)', '가격차이(3)(%)'] # Include percentage columns
     ]
 
     if not price_diff_cols:
@@ -807,7 +827,7 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
                             # 변환 불가능한 값
                             continue
 
-                        # FIXED: Apply highlight if value is less than -1 (negative)
+                        # Apply highlight if value is less than -1 (negative)
                         if numeric_value < -1:
                             highlight_row = True
                             logger.debug(f"행 {excel_row_idx}: 가격차이 {numeric_value} < -1 (컬럼 {price_diff_col}). 하이라이팅 적용.")

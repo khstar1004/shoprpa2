@@ -10,6 +10,7 @@ from openpyxl.utils import get_column_letter
 import shutil
 import sys
 import re
+import hashlib
 
 # Import enhanced image matcher
 try:
@@ -811,6 +812,46 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     'score': kogift_score,
                     'product_name': product_names[idx] # 상품명 추가
                 }
+                
+                # Additional checks to ensure image file exists
+                if not os.path.exists(img_path):
+                    logging.warning(f"Row {idx}: Kogift image file does not exist at path: {img_path}")
+                    # Try to find the image in a different location
+                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                    filename = os.path.basename(img_path)
+                    
+                    # Search for the file in various possible locations
+                    possible_locations = [
+                        os.path.join(base_img_dir, 'Main', 'Kogift', filename),
+                        os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
+                        os.path.join(base_img_dir, 'Main', 'kogift', filename),
+                        os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
+                        os.path.join(base_img_dir, 'Kogift', filename),
+                        os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}"),
+                        os.path.join(base_img_dir, 'kogift', filename),
+                        os.path.join(base_img_dir, 'kogift', f"kogift_{filename}")
+                    ]
+                    
+                    # If URL is available, also try searching by URL hash
+                    if web_url and web_url.startswith(('http://', 'https://')):
+                        import hashlib
+                        url_hash = hashlib.md5(web_url.encode()).hexdigest()[:10]
+                        possible_locations.extend([
+                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.jpg"),
+                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.jpg"),
+                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.png"),
+                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.png"),
+                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}_nobg.png"),
+                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}_nobg.png")
+                        ])
+                    
+                    for alt_path in possible_locations:
+                        if os.path.exists(alt_path):
+                            logging.info(f"Row {idx}: Found alternative Kogift image path: {alt_path}")
+                            image_data['local_path'] = str(alt_path)
+                            image_data['original_path'] = str(alt_path)
+                            break
+                
                 result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
                  if target_col_kogift in result_df.columns:
