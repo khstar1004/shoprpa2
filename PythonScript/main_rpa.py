@@ -21,7 +21,15 @@ from data_processing import process_input_file, filter_results, format_product_d
 from excel_utils import (
     create_split_excel_outputs,
     find_excel_file,
-    finalize_dataframe_for_excel
+    finalize_dataframe_for_excel,
+    create_final_output_excel,
+    FINAL_COLUMN_ORDER,
+    COLUMN_MAPPING_FINAL_TO_UPLOAD,
+    IMAGE_COLUMNS,
+    PRICE_COLUMNS,
+    QUANTITY_COLUMNS,
+    PERCENTAGE_COLUMNS,
+    LINK_COLUMNS
 )
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
@@ -904,6 +912,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             progress_queue.emit("error", str(e))
             progress_queue.emit("finished", "False")
         return
+
+    return True
 
 def run_cli():
     """Run the RPA process in CLI mode"""
