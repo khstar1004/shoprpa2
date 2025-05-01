@@ -570,8 +570,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     img = openpyxl.drawing.image.Image(img_path)
                     
                     # Set image size - make cell large enough
-                    img.width = 80  # pixels
-                    img.height = 80  # pixels
+                    img.width = 120  # pixels - 증가된 크기
+                    img.height = 120  # pixels - 증가된 크기
                     
                     # Position image in the cell
                     img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
@@ -606,7 +606,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         
         if has_image:
             # Set row height to accommodate images
-            worksheet.row_dimensions[row_idx].height = 90
+            worksheet.row_dimensions[row_idx].height = 140  # 증가된 높이
     
     return successful_embeddings
 
@@ -1471,7 +1471,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
         try:
             col_letter = get_column_letter(col_idx)
             # Use larger column width for image columns
-            worksheet.column_dimensions[col_letter].width = 22  # Increased from 15
+            worksheet.column_dimensions[col_letter].width = 30  # 증가된 너비
         except Exception as e:
             logger.error(f"Error adjusting column width for {col_name}: {e}")
     
@@ -1519,7 +1519,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     for row_idx in rows_with_images:
         try:
             # Set larger row height to accommodate the bigger images
-            worksheet.row_dimensions[row_idx].height = 120  # Increased from 90
+            worksheet.row_dimensions[row_idx].height = 140  # 증가된 높이
             
             # Center-align all cells in this row for better appearance with images
             for col_idx in range(1, worksheet.max_column + 1):
