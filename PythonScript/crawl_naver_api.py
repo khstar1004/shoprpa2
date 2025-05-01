@@ -913,83 +913,57 @@ async def _test_main():
         print("--- Testing full crawl_naver_products function ---")
         logger.info("--- Testing full crawl_naver_products function ---")
         start_full_crawl_time = time.monotonic()
-        results_df = await crawl_naver_products(
+        
+        # FIXED: crawl_naver_products now returns a list, not a DataFrame
+        result_list = await crawl_naver_products(
             product_rows=test_df.copy(), # Pass a copy to avoid modification issues
             config=config
         )
         full_crawl_time = time.monotonic() - start_full_crawl_time
         logger.info(f"crawl_naver_products completed in {full_crawl_time:.2f} seconds.")
     
-        print(f"--- Test Results (crawl_naver_products processed {len(results_df)} rows) ---")
-        logger.info(f"--- Test Results (crawl_naver_products processed {len(results_df)} rows) ---")
-        logger.info(f"Result DataFrame columns: {results_df.columns.tolist()}")
-        # Log the first few rows of the result DataFrame for inspection
-        logger.info("Result DataFrame head:")
-        logger.info(results_df.head().to_string())
-    
-    
-        # Check if the DataFrame is empty or has the expected columns
-        if results_df.empty:
-            print("ERROR: results_df is empty!")
-            logger.error("Test resulted in an empty DataFrame from crawl_naver_products.")
-            rows_with_data = 0
-        # Check for a key column expected from the processing
-        elif '네이버_상품명' not in results_df.columns:
-            print("ERROR: '네이버_상품명' column is missing in results_df!")
-            logger.error("Test resulted in a DataFrame missing the '네이버_상품명' column.")
-            print(f"Available columns: {results_df.columns.tolist()}")
-            rows_with_data = 0
-        else:
-            # Count how many rows have actual Naver data (not just '-')
-            # Ensure '네이버_상품명' exists before accessing
-            rows_with_data = sum(1 for x in results_df['네이버_상품명'] if x != '-' and pd.notna(x))
-            print(f"Results with actual Naver data in '네이버_상품명': {rows_with_data}/{len(results_df)}")
-            logger.info(f"Results with actual Naver data in '네이버_상품명': {rows_with_data}/{len(results_df)}")
-    
-        # Log example data for each product from the final DataFrame
-        for idx, row in results_df.iterrows():
-            try:
-                # Safely get original product name from the 'original_row' dictionary
-                original_row_data = row.get('original_row', {})
-                original_name = original_row_data.get('상품명', 'Unknown Original Name') if isinstance(original_row_data, dict) else 'Original Row Data Missing/Invalid'
-    
-                # Safely get Naver data, defaulting to '-' if column missing or value is null/NaN
-                naver_name = row.get('네이버_상품명', '-')
-                naver_price = row.get('판매단가(V포함)(3)', '-') # Use the correct output column name
-                naver_seller = row.get('공급사명', '-')          # Use the correct output column name
-                naver_image = row.get('네이버 이미지', '-')
-    
-                print(f"Processed Row {idx}: Original Product='{original_name}'")
-                logger.info(f"Processed Row {idx}: Original Product='{original_name}'")
-                if naver_name != '-' and pd.notna(naver_name):
-                    print(f"  Naver Match: {naver_name}")
-                    print(f"  Price: ₩{naver_price}")
-                    print(f"  Seller: {naver_seller}")
-                    print(f"  Image Path: {naver_image}")
-                    logger.info(f"  -> Match: '{naver_name}' - Price: ₩{naver_price} - Seller: '{naver_seller}' - Image: '{naver_image}'")
+        print(f"--- Test Results (crawl_naver_products processed {len(result_list)} rows) ---")
+        logger.info(f"--- Test Results (crawl_naver_products processed {len(result_list)} items) ---")
+        
+        # FIXED: Handle the list output format instead of expecting a DataFrame
+        if isinstance(result_list, list):
+            logger.info(f"Result list contains {len(result_list)} items")
+            
+            # Log sample data for each result
+            for idx, result in enumerate(result_list[:3]): # Show first 3 results only
+                if isinstance(result, dict):
+                    logger.info(f"Result {idx+1} keys: {list(result.keys())}")
+                    product_name = result.get('original_product_name', 'Unknown')
+                    matched_name = result.get('name', 'No match')
+                    price = result.get('price', 'N/A')
+                    
+                    logger.info(f"Product: '{product_name}' -> Matched: '{matched_name}' (Price: {price})")
+                    
+                    # Print image info if available
+                    if 'image_data' in result and isinstance(result['image_data'], dict):
+                        img_path = result['image_data'].get('local_path', 'No local path')
+                        img_url = result['image_data'].get('url', 'No URL')
+                        logger.info(f"  Image path: {img_path}")
+                        logger.info(f"  Image URL: {img_url}")
                 else:
-                    print(f"  No Naver results found or populated for this row.")
-                    logger.warning(f"  -> No Naver results found or populated for '{original_name}' (Index {idx})")
+                    logger.info(f"Result {idx+1} is not a dictionary: {type(result)}")
+        else:
+            logger.error(f"Unexpected result type: {type(result_list)}")
     
-            except KeyError as ke:
-                 logger.error(f"KeyError processing test result row {idx}: Missing key {ke}. Row data: {row.to_dict()}", exc_info=True)
-                 print(f"KeyError processing row {idx}: {ke}. Check logs.")
-                 continue # Skip to next row on key error
-            except Exception as e:
-                 logger.error(f"Error processing test result row {idx} ('{original_name}'): {e}", exc_info=True)
-                 print(f"Error processing row {idx}: {e}. Check logs.")
-                 continue # Skip to next row on other errors
+        # Count the actual results with image data
+        items_with_images = sum(1 for r in result_list if isinstance(r, dict) and 'image_data' in r)
+        logger.info(f"Results with image data: {items_with_images}/{len(result_list)}")
     
         # Final success/failure assessment based on whether *any* data was found
-        if rows_with_data == 0 and not results_df.empty:
-            print("⛔ TEST FAILED: No data was returned for any products in the final DataFrame!")
-            logger.error("⛔ TEST FAILED: No data was returned for any products in the final DataFrame!")
-        elif results_df.empty:
-             print("⛔ TEST FAILED: The final DataFrame was empty.")
-             logger.error("⛔ TEST FAILED: The final DataFrame was empty.")
+        if len(result_list) == 0:
+            print("⛔ TEST FAILED: No data was returned by the crawler!")
+            logger.error("⛔ TEST FAILED: No data was returned by the crawler!")
+        elif items_with_images == 0:
+            print(f"⚠️ TEST PARTIAL SUCCESS: {len(result_list)} results but no images!")
+            logger.warning(f"⚠️ TEST PARTIAL SUCCESS: {len(result_list)} results but no images!")
         else:
-            print(f"✅ TEST COMPLETED: Data was returned for {rows_with_data} products.")
-            logger.info(f"✅ TEST COMPLETED: Data was returned for {rows_with_data} products.")
+            print(f"✅ TEST COMPLETED: Data was returned for {len(result_list)} products ({items_with_images} with images).")
+            logger.info(f"✅ TEST COMPLETED: Data was returned for {len(result_list)} products ({items_with_images} with images).")
     
     except Exception as e:
         print(f"An error occurred during the async test run: {e}")
