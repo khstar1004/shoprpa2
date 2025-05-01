@@ -227,15 +227,15 @@ INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red fo
 
 NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff < -1
 
-# Image Processing Constants
+# --- Image Processing Constants ---
 IMAGE_MAX_SIZE = (1200, 1200)  # Excel 2021 maximum supported image size
-IMAGE_STANDARD_SIZE = (200, 200)  # Standard display size in Excel
+IMAGE_STANDARD_SIZE = (400, 400)  # Standard display size in Excel (doubled from 200x200)
 IMAGE_QUALITY = 85  # JPEG compression quality
 SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']  # Supported by Excel 2021
 
 # Image cell specific styling
-IMAGE_CELL_HEIGHT = 180  # Increased from 120 to accommodate both image and link
-IMAGE_CELL_WIDTH = 22   # Column width for image cells
+IMAGE_CELL_HEIGHT = 360  # Doubled from 180 to accommodate larger images
+IMAGE_CELL_WIDTH = 44   # Doubled from 22 for image cells
 
 # --- Utility Functions ---
 
@@ -570,8 +570,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     img = openpyxl.drawing.image.Image(img_path)
                     
                     # Set image size - make cell large enough
-                    img.width = 120  # pixels - 증가된 크기
-                    img.height = 120  # pixels - 증가된 크기
+                    img.width = 240  # pixels - doubled from 120
+                    img.height = 240  # pixels - doubled from 120
                     
                     # Position image in the cell
                     img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
@@ -606,7 +606,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         
         if has_image:
             # Set row height to accommodate images
-            worksheet.row_dimensions[row_idx].height = 140  # 증가된 높이
+            worksheet.row_dimensions[row_idx].height = 280  # Doubled from 140
     
     return successful_embeddings
 
@@ -1304,7 +1304,38 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             # Convert result dataframe to upload format with different column names
             df_upload = pd.DataFrame()
             
-            # Map columns from result format to upload format
+            # CRITICAL FIX: Pre-process image columns in the source df_finalized BEFORE column mapping
+            # This ensures we don't copy dictionary objects to df_upload
+            logger.info("Pre-processing image columns in source data to prevent dictionary values...")
+            for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+                if img_col in df_finalized.columns:
+                    # Create a temporary series with just the URLs
+                    web_urls = pd.Series(index=df_finalized.index, dtype='object')
+                    
+                    # Process each cell to extract only the web URL
+                    for idx in df_finalized.index:
+                        value = df_finalized.at[idx, img_col]
+                        url = '-'  # Default placeholder
+                        
+                        if isinstance(value, dict) and 'url' in value:
+                            url_value = value['url']
+                            # Only keep web URLs
+                            if isinstance(url_value, str) and url_value.startswith(('http://', 'https://')):
+                                url = url_value
+                        elif isinstance(value, str) and value.startswith(('http://', 'https://')):
+                            url = value
+                            
+                        web_urls[idx] = url
+                    
+                    # Create a temporary copy of the original data
+                    temp_col = df_finalized[img_col].copy()
+                    # Replace with the URL strings
+                    df_finalized[img_col] = web_urls
+                    
+                    # Store the original image data to restore after df_upload creation
+                    locals()[f"original_{img_col.replace(' ', '_')}"] = temp_col
+            
+            # Map columns from result format to upload format 
             for target_col in UPLOAD_COLUMN_ORDER:
                 # Find corresponding result column
                 source_col = None
@@ -1318,105 +1349,50 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                 else:
                     # If no matching column found, add an empty column
                     df_upload[target_col] = None
-            
-            # Process image columns: convert dictionaries to URL strings
-            for upload_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-                if upload_col in df_upload.columns:
-                    # Get corresponding result column
-                    result_col = None
-                    for rc, uc in COLUMN_MAPPING_FINAL_TO_UPLOAD.items():
-                        if uc == upload_col:
-                            result_col = rc
-                            break
                     
-                    if result_col and result_col in df_finalized.columns:
-                        # Process each cell
-                        for idx in df_upload.index:
-                            value = df_finalized.loc[idx, result_col]
-                            
-                            # FIXED: Improved handling for Naver image URLs
-                            # Handle different types of image data
-                            if isinstance(value, dict):
-                                # FIXED: For Naver images, prioritize image_url over general url
-                                if upload_col == '네이버쇼핑(이미지링크)':
-                                    # First try specific image_url key if it exists
-                                    if 'image_url' in value and isinstance(value['image_url'], str) and value['image_url'].startswith(('http://', 'https://')):
-                                        df_upload.at[idx, upload_col] = value['image_url']
-                                        logger.debug(f"Using explicit image_url for 네이버쇼핑(이미지링크) in row {idx}")
-                                        continue
-                                    
-                                    # Then check for specific Naver image URL formats 
-                                    if 'url' in value and isinstance(value['url'], str):
-                                        url = value['url']
-                                        # Check if it's an image URL (pstatic.net is Naver's image server)
-                                        if 'pstatic.net' in url and any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif']):
-                                            df_upload.at[idx, upload_col] = url
-                                            logger.debug(f"Using pstatic image URL for 네이버쇼핑(이미지링크) in row {idx}")
-                                            continue
-                                        
-                                        # Try extracting an image URL from original crawl data if available
-                                        if '네이버 쇼핑 링크' in df_finalized.columns:
-                                            # Look for associated image URL from crawl data
-                                            store_url = df_finalized.loc[idx, '네이버 쇼핑 링크']
-                                            if isinstance(store_url, str) and '네이버 이미지' in df_finalized.columns:
-                                                # Use regex to find image URL in original crawl data
-                                                import re
-                                                original_img_value = str(df_finalized.loc[idx, '네이버 이미지'])
-                                                img_url_matches = re.findall(r'https?://[^\s,\'"}]+\.(?:jpg|jpeg|png|gif)', original_img_value)
-                                                if img_url_matches:
-                                                    df_upload.at[idx, upload_col] = img_url_matches[0]
-                                                    logger.debug(f"Extracted image URL from crawl data for 네이버쇼핑(이미지링크) in row {idx}")
-                                                    continue
-                            
-                                    # For all other image sources, use the standard approach                    
-                                    if 'url' in value:
-                                        # Extract URL from dictionary and ensure it's a web URL
-                                        url = value['url']
-                                        if isinstance(url, str) and url.startswith(('http://', 'https://')):
-                                            df_upload.at[idx, upload_col] = url
-                                        elif isinstance(url, str) and url.startswith('file:///'):
-                                            # Try to find a web URL in other fields if available
-                                            web_url_col = None
-                                            if '본사상품링크' in df_finalized.columns and upload_col == '해오름(이미지링크)':
-                                                web_url_col = '본사상품링크'
-                                            elif '고려기프트 상품링크' in df_finalized.columns and upload_col == '고려기프트(이미지링크)':
-                                                web_url_col = '고려기프트 상품링크'
-                                            elif '네이버 쇼핑 링크' in df_finalized.columns and upload_col == '네이버쇼핑(이미지링크)':
-                                                web_url_col = '네이버 쇼핑 링크'
-                                                
-                                            if web_url_col:
-                                                web_url = df_finalized.loc[idx, web_url_col]
-                                                if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                                    df_upload.at[idx, upload_col] = web_url
-                                                    continue
-                                            
-                                            # If we can't find a web URL, use the file URL or leave blank
-                                            df_upload.at[idx, upload_col] = '-'
-                                        else:
-                                            df_upload.at[idx, upload_col] = '-'
-                                    elif isinstance(value, str) and value != '-':
-                                        # Handle URL strings
-                                        if value.startswith(('http://', 'https://')):
-                                            # Check if it's a likely image URL
-                                            if any(ext in value.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif']):
-                                                df_upload.at[idx, upload_col] = value
-                                            elif upload_col == '네이버쇼핑(이미지링크)' and '네이버 쇼핑 링크' in df_finalized.columns:
-                                                # For Naver, if it's not an image URL, try to find the correct image URL
-                                                # Check if there's a proper image URL available in the source data
-                                                if '네이버 이미지' in df_finalized.columns:
-                                                    img_data = df_finalized.loc[idx, '네이버 이미지']
-                                                    if isinstance(img_data, dict) and 'image_url' in img_data:
-                                                        df_upload.at[idx, upload_col] = img_data['image_url']
-                                                        continue
-                                                # Otherwise use the provided URL as a fallback
-                                                df_upload.at[idx, upload_col] = value
-                                            else:
-                                                df_upload.at[idx, upload_col] = value
-                                        else:
-                                            df_upload.at[idx, upload_col] = '-'
-                                    else:
-                                        # For other types or empty values, use a placeholder
-                                        df_upload.at[idx, upload_col] = '-'
+            # IMPORTANT: Restore original image data to df_finalized for result file
+            logger.info("Restoring original image data for result file...")
+            for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+                temp_col_name = f"original_{img_col.replace(' ', '_')}"
+                if temp_col_name in locals() and img_col in df_finalized.columns:
+                    df_finalized[img_col] = locals()[temp_col_name]
+                    logger.debug(f"Restored original {img_col} data")
+            
+            # FIXED: Make sure ALL dictionary values are converted to strings before Excel writing
+            # Go through the entire dataframe and convert any remaining dictionaries to strings
+            logger.info("Ensuring all data is in correct format for Excel upload file...")
+            for col in df_upload.columns:
+                for idx in df_upload.index:
+                    value = df_upload.at[idx, col]
+                    # Convert any dictionary or non-standard value to string
+                    if isinstance(value, dict):
+                        # Try to get a URL if it's in the dictionary
+                        if 'url' in value and isinstance(value['url'], str):
+                            df_upload.at[idx, col] = value['url']
+                        else:
+                            # Otherwise convert to string representation
+                            df_upload.at[idx, col] = str(value)
+                    elif pd.isna(value) or value is None:
+                        # Handle None/NaN values
+                        df_upload.at[idx, col] = '-'
+                    elif not isinstance(value, (str, int, float, bool)):
+                        # Convert any other non-standard type to string
+                        df_upload.at[idx, col] = str(value)
+            
+            # Verify no dictionaries remain
+            dict_count = 0
+            for col in df_upload.columns:
+                for idx in df_upload.index:
+                    if isinstance(df_upload.at[idx, col], dict):
+                        dict_count += 1
+                        logger.warning(f"Dictionary still found at {col}[{idx}]: {df_upload.at[idx, col]}")
+                        # Force conversion to string as fallback
+                        df_upload.at[idx, col] = str(df_upload.at[idx, col])
+            
+            if dict_count > 0:
+                logger.warning(f"Found and converted {dict_count} remaining dictionary values in upload data")
+            else:
+                logger.info("Upload data format verification complete - no dictionary values found")
             
             # Create new workbook for upload file
             workbook_upload = openpyxl.Workbook()
@@ -1431,10 +1407,38 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             
             logger.info("Writing upload data to Excel sheet...")
             
-            # Write data
+            # FIXED: Write data with extra safety checks for each cell
+            logger.info("Writing upload data to Excel sheet with enhanced dictionary safety checks...")
             for row_idx, row in enumerate(df_upload.itertuples(), 2):
                 for col_idx, value in enumerate(row[1:], 1):  # Skip the index
-                    worksheet_upload.cell(row=row_idx, column=col_idx, value=value if not pd.isna(value) else "")
+                    # Final safety check to ensure we only write basic types to Excel
+                    try:
+                        # First check for dictionaries (most problematic type)
+                        if isinstance(value, dict):
+                            # Extract URL from dictionary
+                            if 'url' in value and isinstance(value['url'], str):
+                                cell_value = value['url']
+                                logger.warning(f"Found dictionary at R{row_idx}C{col_idx} during write - extracting URL: {cell_value}")
+                            else:
+                                # Last resort - stringify dictionary
+                                cell_value = str(value)
+                                logger.warning(f"Found dictionary without URL at R{row_idx}C{col_idx} - using string conversion")
+                        # Handle other value types
+                        elif pd.isna(value) or value is None:
+                            cell_value = ""
+                        elif isinstance(value, (str, int, float, bool)):
+                            cell_value = value
+                        else:
+                            # Last resort - stringify anything else
+                            cell_value = str(value)
+                            logger.debug(f"Non-standard value type at R{row_idx}C{col_idx}: {type(value).__name__}, converted to string")
+                        
+                        # Write the value to the cell
+                        worksheet_upload.cell(row=row_idx, column=col_idx, value=cell_value)
+                    except Exception as cell_err:
+                        logger.warning(f"Error writing value '{value}' to cell R{row_idx}C{col_idx}: {cell_err}")
+                        # Write empty string as fallback
+                        worksheet_upload.cell(row=row_idx, column=col_idx, value="")
             
             logger.info(f"Upload data ({len(df_upload)} rows) written to Excel sheet. Applying minimal formatting...")
             
@@ -1474,7 +1478,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             logger.info(f"Successfully created upload file: {upload_path}")
             
         except Exception as e:
-            logger.error(f"Error creating upload file: {e}")
+            logger.error(f"Error creating upload file: {e}", exc_info=True)
             logger.debug(traceback.format_exc())
             upload_success = False
         
@@ -1602,7 +1606,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
         try:
             col_letter = get_column_letter(col_idx)
             # Use larger column width for image columns
-            worksheet.column_dimensions[col_letter].width = 30  # 증가된 너비
+            worksheet.column_dimensions[col_letter].width = 60  # Doubled from 30
         except Exception as e:
             logger.error(f"Error adjusting column width for {col_name}: {e}")
     
@@ -1650,7 +1654,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     for row_idx in rows_with_images:
         try:
             # Set larger row height to accommodate the bigger images
-            worksheet.row_dimensions[row_idx].height = 140  # 증가된 높이
+            worksheet.row_dimensions[row_idx].height = 280  # Doubled from 140
             
             # Center-align all cells in this row for better appearance with images
             for col_idx in range(1, worksheet.max_column + 1):

@@ -957,7 +957,7 @@ def create_excel_with_images(df, output_file):
         # 행 높이 설정
         ws.row_dimensions[1].height = 30  # 헤더 행 높이
         for row in range(2, len(df) + 2):
-            ws.row_dimensions[row].height = 100  # 데이터 행 높이
+            ws.row_dimensions[row].height = 200  # 데이터 행 높이 (doubled from 100)
         
         # 열 너비 설정
         column_widths = {}
@@ -970,7 +970,7 @@ def create_excel_with_images(df, output_file):
             elif header == '파일명':
                 column_widths[col_letter] = 30
             else:
-                column_widths[col_letter] = 15
+                column_widths[col_letter] = 30  # Image columns width doubled from 15
         
         for col, width in column_widths.items():
             ws.column_dimensions[col].width = width
@@ -1026,9 +1026,9 @@ def create_excel_with_images(df, output_file):
                         try:
                             # 이미지 파일 복사
                             img = Image(img_path)
-                            # 이미지 크기 조정 (최대 100x100)
-                            img.width = 100
-                            img.height = 100
+                            # 이미지 크기 조정 (최대 200x200, doubled from 100x100)
+                            img.width = 200
+                            img.height = 200
                             # 이미지 추가
                             ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
                             ws.cell(row=row_idx, column=col_idx, value="")  # 이미지가 있으면 셀 값 비움
