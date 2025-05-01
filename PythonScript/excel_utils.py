@@ -1170,119 +1170,44 @@ def verify_image_data(img_value, img_col_name):
         return '-'  # Return placeholder on error
 
 def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame:
-    """Prepares DataFrame for Excel output."""
-    if df is None or df.empty:
-        logger.warning("DataFrame is empty or None in _prepare_data_for_excel.")
-        # Return an empty DataFrame with expected columns, or skip
-        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
-    
-    # Ensure we don't modify the original DataFrame
+    """
+    Prepares the DataFrame for Excel output: column order, formatting.
+    """
+    # Make a copy to avoid modifying the original
     df = df.copy()
-    
-    # Fill missing data with a sentinel value for Excel
-    df = df.fillna('')
-    
-    # Log original columns
-    logger.debug(f"Original columns ({len(df.columns)}): {df.columns.tolist()}")
-    
-    # Replace error codes with human-readable text
-    for col in df.columns:
-        df[col] = df[col].replace({
-            'no_match': '일치하는 제품 없음', 
-            'no_price_match': '가격 범위 내 제품 없음', 
-            'low_similarity': '유사도 낮음', 
-            'no_results': '검색결과 없음',
-            'no_image': '이미지 없음',
-            'image_not_found': '이미지 파일 없음'
-        })
-    
-    # Replace True/False values with human-readable text
-    for col in df.columns:
-        df[col] = df[col].replace({True: '예', False: '아니오'})
-    
-    # Replace common formatting (optimize for Korean Excel)
-    df = df.replace({pd.NA: '', None: '', 'nan': '', np.nan: ''})
-    
-    # Replace empty cells with a dash for better visibility
-    # Only for non-image columns to avoid interfering with image handling
-    image_cols = set(IMAGE_COLUMNS)
-    link_cols = {col for col in df.columns if any(term in col for term in ['링크', 'link', 'url'])}
-    non_image_link_cols = {col for col in df.columns 
-                         if col not in image_cols and col not in link_cols}
-    
-    # Protect certain types of data from dash replacement
-    for col in non_image_link_cols:
-        # Only replace truly empty values, not zeros or other valid data
-        df[col] = df[col].apply(lambda x: '-' if x == '' else x)
-    
-    # First convert key ID/numeric columns to appropriate numeric types
-    # Match "기본수량" in columns and convert to numeric/int
-    quantity_cols = [col for col in df.columns if '기본수량' in col]
-    for col in quantity_cols:
-        try:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-        except Exception as e:
-            logger.warning(f"Error converting quantity column '{col}' to numeric: {e}")
-            # Try alternative approach
-            df[col] = df[col].apply(lambda x: 
-                                    int(float(str(x).replace(',', ''))) 
-                                    if isinstance(x, (str, int, float)) and 
-                                    str(x).strip() and str(x).strip() not in ['-', 'nan', ''] 
-                                    else 0)
-    
-    # Match price columns and convert to numeric
-    price_cols = [col for col in df.columns if any(term in col for term in 
-                                                ['판매단가', '판매가', '가격'])]
-    for col in price_cols:
-        try:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            # If it ends with % format as percentage
-            if col.endswith('%') or col.endswith('(%)'):
-                df[col] = df[col].apply(lambda x: f"{int(x)}%" if pd.notna(x) else '')
-            else:
-                # Format as currency with thousands separator
-                df[col] = df[col].apply(lambda x: 
-                                        f"{int(x):,}" if pd.notna(x) and x != 0 
-                                        else (0 if x == 0 else ''))
-        except Exception as e:
-            logger.warning(f"Error formatting price column '{col}': {e}")
-            # Try alternative formatting - handle strings with commas
-            df[col] = df[col].apply(lambda x: 
-                                    str(x).strip() if isinstance(x, (str, int, float)) and 
-                                    str(x).strip() and str(x).strip() not in ['-', '0', 'nan', ''] 
-                                    else '')
-    
-    # For result file, we keep full image data dictionary structure
-    # For upload file, we need to extract just the image URLs
-    if not skip_images:
-        # Handle image columns to ensure they're correctly formatted for Excel
-        for img_col in IMAGE_COLUMNS:
-            if img_col in df.columns:
-                # Process image data, ensuring it's ready for Excel integration
-                df[img_col] = df[img_col].apply(
-                    lambda x: verify_image_data(x, img_col) if x else '-'
-                )
-    else:
-        # For upload file, extract just the image URLs from the data
-        image_columns = [col for col in df.columns if any(term in col for term in ['이미지', '(이미지링크)'])]
-        logger.debug(f"Processing these image columns for URL extraction: {image_columns}")
-        
-        for img_col in image_columns:
-            # Extract image URLs from various data structures
-            df[img_col] = df[img_col].apply(
+
+    # 1) Rename columns EARLY so that original names are preserved before we drop/reorder columns
+    df.rename(columns=COLUMN_RENAME_MAP, inplace=True, errors='ignore')
+
+    # 2) Ensure all required columns from FINAL_COLUMN_ORDER exist
+    for col in FINAL_COLUMN_ORDER:
+        if col not in df.columns:
+            df[col] = ""
+            logger.debug(f"Added missing column '{col}' to DataFrame before ordering.")
+
+    # 3) Re-order columns based on FINAL_COLUMN_ORDER (keep only expected columns)
+    df = df[[col for col in FINAL_COLUMN_ORDER if col in df.columns]]
+
+    # For upload file, modify image column values to be web URLs or empty
+    if skip_images:
+        # Image columns now use new names from FINAL_COLUMN_ORDER / IMAGE_COLUMNS constant
+        # final_image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'] # Already defined
+        image_columns = [col for col in df.columns if col in IMAGE_COLUMNS] # Use the constant
+
+        for col in image_columns:
+            # Replace image dict/path with web URL or empty string for upload file
+            df[col] = df[col].apply(
                 lambda x:
                     # Case 1: Input is a dictionary with 'url' key
                     x['url'] if isinstance(x, dict) and 'url' in x and isinstance(x['url'], str) and x['url'].startswith(('http://', 'https://'))
                     # Case 2: Input is a string that is already a web URL
                     else (x if isinstance(x, str) and x.startswith(('http://', 'https://'))
-                    # Case 3: Try to extract URL from nested dictionaries or objects
-                    else _extract_image_url_from_data(x, img_col)
-                    # Case 4: No valid URL found
-                    if x and x != '-' else '')
+                    # Case 3: Anything else (dict without web URL, local path, file://, other types, None)
+                    else '')
                 if pd.notna(x) else ''
             )
         logger.debug(f"Processed image columns for upload file, keeping only web URLs: {image_columns}")
-    
+
     # Format numeric columns (prices, quantities) using new names
     # numeric_keywords removed, using specific lists instead
     for col in df.columns:
@@ -1304,79 +1229,6 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
     
     logger.debug(f"Final columns for Excel output: {df.columns.tolist()}")
     return df
-
-def _extract_image_url_from_data(data, img_col_name):
-    """Extract image URL from complex data structures."""
-    if not data:
-        return ""
-        
-    # Case 1: URL in dictionary with alternate keys
-    if isinstance(data, dict):
-        # Try common URL keys
-        for key in ['url', 'image_url', 'src', 'href', 'link', 'original_url']:
-            if key in data and isinstance(data[key], str) and data[key].startswith(('http://', 'https://')):
-                # Validate it looks like an image URL
-                url = data[key]
-                if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) or \
-                   any(term in url.lower() for term in ['image', 'img', 'upload', 'photo', 'phinf']):
-                    return url
-                
-        # Source-specific logic for common image patterns
-        source = data.get('source', '').lower() if isinstance(data.get('source'), str) else ''
-        
-        # For Haereum (JCL Gift)
-        if '본사' in img_col_name or 'haereum' in source or 'jclgift' in str(data).lower():
-            # Try to extract product code or ID
-            code = data.get('product_code', data.get('code', data.get('p_idx', '')))
-            if code and isinstance(code, str):
-                return f"https://www.jclgift.com/upload/product/bimg3/{code}b.gif"
-                
-        # For Kogift
-        elif '고려기프트' in img_col_name or 'kogift' in source or 'koreagift' in str(data).lower():
-            # Try to find a URL in any of the values that contains koreagift
-            for val in data.values():
-                if isinstance(val, str) and 'koreagift' in val.lower() and val.startswith('http'):
-                    return val
-            # Try to construct from shop ID if available
-            shop_id = data.get('shop_id', '')
-            if shop_id:
-                return f"https://koreagift.com/ez/upload/mall/shop_{shop_id}_0.jpg"
-                
-        # For Naver
-        elif '네이버' in img_col_name or 'naver' in source or 'pstatic' in str(data).lower():
-            # Try to find product ID
-            product_id = data.get('product_id', '')
-            if product_id:
-                return f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-            # Try to find a URL in any of the values that contains pstatic
-            for val in data.values():
-                if isinstance(val, str) and 'pstatic' in val.lower() and val.startswith('http'):
-                    return val
-                    
-    # Case 2: URL in a string
-    elif isinstance(data, str):
-        # If it's a URL string already
-        if data.startswith(('http://', 'https://')):
-            return data
-            
-        # Try to extract URL from string
-        import re
-        url_pattern = re.compile(r'https?://[^\s"\']+\.(jpg|jpeg|png|gif|webp)')
-        matches = url_pattern.findall(data)
-        if matches:
-            return matches[0]
-    
-    # Case 3: Fallback - check if string representation contains a URL
-    data_str = str(data)
-    if 'http' in data_str:
-        import re
-        urls = re.findall(r'https?://[^\s"\']+', data_str)
-        if urls:
-            # Return the first URL
-            return urls[0]
-    
-    # No valid URL found
-    return ""
 
 def safe_excel_operation(func):
     """

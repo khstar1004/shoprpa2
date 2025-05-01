@@ -498,35 +498,80 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                     if 'source' not in img_dict:
                                         img_dict['source'] = '네이버'
                                     df.at[idx, '네이버 이미지'] = img_dict
+                                else:
+                                    # 로컬 경로만 있는 경우
+                                    df.at[idx, '네이버 이미지'] = {
+                                        'local_path': img_path,
+                                        'source': '네이버'
+                                    }
         
-        logging.info(f"Matched {naver_matched_count} products with Naver data")
-        
-        # Handle image data to ensure URL format is correct for upload file
-        for idx, row in df.iterrows():
-            # Process Haereum image
-            if '본사 이미지' in df.columns:
-                haereum_img_data = df.at[idx, '본사 이미지']
-                if isinstance(haereum_img_data, dict) and 'url' in haereum_img_data:
-                    df.at[idx, '해오름(이미지링크)'] = haereum_img_data['url']
-                elif isinstance(haereum_img_data, str) and haereum_img_data.startswith(('http://', 'https://')):
-                    df.at[idx, '해오름(이미지링크)'] = haereum_img_data
+        logging.info(f"Updated {naver_matched_count} rows with Naver data")
+    
+    # --- Calculate additional fields ---
+    # Calculate price differences if base price exists
+    if '판매단가(V포함)' in df.columns:
+        # Kogift price difference
+        if '판매단가(V포함)(2)' in df.columns:
+            # FIXED: Ensure we convert to numeric before calculation
+            df['가격차이(2)'] = df.apply(
+                lambda x: pd.to_numeric(x['판매단가(V포함)(2)'], errors='coerce') - 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
+                if pd.notna(x['판매단가(V포함)(2)']) and pd.notna(x['판매단가(V포함)']) else None, 
+                axis=1
+            )
+            # Calculate percentage difference
+            df['가격차이(2)(%)'] = df.apply(
+                lambda x: int((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
+                if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
+                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+                axis=1
+            )
             
-            # Process Kogift image
-            if '고려기프트 이미지' in df.columns:
-                kogift_img_data = df.at[idx, '고려기프트 이미지']
-                if isinstance(kogift_img_data, dict) and 'url' in kogift_img_data:
-                    df.at[idx, '고려기프트(이미지링크)'] = kogift_img_data['url']
-                elif isinstance(kogift_img_data, str) and kogift_img_data.startswith(('http://', 'https://')):
-                    df.at[idx, '고려기프트(이미지링크)'] = kogift_img_data
-            
-            # Process Naver image
-            if '네이버 이미지' in df.columns:
-                naver_img_data = df.at[idx, '네이버 이미지']
-                if isinstance(naver_img_data, dict) and 'url' in naver_img_data:
-                    df.at[idx, '네이버쇼핑(이미지링크)'] = naver_img_data['url']
-                elif isinstance(naver_img_data, str) and naver_img_data.startswith(('http://', 'https://')):
-                    df.at[idx, '네이버쇼핑(이미지링크)'] = naver_img_data
-
+        # Naver price difference
+        if '판매단가(V포함)(3)' in df.columns:
+            df['가격차이(3)'] = df.apply(
+                lambda x: pd.to_numeric(x['판매단가(V포함)(3)'], errors='coerce') - 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
+                if pd.notna(x['판매단가(V포함)(3)']) and pd.notna(x['판매단가(V포함)']) else None, 
+                axis=1
+            )
+            # Calculate percentage difference
+            df['가격차이(3)(%)'] = df.apply(
+                lambda x: int((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
+                if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
+                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+                axis=1
+            )
+    
+    # Ensure all image columns have proper dictionary format
+    for img_col in ['네이버 이미지', '고려기프트 이미지', '본사 이미지']:
+        if img_col in df.columns:
+            # Process the image column consistently with structured data
+            df[img_col] = df[img_col].apply(
+                lambda x: verify_image_data(x, img_col)
+            )
+    
+    # --- Final formatting and cleanup ---
+    # Convert NaN values to None/empty for cleaner Excel output
+    df = df.replace({pd.NA: None, np.nan: None})
+    
+    # Count image URLs per column for logging
+    img_url_counts = {
+        col: (df[col].map(lambda x: 0 if x == '-' or pd.isna(x) else 1).sum()) 
+        for col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지'] 
+        if col in df.columns
+    }
+    
+    # FIXED: Log column values to verify data is properly formatted
+    logging.info(f"Formatted data for output: {len(df)} rows with image URLs: {img_url_counts}")
+    logging.debug(f"Columns in formatted data: {df.columns.tolist()}")
+    
+    # Verify price data is present in the output DataFrame
+    kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
+    logging.info(f"Kogift price data count: {kogift_price_count} rows have valid price values")
+    
     return df
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
