@@ -136,6 +136,14 @@ REQUIRED_INPUT_COLUMNS = [
     '상품명', '기본수량(1)', '판매단가(V포함)', '본사상품링크'
 ]
 
+# Define link columns for hyperlink processing
+LINK_COLUMNS = [
+    '본사상품링크',
+    '고려기프트 상품링크',
+    '네이버 쇼핑 링크',
+    '공급사 상품링크'
+]
+
 # --- Column Type Definitions for Formatting ---
 # Update these lists based on the FINAL_COLUMN_ORDER names
 PRICE_COLUMNS = [
