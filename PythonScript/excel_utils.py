@@ -627,6 +627,12 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Define yellow fill
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
+    # FIXED: Add detailed logging for debugging
+    logger.info(f"Applying conditional formatting for price differences in columns: {price_diff_cols}")
+    logger.info(f"Total rows to check: {worksheet.max_row - 1}")  # Subtract 1 for header row
+    
+    rows_highlighted = 0
+
     # Process each row
     for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
         highlight_row = False # Flag to highlight the row
@@ -636,38 +642,60 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
             if price_diff_col not in df.columns: # Skip if column doesn't exist
                 continue
                 
-            col_idx = list(df.columns).index(price_diff_col) + 1  # Get 1-based column index for openpyxl
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-
-            # Get cell value and check if it's < -1
+            # FIXED: First try to get value directly from DataFrame for more reliable extraction
+            df_row_idx = row_idx - 2  # Adjust for 0-based indexing and header row
+            if 0 <= df_row_idx < len(df):
+                df_value = df.iloc[df_row_idx].get(price_diff_col)
+                
+                # Check if the value is numeric and less than -1
+                if pd.notna(df_value) and df_value not in ['-', '']:
+                    try:
+                        if isinstance(df_value, (int, float)):
+                            numeric_value = float(df_value)
+                        else:
+                            # Try to convert string to float
+                            numeric_value = float(str(df_value).replace(',', ''))
+                            
+                        # Apply highlight if value is less than -1
+                        if numeric_value < -1:
+                            highlight_row = True
+                            logger.debug(f"Row {row_idx}: Price difference {numeric_value} < -1 in column {price_diff_col}. Highlighting row.")
+                            break  # Found a reason to highlight
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Could not convert value '{df_value}' in column {price_diff_col} to numeric: {e}")
+                        # Continue to try cell-based approach as fallback
+            
+            # Fallback to cell-based approach if DataFrame extraction doesn't work
+            col_idx = 0
             try:
+                # Find column index in worksheet
+                for i, col in enumerate(df.columns, 1):
+                    if col == price_diff_col:
+                        col_idx = i
+                        break
+                        
+                if col_idx == 0:
+                    logger.warning(f"Column {price_diff_col} not found in worksheet columns")
+                    continue
+                    
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                
+                # Get cell value and check if it's < -1
                 if cell.value not in ['-', '', None]:  # Skip empty or placeholder values
                     # Try to convert to float - handle both direct values and formatted strings
                     value_str = str(cell.value).replace(',', '')
                     try:
                         value = float(value_str)
+                        
+                        # Highlight if value is less than -1
+                        if value < -1:
+                            highlight_row = True
+                            logger.debug(f"Row {row_idx}: Cell {cell.coordinate} contains price difference {value} < -1. Highlighting row.")
+                            break # Found a reason to highlight, no need to check other diff cols
                     except ValueError:
-                        # Try getting from DataFrame directly as a fallback
-                        idx = row_idx - 2  # Adjust for 0-based indexing and header row
-                        if 0 <= idx < len(df):
-                            df_value = df.iloc[idx][price_diff_col]
-                            if pd.notna(df_value) and df_value not in ['-', '']:
-                                try:
-                                    value = float(str(df_value).replace(',', ''))
-                                except ValueError:
-                                    continue
-                            else:
-                                continue
-                        else:
-                            continue
-
-                    # Highlight if value is less than -1
-                    if value < -1:
-                        highlight_row = True
-                        logger.debug(f"Row {row_idx}: Price difference {value} < -1. Highlighting row.")
-                        break # Found a reason to highlight, no need to check other diff cols
+                        logger.debug(f"Cell {cell.coordinate} contains non-numeric value: '{cell.value}'")
             except Exception as e:
-                logger.error(f"Error processing cell {cell.coordinate} for conditional formatting: {e}")
+                logger.error(f"Error processing cell in row {row_idx}, column {price_diff_col} for conditional formatting: {e}")
                 continue
 
         # If the flag is set, highlight the entire row
@@ -675,10 +703,30 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
             for col in range(1, worksheet.max_column + 1):
                 try:
                     worksheet.cell(row=row_idx, column=col).fill = yellow_fill
+                    # Use consistent style
+                    current_cell = worksheet.cell(row=row_idx, column=col)
+                    if not current_cell.font:  # Only set font if not already customized
+                        current_cell.font = Font(name="맑은 고딕", size=10)
                 except Exception as e:
                     logger.error(f"Error applying fill to cell R{row_idx}C{col}: {e}")
+            
+            rows_highlighted += 1
 
-    logger.debug("Finished applying conditional formatting for price differences < -1.")
+    # FIXED: Log summary of highlighting results 
+    logger.info(f"Conditional formatting complete: {rows_highlighted} rows highlighted for price differences < -1")
+    
+    # Check if no rows were highlighted despite having price difference columns
+    if rows_highlighted == 0 and price_diff_cols:
+        logger.warning("No rows were highlighted despite having price difference columns. This might indicate a problem.")
+        
+        # Additional debugging: Check a sample of values in the price difference columns
+        sample_size = min(5, len(df))
+        logger.debug(f"Sample of values in price difference columns (first {sample_size} rows):")
+        for idx in range(sample_size):
+            for col in price_diff_cols:
+                if col in df.columns:
+                    value = df.iloc[idx].get(col) if idx < len(df) else None
+                    logger.debug(f"  Row {idx+2}, Column '{col}': {value} (type: {type(value).__name__})")
 
 def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Sets up page orientation, print area, freeze panes, etc."""
@@ -1166,6 +1214,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             _add_hyperlinks_to_worksheet(worksheet_result, df_for_excel, hyperlinks_as_formulas=False)
             _add_header_footer(worksheet_result)
             
+            # FIXED: Explicitly remove auto filter in result file
+            if hasattr(worksheet_result, 'auto_filter') and worksheet_result.auto_filter:
+                worksheet_result.auto_filter.ref = None
+                logger.info("Removed filter from result Excel file")
+            
             # Save without images first to ensure we can write to file
             workbook_result.save(result_path)
             
@@ -1222,6 +1275,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                     else:
                                         cell.value = str(img_path)
                 
+                # FIXED: Ensure filter is removed after image addition too
+                if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
+                    worksheet_with_images.auto_filter.ref = None
+                    logger.info("Removed filter from result Excel file after adding images")
+                
                 # Save the workbook with images
                 workbook_with_images.save(result_path)
                 logger.info(f"Successfully added {images_added} images to result file")
@@ -1276,41 +1334,89 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         for idx in df_upload.index:
                             value = df_finalized.loc[idx, result_col]
                             
+                            # FIXED: Improved handling for Naver image URLs
                             # Handle different types of image data
-                            if isinstance(value, dict) and 'url' in value:
-                                # Extract URL from dictionary and ensure it's a web URL
-                                url = value['url']
-                                if isinstance(url, str) and url.startswith(('http://', 'https://')):
-                                    df_upload.at[idx, upload_col] = url
-                                elif isinstance(url, str) and url.startswith('file:///'):
-                                    # Try to find a web URL in other fields if available
-                                    web_url_col = None
-                                    if '본사상품링크' in df_finalized.columns and upload_col == '해오름(이미지링크)':
-                                        web_url_col = '본사상품링크'
-                                    elif '고려기프트 상품링크' in df_finalized.columns and upload_col == '고려기프트(이미지링크)':
-                                        web_url_col = '고려기프트 상품링크'
-                                    elif '네이버 쇼핑 링크' in df_finalized.columns and upload_col == '네이버쇼핑(이미지링크)':
-                                        web_url_col = '네이버 쇼핑 링크'
-                                        
-                                    if web_url_col:
-                                        web_url = df_finalized.loc[idx, web_url_col]
-                                        if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
-                                            df_upload.at[idx, upload_col] = web_url
-                                            continue
+                            if isinstance(value, dict):
+                                # FIXED: For Naver images, prioritize image_url over general url
+                                if upload_col == '네이버쇼핑(이미지링크)':
+                                    # First try specific image_url key if it exists
+                                    if 'image_url' in value and isinstance(value['image_url'], str) and value['image_url'].startswith(('http://', 'https://')):
+                                        df_upload.at[idx, upload_col] = value['image_url']
+                                        logger.debug(f"Using explicit image_url for 네이버쇼핑(이미지링크) in row {idx}")
+                                        continue
                                     
-                                    # If we can't find a web URL, use the file URL or leave blank
-                                    df_upload.at[idx, upload_col] = '-'
-                                else:
-                                    df_upload.at[idx, upload_col] = '-'
-                            elif isinstance(value, str) and value != '-' and ('http' in value or 'file:/' in value):
-                                # Handle URL strings
-                                if value.startswith(('http://', 'https://')):
-                                    df_upload.at[idx, upload_col] = value
-                                else:
-                                    df_upload.at[idx, upload_col] = '-'
-                            else:
-                                # For other types or empty values, use a placeholder
-                                df_upload.at[idx, upload_col] = '-'
+                                    # Then check for specific Naver image URL formats 
+                                    if 'url' in value and isinstance(value['url'], str):
+                                        url = value['url']
+                                        # Check if it's an image URL (pstatic.net is Naver's image server)
+                                        if 'pstatic.net' in url and any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+                                            df_upload.at[idx, upload_col] = url
+                                            logger.debug(f"Using pstatic image URL for 네이버쇼핑(이미지링크) in row {idx}")
+                                            continue
+                                        
+                                        # Try extracting an image URL from original crawl data if available
+                                        if '네이버 쇼핑 링크' in df_finalized.columns:
+                                            # Look for associated image URL from crawl data
+                                            store_url = df_finalized.loc[idx, '네이버 쇼핑 링크']
+                                            if isinstance(store_url, str) and '네이버 이미지' in df_finalized.columns:
+                                                # Use regex to find image URL in original crawl data
+                                                import re
+                                                original_img_value = str(df_finalized.loc[idx, '네이버 이미지'])
+                                                img_url_matches = re.findall(r'https?://[^\s,\'"}]+\.(?:jpg|jpeg|png|gif)', original_img_value)
+                                                if img_url_matches:
+                                                    df_upload.at[idx, upload_col] = img_url_matches[0]
+                                                    logger.debug(f"Extracted image URL from crawl data for 네이버쇼핑(이미지링크) in row {idx}")
+                                                    continue
+                            
+                                    # For all other image sources, use the standard approach                    
+                                    if 'url' in value:
+                                        # Extract URL from dictionary and ensure it's a web URL
+                                        url = value['url']
+                                        if isinstance(url, str) and url.startswith(('http://', 'https://')):
+                                            df_upload.at[idx, upload_col] = url
+                                        elif isinstance(url, str) and url.startswith('file:///'):
+                                            # Try to find a web URL in other fields if available
+                                            web_url_col = None
+                                            if '본사상품링크' in df_finalized.columns and upload_col == '해오름(이미지링크)':
+                                                web_url_col = '본사상품링크'
+                                            elif '고려기프트 상품링크' in df_finalized.columns and upload_col == '고려기프트(이미지링크)':
+                                                web_url_col = '고려기프트 상품링크'
+                                            elif '네이버 쇼핑 링크' in df_finalized.columns and upload_col == '네이버쇼핑(이미지링크)':
+                                                web_url_col = '네이버 쇼핑 링크'
+                                                
+                                            if web_url_col:
+                                                web_url = df_finalized.loc[idx, web_url_col]
+                                                if isinstance(web_url, str) and web_url.startswith(('http://', 'https://')):
+                                                    df_upload.at[idx, upload_col] = web_url
+                                                    continue
+                                            
+                                            # If we can't find a web URL, use the file URL or leave blank
+                                            df_upload.at[idx, upload_col] = '-'
+                                        else:
+                                            df_upload.at[idx, upload_col] = '-'
+                                    elif isinstance(value, str) and value != '-':
+                                        # Handle URL strings
+                                        if value.startswith(('http://', 'https://')):
+                                            # Check if it's a likely image URL
+                                            if any(ext in value.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+                                                df_upload.at[idx, upload_col] = value
+                                            elif upload_col == '네이버쇼핑(이미지링크)' and '네이버 쇼핑 링크' in df_finalized.columns:
+                                                # For Naver, if it's not an image URL, try to find the correct image URL
+                                                # Check if there's a proper image URL available in the source data
+                                                if '네이버 이미지' in df_finalized.columns:
+                                                    img_data = df_finalized.loc[idx, '네이버 이미지']
+                                                    if isinstance(img_data, dict) and 'image_url' in img_data:
+                                                        df_upload.at[idx, upload_col] = img_data['image_url']
+                                                        continue
+                                                # Otherwise use the provided URL as a fallback
+                                                df_upload.at[idx, upload_col] = value
+                                            else:
+                                                df_upload.at[idx, upload_col] = value
+                                        else:
+                                            df_upload.at[idx, upload_col] = '-'
+                                    else:
+                                        # For other types or empty values, use a placeholder
+                                        df_upload.at[idx, upload_col] = '-'
             
             # Create new workbook for upload file
             workbook_upload = openpyxl.Workbook()
@@ -1337,17 +1443,27 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             _add_hyperlinks_to_worksheet(worksheet_upload, df_upload, hyperlinks_as_formulas=True)
             _add_header_footer(worksheet_upload)
             
-            # Remove filters from the worksheet
+            # FIXED: Ensure filters are completely removed
+            # Remove any autofilter - Using multiple techniques to be thorough
             try:
-                # Remove any autofilter
+                # Method 1: Set auto_filter.ref to None
                 if hasattr(worksheet_upload, 'auto_filter') and worksheet_upload.auto_filter:
                     worksheet_upload.auto_filter.ref = None
                 
-                # Also check for specific filtered ranges
+                # Method 2: Clear any filterMode attributes
                 if hasattr(worksheet_upload, '_filters'):
                     worksheet_upload._filters = {}
                 
-                logger.info("Removed filters from upload Excel file")
+                # Method 3: If sheetView has autoFilter attribute, remove it
+                if hasattr(worksheet_upload, 'sheet_view'):
+                    if hasattr(worksheet_upload.sheet_view, 'autoFilter'):
+                        worksheet_upload.sheet_view.autoFilter = None
+                
+                # Method 4: Check for legacy autofilter property
+                if hasattr(worksheet_upload, 'auto_filter'):
+                    worksheet_upload.auto_filter = None
+                
+                logger.info("Removed filters from upload Excel file using multiple methods")
             except Exception as filter_err:
                 logger.warning(f"Could not remove filters: {filter_err}")
             
@@ -1593,38 +1709,76 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     # Step 2: Rename columns to the target names
     df_final = df_final.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
     
+    # FIXED: Debug logging for Kogift price data
+    logger.info("Checking Kogift price data before column processing:")
+    kogift_price_col = '판매단가(V포함)(2)'
+    if kogift_price_col in df_final.columns:
+        price_count = df_final[kogift_price_col].notnull().sum()
+        logger.info(f"Found {price_count} non-null values in '{kogift_price_col}' column")
+        
+        # Log a few sample values
+        if price_count > 0:
+            sample_values = df_final[kogift_price_col].head(3).tolist()
+            logger.info(f"Sample Kogift price values: {sample_values}")
+    else:
+        logger.warning(f"Column '{kogift_price_col}' not found in dataframe!")
+    
     # Step 3: Create an output DataFrame with columns in the proper order
     output_df = pd.DataFrame()
     
-    # Add each column from FINAL_COLUMN_ORDER
-    for target_col in FINAL_COLUMN_ORDER:
-        if target_col in df_final.columns:
-            # Column already exists with correct name
-            output_df[target_col] = df_final[target_col]
-        else:
-            # Column doesn't exist - add empty column
-            output_df[target_col] = None
-            logger.debug(f"Added missing column '{target_col}' to DataFrame.")
+    # Identify which columns in the final_order exist in the input
+    available_cols = [col for col in FINAL_COLUMN_ORDER if col in df_final.columns]
     
-    # Step 4: Handle image columns specifically to ensure proper data transfer
-    # This is important because image data can be in different formats (dictionaries, paths, etc.)
-    image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+    # Log which columns from FINAL_COLUMN_ORDER are missing
+    missing_cols = [col for col in FINAL_COLUMN_ORDER if col not in df_final.columns]
+    if missing_cols:
+        logger.warning(f"The following columns from FINAL_COLUMN_ORDER are missing: {missing_cols}")
     
-    # If image columns are present in the input but not in the output, copy them over
-    old_image_cols = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+    # Copy data from original to new dataframe
+    for col in available_cols:
+        output_df[col] = df_final[col]
     
-    for i, old_col in enumerate(old_image_cols):
-        new_col = image_cols[i]
+    # Step 4: Add missing columns with empty values
+    for col in FINAL_COLUMN_ORDER:
+        if col not in output_df.columns:
+            output_df[col] = None # Add missing column with None values
+            logger.debug(f"Added missing column '{col}' with None values")
+    
+    # FIXED: Ensure the Kogift price column exists and has data copied correctly
+    # First, check for the specific price column again:
+    if kogift_price_col in df_final.columns and kogift_price_col in output_df.columns:
+        # Explicitly copy the price column data again to ensure it's not lost
+        output_df[kogift_price_col] = df_final[kogift_price_col]
+        logger.info(f"Explicitly copied '{kogift_price_col}' data to ensure preservation")
         
-        # If new column is empty but old column exists, copy data
-        if old_col in df_final.columns and new_col in output_df.columns:
-            # Check if we need to copy the data (new column is empty)
-            needs_copy = output_df[new_col].isna().all() or (output_df[new_col] == '-').all()
-            if needs_copy:
-                logger.debug(f"Copying image data from '{old_col}' to '{new_col}'")
-                output_df[new_col] = df_final[old_col]
+        # Verify the copy worked
+        kogift_price_count_after = output_df[kogift_price_col].notnull().sum()
+        logger.info(f"After explicit copy: {kogift_price_count_after} non-null values in '{kogift_price_col}'")
+    
+    # FIXED: Special handling for price columns to avoid data loss
+    # Check for alternate column names that might hold price data
+    price_alternates = {
+        '판매단가(V포함)(2)': ['판매가(V포함)(2)', '고려가격', '고려기프트판매가', '고려기프트 판매가'],
+        '판매단가(V포함)(3)': ['판매가(V포함)(3)', '네이버가격', '네이버판매가']
+    }
+    
+    for target_col, alt_cols in price_alternates.items():
+        if target_col in output_df.columns:
+            # Check if the target column is mostly empty
+            if output_df[target_col].isna().sum() > len(output_df) * 0.9:  # 90% or more is empty
+                logger.warning(f"Target column '{target_col}' is mostly empty, checking alternates")
+                
+                # Try each alternate column
+                for alt_col in alt_cols:
+                    if alt_col in df_final.columns and df_final[alt_col].notnull().sum() > 0:
+                        logger.info(f"Found data in alternate column '{alt_col}', copying to '{target_col}'")
+                        output_df[target_col] = df_final[alt_col]
+                        break
     
     # Step 5: Format numeric columns
+    # Get image columns for exclusion from numeric formatting
+    image_cols = [col for col in output_df.columns if col in IMAGE_COLUMNS]
+    
     for col in output_df.columns:
         # Skip image columns
         if col in image_cols:
@@ -1648,8 +1802,15 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             # Set empty cells to '-' for non-image columns
             output_df[col] = output_df[col].apply(lambda x: '-' if pd.isna(x) or x == '' else x)
     
+    # Final verification of key data
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
     logger.debug(f"Final columns: {output_df.columns.tolist()}")
+    
+    # FIXED: Final verification of price data
+    for price_col in ['판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)']:
+        if price_col in output_df.columns:
+            non_empty_count = output_df[price_col].apply(lambda x: x != '-' and pd.notna(x)).sum()
+            logger.info(f"Final verification: Column '{price_col}' has {non_empty_count} non-empty values")
     
     return output_df
 
@@ -1740,8 +1901,10 @@ def _apply_basic_excel_formatting(worksheet, column_list):
         # 4. Freeze the header row
         worksheet.freeze_panes = 'A2'
         
-        # 5. Auto-filter for all columns
-        worksheet.auto_filter.ref = f"A1:{get_column_letter(len(column_list))}{max_row}"
+        # FIXED: Remove the auto-filter functionality
+        # Explicitly remove any existing filter
+        if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
+            worksheet.auto_filter.ref = None
         
         logger.debug(f"Applied basic Excel formatting to worksheet (header + {max_row-1} data rows)")
         

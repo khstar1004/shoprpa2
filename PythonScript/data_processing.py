@@ -205,212 +205,33 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                              naver_results: Dict[str, List[Dict]] = None) -> pd.DataFrame:
     """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
-    # Deep copy to avoid modifying original
+    # Create a copy to avoid modifying the input
     df = input_df.copy()
     
-    # Store original columns to check what existed in input
-    original_columns = df.columns.tolist()
-    
-    # Check if the DataFrame is empty or has no useful data
-    if df.empty or df.isnull().all().all():
-        logging.warning("Input DataFrame is empty or contains only null values. Adding sample data row for debugging.")
-        
-        # Create a sample row using data similar to examples in the notepad context
-        sample_row = {
-            '구분': 'A',
-            '담당자': '김균아',
-            '업체명': '엠제이(MJ)기획',
-            '업체코드': '3941',
-            'Code': '437611',
-            '중분류카테고리': '가방(에코백/면)',
-            '상품명': '사랑이 엔젤하트 투포켓 에코백',
-            '기본수량(1)': 200,
-            '판매단가(V포함)': 2970,
-            '본사상품링크': 'http://www.jclgift.com/product/product_view.asp?p_idx=437611',
-            '기본수량(2)': 200,
-            '판매단가(V포함)(2)': 2854.5,
-            '가격차이(2)': -115.5,
-            '가격차이(2)(%)': -3.9,
-            '고려기프트 상품링크': 'http://koreagift.com/ez/mall.php?cat=003011001&query=view&no=170303',
-            '본사 이미지': {'url': 'http://i.jclgift.com/upload/product/bimg3/BBCH0009423b.png', 'local_path': 'C:/RPA/Image/Main/Haereum/haereum_sample.png', 'source': 'haereum', 'score': 1.0},
-            '고려기프트 이미지': {'url': 'http://koreagift.com/ez/upload/mall/shop_1744176711612699_0.png', 'local_path': 'C:/RPA/Image/Main/Kogift/kogift_sample.png', 'source': 'kogift', 'score': 0.8},
-            '네이버 이미지': None,
-            '해오름(이미지링크)': {'url': 'http://i.jclgift.com/upload/product/bimg3/BBCH0009423b.png', 'local_path': 'C:/RPA/Image/Main/Haereum/haereum_sample.png', 'source': 'haereum', 'score': 1.0},
-            '고려기프트(이미지링크)': {'url': 'http://koreagift.com/ez/upload/mall/shop_1744176711612699_0.png', 'local_path': 'C:/RPA/Image/Main/Kogift/kogift_sample.png', 'source': 'kogift', 'score': 0.8},
-            '네이버쇼핑(이미지링크)': '-'
-        }
-        
-        # Add a second sample row with data from 엑셀골든_upload
-        sample_row2 = {
-            '구분': 'A',
-            '담당자': '김지나',
-            '업체명': '(주)에이디웰',
-            '업체코드': '14369',
-            'Code': '428513',
-            '중분류카테고리': '칫솔/덴탈용품',
-            '상품명': '콜게이트 레귤러 치약 100g',
-            '기본수량(1)': 144,
-            '판매단가(V포함)': 3119,
-            '본사상품링크': 'http://www.jclgift.com/product/product_view.asp?p_idx=428513',
-            '판매단가(V포함)(3)': 2806,
-            '가격차이(3)': -313,
-            '가격차이(3)(%)': -10,
-            '공급사명': '앵두판촉',
-            '네이버 쇼핑 링크': 'http://www.cherrygift.co.kr/product_w/product_view.asp?p_idx=428513',
-            '본사 이미지': {'url': 'http://i.jclgift.com/upload/product/bimg3/EECZ00010000b_340.jpg', 'local_path': 'C:/RPA/Image/Main/Haereum/haereum_sample2.jpg', 'source': 'haereum', 'score': 1.0},
-            '네이버 이미지': {'url': 'https://shopping-phinf.pstatic.net/main_5321641/53216410772.jpg', 'local_path': 'C:/RPA/Image/Main/Naver/naver_sample2.jpg', 'source': 'naver', 'score': 0.7},
-            '해오름(이미지링크)': {'url': 'http://i.jclgift.com/upload/product/bimg3/EECZ00010000b_340.jpg', 'local_path': 'C:/RPA/Image/Main/Haereum/haereum_sample2.jpg', 'source': 'haereum', 'score': 1.0},
-            '고려기프트(이미지링크)': '-',
-            '네이버쇼핑(이미지링크)': {'url': 'https://shopping-phinf.pstatic.net/main_5321641/53216410772.jpg', 'local_path': 'C:/RPA/Image/Main/Naver/naver_sample2.jpg', 'source': 'naver', 'score': 0.7}
-        }
-        
-        # Create DataFrame with sample rows
-        df = pd.DataFrame([sample_row, sample_row2])
-        logging.info(f"Added 2 sample data rows to empty DataFrame. New shape: {df.shape}")
-    
-    # 필수 컬럼 목록 - 최종 결과에 반드시 포함되어야 하는 컬럼
-    required_columns = ['기본수량(1)', '판매단가(V포함)']
-    
-    # 필수 컬럼 확인 및 추가 로직 강화
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        logging.warning(f"Initial check found missing required columns: {missing_columns}. Attempting to add them.")
-        for col in missing_columns:
-            if col == '기본수량(1)':
-                if '본사 기본수량' in df.columns:
-                    df['기본수량(1)'] = df['본사 기본수량']
-                    logging.info(f"Added missing column '{col}' by copying from '본사 기본수량'.")
-                else:
-                    df[col] = '-' # Default to '-' if fallback is missing
-                    logging.warning(f"Added missing column '{col}' with default value '-' as '본사 기본수량' was also missing.")
-            elif col == '판매단가(V포함)':
-                if '판매단가' in df.columns:
-                    df['판매단가(V포함)'] = df['판매단가']
-                    logging.info(f"Added missing column '{col}' by copying from '판매단가'.")
-                else:
-                    df[col] = '-' # Default to '-' if fallback is missing
-                    logging.warning(f"Added missing column '{col}' with default value '-' as '판매단가' was also missing.")
-
-    # 최종 확인: 필수 컬럼이 여전히 누락되었는지 확인 (추가 시도 후)
-    missing_columns_after_add = [col for col in required_columns if col not in df.columns]
-    if missing_columns_after_add:
-        # 에러 대신 경고 로깅하고 기본값으로 채우기 시도
-        logging.warning(f"Input DataFrame is STILL missing required columns after attempting to add them: {missing_columns_after_add}. Filling with pd.NA.")
-        for col in missing_columns_after_add:
-             # Ensure column exists, fill with default value pd.NA
-             if col not in df.columns:
-                 df[col] = pd.NA
-
-    # --- Standardize column names if needed ---
-    # Add mapping for common column name variations
-    column_name_map = {
-        # 'Code': '상품코드', # 최종 출력에 Code 컬럼이 필요하므로 주석 처리
-        '제품코드': '상품코드',
-        '상품분류': '상품분류',
-        '상품명': '상품명',
-        '품명': '상품명',
-        '제품명': '상품명'
-    }
-    
-    # Rename columns based on mapping (only if target name doesn't already exist)
-    for old_name, new_name in column_name_map.items():
-        if old_name in df.columns and new_name not in df.columns:
-            df.rename(columns={old_name: new_name}, inplace=True)
-    
-    # --- Ensure all expected output columns exist ---
-    # Define final columns structure with defaults
-    expected_output_columns = {
-        '구분': None,
-        '담당자': None,
-        '업체명': None,
-        '업체코드': None,
-        'Code': None,
-        '중분류카테고리': None,
-        '상품명': None,
-        '기본수량(1)': None,
-        '판매단가(V포함)': None,
-        '본사상품링크': None,
-        '기본수량(2)': None,
-        '판매가(V포함)(2)': None,
-        '판매단가(V포함)(2)': None,
-        '가격차이(2)': None,
-        '가격차이(2)(%)': None,
-        '고려기프트 상품링크': None,
-        '기본수량(3)': None,
-        '판매단가(V포함)(3)': None,
-        '가격차이(3)': None,
-        '가격차이(3)(%)': None,
-        '공급사명': None,
-        '네이버 쇼핑 링크': None,
-        '공급사 상품링크': None,
-        '본사 이미지': None,
-        '고려기프트 이미지': None,
-        '네이버 이미지': None
-    }
-    
-    # 보호해야 할 초기 입력 컬럼 목록 (표준화된 이름 기준)
-    protected_initial_columns = {
-        'Code', # 상품코드 대신 Code 보호
-        '상품명', '기본수량(1)', '판매단가(V포함)',
-        # 사용자가 언급한 다른 초기 컬럼들도 추가 (만약 expected_output_columns에 포함될 경우 대비)
-        '구분', '담당자', '업체명', '업체코드', '중분류카테고리', '본사상품링크' 
-    }
-
-    # Add missing columns with defaults, ONLY if they were not in the original input
-    # AND are not protected initial columns
-    for col, default_value in expected_output_columns.items():
+    # Ensure required columns exist
+    for col in ['상품명', '판매단가(V포함)']:
         if col not in df.columns:
-            # 보호해야 할 컬럼인 경우, 기본값 할당 로직 건너뛰기
-            if col in protected_initial_columns:
-                logging.warning(f"Protected initial column '{col}' was missing. Skipping default assignment.")
-                # 필요하다면 None으로 추가할 수는 있음 (현재는 그냥 건너뛰기)
-                # df[col] = None 
-                continue 
-
-            # Check if the column was present in the original input DataFrame
-            if col not in original_columns:
-                logging.warning(f"Column '{col}' was missing from original input and current df. Adding with default: {default_value}")
-                df[col] = default_value
-            else:
-                # Column existed originally but is now missing. This indicates a potential issue.
-                # Log a warning, but don't add a default to avoid overwriting potentially recoverable data.
-                # Consider adding it back with None/NaN or a specific placeholder if necessary.
-                logging.warning(f"Column '{col}' existed in original input but is now missing. Not applying default.")
-                df[col] = None # Or pd.NA, or '-' depending on desired handling
-
-    # --- Column mapping for different data sources ---
-    column_mappings = {
-        # Map various internal column names to standardized output names
-        '고려 링크': '고려기프트 상품링크',
-        '고려기프트(이미지링크)': '고려기프트 이미지',
-        '고려 기본수량': '고려 기본수량',
-        '판매단가2(VAT포함)': '판매단가(V포함)(2)',
-        
-        '네이버 공급사명': '공급사명',
-        '네이버 링크': '공급사 상품링크',
-        '네이버쇼핑(이미지링크)': '네이버 이미지',
-        '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
-    }
+            df[col] = None
+            logging.warning(f"Adding missing required column: {col}")
     
-    # Apply mappings
-    for src_col, dst_col in column_mappings.items():
-        if src_col in df.columns and dst_col not in df.columns:
-            df[dst_col] = df[src_col]
-            
-    # --- Process and add images ---
-    # Ensure image columns exist and add from crawl results if missing
-    if '본사 이미지' not in df.columns:
-        # If 해오름이미지경로 exists and contains dictionaries, use it.
-        # Otherwise, fall back to 해오름이미지URL if it exists.
-        if '해오름이미지경로' in df.columns and df['해오름이미지경로'].apply(lambda x: isinstance(x, dict)).any():
-            df['본사 이미지'] = df['해오름이미지경로']
-            logging.info("Added '본사 이미지' column from '해오름이미지경로' (containing image dictionaries)")
-        elif '해오름이미지URL' in df.columns:
-            df['본사 이미지'] = df['해오름이미지URL']
-            logging.warning("'해오름이미지경로' not found or empty, using '해오름이미지URL' for '본사 이미지'. Path info might be missing.")
-        else:
-            df['본사 이미지'] = None # Set to None if neither is available
-            logging.warning("Neither '해오름이미지경로' nor '해오름이미지URL' found. '본사 이미지' column added as None.")
+    # Add columns for Kogift results if they don't exist yet
+    # FIXED: Ensure 판매단가(V포함)(2) column exists explicitly for kogift prices
+    for col in ['기본수량(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']:
+        if col not in df.columns:
+            df[col] = None
+            logging.debug(f"Adding column for Kogift data: {col}")
+    
+    # Add columns for Naver results if they don't exist yet
+    for col in ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '네이버 쇼핑 링크', '공급사명', '공급사 상품링크', '네이버 이미지']:
+        if col not in df.columns:
+            df[col] = None
+            logging.debug(f"Adding column for Naver data: {col}")
+    
+    # Initialize the image columns with proper dictionary format where applicable
+    for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+        if img_col in df.columns:
+            # Ensure we have a valid column (not None)
+            df[img_col] = df[img_col].apply(lambda x: {} if pd.isna(x) or x is None else x)
 
     # Add Kogift data from crawl results if available
     if kogift_results:
@@ -438,12 +259,26 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
                             df.at[idx, '기본수량'] = row['기본수량(1)']
                     
+                    # FIXED: Improved price data handling for Kogift price
                     # Use price_with_vat instead of price when available (VAT included)
                     if '판매단가(V포함)(2)' in df.columns:
-                        if 'price_with_vat' in item and item['price_with_vat']:
-                            df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
-                        elif 'price' in item:
-                            df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                        # Check for price_with_vat first (priority)
+                        if 'price_with_vat' in item and item['price_with_vat'] is not None:
+                            # Convert to numeric and ensure it's an integer to match typical format
+                            try:
+                                price_val = float(item['price_with_vat'])
+                                df.at[idx, '판매단가(V포함)(2)'] = int(price_val)
+                                logging.debug(f"Set Kogift price for '{product_name}': {int(price_val)} (from price_with_vat)")
+                            except (ValueError, TypeError):
+                                logging.warning(f"Invalid price_with_vat value: {item['price_with_vat']} for '{product_name}'")
+                        # Fall back to price if price_with_vat is not available
+                        elif 'price' in item and item['price'] is not None:
+                            try:
+                                price_val = float(item['price'])
+                                df.at[idx, '판매단가(V포함)(2)'] = int(price_val)
+                                logging.debug(f"Set Kogift price for '{product_name}': {int(price_val)} (from price)")
+                            except (ValueError, TypeError):
+                                logging.warning(f"Invalid price value: {item['price']} for '{product_name}'")
                     
                     # 판매가 칼럼에도 동일한 가격 정보 복사 (요구사항)
                     if '판매가' in df.columns:
@@ -467,24 +302,21 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     kogift_update_count += 1
         
         logging.info(f"Updated {kogift_update_count} rows with Kogift data")
-                            
+
     # Add Naver data from crawl results if available
     if naver_results:
-        naver_update_count = 0
         naver_matched_count = 0
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
+            
             if product_name in naver_results:
-                # Get first matching result from Naver
                 naver_data = naver_results[product_name]
                 if naver_data and len(naver_data) > 0:
-                    item = naver_data[0]  # Use the first match
+                    # Use first match for now
+                    item = naver_data[0]
                     
-                    # 네이버 매칭 여부 확인 - 링크나 가격 정보가 있어야 매칭으로 간주
-                    is_matched = ('link' in item and item['link']) or ('price' in item and item['price'])
-                    
-                    # 매칭된 경우에만 데이터 추가
-                    if is_matched:
+                    # Process if item is valid and has required data
+                    if isinstance(item, dict):
                         naver_matched_count += 1
                         
                         # Update Naver related columns
@@ -508,69 +340,52 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if '공급사명' in df.columns and 'seller_name' in item:
                             df.at[idx, '공급사명'] = item['seller_name']
                         
-                        # Handle Naver image data properly - 통일된 형식으로 처리
+                        # 이미지 URL 추가
                         if '네이버 이미지' in df.columns:
-                            # Kogift와 동일한 방식으로 이미지 데이터 처리
-                            if 'image_data' in item and isinstance(item['image_data'], dict):
-                                # 이미 올바른 형식으로 준비된 이미지 데이터 사용
-                                df.at[idx, '네이버 이미지'] = item['image_data']
-                            elif 'image_path' in item and 'image_url' in item:
-                                # URL과 로컬 경로가 모두 있는 경우
-                                image_data = {
-                                    'url': item['image_url'],
-                                    'local_path': item['image_path'],
-                                    'source': 'naver',
-                                    'original_path': item.get('original_path', item['image_path'])
-                                }
-                                df.at[idx, '네이버 이미지'] = image_data
-                            elif 'image_path' in item:
-                                # 로컬 경로만 있는 경우
-                                image_path = item['image_path']
-                                if isinstance(image_path, str):
-                                    # URL 생성 (파일 경로인 경우 file:// 형식으로)
-                                    url = item.get('image_url', None)
-                                    if not url and os.path.exists(image_path):
-                                        url = f"file:///{image_path.replace(os.sep, '/')}"
-                                    
-                                    image_data = {
-                                        'url': url if url else '',
-                                        'local_path': image_path,
-                                        'source': 'naver',
-                                        'original_path': item.get('original_path', image_path)
+                            # 이미지 경로 정보가 있으면 추가
+                            img_path = None
+                            img_url = None
+                            
+                            # FIXED: Explicitly capture image URL from Naver crawl data
+                            if 'image_path' in item:
+                                img_path = item['image_path']
+                            if 'image_url' in item:
+                                img_url = item['image_url']
+                            elif 'image_path' in item and item['image_path'] and item['image_path'].startswith(('http://', 'https://')):
+                                img_url = item['image_path']
+                            
+                            if img_path or img_url:
+                                if isinstance(img_path, dict):
+                                    # Dictionary format - make sure image_url is included
+                                    img_dict = img_path.copy()
+                                    if img_url and 'image_url' not in img_dict:
+                                        img_dict['image_url'] = img_url
+                                    df.at[idx, '네이버 이미지'] = img_dict
+                                else:
+                                    # String format - convert to dict for consistency
+                                    img_dict = {
+                                        'source': '네이버',
+                                        'image_url': img_url
                                     }
-                                    df.at[idx, '네이버 이미지'] = image_data
-                            elif 'image_url' in item:
-                                # URL만 있는 경우
-                                image_data = {
-                                    'url': item['image_url'],
-                                    'source': 'naver'
-                                }
-                                df.at[idx, '네이버 이미지'] = image_data
-                            else:
-                                df.at[idx, '네이버 이미지'] = '-'  # 이미지 정보 없음
-                        
-                        naver_update_count += 1
+                                    
+                                    if img_path:
+                                        if str(img_path).startswith('http'):
+                                            img_dict['url'] = img_path
+                                        else:
+                                            img_dict['local_path'] = img_path
+                                    elif img_url:
+                                        img_dict['url'] = img_url
+                                        
+                                    df.at[idx, '네이버 이미지'] = img_dict
         
-        logging.info(f"Updated {naver_update_count} rows with Naver data ({naver_matched_count} matched products)")
-    
-    # Add additional logic to ensure Haereum images are included correctly
-    # This focuses on filling gaps if '본사 이미지' is missing but path data exists
-    if '본사 이미지' in df.columns and '해오름이미지경로' in df.columns:
-        # Find rows where '본사 이미지' is missing (None, pd.NA, '-')
-        # but '해오름이미지경로' has data (and is preferably a dictionary)
-        본사_이미지_missing = df['본사 이미지'].apply(lambda x: pd.isna(x) or x == '-' or x == '')
-        해오름_경로_valid = df['해오름이미지경로'].apply(lambda x: isinstance(x, dict) or (isinstance(x, str) and x != '-' and x != ''))
-
-        update_mask = 본사_이미지_missing & 해오름_경로_valid
-        if update_mask.any():
-            df.loc[update_mask, '본사 이미지'] = df.loc[update_mask, '해오름이미지경로']
-            logging.info(f"Updated {update_mask.sum()} missing '본사 이미지' with data from '해오름이미지경로'")
+        logging.info(f"Updated {naver_matched_count} rows with Naver data")
     
     # --- Calculate additional fields ---
     # Calculate price differences if base price exists
     if '판매단가(V포함)' in df.columns:
         # Kogift price difference
         if '판매단가(V포함)(2)' in df.columns:
+            # FIXED: Ensure we convert to numeric before calculation
             df['가격차이(2)'] = df.apply(
                 lambda x: pd.to_numeric(x['판매단가(V포함)(2)'], errors='coerce') - 
                            pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
@@ -622,7 +437,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         if col in df.columns
     }
     
+    # FIXED: Log column values to verify data is properly formatted
     logging.info(f"Formatted data for output: {len(df)} rows with image URLs: {img_url_counts}")
+    logging.debug(f"Columns in formatted data: {df.columns.tolist()}")
+    
+    # Verify price data is present in the output DataFrame
+    kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
+    logging.info(f"Kogift price data count: {kogift_price_count} rows have valid price values")
+    
     return df
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 

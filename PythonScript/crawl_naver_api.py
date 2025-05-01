@@ -75,10 +75,11 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
     # Get initial similarity threshold from config
     try:
-        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.1) # Default low threshold
+        # FIXED: Increased default threshold from 0.1 to 0.4 for better matching
+        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.4)
     except (configparser.Error, ValueError):
-        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.1.")
-        initial_sim_threshold = 0.1
+        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.4.")
+        initial_sim_threshold = 0.4
     logger.info(f"Using initial Naver result similarity threshold: {initial_sim_threshold}")
 
     # Tokenize the original query once
@@ -205,25 +206,44 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                         logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to zero/invalid price: '{title}' (Price String: '{price_str}')")
                         continue
 
-                    # --- Initial Similarity Check ---
+                    # --- Enhanced Similarity Check ---
                     title_tokens = tokenize_korean(title)
                     similarity = jaccard_similarity(original_query_tokens, title_tokens)
                     
-                    # 더 정교한 유사도 계산 (Kogift 방식 참고)
-                    # 토큰 길이에 따른 가중치 추가
+                    # FIXED: Improved similarity calculation with more weight on exact matches
+                    # Enhanced weighting based on token length and exact matches
                     weight = 1.0
                     common_tokens = set(original_query_tokens) & set(title_tokens)
-                    for token in common_tokens:
-                        if len(token) >= 4:  # 4글자 이상 토큰에 가중치
-                            weight += 0.1
                     
-                    # 가중치 적용된 유사도
+                    # Add weight for longer common tokens (more significant matches)
+                    for token in common_tokens:
+                        if len(token) >= 4:  # 4+ character tokens get more weight
+                            weight += 0.15
+                        elif len(token) >= 3: # 3 character tokens get some weight
+                            weight += 0.1
+                            
+                    # Check for exact word matches (higher confidence)
+                    original_words = ' '.join(original_query_tokens).split()
+                    title_words = ' '.join(title_tokens).split()
+                    exact_word_matches = set(original_words) & set(title_words)
+                    
+                    # Add weight for exact word matches
+                    weight += len(exact_word_matches) * 0.2
+                    
+                    # Apply weight to similarity
                     weighted_similarity = similarity * weight
                     
+                    # FIXED: Log more useful information about similarity calculation
+                    if weighted_similarity >= initial_sim_threshold * 0.8:  # Log near-matches too
+                        logger.debug(f"🟢 Item #{item_idx+1} similarity: Jaccard={similarity:.2f}, Weight={weight:.2f}, " +
+                                   f"Final={weighted_similarity:.2f}, Threshold={initial_sim_threshold:.2f}, " +
+                                   f"Common={len(common_tokens)}, ExactWords={len(exact_word_matches)}")
+                    
+                    # FIXED: Use stricter threshold
                     if weighted_similarity < initial_sim_threshold:
                         logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to low weighted similarity ({weighted_similarity:.2f} < {initial_sim_threshold}): '{title}'")
                         continue
-                    # --- End Initial Similarity Check ---
+                    # --- End Enhanced Similarity Check ---
 
                     seller = item.get("mallName", "")
                     link = item.get("link", "")
@@ -251,8 +271,14 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                     elif "티몬" in seller:
                         supplier_type = "티몬"
                     
-                    # Basic check for promotional items
-                    is_promotional = any(promo.lower() in title.lower() or promo.lower() in seller.lower() for promo in promo_keywords)
+                    # Enhanced check for promotional items - better filtering
+                    is_promotional = False
+                    for promo in promo_keywords:
+                        if promo.lower() in title.lower() or promo.lower() in seller.lower():
+                            is_promotional = True
+                            logger.debug(f"🟢 Detected promotional keyword '{promo}' in '{title}' or '{seller}'")
+                            break
+                            
                     if is_promotional:
                         logger.debug(f"🟢 Skipping promotional item #{item_idx+1} (Keyword: '{query}'): '{title}' (Seller: '{seller}')")
                         continue
@@ -262,23 +288,22 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                         'name': title,
                         'price': price,
                         'link': link,
-                        'image_url': image_url,
+                        'image_url': image_url,  # Make sure this is explicitly set
                         'quantity': "1",
                         'mallName': seller,
                         'mallProductUrl': mall_product_url,
-                        'initial_similarity': round(weighted_similarity, 3),  # 가중치 적용된 유사도 저장
+                        'initial_similarity': round(weighted_similarity, 3),  # Store weighted similarity
                         'supplier': supplier_type,  # 공급사 유형 추가
-                        'source': 'naver'  # 출처 명시
+                        'source': 'naver',  # 출처 명시
+                        'seller_name': seller,  # Add seller name for easier access
+                        'seller_link': mall_product_url  # Add seller link for easier access
                     }
                     # --- End Data Extraction ---
 
                     # Optional: Reference price check (only logging for now)
                     if reference_price > 0:
                         price_diff_percent = ((price - reference_price) / reference_price) * 100
-                        if 0 < price_diff_percent < 10: # Example: skip if price is less than 10% higher
-                            logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to small price difference ({price_diff_percent:.2f}%): '{title}' (Price: {price}, Ref: {reference_price})")
-                            # This skip might be too aggressive, consider removing or making configurable
-                            # continue # <--- Temporarily disable aggressive skipping based on price diff
+                        logger.debug(f"🟢 Price difference for '{title[:30]}...': {price_diff_percent:.2f}% (Item: {price}, Ref: {reference_price})")
 
                     current_keyword_results.append(product)
                     items_added_this_page += 1
@@ -322,6 +347,16 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
          logger.warning(f"🟢 Could not find sufficient Naver results ({MIN_RESULTS_THRESHOLD_NAVER} needed) for '{original_query}' after trying {len(keywords_to_try)} variations. Max found: {len(best_result_list)} items.")
     else:
          logger.info(f"🟢 Naver API search finished for '{original_query}'. Final result count: {len(best_result_list)} items.")
+
+    # FIXED: Sort results by similarity score before returning
+    if best_result_list:
+        best_result_list.sort(key=lambda x: x.get('initial_similarity', 0), reverse=True)
+        logger.info(f"Sorted {len(best_result_list)} Naver results by similarity score (highest first)")
+        
+        # Log the top match for debugging
+        if best_result_list:
+            top_match = best_result_list[0]
+            logger.info(f"Top Naver match for '{original_query}': '{top_match.get('name', '')}' with similarity {top_match.get('initial_similarity', 0):.3f}")
 
     return best_result_list
 
@@ -613,6 +648,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     # Process image if available
     image_url = first_item.get('image_url')
     if image_url:
+        # FIXED: Ensure we clearly store the original image URL
         result_data['image_url'] = image_url
         
         # Download the image
@@ -625,7 +661,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                 'url': image_url,
                 'local_path': local_path,
                 'original_path': local_path,
-                'source': 'naver'
+                'source': 'naver',
+                'image_url': image_url  # FIXED: Explicitly add image_url to the dictionary
             }
     
     return result_data
