@@ -20,7 +20,7 @@ import re
 from utils import download_image
 from image_utils import remove_background
 from crawl_naver_api import crawl_naver_products
-from crowling_kogift import scrape_data as scrape_kogift_data
+from crawling_kogift import scrape_data as scrape_kogift_data
 from crawling_haereum_standalone import scrape_haereum_data as scrape_haereum_image_url
 
 async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.ConfigParser):

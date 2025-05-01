@@ -1,11 +1,32 @@
 import os
+# Set TensorFlow GPU memory growth before importing any TensorFlow-related code
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 import sys
 import logging
-import json
-import shutil
-import tensorflow as tf
-import configparser # Import configparser
 from typing import Union, Optional, Dict, List, Tuple, Any
+import configparser  
+import subprocess
+import traceback
+import json
+import platform
+import shutil
+import time
+from pathlib import Path
+
+# Import TensorFlow first to ensure GPU settings are applied
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+    logging.warning("TensorFlow not available, GPU check will be limited")
+
+# Now import remaining modules
+import requests
+from PIL import Image
+import pandas as pd
+import numpy as np
 
 from utils import load_config # Assuming load_config is in utils.py
 
@@ -73,19 +94,50 @@ def setup_logging(config: configparser.ConfigParser):
 def detect_gpu():
     """Attempts to detect GPU using TensorFlow and returns a boolean flag."""
     gpu_available = False
+    
+    if not TF_AVAILABLE:
+        logging.warning("TensorFlow not available, cannot detect GPU properly")
+        return False
+        
     try:
         gpus = tf.config.list_physical_devices('GPU')
         if gpus:
             gpu_available = True
             logging.info(f"TensorFlow detected GPU(s): {gpus}")
-            # Optional: Configure memory growth (might be needed earlier depending on usage)
-            # for gpu in gpus:
-            #     tf.config.experimental.set_memory_growth(gpu, True)
+            try:
+                # Just verify GPU devices are visible
+                logical_gpus = tf.config.list_logical_devices('GPU')
+                logging.info(f"{len(logical_gpus)} Logical GPUs configured.")
+                # Memory growth is now handled via TF_FORCE_GPU_ALLOW_GROWTH
+            except RuntimeError as e:
+                # Virtual devices must be set before GPUs have been initialized
+                logging.error(f"Error configuring GPU devices: {e}")
+                gpu_available = False # Don't use GPU if configuration failed
         else:
             logging.info("TensorFlow did not detect any physical GPUs.")
     except Exception as e:
         # Log specific error during device listing but don't crash
         logging.error(f"Error during TensorFlow GPU device listing: {e}", exc_info=True)
+    
+    # Fallback to nvidia-smi check if TensorFlow didn't detect a GPU
+    if not gpu_available:
+        try:
+            if platform.system() == "Windows":
+                result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                if result.returncode == 0:
+                    logging.info("GPU detected via nvidia-smi, but not visible to TensorFlow")
+                    gpu_available = True
+            else:
+                # For Linux/Mac
+                result = subprocess.run(['which', 'nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                if result.returncode == 0:
+                    result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if result.returncode == 0:
+                        logging.info("GPU detected via nvidia-smi, but not visible to TensorFlow")
+                        gpu_available = True
+        except Exception as e:
+            logging.warning(f"Error checking for GPU via nvidia-smi: {e}")
+    
     return gpu_available
 
 def ensure_directories(config: configparser.ConfigParser) -> bool:

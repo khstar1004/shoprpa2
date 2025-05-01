@@ -13,7 +13,7 @@ from PyQt6.QtSvgWidgets import QSvgWidget
 import pandas as pd
 import configparser
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import traceback
 import asyncio
 
@@ -1320,6 +1320,13 @@ class MainWindow(QMainWindow):
                 
                 if success:
                     self.status_text.append(f"<span style='color:#4CAF50;'>{file_info} 처리 완료: 소요 시간 {duration_str}</span>")
+                    # Extract base path and add result path
+                    if output_path:
+                        base_path = output_path.replace('_upload.xlsx', '')
+                        result_path = f"{base_path}_result.xlsx"
+                        self.status_text.append(f"<span style='color:#2196F3;'>{file_info} 생성된 파일:</span>")
+                        self.status_text.append(f"<span style='color:#2196F3;'>- Result 파일: {result_path}</span>")
+                        self.status_text.append(f"<span style='color:#2196F3;'>- Upload 파일: {output_path}</span>")
                 else:
                     self.status_text.append(f"<span style='color:#FF9800;'>{file_info} 처리 실패: 소요 시간 {duration_str}</span>")
             
@@ -1330,8 +1337,6 @@ class MainWindow(QMainWindow):
                     self.last_upload_path = output_path # Update last known good path
             else:
                 logging.warning(f"{file_info} processing failed or produced no output.")
-                # Optionally add a specific log message here if not already covered by 'error' signals
-                # self.status_text.append(f"<span style='color:#f44336;'>{file_info} 처리 실패 또는 결과 없음</span>")
 
             # Move to the next file
             self.current_file_index += 1
@@ -1362,7 +1367,7 @@ class MainWindow(QMainWindow):
                 # 평균 처리 시간 계산 및 출력
                 if success_files > 0:
                     avg_seconds = sum(d.total_seconds() for d in self.file_durations.values()) / success_files
-                    avg_duration = datetime.timedelta(seconds=avg_seconds)
+                    avg_duration = timedelta(seconds=avg_seconds)
                     avg_duration_str = self._format_duration(avg_duration)
                     self.status_text.append(f"<span style='color:#2196F3;'>파일당 평균 처리 시간: {avg_duration_str}</span>")
                 

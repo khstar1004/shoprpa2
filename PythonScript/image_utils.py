@@ -1,4 +1,7 @@
 import os
+# Set TensorFlow GPU memory growth before importing TensorFlow
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 import logging
 import numpy as np
 from PIL import Image
@@ -36,17 +39,17 @@ except Exception as e:
     os.makedirs(IMAGE_DIR, exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Disable GPU usage explicitly for TensorFlow if needed
-# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# Configure TensorFlow GPU - use a safer approach that won't conflict with other modules
 try:
-    tf.config.set_visible_devices([], 'GPU')
-    logical_gpus = tf.config.list_logical_devices('GPU')
-    logging.info(f"{len(logical_gpus)} Logical GPUs available after setting visible devices.")
-except RuntimeError as e:
-    # Virtual devices must be set before GPUs have been initialized
-    logging.warning(f"Could not explicitly disable GPUs, might already be initialized: {e}")
+    # We already set TF_FORCE_GPU_ALLOW_GROWTH at the beginning
+    # This is just to check if a GPU is available
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        logging.info(f"Found {len(gpus)} GPU(s) available for image processing")
+    else:
+        logging.info("No GPUs available for image processing, using CPU")
 except Exception as e:
-     logging.error(f"Error configuring TensorFlow GPU visibility: {e}")
+    logging.warning(f"Error checking GPU availability: {e}")
 
 # --- Global Cache for Models ---
 # Avoid reloading models repeatedly

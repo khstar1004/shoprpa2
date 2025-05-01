@@ -868,8 +868,17 @@ async def preprocess_and_download_images(
         for idx, row in df.iterrows():
             image_url = row.get(url_column_name)
             row_id = row.get(id_column_name)
-            # Skip invalid URLs or missing IDs
-            if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http') or pd.isna(row_id):
+            # Basic validation
+            if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')) or pd.isna(row_id):
+                continue
+
+            # Skip URLs that are clearly not direct image links (e.g., .asp, .aspx, .php, no extension)
+            parsed_path = urlparse(image_url).path
+            _, url_ext = os.path.splitext(parsed_path)
+            url_ext = url_ext.lower()
+            non_image_exts = ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm', '']
+            if url_ext in non_image_exts or len(url_ext) > 5:
+                logging.debug(f"Skipping non-image URL {image_url} (ext='{url_ext}') for row {row_id}")
                 continue
 
             # Prepare arguments for the wrapper function

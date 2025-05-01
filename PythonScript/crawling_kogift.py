@@ -1072,6 +1072,18 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         break
                                     try:
                                         row = rows.nth(i)
+                                        
+                                        # Check for "품절" (Sold Out) before processing
+                                        try:
+                                            item_text = await row.text_content(timeout=2000)
+                                            if item_text and "품절" in item_text:
+                                                logger.info(f"Skipping item {i} as it appears to be sold out (품절).")
+                                                continue # Skip this item
+                                        except Exception as sold_out_check_err:
+                                            logger.warning(f"Could not check for '품절' on item {i}: {sold_out_check_err}")
+                                            # Optionally continue processing or skip, depending on desired behavior
+                                            # continue 
+                                            
                                         item_data = {}
                                         
                                         # Extract data using locators with short timeouts

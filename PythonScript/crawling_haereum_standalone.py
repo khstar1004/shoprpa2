@@ -34,7 +34,7 @@ from PIL import Image
 # from utils import generate_keyword_variations # Example if needed
 
 # Import helper from Kogift scraper (or move to utils)
-from crowling_kogift import should_block_request, setup_page_optimizations 
+from crawling_kogift import should_block_request, setup_page_optimizations 
 
 # Recent Changes (2024-05-21):
 # 1. Updated scrape_haereum_data function to return a dictionary with URL, local path, and source info

@@ -12,9 +12,11 @@ The combined approach provides better accuracy for product image matching.
 """
 
 import os
+# Set TensorFlow GPU memory growth before importing TensorFlow
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 import cv2
 import numpy as np
-import tensorflow as tf
 import logging
 from typing import Tuple, Dict, List, Optional, Union
 import time
@@ -67,6 +69,10 @@ def _get_config_values(config: configparser.ConfigParser) -> Dict:
         return None
 
     try:
+        # Get use_gpu from Matching section
+        use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
+        logger.info(f"GPU usage setting from config: {use_gpu}")
+
         return {
             'FEATURE_MATCH_THRESHOLD': config.getint('ImageMatching', 'feature_match_threshold', 
                                                    fallback=DEFAULT_FEATURE_MATCH_THRESHOLD),
@@ -107,7 +113,8 @@ def _get_config_values(config: configparser.ConfigParser) -> Dict:
             'APPLY_CLAHE': config.getboolean('ImageMatching', 'apply_clahe',
                                           fallback=True),
             'USE_MULTIPLE_MODELS': config.getboolean('ImageMatching', 'use_multiple_models',
-                                                  fallback=True)
+                                                  fallback=True),
+            'USE_GPU': use_gpu
         }
     except Exception as e:
         logger.error(f"Error getting config values: {e}")
@@ -131,8 +138,190 @@ SETTINGS = _get_config_values(CONFIG) or {
     'MIN_MATCH_COUNT': DEFAULT_MIN_MATCH_COUNT,
     'INLIER_THRESHOLD': DEFAULT_INLIER_THRESHOLD,
     'APPLY_CLAHE': True,
-    'USE_MULTIPLE_MODELS': True
+    'USE_MULTIPLE_MODELS': True,
+    'USE_GPU': False  # Default to False if not specified
 }
+
+def _is_gpu_available():
+    """Check if GPU is truly available for TensorFlow to use"""
+    try:
+        # Check using nvidia-smi first
+        import subprocess
+        try:
+            nvidia_smi = subprocess.run(["nvidia-smi"], capture_output=True, text=True, check=False)
+            if nvidia_smi.returncode == 0:
+                logger.info("GPU detected via nvidia-smi")
+                return True
+        except (FileNotFoundError, subprocess.SubprocessError):
+            logger.debug("nvidia-smi check failed, trying other methods")
+        
+        # Try importing CUDA runtime directly
+        try:
+            from ctypes import cdll
+            cdll.LoadLibrary("nvcuda.dll")
+            logger.info("CUDA runtime is accessible")
+            return True
+        except:
+            logger.debug("Could not load CUDA runtime directly")
+            
+        # Last resort: check environment
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        if cuda_visible and cuda_visible != "-1":
+            logger.info(f"CUDA_VISIBLE_DEVICES is set to: {cuda_visible}")
+            return True
+            
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking GPU availability: {e}")
+        return False
+
+def check_gpu_status():
+    """Standalone utility function to check GPU status"""
+    try:
+        logger.info("=== GPU Status Check ===")
+        
+        # Check environment variables
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        logger.info(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
+        
+        # Try nvidia-smi
+        try:
+            import subprocess
+            nvidia_smi = subprocess.run(["nvidia-smi"], capture_output=True, text=True, check=False)
+            if nvidia_smi.returncode == 0:
+                logger.info("nvidia-smi available and returned success")
+                # Print the first line (driver version)
+                if nvidia_smi.stdout:
+                    first_line = nvidia_smi.stdout.splitlines()[0] if nvidia_smi.stdout.splitlines() else "No output"
+                    logger.info(f"nvidia-smi first line: {first_line}")
+            else:
+                logger.warning("nvidia-smi command failed")
+        except Exception as e:
+            logger.warning(f"Error running nvidia-smi: {e}")
+        
+        # Check CUDA_PATH
+        cuda_path = os.environ.get("CUDA_PATH", "Not set")
+        logger.info(f"CUDA_PATH: {cuda_path}")
+        
+        logger.info("=== End GPU Status Check ===")
+        return True
+    except Exception as e:
+        logger.error(f"Error checking GPU status: {e}")
+        return False
+
+# Run a GPU status check before configuring TensorFlow
+gpu_check_result = check_gpu_status()
+
+# Configure TensorFlow based on the use_gpu setting
+use_gpu = SETTINGS.get('USE_GPU', False)
+
+if use_gpu:
+    logger.info("Configuring TensorFlow to use GPU")
+    
+    # Check if GPU is actually available
+    gpu_available = _is_gpu_available()
+    
+    if gpu_available:
+        logger.info("GPU appears to be available, enabling for TensorFlow")
+        # Allow TensorFlow to use the GPU - don't set any restrictions
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            del os.environ["CUDA_VISIBLE_DEVICES"]
+    else:
+        logger.warning("GPU was requested but no CUDA-capable device was detected")
+        logger.warning("Falling back to CPU mode")
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        # Update setting
+        SETTINGS['USE_GPU'] = False
+else:
+    logger.info("Configuring TensorFlow to use CPU only (by configuration)")
+    # Force TensorFlow to use CPU only
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+# Import TensorFlow after environment variable settings
+import tensorflow as tf
+
+# For debugging
+logger.info(f"TensorFlow version: {tf.__version__}")
+
+# Check for CUDA support in TensorFlow
+logger.info(f"TensorFlow built with CUDA: {tf.test.is_built_with_cuda()}")
+
+# Complete GPU status check after TensorFlow initialization
+def check_tf_gpu_status():
+    """Check GPU status after TensorFlow has been imported"""
+    try:
+        logger.info("=== TensorFlow GPU Status ===")
+        
+        # List physical GPUs
+        gpus = tf.config.list_physical_devices('GPU')
+        logger.info(f"Physical GPUs detected by TensorFlow: {len(gpus)}")
+        for i, gpu in enumerate(gpus):
+            logger.info(f"  GPU {i}: {gpu}")
+            
+        # List logical GPUs
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        logger.info(f"Logical GPUs available: {len(logical_gpus)}")
+        
+        # Run a simple GPU test if available
+        if len(gpus) > 0:
+            try:
+                with tf.device('/GPU:0'):
+                    a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
+                    b = tf.constant([[1.0, 1.0], [1.0, 1.0]])
+                    c = tf.matmul(a, b)
+                    logger.info(f"Simple GPU test succeeded: {c.numpy()}")
+            except Exception as e:
+                logger.warning(f"Simple GPU test failed: {e}")
+                
+        logger.info("=== End TensorFlow GPU Status ===")
+        return len(gpus) > 0
+    except Exception as e:
+        logger.error(f"Error checking TensorFlow GPU status: {e}")
+        return False
+
+# Run the TensorFlow GPU status check
+tf_gpu_available = check_tf_gpu_status()
+
+# Update the global settings if needed
+if tf_gpu_available and not SETTINGS.get('USE_GPU', False):
+    logger.info("GPU is available but was disabled in settings - consider enabling it")
+elif not tf_gpu_available and SETTINGS.get('USE_GPU', False):
+    logger.warning("GPU was enabled in settings but is not available - updating setting")
+    SETTINGS['USE_GPU'] = False
+
+# Check if GPU is available (compatible with all TF versions)
+try:
+    gpu_available_tf = len(tf.config.list_physical_devices('GPU')) > 0
+    logger.info(f"TensorFlow GPU available: {gpu_available_tf}")
+except Exception as e:
+    logger.warning(f"Error checking TensorFlow GPU availability: {e}")
+    try:
+        # Fallback for older TF versions
+        gpu_available_tf = tf.test.is_gpu_available()
+        logger.info(f"TensorFlow GPU available (legacy check): {gpu_available_tf}")
+    except Exception as e2:
+        logger.warning(f"Error in legacy GPU check: {e2}")
+        gpu_available_tf = False
+
+# Log GPU devices after TensorFlow initialization
+try:
+    gpus = tf.config.list_physical_devices('GPU')
+    logger.info(f"{len(gpus)} physical GPU devices visible to TensorFlow")
+    
+    # Apply memory growth for GPUs if available
+    if len(gpus) > 0 and use_gpu:
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                logger.info(f"Set memory growth for GPU: {gpu}")
+            except Exception as e:
+                logger.warning(f"Could not set memory growth for GPU: {e}")
+    
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    logger.info(f"{len(logical_gpus)} logical GPUs available after setting visible devices.")
+except Exception as e:
+    logger.error(f"Error checking GPU devices: {e}")
+    logger.info("Continuing with CPU mode")
 
 # Log settings
 logger.info("EnhancedImageMatcher Settings:")
@@ -236,13 +425,13 @@ class EnhancedImageMatcher:
     Class that combines multiple image matching techniques for better accuracy
     """
     
-    def __init__(self, config: Optional[configparser.ConfigParser] = None, use_gpu: bool = False):
+    def __init__(self, config: Optional[configparser.ConfigParser] = None, use_gpu: bool = None):
         """
         Initialize the matcher with necessary models and parameters.
         
         Args:
             config: ConfigParser instance with settings (optional)
-            use_gpu: Whether to use GPU for TensorFlow operations
+            use_gpu: Whether to use GPU for TensorFlow operations (if None, use config setting)
         """
         self.config = config
         
@@ -255,7 +444,16 @@ class EnhancedImageMatcher:
                 logger.debug("Updated settings from config")
                 
         # Set up properties
-        self.use_gpu = use_gpu
+        # If use_gpu is explicitly provided, use that value
+        # Otherwise use the value from SETTINGS
+        if use_gpu is None:
+            self.use_gpu = SETTINGS.get('USE_GPU', False)
+        else:
+            self.use_gpu = use_gpu
+            
+        # Log GPU usage setting
+        logger.info(f"EnhancedImageMatcher initialized with GPU usage set to: {self.use_gpu}")
+        
         self.sift_features = SETTINGS['SIFT_FEATURES']
         self.akaze_features = SETTINGS['AKAZE_FEATURES']
         self.orb_features = SETTINGS['ORB_FEATURES']
@@ -283,25 +481,6 @@ class EnhancedImageMatcher:
         
         # Initialize deep learning models
         try:
-            # Set TF GPU settings
-            if use_gpu:
-                # Set up GPU memory allocation
-                physical_devices = tf.config.list_physical_devices('GPU')
-                if len(physical_devices) > 0:
-                    logger.info(f"Found {len(physical_devices)} GPUs")
-                    for device in physical_devices:
-                        try:
-                            tf.config.experimental.set_memory_growth(device, True)
-                            logger.info(f"Enabled memory growth for {device}")
-                        except Exception as e:
-                            logger.warning(f"Could not enable memory growth for {device}: {e}")
-                else:
-                    logger.warning("No GPUs found, falling back to CPU")
-                    self.use_gpu = False
-            else:
-                logger.info("GPU disabled for TensorFlow")
-                os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-                
             self._initialize_deep_models()
             
         except Exception as e:
@@ -342,30 +521,41 @@ class EnhancedImageMatcher:
         try:
             # Configure GPU usage
             if self.use_gpu:
+                # Ensure the global settings are applied
+                if not SETTINGS.get('USE_GPU', False):
+                    logger.warning("Global GPU settings disabled but instance requested GPU")
+                    logger.warning("Using global setting, disabling GPU for this instance")
+                    self.use_gpu = False
+                
+            # Display status
+            if self.use_gpu:
+                logger.info("Attempting to configure GPU for deep models")
+                # GPU configuration should already be set up globally
                 gpus = tf.config.list_physical_devices('GPU')
                 if gpus:
-                    for gpu in gpus:
-                        tf.config.experimental.set_memory_growth(gpu, True)
-                    logger.info(f"Using GPU: {len(gpus)} devices available")
+                    logger.info(f"Using GPU: {len(gpus)} physical devices available")
                 else:
-                    logger.warning("No GPU devices found despite GPU flag")
+                    logger.warning("No GPU devices found despite GPU flag being set")
+                    logger.info("Falling back to CPU mode for deep models")
+                    self.use_gpu = False  # Fall back to CPU
             else:
-                # Disable GPU
-                tf.config.set_visible_devices([], 'GPU')
-                logger.info("GPU disabled for TensorFlow")
+                logger.info("GPU disabled for deep models by configuration")
                 
             # Initialize primary model (EfficientNetB0)
+            logger.info("Initializing EfficientNetB0 model...")
             self.model = tf.keras.applications.EfficientNetB0(
                 include_top=False, 
                 weights='imagenet',
                 pooling='avg'
             )
+            logger.info("EfficientNetB0 model initialized successfully")
             
             # Initialize additional models for ensemble if enabled
             self.models = []
             if self.use_multiple_models:
                 # Add MobileNetV2 (faster but still good features)
                 try:
+                    logger.info("Initializing MobileNetV2 model...")
                     mobilenet = tf.keras.applications.MobileNetV2(
                         include_top=False,
                         weights='imagenet',
@@ -378,6 +568,7 @@ class EnhancedImageMatcher:
                 
                 # Add ResNet50 (better accuracy, slower)
                 try:
+                    logger.info("Initializing ResNet50 model...")
                     resnet = tf.keras.applications.ResNet50(
                         include_top=False,
                         weights='imagenet',
@@ -393,7 +584,7 @@ class EnhancedImageMatcher:
             self.mobilenet_preprocess = tf.keras.applications.mobilenet_v2.preprocess_input
             self.resnet_preprocess = tf.keras.applications.resnet.preprocess_input
             
-            logger.info(f"Deep learning models initialized. Using ensemble: {self.use_multiple_models}")
+            logger.info(f"Deep learning models initialized. Using ensemble: {self.use_multiple_models}, GPU: {self.use_gpu}")
             
         except Exception as e:
             logger.error(f"Error initializing deep learning models: {e}")
@@ -404,6 +595,7 @@ class EnhancedImageMatcher:
         """
         Load and prepare an image for processing with preprocessing and contrast enhancement
         Returns color and grayscale versions
+        Uses cv2.imdecode for robust Unicode path handling on Windows.
         """
         try:
             # Check if image exists
@@ -411,7 +603,7 @@ class EnhancedImageMatcher:
                 logger.warning(f"Image does not exist: {image_path}")
                 return None, None
             
-            # Handle problematic file extensions
+            # Handle problematic file extensions before reading
             _, file_ext = os.path.splitext(image_path)
             if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
                 # Create a copy with .jpg extension
@@ -421,14 +613,21 @@ class EnhancedImageMatcher:
                         import shutil
                         shutil.copy2(image_path, new_path)
                     logger.info(f"Copied {file_ext} file to .jpg for processing: {new_path}")
-                    image_path = new_path
+                    image_path = new_path # Use the new path for reading
                 except Exception as copy_err:
-                    logger.error(f"Error copying {image_path} to {new_path}: {copy_err}")
-                
-            # Load image
-            img = cv2.imread(image_path)
+                    logger.error(f"Error copying potentially problematic file {image_path} to {new_path}: {copy_err}")
+                    # Proceed with original path, but decoding might fail
+
+            # Read the file into a numpy array
+            np_arr = np.fromfile(image_path, np.uint8)
+            if np_arr.size == 0:
+                logger.warning(f"Failed to read image file (empty): {image_path}")
+                return None, None
+
+            # Decode the image using cv2.imdecode
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if img is None:
-                logger.warning(f"Unable to read image: {image_path}")
+                logger.warning(f"Unable to decode image: {image_path}")
                 return None, None
                 
             # Get grayscale version
@@ -436,6 +635,10 @@ class EnhancedImageMatcher:
             
             # Apply contrast enhancement if enabled
             if self.apply_clahe:
+                # Make sure clahe is initialized
+                if not hasattr(self, 'clahe') or self.clahe is None:
+                    self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    logger.debug("Initialized CLAHE within _load_and_prepare_image")
                 gray = self.clahe.apply(gray)
             
             return img, gray
@@ -727,7 +930,7 @@ class EnhancedImageMatcher:
                 logger.warning(f"Image does not exist: {img_path}")
                 return None
                 
-            # Handle problematic file extensions
+            # Handle problematic file extensions before reading
             _, file_ext = os.path.splitext(img_path)
             if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
                 # Create a copy with .jpg extension
@@ -737,18 +940,28 @@ class EnhancedImageMatcher:
                         import shutil
                         shutil.copy2(img_path, new_path)
                     logger.info(f"Copied {file_ext} file to .jpg for deep feature extraction: {new_path}")
-                    img_path = new_path
+                    img_path = new_path # Use the new path
                 except Exception as copy_err:
                     logger.error(f"Error copying {img_path} to {new_path}: {copy_err}")
                 
-            # Load and preprocess image for EfficientNet
+            # Load image using cv2.imdecode for robust path handling
             try:
-                img = tf.keras.preprocessing.image.load_img(img_path, target_size=DEFAULT_IMG_SIZE)
-                x = tf.keras.preprocessing.image.img_to_array(img)
-                x = np.expand_dims(x, axis=0)
+                np_arr = np.fromfile(img_path, np.uint8)
+                if np_arr.size == 0:
+                    logger.warning(f"Failed to read image file for deep features (empty): {img_path}")
+                    return None
+                img_cv = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img_cv is None:
+                    logger.warning(f"Unable to decode image for deep features: {img_path}")
+                    return None
+                # Convert BGR (cv2) to RGB (TensorFlow/PIL)
+                img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                # Resize using cv2 for consistency
+                img_resized = cv2.resize(img_rgb, DEFAULT_IMG_SIZE, interpolation=cv2.INTER_AREA)
+                x = np.expand_dims(img_resized, axis=0)
                 x = self.efficient_preprocess(x)
             except Exception as img_err:
-                logger.error(f"Error loading/preprocessing image {img_path}: {img_err}")
+                logger.error(f"Error loading/preprocessing image {img_path} for deep features: {img_err}")
                 return None
             
             # Extract primary features using EfficientNet
@@ -767,9 +980,9 @@ class EnhancedImageMatcher:
                     try:
                         # Preprocess according to model
                         if model_name == 'mobilenet':
-                            x_model = self.mobilenet_preprocess(np.expand_dims(tf.keras.preprocessing.image.img_to_array(img), axis=0))
+                            x_model = self.mobilenet_preprocess(np.expand_dims(img_resized, axis=0))
                         elif model_name == 'resnet':
-                            x_model = self.resnet_preprocess(np.expand_dims(tf.keras.preprocessing.image.img_to_array(img), axis=0))
+                            x_model = self.resnet_preprocess(np.expand_dims(img_resized, axis=0))
                         else:
                             x_model = x
                             

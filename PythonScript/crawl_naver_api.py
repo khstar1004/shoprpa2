@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 import aiohttp
 import aiofiles
 from PIL import Image
+from playwright.async_api import async_playwright
 
 # Import based on how the file is run
 try:

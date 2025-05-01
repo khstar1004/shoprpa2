@@ -4,7 +4,17 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
 from PIL import Image
-import tensorflow as tf # Keep TF import for image similarity within the class
+
+# Configure TensorFlow GPU memory growth BEFORE importing TensorFlow
+# This must be done before ANY other code that might import TensorFlow
+import os
+
+# Set environment variable for TensorFlow GPU memory growth
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+# Now import TensorFlow
+import tensorflow as tf
+
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, TimeoutError, as_completed
 import time
 import configparser # Import configparser
@@ -23,14 +33,32 @@ import multiprocessing
 # 항상 UTF-8 인코딩 사용
 DEFAULT_ENCODING = 'utf-8'
 
+# Configure TensorFlow GPU memory globally at module level
+try:
+    # Global GPU configuration - must happen before any model is loaded
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        # Set memory growth on all GPUs
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logging.info(f"Set memory growth for {len(gpus)} GPUs at module level")
+except Exception as e:
+    logging.warning(f"Failed to configure TensorFlow GPU memory at module level: {e}")
+
 # Import the enhanced image matcher if available
 try:
-    from enhanced_image_matcher import EnhancedImageMatcher
+    from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
     ENHANCED_MATCHER_AVAILABLE = True
     logging.info("Enhanced image matcher imported successfully")
 except ImportError:
-    ENHANCED_MATCHER_AVAILABLE = False
-    logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
+    try:
+        # Try direct import without PythonScript prefix
+        from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+        ENHANCED_MATCHER_AVAILABLE = True
+        logging.info("Enhanced image matcher imported successfully")
+    except ImportError:
+        ENHANCED_MATCHER_AVAILABLE = False
+        logging.warning("Enhanced image matcher not available, falling back to basic image similarity")
 
 # --- Global variable for ProcessPoolExecutor worker ---
 # This needs careful handling during refactoring. It might be better managed
@@ -44,16 +72,16 @@ def _init_worker_matcher(config: configparser.ConfigParser):
     pid = os.getpid()
     logging.info(f"Initializing ProductMatcher in worker process {pid}...")
     
-    # Set lower TensorFlow memory growth to avoid OOM issues
+    # GPU configuration now happens at module level import time
+    # We don't need to configure GPU in each worker, just log status
     try:
-        gpus = tf.config.experimental.list_physical_devices('GPU')
+        gpus = tf.config.list_physical_devices('GPU')
         if gpus:
-            # Memory growth must be set before GPUs have been initialized
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logging.info(f"Worker {pid}: Set TensorFlow GPU memory growth")
+            logging.info(f"Worker {pid}: Found {len(gpus)} GPUs")
+        else:
+            logging.info(f"Worker {pid}: No GPUs detected")
     except Exception as e:
-        logging.warning(f"Worker {pid}: Failed to configure TensorFlow GPU memory: {e}")
+        logging.warning(f"Worker {pid}: Error checking GPU devices: {e}")
     
     # config.ini 직접 읽기 (UTF-8 인코딩 명시적 지정)
     if isinstance(config, str):
@@ -76,8 +104,9 @@ def _init_worker_matcher(config: configparser.ConfigParser):
     # Initialize ProductMatcher with retry
     max_retries = 3
     retry_count = 0
-    retry_delay = 2  # seconds
+    retry_delay = 2
     
+    # Rest of the function remains the same
     while retry_count < max_retries:
         try:
             worker_matcher_instance = ProductMatcher(config)
@@ -357,16 +386,15 @@ class ProductMatcher:
         try:
             logging.info("Loading EfficientNetB0 image model...")
             
-            # Configure GPU memory growth if available
+            # GPU memory growth is now handled at module level, we just need to check status
             if self.use_gpu:
-                try:
-                    gpus = tf.config.experimental.list_physical_devices('GPU')
-                    if gpus:
-                        for gpu in gpus:
-                            tf.config.experimental.set_memory_growth(gpu, True)
-                        logging.info("GPU memory growth enabled")
-                except Exception as e:
-                    logging.warning(f"Failed to configure GPU memory growth: {e}")
+                gpus = tf.config.list_physical_devices('GPU')
+                if gpus:
+                    logging.info(f"Using {len(gpus)} GPUs for image model")
+                else:
+                    logging.warning("No GPUs available despite GPU flag being set")
+                    logging.info("Falling back to CPU for image model")
+                    self.use_gpu = False
             
             # Initialize base model with proper input shape
             base_model = tf.keras.applications.EfficientNetB0(
@@ -508,7 +536,15 @@ class ProductMatcher:
         """Initialize the text similarity model"""
         try:
             logging.info(f"Loading text similarity model from {self.text_model_path}...")
-            self.text_model = SentenceTransformer(self.text_model_path)
+            
+            # Determine device (GPU if available, else CPU)
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            logging.info(f"Using device: {device} for text model")
+
+            self.text_model = SentenceTransformer(self.text_model_path, device=device)
+            # The model is loaded directly onto the specified device.
+            # No need for .to(device) after initialization.
+            
             logging.info("Text similarity model loaded successfully")
             return True
         except Exception as e:
@@ -531,8 +567,9 @@ class ProductMatcher:
         if ENHANCED_MATCHER_AVAILABLE and self.image_ensemble:
             try:
                 from enhanced_image_matcher import EnhancedImageMatcher
-                enhanced_matcher = EnhancedImageMatcher()
-                return enhanced_matcher.calculate_similarity(image_path1, image_path2)
+                enhanced_matcher = EnhancedImageMatcher(use_gpu=True)
+                similarity = enhanced_matcher.calculate_similarity(image_path1, image_path2)
+                return similarity
             except Exception as e:
                 logging.warning(f"Enhanced image matcher failed: {e}. Falling back to basic image similarity.")
         

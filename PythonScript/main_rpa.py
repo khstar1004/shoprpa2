@@ -13,11 +13,16 @@ import datetime
 import traceback
 import shutil
 from pathlib import Path
+import openpyxl
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
-from excel_utils import create_split_excel_outputs
+from excel_utils import (
+    create_split_excel_outputs,
+    find_excel_file,
+    finalize_dataframe_for_excel
+)
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
 from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
@@ -704,61 +709,201 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
                 
-                # 이미지 통합 및 필터링 수행
+                # --- Moved Image Integration Here ---
                 try:
-                    logging.info("이미지 통합 및 유사도 기반 필터링 시작...")
-                    formatted_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
-                    logging.info("이미지 통합 및 유사도 기반 필터링 완료")
+                    logging.info("Integrating and filtering images immediately before Excel generation...")
+                    # Log DataFrame state BEFORE integration
+                    logging.info(f"DataFrame shape BEFORE image integration: {formatted_df.shape}")
+                    logging.debug(f"DataFrame columns BEFORE image integration: {formatted_df.columns.tolist()}")
+                    if not formatted_df.empty:
+                        logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
+
+                    # Perform image integration
+                    integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
+                    logging.info("Image integration and filtering complete.")
+
+                    # Log DataFrame state AFTER integration
+                    logging.info(f"DataFrame shape AFTER image integration: {integrated_df.shape}")
+                    logging.debug(f"DataFrame columns AFTER image integration: {integrated_df.columns.tolist()}")
+                    if not integrated_df.empty:
+                        logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
+                        # Explicitly check image column sample data
+                        from excel_utils import IMAGE_COLUMNS # Import IMAGE_COLUMNS for logging
+                        img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
+                        if img_cols_to_log:
+                             logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
+
+                    # --- Image Matching Result Verification ---
+                    logging.info("Verifying image matching results post-integration...")
+                    image_columns_to_check = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+                    valid_data_count = 0
+                    invalid_rows_details = []
+
+                    for col in image_columns_to_check:
+                        if col in integrated_df.columns: # Check against integrated_df
+                            # Calculate valid matches based on dictionary structure and content
+                            valid_matches = integrated_df[col].apply(lambda x:
+                                isinstance(x, dict) and (
+                                    (x.get('local_path') and isinstance(x.get('local_path'), str) and x.get('local_path').strip() not in ['','-']) or
+                                    (x.get('url') and isinstance(x.get('url'), str) and x.get('url').strip().startswith(('http', 'file:')))
+                                )
+                            ).sum()
+                            logging.info(f"  - '{col}': {valid_matches} valid image data dictionaries found.")
+
+                            # Check for invalid data formats
+                            for index, value in integrated_df[col].items():
+                                if pd.notna(value) and value not in ['-', '']: # Check non-empty values
+                                    is_valid_dict = isinstance(value, dict) and (
+                                        (value.get('local_path') and isinstance(value.get('local_path'), str) and value.get('local_path').strip() not in ['','-']) or
+                                        (value.get('url') and isinstance(value.get('url'), str) and value.get('url').strip().startswith(('http', 'file:')))
+                                    )
+                                    if not is_valid_dict:
+                                        invalid_rows_details.append(f"    - Row {index}, Col '{col}': Invalid format -> {str(value)[:100]}...")
+
+                        else:
+                            logging.warning(f"  - '{col}': Column not found in DataFrame post-integration.")
+
+                    if invalid_rows_details:
+                         logging.warning(f"Verification: Found {len(invalid_rows_details)} invalid data formats in image columns post-integration:")
+                         for detail in invalid_rows_details[:10]: # Log details for first few invalid entries
+                              logging.warning(detail)
+                    else:
+                         logging.info("Verification: All image data formats appear valid post-integration.")
+
                 except Exception as e:
-                    logging.error(f"이미지 통합 및 필터링 중 오류 발생: {e}", exc_info=True)
-                
-                # Create both Excel files (with and without images)
-                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(formatted_df, output_path)
-                
-                if result_success and upload_success:
-                    logging.info(f"Successfully created both Excel files:")
-                    logging.info(f"- Result file (with images): {result_path}")
-                    logging.info(f"- Upload file (links only): {upload_path}")
-                    if progress_queue: 
-                        progress_queue.emit("status", "Output file saved successfully")
-                        # Make sure to emit the final path for GUI to capture
-                        progress_queue.emit("final_path", upload_path)
-                else:
-                    raise Exception("Failed to create one or both Excel files")
-                
-            except Exception as save_err:
-                error_msg = f"Failed to save or format output file: {str(save_err)}"
+                    logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)
+                    # Fallback: use the pre-integration DataFrame if integration fails
+                    integrated_df = formatted_df
+                    logging.warning("Proceeding with pre-integration data due to error.")
+                # --- End Image Integration ---
+
+                # Finalize the DataFrame structure before saving to Excel
+                logging.info("Finalizing DataFrame structure for Excel output...")
+                try:
+                    # Ensure the finalize function is called with the correct DataFrame
+                    df_to_save = finalize_dataframe_for_excel(integrated_df)
+                    
+                    # Log the result of finalization
+                    if df_to_save.empty and not integrated_df.empty:
+                        logging.error("DataFrame became empty after finalization. Skipping Excel creation.")
+                        # Optionally: Emit error to progress_queue if available
+                        if progress_queue: progress_queue.emit("error", "Error during data finalization stage.")
+                        # Skip Excel creation steps
+                        result_success, upload_success = False, False
+                        result_path, upload_path = None, None
+                    else:
+                        logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
+                        logging.debug(f"Finalized columns: {df_to_save.columns.tolist()}")
+                        
+                        # Add Detailed Logging Before Saving
+                        if df_to_save is not None and not df_to_save.empty:
+                            logging.info("--- DataFrame Snapshot Before Excel Write ---")
+                            logging.info(f"Shape: {df_to_save.shape}")
+                            logging.info(f"Columns: {df_to_save.columns.tolist()}")
+                            logging.info(f"dtypes:\n{df_to_save.dtypes.to_string()}")
+                            # Log first 2 rows data, especially image columns
+                            image_cols_in_final = [col for col in IMAGE_COLUMNS if col in df_to_save.columns]
+                            log_limit = min(2, len(df_to_save))
+                            logging.info(f"Sample Data (first {log_limit} rows):")
+                            try:
+                                # Use to_string for better formatting of rows/cols
+                                logging.info(f"\n{df_to_save.head(log_limit).to_string()}")
+                                # Specifically log types in image columns for first few rows
+                                if image_cols_in_final:
+                                    logging.info(f"Image Column Data Types (first {log_limit} rows):")
+                                    for i in range(log_limit):
+                                        for col in image_cols_in_final:
+                                            value = df_to_save.iloc[i][col]
+                                            logging.info(f"  Row {i}, Col '{col}': Type={type(value).__name__}, Value=\"{str(value)[:80]}...\"")
+                            except Exception as log_snap_err:
+                                logging.error(f"Could not log DataFrame snapshot: {log_snap_err}")
+                            logging.info("--- End DataFrame Snapshot ---")
+                        elif df_to_save is None:
+                            logging.warning("Skipping Excel write step because DataFrame finalization failed.")
+                        else: # df_to_save is empty
+                            logging.warning("DataFrame is empty after finalization. Excel files will have headers only.")
+
+                        # Only proceed to create Excel if finalization succeeded
+                        if df_to_save is not None:
+                            try:
+                                # Create Excel files (even if df_to_save is empty, to get headers)
+                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
+                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                # --- Result Excel File Verification ---
+                                if result_success and result_path and os.path.exists(result_path):
+                                    try:
+                                        wb_verify = openpyxl.load_workbook(result_path)
+                                        ws_verify = wb_verify.active
+                                        embedded_image_count = len(ws_verify._images)
+                                        logging.info(f"검증: 결과 엑셀 파일 '{os.path.basename(result_path)}' 검증 완료. {embedded_image_count}개 이미지 포함됨.")
+                                    except Exception as verify_err:
+                                        logging.error(f"검증: 결과 엑셀 파일 '{os.path.basename(result_path)}' 검증 중 오류 발생: {verify_err}")
+                                elif result_success:
+                                    logging.warning(f"검증: 결과 엑셀 파일 경로가 유효하지 않거나 파일이 존재하지 않아 검증을 건너뛰었습니다: {result_path}")
+
+                                # --- Success/Failure Logging for Excel Creation ---
+                                if result_success and upload_success:
+                                    logging.info("Successfully created both Excel files:")
+                                    logging.info(f"- Result file (with images): {result_path}")
+                                    logging.info(f"- Upload file (links only): {upload_path}")
+                                    if progress_queue:
+                                        progress_queue.emit("status", "Output files saved successfully")
+                                        progress_queue.emit("final_path", upload_path)
+                                else:
+                                    logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
+                                    if progress_queue:
+                                        progress_queue.emit("error", "Failed to create one or both Excel output files.")
+                                    output_path = None
+                            except Exception as save_err:
+                                error_msg = f"Failed during Excel creation step: {str(save_err)}"
+                                logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
+                                if progress_queue:
+                                    progress_queue.emit("error", error_msg)
+                                output_path = None
+                                result_success, upload_success = False, False
+                except Exception as finalize_err:
+                    logging.error(f"Error during DataFrame finalization step: {finalize_err}", exc_info=True)
+                    if progress_queue:
+                        progress_queue.emit("error", f"Error finalizing data: {finalize_err}")
+                    result_success, upload_success = False, False
+                    result_path, upload_path = None, None
+                    output_path = None
+            except Exception as e:
+                error_msg = f"Error during output file saving: {str(e)}"
                 logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
                 if progress_queue: progress_queue.emit("error", error_msg)
                 output_path = None
-        else:
-            error_msg = "Could not determine input filename base, cannot save output file"
-            logging.error(f"[Step 7/7] {error_msg}")
-            if progress_queue: progress_queue.emit("error", error_msg)
-            output_path = None
-
-        # --- Final Summary ---
-        total_time = time.time() - main_start_time
-        logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
-        if progress_queue:
-            # First send the result path (which is now upload_path) if available
-            if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
-                # Check if the specifically emitted upload_path exists
-                final_emitted_path = upload_path # Use the variable we know holds the upload path
-                if final_emitted_path and os.path.exists(final_emitted_path):
-                    logging.info(f"Emitting final upload path: {final_emitted_path}")
-                    # Ensure final_path signal emission logic remains consistent (already done above)
-                    # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
-                else:
-                    logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
-                    progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
+                result_success, upload_success = False, False
             else:
-                # If output_path wasn't even determined (earlier error maybe)
-                logging.warning("No base output path available, cannot check for upload file.")
-                progress_queue.emit("final_path", "Error: No output file created")
-            
-            # Then mark the process as finished
-            progress_queue.emit("finished", "True")
+                if not input_filename:
+                    error_msg = "Could not determine input filename base, cannot save output file"
+                    logging.error(f"[Step 7/7] {error_msg}")
+                    if progress_queue: progress_queue.emit("error", error_msg)
+                    output_path = None
+                    result_success, upload_success = False, False
+
+            # --- Final Summary ---
+            total_time = time.time() - main_start_time
+            logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
+            if progress_queue:
+                # First send the result path (which is now upload_path) if available
+                if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
+                    # Check if the specifically emitted upload_path exists
+                    final_emitted_path = upload_path # Use the variable we know holds the upload path
+                    if final_emitted_path and os.path.exists(final_emitted_path):
+                        logging.info(f"Emitting final upload path: {final_emitted_path}")
+                        # Ensure final_path signal emission logic remains consistent (already done above)
+                        # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
+                    else:
+                        logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
+                        progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
+                else:
+                    # If output_path wasn't even determined (earlier error maybe)
+                    logging.warning("No base output path available, cannot check for upload file.")
+                    progress_queue.emit("final_path", "Error: No output file created")
+                
+                # Then mark the process as finished
+                progress_queue.emit("finished", "True")
 
     except Exception as e:
         logging.error(f"Error in main: {e}", exc_info=True)
@@ -769,6 +914,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
 
 def run_cli():
     """Run the RPA process in CLI mode"""
+    # Remove the --cli flag from sys.argv before parsing arguments
+    if '--cli' in sys.argv:
+        sys.argv.remove('--cli')
+        
     parser = argparse.ArgumentParser(description="Run ShopRPA process.")
     parser.add_argument("-c", "--config", default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.ini'), 
                       help="Path to configuration file (config.ini).")

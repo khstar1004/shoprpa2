@@ -15,27 +15,37 @@ import ast
 def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Processes the main input Excel file, reading config with ConfigParser."""
     try:
+        # Get input directory from config
         input_dir = config.get('Paths', 'input_dir')
+        
+        # Check if a specific input file is provided in the config
+        specific_input_file = config.get('Paths', 'input_file', fallback=None)
+        
+        if specific_input_file and os.path.exists(specific_input_file):
+            # Use the specific input file provided in config
+            logging.info(f"Using specific input file from config: {specific_input_file}")
+            input_file = specific_input_file
+            input_filename = os.path.basename(input_file)
+        else:
+            # No specific file provided, search in the input directory
+            logging.info(f"Checking for input file in {input_dir}")
+            excel_files = glob.glob(os.path.join(input_dir, '*.xlsx'))
+            excel_files = [f for f in excel_files if not os.path.basename(f).startswith('~')]
+
+            if not excel_files:
+                logging.warning(f"No Excel (.xlsx) file found in {input_dir}.")
+                return None, None
+
+            # Process only the first found Excel file
+            input_file = excel_files[0]
+            input_filename = os.path.basename(input_file)
+            logging.info(f"Processing input file: {input_file}")
     except configparser.Error as e:
         logging.error(f"Error reading configuration for input processing: {e}. Cannot proceed.")
         return None, None
-        
-    logging.info(f"Checking for input file in {input_dir}")
+
     start_time = time.time()
-
     try:
-        excel_files = glob.glob(os.path.join(input_dir, '*.xlsx'))
-        excel_files = [f for f in excel_files if not os.path.basename(f).startswith('~')]
-
-        if not excel_files:
-            logging.warning(f"No Excel (.xlsx) file found in {input_dir}.")
-            return None, None
-
-        # Process only the first found Excel file
-        input_file = excel_files[0]
-        input_filename = os.path.basename(input_file)
-        logging.info(f"Processing input file: {input_file}")
-
         # Read the entire Excel file at once
         df = pd.read_excel(input_file, sheet_name=0)
         logging.info(f"Read {len(df)} rows from '{input_filename}'")
