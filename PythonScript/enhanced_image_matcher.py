@@ -28,7 +28,6 @@ import pickle
 from pathlib import Path
 import hashlib
 import pandas as pd
-import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1159,51 +1158,6 @@ def match_product_images(haoreum_paths: List[str],
         
     logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(kogift_valid)} Kogift images")
     
-    # Create URL extraction function for images
-    def extract_url_from_path(img_path: str) -> Optional[str]:
-        """Extract original URL from image path based on common patterns"""
-        try:
-            # URL patterns found in image paths
-            patterns = [
-                # Kogift patterns
-                r'https?://(?:www\.)?koreagift\.com/[^\s"\']+\.(jpg|jpeg|png|gif)',
-                r'https?://(?:www\.)?adpanchok\.co\.kr/[^\s"\']+\.(jpg|jpeg|png|gif)',
-                # Generic pattern
-                r'https?://[^\s"\']+\.(jpg|jpeg|png|gif)'
-            ]
-            
-            # First check for pattern in filename
-            filename = os.path.basename(img_path)
-            
-            # If filename has URL-encoded characters, try to decode it
-            if '%' in filename:
-                try:
-                    from urllib.parse import unquote
-                    filename = unquote(filename)
-                except:
-                    pass
-                    
-            # Look for URL in full path or filename
-            for pattern in patterns:
-                # First try in basename
-                match = re.search(pattern, filename, re.IGNORECASE)
-                if match:
-                    return match.group(0)
-                    
-                # Then try in full path
-                match = re.search(pattern, img_path, re.IGNORECASE)
-                if match:
-                    return match.group(0)
-            
-            # If it's a URL hash pattern, we can't extract the original URL directly
-            # Format: kogift_XXXXXXXXXX.jpg where X is a hex hash
-            
-            # No URL found
-            return None
-        except Exception as e:
-            logger.warning(f"Error extracting URL from path {img_path}: {e}")
-            return None
-    
     # Process each Haoreum image
     for h_idx, haoreum_path in enumerate(haoreum_valid):
         best_match = None
@@ -1218,11 +1172,6 @@ def match_product_images(haoreum_paths: List[str],
                 best_match = kogift_path
                 best_similarity = similarity
                 best_scores = scores
-        
-        # Extract original URL from matched image path if possible
-        original_url = None
-        if best_match:
-            original_url = extract_url_from_path(best_match)
                 
         # Add result
         result = {
@@ -1232,11 +1181,6 @@ def match_product_images(haoreum_paths: List[str],
             'scores': best_scores,
             'is_match': best_match is not None
         }
-        
-        # Add original image URL if we extracted one
-        if original_url:
-            result['original_image_url'] = original_url
-        
         results.append(result)
         
         # Log progress
@@ -1286,167 +1230,118 @@ def match_naver_product_images(haoreum_paths: List[str],
     missing_images = 0
     valid_images = 0
     
-    # Create URL extraction function for naver images
-    def extract_url_from_path(img_path: str) -> Optional[str]:
-        """Extract original URL from image path based on common patterns"""
+    for _, row in naver_results.iterrows():
         try:
-            # URL patterns found in image paths
-            patterns = [
-                # Naver patterns
-                r'https?://(?:shopping-)?phinf\.pstatic\.net/[^\s"\']+\.(jpg|jpeg|png|gif)',
-                r'https?://(?:www\.)?naver\.com/[^\s"\']+\.(jpg|jpeg|png|gif)',
-                # Generic pattern
-                r'https?://[^\s"\']+\.(jpg|jpeg|png|gif)'
-            ]
-            
-            # First check for pattern in filename
-            filename = os.path.basename(img_path)
-            
-            # If filename has URL-encoded characters, try to decode it
-            if '%' in filename:
-                try:
-                    from urllib.parse import unquote
-                    filename = unquote(filename)
-                except:
-                    pass
-                    
-            # Look for URL in full path or filename
-            for pattern in patterns:
-                # First try in basename
-                match = re.search(pattern, filename, re.IGNORECASE)
-                if match:
-                    return match.group(0)
-                    
-                # Then try in full path
-                match = re.search(pattern, img_path, re.IGNORECASE)
-                if match:
-                    return match.group(0)
-            
-            # If it's a URL hash pattern, we may be able to reconstruct the URL
-            # Format: naver_XXXXXXXXXX.jpg where X is a hex hash
-            if 'naver_' in img_path and '.jpg' in img_path:
-                try:
-                    # Try to extract main image ID from filename
-                    match = re.search(r'naver_([a-f0-9]{10})\.jpg', os.path.basename(img_path), re.IGNORECASE)
-                    if match:
-                        product_id = match.group(1)
-                        constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                        return constructed_url
-                except:
-                    pass
-            
-            # No URL found
-            return None
-        except Exception as e:
-            logger.warning(f"Error extracting URL from path {img_path}: {e}")
-            return None
-    
-    # Process Naver results
-    for index, row in naver_results.iterrows():
-        product_name = row.get('original_product_name', row.get('product_name'))
-        image_path = row.get('image_path')
-        
-        if not product_name:
-            continue
-        
-        # Handle image path which could be a dictionary or string
-        if isinstance(image_path, dict):
-            # If it's a dictionary (as used by excel_utils.py), extract the local path
-            if 'local_path' in image_path and image_path['local_path']:
-                actual_path = image_path['local_path']
+            if isinstance(row.get('original_row'), dict):
+                product_name = row['original_row'].get('상품명')
+                # Check both 네이버 이미지 and 네이버쇼핑(이미지링크) columns
+                image_path = None
+                for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
+                    if col in row and row[col] and row[col] != '-':
+                        image_path = row[col]
+                        break
                 
-                # Extract original URL if possible
-                if 'url' in image_path and image_path['url']:
-                    # Store original URL directly in the dictionary for later use
-                    image_path['original_image_url'] = image_path['url']
-                else:
-                    # Try to extract URL from path if not directly available
-                    original_url = extract_url_from_path(actual_path)
-                    if original_url:
-                        image_path['original_image_url'] = original_url
+                # Also check in the original_row
+                if not image_path and 'original_row' in row:
+                    for col in ['네이버 이미지', '네이버쇼핑(이미지링크)', 'image_path']:
+                        if col in row['original_row'] and row['original_row'][col] and row['original_row'][col] != '-':
+                            image_path = row['original_row'][col]
+                            break
                 
-                naver_images.append(actual_path)
-                product_names.append(product_name)
-                valid_images += 1
-            elif 'url' in image_path:
-                # No local path but has URL - try to see if we can find the local file
-                img_url = image_path['url']
-                source = image_path.get('source', 'naver')
-                # Try to find the file by URL hash
-                try:
-                    url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
-                    naver_dir = 'C:\\RPA\\Image\\Main\\Naver'
-                    matching_files = []
-                    
-                    if os.path.exists(naver_dir):
-                        for f in os.listdir(naver_dir):
-                            if url_hash in f and os.path.isfile(os.path.join(naver_dir, f)):
-                                matching_files.append(f)
-                    
-                    if matching_files:
-                        # Prefer original jpg over _nobg version
-                        matching_files.sort(key=lambda x: '_nobg' in x)
-                        actual_path = os.path.join(naver_dir, matching_files[0])
-                        logger.debug(f"Found local file for URL by hash: {actual_path}")
-                        
-                        # Store original URL directly
-                        image_path['original_image_url'] = img_url
-                        
-                        naver_images.append(actual_path)
-                        product_names.append(product_name)
-                        valid_images += 1
-                    else:
-                        # Try both Main and Target directories
-                        alt_dirs = ['C:\\RPA\\Image\\Main\\Naver', 'C:\\RPA\\Image\\Target\\Naver']
-                        found = False
-                        
-                        for alt_dir in alt_dirs:
-                            if os.path.exists(alt_dir):
-                                # Try to find by product name in filename
-                                product_words = product_name.split()
-                                if product_words:
-                                    for f in os.listdir(alt_dir):
-                                        # Use first word of product in filename (more unique)
-                                        if product_words[0] in f and os.path.isfile(os.path.join(alt_dir, f)):
-                                            actual_path = os.path.join(alt_dir, f)
-                                            found = True
-                                            logger.debug(f"Found local file for URL by product name: {actual_path}")
-                                            
-                                            # Store original URL directly
-                                            image_path['original_image_url'] = img_url
-                                            
-                                            naver_images.append(actual_path)
-                                            product_names.append(product_name)
-                                            valid_images += 1
-                                            break
-                            if found:
-                                break
-                        
-                        if not found:
-                            logger.warning(f"Image dictionary has URL but no local path: {img_url} for product: {product_name}")
-                            missing_images += 1
-                            continue
-                except Exception as e:
-                    logger.warning(f"Error finding local file for URL {img_url}: {e}")
+                if not image_path:
+                    logger.warning(f"No image path found for product: {product_name}")
                     missing_images += 1
                     continue
-        elif isinstance(image_path, str) and os.path.exists(image_path):
-            # It's a direct file path, use it as is
-            naver_images.append(image_path)
-            product_names.append(product_name)
-            valid_images += 1
-            
-            # Try to extract original URL if possible
-            original_url = extract_url_from_path(image_path)
-            if original_url:
-                # Store original URL in row data for later use
-                row['original_image_url'] = original_url
-        else:
-            # Invalid path format or file doesn't exist
-            missing_images += 1
+                
+                # Handle image path which could be a dictionary or string
+                if isinstance(image_path, dict):
+                    # If it's a dictionary (as used by excel_utils.py), extract the local path
+                    if 'local_path' in image_path and image_path['local_path']:
+                        actual_path = image_path['local_path']
+                    elif 'url' in image_path:
+                        # No local path but has URL - try to see if we can find the local file
+                        img_url = image_path['url']
+                        source = image_path.get('source', 'naver')
+                        # Try to find the file by URL hash
+                        try:
+                            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                            naver_dir = 'C:\\RPA\\Image\\Main\\Naver'
+                            matching_files = []
+                            
+                            if os.path.exists(naver_dir):
+                                for f in os.listdir(naver_dir):
+                                    if url_hash in f and os.path.isfile(os.path.join(naver_dir, f)):
+                                        matching_files.append(f)
+                            
+                            if matching_files:
+                                # Prefer original jpg over _nobg version
+                                matching_files.sort(key=lambda x: '_nobg' in x)
+                                actual_path = os.path.join(naver_dir, matching_files[0])
+                                logger.debug(f"Found local file for URL by hash: {actual_path}")
+                            else:
+                                # Try both Main and Target directories
+                                alt_dirs = ['C:\\RPA\\Image\\Main\\Naver', 'C:\\RPA\\Image\\Target\\Naver']
+                                found = False
+                                
+                                for alt_dir in alt_dirs:
+                                    if os.path.exists(alt_dir):
+                                        # Try to find by product name in filename
+                                        product_words = product_name.split()
+                                        if product_words:
+                                            for f in os.listdir(alt_dir):
+                                                # Use first word of product in filename (more unique)
+                                                if product_words[0] in f and os.path.isfile(os.path.join(alt_dir, f)):
+                                                    actual_path = os.path.join(alt_dir, f)
+                                                    found = True
+                                                    logger.debug(f"Found local file for URL by product name: {actual_path}")
+                                                    break
+                                    if found:
+                                        break
+                                
+                                if not found:
+                                    logger.warning(f"Image dictionary has URL but no local path: {img_url} for product: {product_name}")
+                                    missing_images += 1
+                                    continue
+                        except Exception as e:
+                            logger.error(f"Error finding local file for URL: {e}")
+                            missing_images += 1
+                            continue
+                    else:
+                        logger.warning(f"Invalid image dictionary format for product: {product_name}")
+                        missing_images += 1
+                        continue
+                else:
+                    # It's a regular string path
+                    actual_path = image_path
+                
+                # Check if the image file exists
+                if os.path.exists(actual_path):
+                    naver_images.append(actual_path)
+                    product_names.append(product_name)
+                    valid_images += 1
+                else:
+                    # Try to find _nobg version
+                    base_path, ext = os.path.splitext(actual_path)
+                    nobg_path = f"{base_path}_nobg.png"
+                    if os.path.exists(nobg_path):
+                        naver_images.append(nobg_path)
+                        product_names.append(product_name)
+                        valid_images += 1
+                        logger.debug(f"Using _nobg version instead: {nobg_path}")
+                    else:
+                        logger.warning(f"Image file does not exist (both original and _nobg): {actual_path} for product: {product_name}")
+                        missing_images += 1
+        except Exception as e:
+            logger.error(f"Error processing row in naver_results: {e}")
             continue
     
-    logger.info(f"Processing {valid_images} valid Naver images (missing: {missing_images})")
+    logger.info(f"Found {valid_images} valid Naver images, {missing_images} missing or invalid")
+    
+    if not naver_images:
+        logger.warning("No valid Naver images found in results")
+        return results
+    
+    logger.info(f"Matching {len(haoreum_valid)} Haoreum images with {len(naver_images)} Naver images")
     
     # Process each Haoreum image
     for h_idx, haoreum_path in enumerate(haoreum_valid):
@@ -1454,13 +1349,12 @@ def match_naver_product_images(haoreum_paths: List[str],
         best_similarity = 0
         best_scores = {}
         matched_product = None
-        matched_original_url = None
         
         # Get product name from Haoreum path
         haoreum_product = os.path.splitext(os.path.basename(haoreum_path))[0]
         
         # Find best matching Naver image
-        for naver_url, product_name, row_idx in zip(naver_images, product_names, range(len(naver_images))):
+        for naver_url, product_name in zip(naver_images, product_names):
             try:
                 if not os.path.exists(naver_url):
                     logger.warning(f"Skipping non-existent Naver image: {naver_url}")
@@ -1473,16 +1367,6 @@ def match_naver_product_images(haoreum_paths: List[str],
                     best_similarity = similarity
                     best_scores = scores
                     matched_product = product_name
-                    
-                    # Get original URL from row data if available
-                    row_data = naver_results.iloc[row_idx]
-                    if 'original_image_url' in row_data:
-                        matched_original_url = row_data['original_image_url']
-                    else:
-                        # Try to extract from path
-                        extracted_url = extract_url_from_path(naver_url)
-                        if extracted_url:
-                            matched_original_url = extracted_url
             except Exception as e:
                 logger.error(f"Error matching {haoreum_path} with {naver_url}: {e}")
                 continue
@@ -1496,10 +1380,6 @@ def match_naver_product_images(haoreum_paths: List[str],
             'scores': best_scores,
             'is_match': best_match is not None
         }
-        
-        # Add original URL if available
-        if matched_original_url:
-            results[haoreum_product]['original_image_url'] = matched_original_url
         
         # Log progress
         if (h_idx + 1) % 10 == 0 or h_idx == len(haoreum_valid) - 1:

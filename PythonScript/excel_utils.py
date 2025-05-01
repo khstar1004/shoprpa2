@@ -153,16 +153,6 @@ LINK_COLUMNS_FOR_HYPERLINK = {
 # Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
 IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
-# Define columns that should be included in the upload file
-UPLOAD_SHEET_COLUMNS = [
-    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
-    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', 
-    '네이버 쇼핑 링크', '공급사 상품링크',
-    '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
-]
-
 # Upload file columns (based on '엑셀골든_upload' notepad)
 UPLOAD_COLUMN_ORDER = [
     '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
@@ -1201,6 +1191,7 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
     # For upload file, modify image column values to be web URLs or empty
     if skip_images:
         # Image columns now use new names from FINAL_COLUMN_ORDER / IMAGE_COLUMNS constant
+        # final_image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'] # Already defined
         image_columns = [col for col in df.columns if col in IMAGE_COLUMNS] # Use the constant
 
         for col in image_columns:
@@ -1260,9 +1251,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     1. Result file (with images embedded)
     2. Upload file (with image links only)
     """
-    # Use the global UPLOAD_SHEET_COLUMNS constant defined at the module level
-    global UPLOAD_SHEET_COLUMNS
-    
     # Default return values (used in case of error)
     result_path = None
     result_success = False
@@ -1275,26 +1263,60 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         # Validate the DataFrame
         if df_finalized is None or df_finalized.empty:
             logger.error("Input DataFrame is None or empty. Cannot create Excel files.")
-            return result_path, result_success, upload_path, upload_success
+            return False, False, None, None
         
-        # Prepare for combined output
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Ensure columns are properly ordered (defense against the caller passing mal-formed data)
+        if not all(col in FINAL_COLUMN_ORDER for col in df_finalized.columns):
+            logger.warning("Input DataFrame columns are not in the exact FINAL_COLUMN_ORDER. Reordering again.")
+            # Recreate with only the expected columns in the correct order
+            ordered_df = pd.DataFrame()
+            for col in FINAL_COLUMN_ORDER:
+                if col in df_finalized.columns:
+                    ordered_df[col] = df_finalized[col]
+            df_finalized = ordered_df
         
-        # Get management type (품목관리)
-        mgmt_type = "일반"
-        
-        # Get source info for filename
-        source_info = "상품리스트"
-        if "공급처" in df_finalized.columns and df_finalized["공급처"].notna().any():
-            first_valid_source = df_finalized["공급처"].dropna().iloc[0] if len(df_finalized["공급처"].dropna()) > 0 else "상품리스트"
-            if isinstance(first_valid_source, str) and first_valid_source.strip():
-                source_info = first_valid_source.strip()
-        
-        # Get date info for filename
-        date_part = datetime.now().strftime("%Y%m%d")
-        
-        # Get row count for filename
+        # Get file source info for naming
+        source_info = "Unknown"
+        mgmt_type = "승인관리"  # Default type
         row_count = len(df_finalized)
+        
+        try:
+            # Check the appropriate column based on format (use both old and new column names)
+            if '구분' in df_finalized.columns:
+                # Get the most common value to use in naming
+                source_val = df_finalized['구분'].iloc[0]
+                if source_val == 'A':
+                    mgmt_type = "승인관리"
+                elif source_val == 'P':
+                    mgmt_type = "가격관리"
+                else:
+                    mgmt_type = str(source_val)
+            elif '구분(승인관리:A/가격관리:P)' in df_finalized.columns:
+                source_val = df_finalized['구분(승인관리:A/가격관리:P)'].iloc[0]
+                if source_val == 'A':
+                    mgmt_type = "승인관리"
+                elif source_val == 'P':
+                    mgmt_type = "가격관리"
+                else:
+                    mgmt_type = str(source_val)
+                    
+            # Get company name for filename
+            if '업체명' in df_finalized.columns:
+                # Use the most common company name or the first one
+                company_counts = df_finalized['업체명'].value_counts()
+                if not company_counts.empty:
+                    source_info = company_counts.index[0]
+            elif '공급사명' in df_finalized.columns:
+                company_counts = df_finalized['공급사명'].value_counts()
+                if not company_counts.empty:
+                    source_info = company_counts.index[0]
+        except Exception as e:
+            logger.warning(f"Error getting source name: {e}")
+            source_info = "Mixed"
+        
+        # Create timestamped filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        date_part = datetime.now().strftime("%Y%m%d")
         
         # Format: {company}({count})-{mgmt_type}-{date}_{type}_{timestamp}.xlsx
         result_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_result_{timestamp}.xlsx"
@@ -1315,196 +1337,426 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         logger.info(f"Result file path (with images): {result_path}")
         logger.info(f"Upload file path (links only): {upload_path}")
         
-        # First, extract all image URLs to ensure they're preserved for both files
-        # Create an intermediate DataFrame to store image URLs
-        df_with_image_urls = df_finalized.copy()
-        image_cols = [col for col in df_finalized.columns if col in IMAGE_COLUMNS]
-        
-        # Extract web URLs from all image columns
-        for img_col in image_cols:
-            if img_col in df_finalized.columns:
-                logger.info(f"Extracting image URLs from {img_col} column for both result and upload files...")
-                
-                # Process all rows to extract image URLs
-                for idx in df_finalized.index:
-                    value = df_finalized.at[idx, img_col]
-                    
-                    # Default to empty string (not "-") to avoid showing placeholders in cells
-                    image_url = ""
-                    
-                    # Extract URL based on value type
-                    if isinstance(value, dict):
-                        # For dictionaries, try to find the URL directly
-                        # First priority: use original_image_url if available
-                        if 'original_image_url' in value and value['original_image_url'] and isinstance(value['original_image_url'], str) and value['original_image_url'].startswith(('http://', 'https://')):
-                            image_url = value['original_image_url']
-                            logger.debug(f"Using original_image_url for {img_col} at row {idx}")
-                        # Second priority: regular url field
-                        elif 'url' in value and value['url'] and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
-                            image_url = value['url']
-                        # No direct URL, try to construct from code if available (for Haoreum)
-                        elif img_col == '본사 이미지' and not image_url and '상품코드' in df_finalized.columns:
-                            product_code = df_finalized.at[idx, '상품코드']
-                            if product_code and isinstance(product_code, str) and product_code.strip() and len(product_code.strip()) < 15:
-                                # Try to construct Haoreum image URL
-                                image_url = f"https://www.jclgift.com/upload/product/simg3/{product_code.strip()}s.jpg"
-                    
-                    # For image columns, create column name mapping based on column location
-                    if img_col == '본사 이미지':
-                        # This is for 해오름 column
-                        target_col = '해오름(이미지링크)'
-                    elif img_col == '고려기프트 이미지':
-                        # This is for 고려기프트 column
-                        target_col = '고려기프트(이미지링크)'
-                    elif img_col == '네이버 이미지':
-                        # This is for 네이버쇼핑 column
-                        target_col = '네이버쇼핑(이미지링크)'
-                    else:
-                        # Default, just append (이미지링크)
-                        target_col = f"{img_col}(이미지링크)"
-                    
-                    # Add the extracted URL to the intermediate DataFrame
-                    if image_url:
-                        df_with_image_urls.at[idx, target_col] = image_url
-                        
-                        # Log a sample of URLs for debugging
-                        if idx < 5:  # Only log first 5
-                            logger.debug(f"Extracted URL for {img_col} at row {idx}: {image_url[:50]}...")
-        
-        # Create result file with embedded images
-        logger.info("Creating result file with embedded images...")
-        result_df = df_finalized.copy()
-        
-        # Prepare data for Excel (for result file)
-        result_data = _prepare_data_for_excel(result_df, skip_images=False)
-        
-        # Prepare data for upload (no images, only URLs)
-        logger.info("Creating upload file with image links only...")
-        upload_df = df_with_image_urls.copy()
-        
-        # Create a COLUMN_MAPPING_FOR_UPLOAD directly from FINAL_COLUMN_ORDER
-        # This is a more dynamic approach that handles all possible columns
-        upload_column_mapping = {}
-        
-        # Add mappings for standard non-image columns
-        for col in df_finalized.columns:
-            # Check if this is a non-image column
-            if col not in IMAGE_COLUMNS and not col.endswith('(이미지링크)'):
-                # Map it to itself (identity mapping)
-                upload_column_mapping[col] = col
-        
-        # Use the image URL columns instead of image columns for upload file
-        for img_col in image_cols:
-            if img_col in df_finalized.columns:
-                # Skip the image column itself for the upload file
-                if img_col == '본사 이미지':
-                    # Map from Haoreum column to 해오름(이미지링크)
-                    upload_column_mapping[img_col] = '해오름(이미지링크)'
-                elif img_col == '고려기프트 이미지':
-                    # Map from Kogift column to 고려기프트(이미지링크)
-                    upload_column_mapping[img_col] = '고려기프트(이미지링크)'
-                elif img_col == '네이버 이미지':
-                    # Map from Naver column to 네이버쇼핑(이미지링크)
-                    upload_column_mapping[img_col] = '네이버쇼핑(이미지링크)'
-        
-        # Use the image URL columns for upload file
-        for url_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-            if url_col in df_with_image_urls.columns:
-                upload_column_mapping[url_col] = url_col
-        
-        logger.info(f"Upload file column mapping: {upload_column_mapping}")
-        
-        # Apply the column mapping to rename columns
-        upload_df = upload_df.rename(columns=upload_column_mapping, errors='ignore')
-        
-        # Create a new list of columns for upload file
-        upload_columns = []
-        
-        # Start with standard columns that should appear in upload file
-        for col in UPLOAD_SHEET_COLUMNS:
-            if col in upload_df.columns:
-                upload_columns.append(col)
-        
-        # Add image URL columns
-        for url_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-            if url_col in upload_df.columns and url_col not in upload_columns:
-                upload_columns.append(url_col)
-        
-        # Add any remaining columns except image columns
-        for col in upload_df.columns:
-            if col not in upload_columns and col not in IMAGE_COLUMNS:
-                upload_columns.append(col)
-        
-        # Prepare data for Excel (for upload file)
-        # Use only the selected columns and ensure image columns are excluded
-        upload_data = upload_df[upload_columns].copy()
-        
-        # Filter out image columns to ensure they're not in the upload file
-        for col in upload_data.columns:
-            if col in IMAGE_COLUMNS:
-                logger.warning(f"Removing image column from upload file: {col}")
-                upload_data = upload_data.drop(columns=[col])
-        
-        logger.info(f"Result file columns: {result_data.columns.tolist()}")
-        logger.info(f"Upload file columns: {upload_data.columns.tolist()}")
-        
-        # Create result file (with images)
+        # -----------------------------------------
+        # 1. Create Result File (with images)
+        # -----------------------------------------
         try:
-            result_success = create_final_output_excel(result_data, result_path)
-            logger.info(f"Result file created: {result_path}")
+            logger.info(f"Attempting to write result file: {result_path} with {len(df_finalized)} rows.")
+            
+            # Create a new workbook for result file
+            workbook_result = openpyxl.Workbook()
+            worksheet_result = workbook_result.active
+            worksheet_result.title = "제품 가격 비교"
+            
+            logger.info("Writing result data to Excel sheet...")
+            
+            # Convert image dictionaries to strings for initial data writing
+            # This prevents "Cannot convert dict to Excel" errors
+            df_for_excel = df_finalized.copy()
+            
+            # Convert any dictionary or complex objects to strings
+            for col in df_for_excel.columns:
+                for idx in df_for_excel.index:
+                    value = df_for_excel.loc[idx, col]
+                    if isinstance(value, dict):
+                        # For dictionary values, store just the URL to make Excel happy
+                        if 'url' in value:
+                            df_for_excel.at[idx, col] = value['url']
+                        else:
+                            # Just convert to string representation if no URL
+                            df_for_excel.at[idx, col] = str(value)
+                    elif isinstance(value, pd.Series):
+                        # For Series objects, convert to string
+                        for item in value:
+                            if pd.notna(item) and item not in ['-', '']:
+                                if isinstance(item, dict) and 'url' in item:
+                                    df_for_excel.at[idx, col] = item['url']
+                                else:
+                                    df_for_excel.at[idx, col] = str(item)
+                                break
+                        else:
+                            df_for_excel.at[idx, col] = "-"
+            
+            # Write header
+            for col_idx, col_name in enumerate(df_for_excel.columns, 1):
+                worksheet_result.cell(row=1, column=col_idx, value=col_name)
+            
+            # Write data
+            for row_idx, row in enumerate(df_for_excel.itertuples(), 2):
+                for col_idx, value in enumerate(row[1:], 1):  # Skip the index
+                    # Convert None to empty string to avoid writing 'None' to cells
+                    worksheet_result.cell(row=row_idx, column=col_idx, value=value if not pd.isna(value) else "")
+            
+            # Apply common formatting (basic without images)
+            _apply_basic_excel_formatting(worksheet_result, df_for_excel.columns.tolist())
+            _add_hyperlinks_to_worksheet(worksheet_result, df_for_excel, hyperlinks_as_formulas=False)
+            _add_header_footer(worksheet_result)
+            
+            # FIXED: Explicitly remove auto filter in result file
+            if hasattr(worksheet_result, 'auto_filter') and worksheet_result.auto_filter:
+                worksheet_result.auto_filter.ref = None
+                logger.info("Removed filter from result Excel file")
+            
+            # Save without images first to ensure we can write to file
+            workbook_result.save(result_path)
+            
+            # Now load the saved file to add images
+            # Create a new workbook with images
+            try:
+                logger.info("Adding images to result file...")
+                # Load the workbook
+                workbook_with_images = openpyxl.load_workbook(result_path)
+                worksheet_with_images = workbook_with_images.active
+                
+                # Process image columns
+                image_cols = [col for col in df_finalized.columns if col in IMAGE_COLUMNS]
+                images_added = 0
+                
+                # Adjust row heights to accommodate images
+                for row_idx in range(2, len(df_finalized) + 2):
+                    worksheet_with_images.row_dimensions[row_idx].height = 120  # Adjust row height
+                
+                # Adjust column widths for image columns
+                for img_col in image_cols:
+                    col_idx = df_finalized.columns.get_loc(img_col) + 1
+                    col_letter = get_column_letter(col_idx)
+                    worksheet_with_images.column_dimensions[col_letter].width = 22  # Wider columns for images
+                
+                # Add images to the worksheet
+                for row_idx, (_, row) in enumerate(df_finalized.iterrows(), 2):
+                    for img_col in image_cols:
+                        col_idx = df_finalized.columns.get_loc(img_col) + 1
+                        img_value = row[img_col]
+                        
+                        if isinstance(img_value, dict) and 'local_path' in img_value:
+                            img_path = img_value['local_path']
+                            if os.path.exists(img_path):
+                                try:
+                                    # Create and add the image
+                                    img = openpyxl.drawing.image.Image(img_path)
+                                    # FIXED: Larger images in the result file
+                                    img.width = 160  # Set image width - increased from 80
+                                    img.height = 160  # Set image height - increased from 80
+                                    img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
+                                    worksheet_with_images.add_image(img)
+                                    
+                                    # Clear the cell content
+                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                    cell.value = ""
+                                    
+                                    images_added += 1
+                                except Exception as img_err:
+                                    logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
+                                    # Keep the web URL as fallback
+                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                    if 'url' in img_value and img_value['url']:
+                                        cell.value = img_value['url']
+                                    else:
+                                        cell.value = str(img_path)
+                
+                # FIXED: Ensure filter is removed after image addition too
+                if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
+                    worksheet_with_images.auto_filter.ref = None
+                    logger.info("Removed filter from result Excel file after adding images")
+                
+                # Save the workbook with images
+                workbook_with_images.save(result_path)
+                logger.info(f"Successfully added {images_added} images to result file")
+            except Exception as img_err:
+                logger.error(f"Error adding images to result file: {img_err}")
+                # Continue with the file without images
+            
+            result_success = True
+            logger.info(f"Successfully created result file: {result_path}")
+            
         except Exception as e:
             logger.error(f"Error creating result file: {e}")
+            logger.debug(traceback.format_exc())
             result_success = False
         
-        # Create upload file (no images)
+        # -----------------------------------------
+        # 2. Create Upload File (with links only and different column names)
+        # -----------------------------------------
         try:
-            # Rename imagelink columns according to the specific naming the upload file needs
-            column_rename_map = {
-                '해오름(이미지링크)': '해오름(이미지링크)',
-                '고려기프트(이미지링크)': '고려기프트(이미지링크)',
-                '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)'
-            }
+            logger.info(f"Preparing data for upload file: {upload_path}")
             
-            # Apply renaming where columns exist
-            for old_name, new_name in column_rename_map.items():
-                if old_name in upload_data.columns and old_name != new_name:
-                    upload_data = upload_data.rename(columns={old_name: new_name})
+            # Create a deep copy of the original DataFrame to avoid modifying it
+            df_upload = pd.DataFrame()
             
-            # Ensure image URLs are clean text strings, not complex objects
-            for link_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
-                if link_col in upload_data.columns:
-                    upload_data[link_col] = upload_data[link_col].apply(
-                        lambda x: x if isinstance(x, str) else (x.get('url', '') if isinstance(x, dict) else '')
-                    )
+            # FIX: First extract image URLs from the DataFrame before column mapping
+            # Create a new DataFrame with the image URLs
+            df_with_image_urls = df_finalized.copy()
             
-            # Create the Excel file with standard formatting (no images)
-            upload_success = create_final_output_excel(upload_data, upload_path)
-            logger.info(f"Upload file created: {upload_path}")
-        except Exception as e:
-            logger.error(f"Error creating upload file: {e}")
+            # Process each image column to extract only web URLs
+            for img_col in IMAGE_COLUMNS:
+                if img_col in df_finalized.columns:
+                    logger.info(f"Extracting image URLs from {img_col} column...")
+                    
+                    # Process all rows to extract image URLs
+                    for idx in df_finalized.index:
+                        value = df_finalized.at[idx, img_col]
+                        
+                        # Default to empty string (not "-") to avoid showing placeholders in cells
+                        image_url = ""
+                        
+                        # FIX: Improved image URL extraction logic
+                        if isinstance(value, dict):
+                            # Try multiple keys to find a usable URL
+                            for url_key in ['url', 'original_url', 'image_url']:
+                                if url_key in value and isinstance(value[url_key], str) and value[url_key].strip() and value[url_key].startswith(('http://', 'https://')):
+                                    image_url = value[url_key].strip()
+                                    logger.debug(f"Found URL in {img_col} at idx {idx} using key '{url_key}': {image_url[:50]}...")
+                                    break
+                            
+                            # If no URL found but there's source info, try to extract from known patterns
+                            if not image_url and 'source' in value:
+                                source = value.get('source', '').lower()
+                                
+                                # Handle known source formats
+                                if source == 'haereum' and 'product_name' in value:
+                                    # Construct a jclgift URL if possible
+                                    if 'p_idx' in value:
+                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{value['p_idx']}.gif"
+                                        logger.debug(f"Constructed Haereum URL: {image_url}")
+                                elif source == 'kogift' and 'product_name' in value:
+                                    # For Kogift, check if we can extract from original_path
+                                    if 'original_path' in value and 'koreagift.com' in str(value.get('original_path', '')):
+                                        orig_path = str(value['original_path'])
+                                        if 'upload' in orig_path:
+                                            # Try to extract the filename part
+                                            parts = orig_path.split('upload/')
+                                            if len(parts) > 1:
+                                                image_url = f"https://koreagift.com/ez/upload/{parts[1]}"
+                                                logger.debug(f"Constructed Kogift URL from original_path: {image_url}")
+                                elif source == 'naver' and 'product_id' in value:
+                                    # For Naver, construct URL from product_id if available
+                                    image_url = f"https://shopping-phinf.pstatic.net/main_{value['product_id']}/{value['product_id']}.jpg"
+                                    logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                            
+                        # Handle string URL format
+                        elif isinstance(value, str) and value.strip() and value != '-':
+                            url = value.strip()
+                            if url.startswith(('http://', 'https://')):
+                                # Check if it's an image URL
+                                image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+                                image_identifiers = ['upload/', 'simg', 'pstatic.net', 'phinf', '/image/', 'thumb']
+                                
+                                if any(url.lower().endswith(ext) for ext in image_extensions) or any(ident in url.lower() for ident in image_identifiers):
+                                    image_url = url
+                                    logger.debug(f"Found image URL string in {img_col} at idx {idx}: {url[:50]}...")
+                        
+                        # Additional logic to handle complex nested structures
+                        if not image_url and isinstance(value, (dict, str)) and str(value).find('http') >= 0:
+                            # Attempt to extract URLs from complex string representations
+                            try:
+                                str_value = str(value)
+                                url_start = str_value.find('http')
+                                if url_start >= 0:
+                                    url_end = min(x for x in [str_value.find(' ', url_start), 
+                                                              str_value.find('"', url_start), 
+                                                              str_value.find("'", url_start), 
+                                                              str_value.find(')', url_start),
+                                                              str_value.find(',', url_start),
+                                                              len(str_value)] if x > url_start)
+                                    
+                                    potential_url = str_value[url_start:url_end]
+                                    if potential_url.startswith(('http://', 'https://')) and ('jclgift.com' in potential_url or 
+                                                                                             'koreagift.com' in potential_url or 
+                                                                                             'pstatic.net' in potential_url):
+                                        image_url = potential_url
+                                        logger.debug(f"Extracted URL from string representation: {image_url[:50]}...")
+                            except Exception as e:
+                                logger.warning(f"Error extracting URL from complex value: {e}")
+                        
+                        # Special case handling for each source type
+                        if not image_url:
+                            if '본사 이미지' == img_col:
+                                # Try to extract Haereum URLs based on indicators
+                                if isinstance(value, dict) and ('product_name' in value or 'haereum' in str(value).lower()):
+                                    # Check for p_idx in the data or URLs
+                                    p_idx = None
+                                    if 'p_idx' in value:
+                                        p_idx = value['p_idx']
+                                    elif 'url' in value and 'p_idx=' in value['url']:
+                                        try:
+                                            p_idx = value['url'].split('p_idx=')[1].split('&')[0]
+                                        except:
+                                            pass
+                                    
+                                    if p_idx:
+                                        # Construct standard Haereum image URL
+                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{p_idx}.gif"
+                                        logger.debug(f"Constructed Haereum URL from p_idx: {image_url}")
+                                    else:
+                                        # If product name exists, construct a more generic URL pattern
+                                        product_name = value.get('product_name', '')
+                                        if product_name:
+                                            clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
+                                            image_url = f"https://www.jclgift.com/upload/product/simg3/{clean_name}.gif"
+                                            logger.debug(f"Constructed approximate Haereum URL: {image_url}")
+                                
+                                # Look for jclgift.com links in any string
+                                elif isinstance(value, str) and ('jclgift' in value.lower()):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+jclgift[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted jclgift URL from string: {image_url}")
+                            
+                            elif '고려기프트 이미지' == img_col:
+                                # Try to extract Kogift URLs
+                                if isinstance(value, dict) and ('kogift' in str(value).lower() or 'koreagift' in str(value).lower()):
+                                    # Standard Kogift image URL pattern
+                                    image_url = "https://koreagift.com/ez/upload/mall/shop_default.jpg"  # Default fallback
+                                    
+                                    # Try to find any URL with koreagift in the dictionary
+                                    for k, v in value.items():
+                                        if isinstance(v, str) and 'koreagift' in v.lower() and 'http' in v.lower():
+                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift)[^"\'\s,)]*', v)
+                                            if matches:
+                                                image_url = matches[0]
+                                                logger.debug(f"Extracted Kogift URL from dict value: {image_url}")
+                                                break
+                                
+                                # Look for koreagift.com links in any string
+                                elif isinstance(value, str):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift|adpanchok)[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted Kogift URL from string: {image_url}")
+                            
+                            elif '네이버 이미지' == img_col:
+                                # Try to extract Naver URLs
+                                if isinstance(value, dict) and ('naver' in str(value).lower() or 'pstatic' in str(value).lower()):
+                                    # Look for standard Naver image URL patterns
+                                    for k, v in value.items():
+                                        if isinstance(v, str) and ('pstatic.net' in v.lower() or 'shopping.naver' in v.lower()):
+                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', v)
+                                            if matches:
+                                                image_url = matches[0]
+                                                logger.debug(f"Extracted Naver URL from dict value: {image_url}")
+                                                break
+                                    
+                                    # If product_id is available, construct a standard URL
+                                    if not image_url and 'product_id' in value:
+                                        product_id = value['product_id']
+                                        image_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                        logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                                
+                                # Look for pstatic.net links in any string
+                                elif isinstance(value, str):
+                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', value)
+                                    if matches:
+                                        image_url = matches[0]
+                                        logger.debug(f"Extracted Naver URL from string: {image_url}")
+                        
+                        # Update the value in the intermediate DataFrame
+                        df_with_image_urls.at[idx, img_col] = image_url
+            
+            # Check if we extracted any image URLs
+            for img_col in IMAGE_COLUMNS:
+                if img_col in df_with_image_urls.columns:
+                    url_count = (df_with_image_urls[img_col].astype(str).str.startswith(('http://', 'https://'))).sum()
+                    logger.info(f"Extracted {url_count} image URLs from {img_col}")
+                    
+                    # Log a few examples if any URLs were found
+                    if url_count > 0:
+                        sample_urls = df_with_image_urls[df_with_image_urls[img_col].astype(str).str.startswith(('http://', 'https://'))][img_col].head(3).tolist()
+                        logger.info(f"Sample image URLs for {img_col}: {sample_urls}")
+            
+            # Map columns from result format to upload format 
+            for target_col in UPLOAD_COLUMN_ORDER:
+                # Find corresponding source column
+                source_col = None
+                for result_col, upload_col in COLUMN_MAPPING_FINAL_TO_UPLOAD.items():
+                    if upload_col == target_col and result_col in df_with_image_urls.columns:
+                        source_col = result_col
+                        break
+                
+                if source_col:
+                    # Copy data from the intermediate DataFrame with extracted image URLs
+                    df_upload[target_col] = df_with_image_urls[source_col]
+                else:
+                    # If no matching column found, add an empty column
+                    df_upload[target_col] = ''
+            
+            # Log image columns in the upload file to confirm extraction worked
+            for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+                if img_col in df_upload.columns:
+                    non_empty = df_upload[img_col].astype(str).str.strip().str.len() > 0
+                    non_empty_urls = df_upload[img_col].astype(str).str.startswith(('http://', 'https://'))
+                    count = non_empty.sum()
+                    url_count = non_empty_urls.sum()
+                    logger.info(f"Upload file: {img_col} column has {count} non-empty values, {url_count} are URLs")
+                    
+                    # Log sample values
+                    if url_count > 0:
+                        sample_values = df_upload.loc[non_empty_urls, img_col].head(3).tolist()
+                        logger.info(f"Sample URL values: {sample_values}")
+            
+            # Create new workbook for upload file (now with properly extracted image URLs)
+            workbook_upload = openpyxl.Workbook()
+            worksheet_upload = workbook_upload.active
+            worksheet_upload.title = "제품 가격 비교 (업로드용)"
+            
+            logger.info(f"Writing upload file (with image links): {upload_path} with {len(df_upload)} rows.")
+            
+            # Write header
+            for col_idx, col_name in enumerate(df_upload.columns, 1):
+                worksheet_upload.cell(row=1, column=col_idx, value=col_name)
+            
+            # Write data (now with properly extracted image URLs)
+            for row_idx, row in enumerate(df_upload.itertuples(), 2):
+                for col_idx, value in enumerate(row[1:], 1):  # Skip the index
+                    # Handle NaN/None values
+                    if pd.isna(value) or value is None:
+                        cell_value = ""
+                    else:
+                        cell_value = value
+                    
+                    # Write the cell value
+                    worksheet_upload.cell(row=row_idx, column=col_idx, value=cell_value)
+                
+                # Add direct verification of image URL columns for logging
+                if row_idx <= 5:  # Log only the first 5 rows
+                    img_idx_start = len(UPLOAD_COLUMN_ORDER) - 3
+                    for i in range(3):  # Check all 3 image columns
+                        col_idx = img_idx_start + i + 1
+                        cell_value = worksheet_upload.cell(row=row_idx, column=col_idx).value
+                        col_name = UPLOAD_COLUMN_ORDER[img_idx_start + i]
+                        if cell_value and isinstance(cell_value, str) and cell_value.startswith(('http://', 'https://')):
+                            logger.debug(f"Row {row_idx}, {col_name}: Valid URL found: {cell_value[:50]}...")
+                        else:
+                            logger.debug(f"Row {row_idx}, {col_name}: No valid URL found. Value: '{cell_value}'")
+            
+            # Apply common formatting
+            _apply_basic_excel_formatting(worksheet_upload, df_upload.columns.tolist())
+            _add_hyperlinks_to_worksheet(worksheet_upload, df_upload, hyperlinks_as_formulas=False)
+            _add_header_footer(worksheet_upload)
+            
+            # Adjust column widths for the upload file (wider for image URL columns)
+            for idx, col_name in enumerate(df_upload.columns, 1):
+                col_letter = get_column_letter(idx)
+                if '이미지링크' in col_name:
+                    worksheet_upload.column_dimensions[col_letter].width = 60  # Wider for image URLs
+                else:
+                    worksheet_upload.column_dimensions[col_letter].width = 18  # Default width
+            
+            # Save upload file
+            workbook_upload.save(upload_path)
+            upload_success = True
+            logger.info(f"Successfully created upload file (with image links): {upload_path}")
+            
+        except Exception as upload_err:
+            logger.error(f"Error creating upload file: {upload_err}")
+            logger.debug(traceback.format_exc())
             upload_success = False
         
-        # Verification of both output files
-        if result_success and upload_success:
-            # Check that files exist
-            if os.path.exists(result_path) and os.path.getsize(result_path) > 0:
-                logger.info(f"Verified result file exists: {result_path} ({os.path.getsize(result_path):,} bytes)")
-            else:
-                logger.warning(f"Result file verification failed: {result_path}")
-                result_success = False
-                
-            if os.path.exists(upload_path) and os.path.getsize(upload_path) > 0:
-                logger.info(f"Verified upload file exists: {upload_path} ({os.path.getsize(upload_path):,} bytes)")
-            else:
-                logger.warning(f"Upload file verification failed: {upload_path}")
-                upload_success = False
+        return result_success, upload_success, result_path, upload_path
         
-        # Return the file paths and success status
-        return result_path, result_success, upload_path, upload_success
-        
-    except Exception as e:
-        logger.error(f"Error in create_split_excel_outputs: {e}", exc_info=True)
-        return result_path, result_success, upload_path, upload_success
+    except Exception as main_error:
+        logger.error(f"Unexpected error in create_split_excel_outputs: {main_error}")
+        logger.debug(traceback.format_exc())
+        return False, False, None, None
 
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
@@ -1683,27 +1935,59 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
 
 # --- Refactored Data Finalization ---
 def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
-    """Finalize DataFrame for Excel output with proper column handling and data validation"""
-    # Step 1: Handle duplicate columns
+    """
+    Finalizes the DataFrame for Excel output: Renames columns, ensures all required columns exist,
+    sets the final column order, and applies basic type formatting.
+    Assumes image data (paths or dicts) is already present.
+    """
+    if df is None:
+        logger.error("Input DataFrame is None, cannot finalize.")
+        # Return empty df with correct columns to avoid downstream errors
+        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
+
+    logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
+    logger.debug(f"Input columns: {df.columns.tolist()}")
+    
+    # Check for duplicate column names - this can cause the 'dtype' error
     duplicate_cols = df.columns[df.columns.duplicated()].tolist()
     if duplicate_cols:
         logger.warning(f"Found {len(duplicate_cols)} duplicate column names: {duplicate_cols}")
         # Create a new DataFrame with deduplicated columns
+        # For each duplicate, keep only the first instance
         unique_cols = []
+        
         for col in df.columns:
-            if col not in unique_cols:
-                unique_cols.append(col)
+            if col in unique_cols:
+                # Skip this column as we already have it
+                continue
+            unique_cols.append(col)
+        
+        # Create new DataFrame with only unique columns
         df = df[unique_cols]
         logger.info(f"Removed duplicate columns. New shape: {df.shape}")
     
-    # Step 2: Create a new DataFrame to avoid modifying the original
+    # Step 1: Create a new DataFrame to avoid modifying the original
     df_final = df.copy()
     
-    # Step 3: Rename columns to the target names
+    # Step 2: Rename columns to the target names
     df_final = df_final.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
     logger.debug(f"Columns after rename: {df_final.columns.tolist()}")
     
-    # Step 4: Create an output DataFrame with columns in the proper order
+    # FIXED: Debug logging for Kogift price data
+    logger.info("Checking Kogift price data before column processing:")
+    kogift_price_col = '판매단가(V포함)(2)'
+    if kogift_price_col in df_final.columns:
+        price_count = df_final[kogift_price_col].notnull().sum()
+        logger.info(f"Found {price_count} non-null values in '{kogift_price_col}' column")
+        
+        # Log a few sample values
+        if price_count > 0:
+            sample_values = df_final[kogift_price_col].head(3).tolist()
+            logger.info(f"Sample Kogift price values: {sample_values}")
+    else:
+        logger.warning(f"Column '{kogift_price_col}' not found in dataframe!")
+    
+    # Step 3: Create an output DataFrame with columns in the proper order
     output_df = pd.DataFrame()
     
     # Identify which columns in the final_order exist in the input
@@ -1714,51 +1998,152 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     if missing_cols:
         logger.warning(f"The following columns from FINAL_COLUMN_ORDER are missing: {missing_cols}")
     
-    # Step 5: Copy data from original to new dataframe with proper handling
+    # Copy data from original to new dataframe
     for col in available_cols:
         try:
-            # Special handling for image columns
-            if col in ['본사 이미지', '네이버 이미지']:
-                # Ensure we're copying a single column, not a DataFrame
-                if isinstance(df_final[col], pd.DataFrame):
-                    logger.warning(f"Column '{col}' is a DataFrame, taking first column only")
-                    output_df[col] = df_final[col].iloc[:, 0]
-                else:
-                    output_df[col] = df_final[col]
-            else:
-                output_df[col] = df_final[col]
+            output_df[col] = df_final[col]
         except Exception as e:
             logger.error(f"Error copying column '{col}' during finalization: {e}")
-            output_df[col] = None  # Add empty column on error
-    
-    # Step 6: Add missing columns with empty values
+            output_df[col] = None # Add empty column on error
+
+    # Step 4: Add missing columns with empty values
     for col in FINAL_COLUMN_ORDER:
         if col not in output_df.columns:
-            output_df[col] = None
+            output_df[col] = None # Add missing column with None values
             logger.debug(f"Added missing column '{col}' with None values")
     
-    # Step 7: Apply numeric formatting to price columns
-    price_columns = ['판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)', 
-                    '가격차이(2)', '가격차이(2)(%)', '가격차이(3)', '가격차이(3)(%)']
+    # FIXED: Ensure the Kogift price column exists and has data copied correctly
+    # First, check for the specific price column again:
+    if kogift_price_col in df_final.columns and kogift_price_col in output_df.columns:
+        # Explicitly copy the price column data again to ensure it's not lost
+        output_df[kogift_price_col] = df_final[kogift_price_col]
+        logger.info(f"Explicitly copied '{kogift_price_col}' data to ensure preservation")
+        
+        # Verify the copy worked
+        kogift_price_count_after = output_df[kogift_price_col].notnull().sum()
+        logger.info(f"After explicit copy: {kogift_price_count_after} non-null values in '{kogift_price_col}'")
     
-    for col in price_columns:
-        if col in output_df.columns:
+    # FIXED: Special handling for price columns to avoid data loss
+    # Check for alternate column names that might hold price data
+    price_alternates = {
+        '판매가(V포함)(2)': ['판매단가2(VAT포함)', '판매단가(V포함)(2)', '고려가격', '고려기프트판매가'], # Added original processing name
+        '판매단가(V포함)(3)': ['판매단가3 (VAT포함)', '판매단가(V포함)(3)', '네이버가격', '네이버판매가'] # Added original processing name
+    }
+
+    logger.info("Checking for and consolidating data from alternate price columns...")
+    for target_col, alt_cols in price_alternates.items():
+        if target_col in output_df.columns:
+            # Count valid data points in the target column currently
+            target_valid_count = output_df[target_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+            logger.debug(f"Target '{target_col}' currently has {target_valid_count} valid entries.")
+
+            # Check each alternate column found in the *renamed* df_final
+            best_alt_col = None
+            best_alt_count = target_valid_count # Start with current count
+
+            for alt_col_potential in alt_cols:
+                # Check if this alternate exists *after renaming*
+                if alt_col_potential in df_final.columns:
+                    alt_valid_count = df_final[alt_col_potential].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+                    logger.debug(f"  Checking alternate '{alt_col_potential}': Found {alt_valid_count} valid entries.")
+                    # If this alternate has more valid data, consider it
+                    if alt_valid_count > best_alt_count:
+                        best_alt_count = alt_valid_count
+                        best_alt_col = alt_col_potential
+
+            # If a better alternate was found, copy its data to the target column
+            if best_alt_col:
+                logger.info(f"Found better data in alternate column '{best_alt_col}' ({best_alt_count} valid). Copying to '{target_col}'.")
+                # Ensure the source column exists before copying
+                if best_alt_col in df_final.columns:
+                     # Copy data, converting potential errors during copy
+                     try:
+                          output_df[target_col] = pd.to_numeric(df_final[best_alt_col], errors='coerce')
+                     except Exception as copy_err:
+                          logger.error(f"Error coercing/copying from {best_alt_col} to {target_col}: {copy_err}")
+                          # Fallback: copy raw data if numeric conversion fails
+                          output_df[target_col] = df_final[best_alt_col]
+                else:
+                     logger.warning(f"Attempted to copy from non-existent column '{best_alt_col}'")
+
+    # Step 5: Format numeric columns (Ensure this runs AFTER alternate consolidation)
+    # Get image columns for exclusion from numeric formatting
+    image_cols = [col for col in output_df.columns if col in IMAGE_COLUMNS]
+
+    logger.info("Applying numeric formatting to relevant columns...")
+    for col in output_df.columns:
+        # Skip image columns
+        if col in image_cols:
+            continue
+
+        # Check if column should be numeric (Prices, Quantities, Differences)
+        # Use final column names here
+        is_numeric_col = (
+            col in PRICE_COLUMNS or
+            col in QUANTITY_COLUMNS or
+            col in PERCENTAGE_COLUMNS or
+            col in ['가격차이(2)', '가격차이(3)'] # Explicitly include difference columns
+        )
+
+        if is_numeric_col:
+            # Log before conversion
+            pre_conversion_sample = output_df[col].head(3).tolist()
+            pre_conversion_dtype = output_df[col].dtype
+            logger.debug(f"Converting column '{col}' (dtype: {pre_conversion_dtype}, sample: {pre_conversion_sample}) to numeric.")
+
             try:
-                # Convert to numeric, coercing errors to NaN
+                # Store original data before attempting conversion
+                original_data = output_df[col].copy()
+                
+                # Attempt conversion to numeric, coercing errors to NaN
                 output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
-                # Replace NaN with '-'
-                output_df[col] = output_df[col].fillna('-')
-                # Count valid entries
-                valid_count = output_df[col].apply(lambda x: x != '-').sum()
-                sample_values = output_df[col].head(3).tolist()
-                logger.info(f"Final check: Column '{col}' has {valid_count} valid entries. Sample: {sample_values}")
+                
+                # Log after conversion
+                post_conversion_sample = output_df[col].head(3).tolist()
+                post_conversion_dtype = output_df[col].dtype
+                nan_count = output_df[col].isna().sum()
+                logger.debug(f"  -> Post-conversion '{col}' (dtype: {post_conversion_dtype}, sample: {post_conversion_sample}, NaNs: {nan_count})")
+
+                # If conversion resulted in all NaNs, consider reverting
+                if nan_count == len(output_df[col]):
+                    logger.warning(f"Numeric conversion resulted in all NaN for column '{col}'. Reverting to original data.")
+                    output_df[col] = original_data
+
             except Exception as e:
-                logger.error(f"Error formatting price column '{col}': {e}")
-    
-    # Step 8: Set default values for empty cells
-    output_df = output_df.fillna('-')
-    
+                logger.warning(f"Error converting column '{col}' to numeric: {e}. Keeping original data.")
+                # Optionally revert if needed, but pd.to_numeric usually handles errors well with coerce
+
+    # Step 6: Replace NaN/NaT with None for Excel compatibility
+    output_df = output_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
+
+    # Step 7: Set default values for empty cells ('-' for non-image, handling None)
+    logger.info("Setting default values for empty cells ('-')...")
+    for col in output_df.columns:
+        if col not in image_cols:
+            # Apply '-' default to cells that are None or empty strings after NaN replacement
+            # Ensure we don't overwrite 0 or False
+            output_df[col] = output_df[col].apply(
+                lambda x: '-' if (x is None or x == '') else x
+            )
+
+    # Final verification of key data
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
+    logger.debug(f"Final columns: {output_df.columns.tolist()}")
+
+    # Final verification of price data
+    for price_col in ['판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)', '가격차이(2)', '가격차이(3)']:
+        if price_col in output_df.columns:
+            try:
+                 # Count non-empty, non-'', non-None values
+                 non_empty_count = output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+                 # Log sample non-empty values if they exist
+                 sample_values = output_df.loc[output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']), price_col].head(3).tolist()
+                 logger.info(f"Final check: Column '{price_col}' has {non_empty_count} valid entries. Sample: {sample_values}")
+            except Exception as e:
+                 logger.error(f"Error during final check for column '{price_col}': {e}")
+                 logger.info(f"Final check: Column '{price_col}' dtype: {output_df[price_col].dtype}")
+
+
     return output_df
 
 def _apply_basic_excel_formatting(worksheet, column_list):

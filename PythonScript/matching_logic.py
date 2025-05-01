@@ -778,69 +778,24 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
 
                 # Add Kogift data if available
                 if best_kogift_match:
-                    # Extract image data from best match
-                    kogift_match_data = best_kogift_match['match_data']
-                    
-                    # Create proper dictionary format for image data
-                    kogift_image_data = None
-                    img_path = kogift_match_data.get('image_path')
-                    img_url = kogift_match_data.get('image_url') or kogift_match_data.get('src') or kogift_match_data.get('link')
-                    
-                    if img_path and img_url:
-                        # Create dictionary with both URL and local path
-                        kogift_image_data = {
-                            'url': img_url,
-                            'local_path': img_path,
-                            'source': 'kogift',
-                            'original_image_url': img_url  # Store original URL for later use
-                        }
-                    elif img_path:
-                        # Only have local path
-                        if isinstance(img_path, str) and img_path.startswith('http'):
-                            # It's actually a URL
-                            kogift_image_data = {
-                                'url': img_path,
-                                'source': 'kogift',
-                                'original_image_url': img_path  # Store original URL for later use
-                            }
-                        else:
-                            # It's a local path
-                            kogift_image_data = {
-                                'local_path': img_path,
-                                'source': 'kogift'
-                            }
-                    elif img_url:
-                        # Only have URL
-                        kogift_image_data = {
-                            'url': img_url,
-                            'source': 'kogift',
-                            'original_image_url': img_url  # Store original URL for later use
-                        }
-
                     result.update({
-                        '매칭_사이트': 'Kogift',
-                        '고려기프트 상품링크': kogift_match_data.get('link', kogift_match_data.get('href')),
-                        '고려기프트 이미지': kogift_image_data,
-                        '판매단가(V포함)(2)': kogift_match_data.get('price_with_vat', kogift_match_data.get('price')),
-                        '텍스트_유사도': best_kogift_match['text_similarity'],
-                        '이미지_유사도': best_kogift_match['image_similarity'],
-                        '매칭_정확도': best_kogift_match['combined_score'],
-                        '기본수량(2)': kogift_match_data.get('quantity', '1'),
-                        '매칭_여부': 'Y',
-                        '매칭_품질': '상' if best_kogift_match['combined_score'] > 0.8 else '중' if best_kogift_match['combined_score'] > 0.6 else '하'
+                        '고려 링크': best_kogift_match['match_data'].get('link'),
+                        '고려기프트(이미지링크)': best_kogift_match['match_data'].get('image_path'),
+                        '판매단가2(VAT포함)': best_kogift_match['match_data'].get('price'),
+                        '_고려_TextSim': best_kogift_match['text_similarity'],
+                        '_해오름_고려_ImageSim': best_kogift_match['image_similarity'],
+                        '_고려_Combined': best_kogift_match['combined_score'],
+                        '고려 기본수량': best_kogift_match['match_data'].get('quantity', '-')
                     })
                 else:
                     result.update({
-                        '매칭_사이트': None,
-                        '고려기프트 상품링크': None,
-                        '고려기프트 이미지': None,
-                        '판매단가(V포함)(2)': None,
-                        '텍스트_유사도': 0.0,
-                        '이미지_유사도': 0.0,
-                        '매칭_정확도': None,
-                        '기본수량(2)': None,
-                        '매칭_여부': 'N',
-                        '매칭_품질': '실패'
+                        '고려 링크': None,
+                        '고려기프트(이미지링크)': None,
+                        '판매단가2(VAT포함)': None,
+                        '_고려_TextSim': 0.0,
+                        '_해오름_고려_ImageSim': 0.0,
+                        '_고려_Combined': None,
+                        '고려 기본수량': '-'
                     })
 
                 # Add Naver data if available
@@ -859,8 +814,7 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
                             naver_image_data = {
                                 'url': img_url,
                                 'local_path': img_path,
-                                'source': 'naver',
-                                'original_image_url': img_url  # Store original URL for later use
+                                'source': 'naver'
                             }
                         elif img_path:
                             # Only have local path
@@ -868,8 +822,7 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
                                 # It's actually a URL
                                 naver_image_data = {
                                     'url': img_path,
-                                    'source': 'naver',
-                                    'original_image_url': img_path  # Store original URL for later use
+                                    'source': 'naver'
                                 }
                             else:
                                 # It's a local path
@@ -881,8 +834,7 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
                             # Only have URL
                             naver_image_data = {
                                 'url': img_url,
-                                'source': 'naver',
-                                'original_image_url': img_url  # Store original URL for later use
+                                'source': 'naver'
                             }
                     
                     # Update result with Naver data
