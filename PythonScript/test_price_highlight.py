@@ -30,6 +30,11 @@ def test_price_highlighting():
         '가격차이(3)(%)': [-5, 5, 3.3, -2.5, -4],  # Rows 1, 4, and 5 should be highlighted (-5, -2.5, -4 < -1)
         '공급사명': ['공급사1', '공급사2', '공급사3', '공급사4', '공급사5'],
         '네이버 쇼핑 링크': ['http://shopping.naver.com/1', 'http://shopping.naver.com/2', 'http://shopping.naver.com/3', 'http://shopping.naver.com/4', 'http://shopping.naver.com/5'],
+        # Add the missing columns
+        '공급사 상품링크': ['http://supplier.com/1', 'http://supplier.com/2', 'http://supplier.com/3', 'http://supplier.com/4', 'http://supplier.com/5'],
+        '본사 이미지': ['-', '-', '-', '-', '-'],
+        '고려기프트 이미지': ['-', '-', '-', '-', '-'],
+        '네이버 이미지': ['-', '-', '-', '-', '-'],
     }
     
     # Create DataFrame

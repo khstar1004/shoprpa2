@@ -390,13 +390,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     import openpyxl
     from openpyxl.drawing.image import Image
     
+    # Initialize tracking variables
+    successful_embeddings = 0
+    attempted_embeddings = 0
+    kogift_successful = 0
+    kogift_attempted = 0
+    
     # Only handle these image-specific columns
     global IMAGE_COLUMNS
     columns_to_process = [col for col in IMAGE_COLUMNS if col in df.columns]
     
     if not columns_to_process:
         logger.debug("No image columns found in DataFrame")
-        return
+        return 0
         
     # Fallback image to use if an image file is not found
     default_img_path = os.environ.get('RPA_DEFAULT_IMAGE', None)
@@ -691,6 +697,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             # Add image to worksheet if file exists and has content
             try:
                 attempted_embeddings += 1
+                if is_kogift_image:
+                    kogift_attempted += 1
                 
                 # Verify file exists and is not empty
                 if not os.path.exists(img_path):
@@ -747,6 +755,9 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
     if kogift_attempted > 0:
         logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
+    
+    # Track image columns for dimension adjustment
+    image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
     
     # Adjust row heights where images are embedded
     for row_idx in range(2, worksheet.max_row + 1):
