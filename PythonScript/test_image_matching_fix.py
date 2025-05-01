@@ -28,15 +28,72 @@ def test_image_matching_fix():
     """Test the fixed image matching functionality."""
     logging.info("Starting image matching fix test...")
     
-    # Load configuration
+    # Create manual configuration instead of loading from file
     config = configparser.ConfigParser()
-    config.read('config.ini')
     
-    if not config.has_section('Paths'):
-        config.add_section('Paths')
+    # Set up required sections and values
+    config.add_section('Paths')
     
-    config.set('Paths', 'image_main_dir', 'C:\\RPA\\Image\\Main')
-    config.set('Paths', 'output_dir', 'C:\\RPA\\Output')
+    # Use a local test directory instead of C:\RPA path to avoid permission issues
+    test_dir = Path("test_images")
+    test_dir.mkdir(exist_ok=True)
+    
+    # Create subdirectories for images
+    image_main_dir = test_dir / "Main"
+    image_main_dir.mkdir(exist_ok=True)
+    
+    haereum_dir = image_main_dir / "Haereum"
+    kogift_dir = image_main_dir / "Kogift"
+    naver_dir = image_main_dir / "Naver"
+    
+    haereum_dir.mkdir(exist_ok=True)
+    kogift_dir.mkdir(exist_ok=True)
+    naver_dir.mkdir(exist_ok=True)
+    
+    # Create test output directory
+    output_dir = test_dir / "Output"
+    output_dir.mkdir(exist_ok=True)
+    
+    # Create dummy test images if they don't exist
+    test_images = [
+        (haereum_dir / "haereum_고급_3단_자동_양우산_10k_d4caa6a694.jpg"),
+        (haereum_dir / "haereum_목쿠션_메모리폼_목베개_여행용목베개_bda60bd016.jpg"),
+        (haereum_dir / "haereum_손톱깎이_세트_선물세트_네일세트_12p_06f5435e4e.jpg"),
+        (haereum_dir / "haereum_양면_수면안대_눈안대_인쇄주문안대_e86c7c53ae.jpg"),
+        (haereum_dir / "haereum_플라워_양우산_UV자외선_차단_파우치_541d22ca20.jpg"),
+        
+        (kogift_dir / "kogift_1912824fba_2061e0f04f.jpg"),
+        (kogift_dir / "kogift_c85244abdf_e4f4b98d58.jpg"),
+        (kogift_dir / "kogift_d05fe70853_db8e46e9e4.jpg"),
+        
+        (naver_dir / "naver_0d3dca10db841346_e17141bd.jpg"),
+        (naver_dir / "naver_16f0dac0124fe5f4_4bb177a0.jpg")
+    ]
+    
+    # Create empty image files for testing
+    for img_path in test_images:
+        if not img_path.exists():
+            try:
+                with open(img_path, 'wb') as f:
+                    # Write minimal JPEG header
+                    f.write(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x14\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\n\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\n\xff\xda\x00\x08\x01\x01\x00\x00?\x00\x92\x00\xff\xd9')
+                logging.info(f"Created test image: {img_path}")
+            except Exception as e:
+                logging.error(f"Failed to create test image {img_path}: {e}")
+    
+    # Update paths in config to use test directory
+    config.set('Paths', 'image_main_dir', str(image_main_dir))
+    config.set('Paths', 'output_dir', str(output_dir))
+    
+    # ImageMatching section
+    config.add_section('ImageMatching')
+    config.set('ImageMatching', 'use_enhanced_matcher', 'true')
+    config.set('ImageMatching', 'minimum_match_confidence', '0.1')
+    
+    # Matching section
+    config.add_section('Matching')
+    config.set('Matching', 'image_threshold', '0.1')
+    config.set('Matching', 'image_display_threshold', '0.05')
     
     # Create test DataFrame with product names
     test_df = pd.DataFrame({
@@ -124,19 +181,19 @@ def test_image_matching_fix():
             logging.info(f"Column '{col}' has {null_count} null values out of {len(result_df)} rows")
     
     # Create a temporary Excel file to test conditional formatting
-    test_excel_path = 'C:\\RPA\\Output\\test_image_matching_fix.xlsx'
+    test_excel_path = output_dir / "test_image_matching_fix.xlsx"
     logging.info(f"Creating test Excel file: {test_excel_path}")
     
     # Create Excel file
-    create_final_output_excel(result_df, test_excel_path)
+    create_final_output_excel(result_df, str(test_excel_path))
     
     # Check if Excel file exists
-    if os.path.exists(test_excel_path):
+    if test_excel_path.exists():
         logging.info(f"Excel file created successfully: {test_excel_path}")
         
         # Load the Excel file to verify conditional formatting
         try:
-            wb = load_workbook(test_excel_path)
+            wb = load_workbook(str(test_excel_path))
             ws = wb.active
             
             # Check for yellow highlighting
@@ -163,6 +220,19 @@ def test_image_matching_fix():
         logging.error(f"Failed to create Excel file: {test_excel_path}")
     
     logging.info("Test completed!")
+    
+    # Print a summary of test results
+    print("\n============ 테스트 결과 요약 ============")
+    print(f"테스트 이미지 디렉토리: {image_main_dir}")
+    print(f"테스트 결과 파일: {test_excel_path}")
+    print(f"검출된 이미지 수: 해오름({image_counts['본사 이미지']}), 고려기프트({image_counts['고려기프트 이미지']}), 네이버({image_counts['네이버 이미지']})")
+    print(f"가격차이 강조 테스트: {'성공' if set(highlighted_rows) == set(expected_highlighted_rows) else '실패'}")
+    if '기본수량' in result_df.columns:
+        print(f"고려기프트 기본수량 및 판매가 컬럼 추가: 성공")
+    else:
+        print(f"고려기프트 기본수량 및 판매가 컬럼 추가: 실패")
+    print("=========================================\n")
+    
     return result_df
 
 if __name__ == "__main__":
