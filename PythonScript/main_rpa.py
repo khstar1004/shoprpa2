@@ -697,7 +697,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 formatted_df = format_product_data_for_output(
                     input_df=filtered_df, 
                     kogift_results=kogift_map, 
-                    naver_results=naver_map
+                    naver_results=naver_map,
+                    input_file_image_map=input_file_image_map
                 )
                 
                 # Create output directory if it doesn't exist

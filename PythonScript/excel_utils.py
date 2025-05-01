@@ -228,14 +228,14 @@ INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red fo
 NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff < -1
 
 # --- Image Processing Constants ---
-IMAGE_MAX_SIZE = (1200, 1200)  # Excel 2021 maximum supported image size
-IMAGE_STANDARD_SIZE = (400, 400)  # Standard display size in Excel (doubled from 200x200)
+IMAGE_MAX_SIZE = (2000, 2000)  # Excel 2021 maximum supported image size (increased from 1200x1200)
+IMAGE_STANDARD_SIZE = (600, 600)  # Standard display size in Excel (increased from 400x400)
 IMAGE_QUALITY = 85  # JPEG compression quality
 SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']  # Supported by Excel 2021
 
 # Image cell specific styling
-IMAGE_CELL_HEIGHT = 360  # Doubled from 180 to accommodate larger images
-IMAGE_CELL_WIDTH = 44   # Doubled from 22 for image cells
+IMAGE_CELL_HEIGHT = 420  # Increased from 360 for larger images
+IMAGE_CELL_WIDTH = 60   # Increased from 44 for wider image cells
 
 # --- Utility Functions ---
 
@@ -569,9 +569,9 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 try:
                     img = openpyxl.drawing.image.Image(img_path)
                     
-                    # Set image size - make cell large enough
-                    img.width = 240  # pixels - doubled from 120
-                    img.height = 240  # pixels - doubled from 120
+                    # FIXED: Set larger image size for better visibility
+                    img.width = 360  # pixels - increased from 240
+                    img.height = 360  # pixels - increased from 240
                     
                     # Position image in the cell
                     img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
@@ -605,8 +605,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 break
         
         if has_image:
-            # Set row height to accommodate images
-            worksheet.row_dimensions[row_idx].height = 280  # Doubled from 140
+            # FIXED: Set taller row height to accommodate larger images
+            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
     
     return successful_embeddings
 
@@ -627,106 +627,64 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Define yellow fill
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
+    # Check dtypes of the relevant columns in the DataFrame
+    for col in price_diff_cols:
+        if col in df.columns:
+            logger.debug(f"Conditional formatting: Column '{col}' dtype is {df[col].dtype}")
+        else:
+            logger.warning(f"Conditional formatting: Column '{col}' not found in DataFrame.")
+
     # FIXED: Add detailed logging for debugging
     logger.info(f"Applying conditional formatting for price differences in columns: {price_diff_cols}")
     logger.info(f"Total rows to check: {worksheet.max_row - 1}")  # Subtract 1 for header row
     
     rows_highlighted = 0
 
-    # Process each row
-    for row_idx in range(2, worksheet.max_row + 1):  # Start from 2 to skip header
+    # Process each row - Rely PRIMARILY on DataFrame values for consistency
+    for df_row_idx in range(len(df)):
+        excel_row_idx = df_row_idx + 2 # Adjust for 1-based indexing and header row
         highlight_row = False # Flag to highlight the row
         
-        # Check both price difference columns
         for price_diff_col in price_diff_cols:
             if price_diff_col not in df.columns: # Skip if column doesn't exist
                 continue
                 
-            # FIXED: First try to get value directly from DataFrame for more reliable extraction
-            df_row_idx = row_idx - 2  # Adjust for 0-based indexing and header row
-            if 0 <= df_row_idx < len(df):
-                df_value = df.iloc[df_row_idx].get(price_diff_col)
-                
+            try:
+                # Get value directly from DataFrame
+                value = df.iloc[df_row_idx].get(price_diff_col)
+
                 # Check if the value is numeric and less than -1
-                if pd.notna(df_value) and df_value not in ['-', '']:
+                if pd.notna(value) and value not in ['-', '']:
                     try:
-                        if isinstance(df_value, (int, float)):
-                            numeric_value = float(df_value)
-                        else:
-                            # Try to convert string to float
-                            numeric_value = float(str(df_value).replace(',', ''))
-                            
+                        numeric_value = float(str(value).replace(',', '')) # Convert robustly
+
                         # Apply highlight if value is less than -1
                         if numeric_value < -1:
                             highlight_row = True
-                            logger.debug(f"Row {row_idx}: Price difference {numeric_value} < -1 in column {price_diff_col}. Highlighting row.")
-                            break  # Found a reason to highlight
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"Could not convert value '{df_value}' in column {price_diff_col} to numeric: {e}")
-                        # Continue to try cell-based approach as fallback
-            
-            # Fallback to cell-based approach if DataFrame extraction doesn't work
-            col_idx = 0
-            try:
-                # Find column index in worksheet
-                for i, col in enumerate(df.columns, 1):
-                    if col == price_diff_col:
-                        col_idx = i
-                        break
-                        
-                if col_idx == 0:
-                    logger.warning(f"Column {price_diff_col} not found in worksheet columns")
-                    continue
-                    
-                cell = worksheet.cell(row=row_idx, column=col_idx)
-                
-                # Get cell value and check if it's < -1
-                if cell.value not in ['-', '', None]:  # Skip empty or placeholder values
-                    # Try to convert to float - handle both direct values and formatted strings
-                    value_str = str(cell.value).replace(',', '')
-                    try:
-                        value = float(value_str)
-                        
-                        # Highlight if value is less than -1
-                        if value < -1:
-                            highlight_row = True
-                            logger.debug(f"Row {row_idx}: Cell {cell.coordinate} contains price difference {value} < -1. Highlighting row.")
-                            break # Found a reason to highlight, no need to check other diff cols
-                    except ValueError:
-                        logger.debug(f"Cell {cell.coordinate} contains non-numeric value: '{cell.value}'")
+                            logger.debug(f"Row {excel_row_idx}: Price difference {numeric_value} < -1 in column {price_diff_col}. Highlighting.")
+                            break  # Found a reason to highlight this row
+                    except (ValueError, TypeError):
+                        # Log if conversion fails, but don't highlight
+                        logger.debug(f"Row {excel_row_idx}: Could not convert value '{value}' in column {price_diff_col} to numeric.")
+            except IndexError:
+                 logger.warning(f"IndexError accessing DataFrame row {df_row_idx} for conditional formatting.")
+                 continue # Skip this row if index is out of bounds
             except Exception as e:
-                logger.error(f"Error processing cell in row {row_idx}, column {price_diff_col} for conditional formatting: {e}")
+                logger.error(f"Error processing DataFrame row {df_row_idx}, column {price_diff_col} for conditional formatting: {e}")
                 continue
 
-        # If the flag is set, highlight the entire row
+        # If the flag is set, highlight the entire row in Excel
         if highlight_row:
-            for col in range(1, worksheet.max_column + 1):
-                try:
-                    worksheet.cell(row=row_idx, column=col).fill = yellow_fill
-                    # Use consistent style
-                    current_cell = worksheet.cell(row=row_idx, column=col)
-                    if not current_cell.font:  # Only set font if not already customized
-                        current_cell.font = Font(name="맑은 고딕", size=10)
-                except Exception as e:
-                    logger.error(f"Error applying fill to cell R{row_idx}C{col}: {e}")
-            
             rows_highlighted += 1
+            for col_idx_excel in range(1, worksheet.max_column + 1):
+                try:
+                    cell_to_fill = worksheet.cell(row=excel_row_idx, column=col_idx_excel)
+                    cell_to_fill.fill = yellow_fill
+                except Exception as e:
+                    logger.error(f"Error applying fill to cell R{excel_row_idx}C{col_idx_excel}: {e}")
 
-    # FIXED: Log summary of highlighting results 
+    # Log summary of highlighting results
     logger.info(f"Conditional formatting complete: {rows_highlighted} rows highlighted for price differences < -1")
-    
-    # Check if no rows were highlighted despite having price difference columns
-    if rows_highlighted == 0 and price_diff_cols:
-        logger.warning("No rows were highlighted despite having price difference columns. This might indicate a problem.")
-        
-        # Additional debugging: Check a sample of values in the price difference columns
-        sample_size = min(5, len(df))
-        logger.debug(f"Sample of values in price difference columns (first {sample_size} rows):")
-        for idx in range(sample_size):
-            for col in price_diff_cols:
-                if col in df.columns:
-                    value = df.iloc[idx].get(col) if idx < len(df) else None
-                    logger.debug(f"  Row {idx+2}, Column '{col}': {value} (type: {type(value).__name__})")
 
 def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
     """Sets up page orientation, print area, freeze panes, etc."""
@@ -1020,7 +978,7 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
             # Replace image dict/path with web URL or empty string for upload file
             df[col] = df[col].apply(
                 lambda x:
-                    # Case 1: Input is a dictionary
+                    # Case 1: Input is a dictionary with 'url' key
                     x['url'] if isinstance(x, dict) and 'url' in x and isinstance(x['url'], str) and x['url'].startswith(('http://', 'https://'))
                     # Case 2: Input is a string that is already a web URL
                     else (x if isinstance(x, str) and x.startswith(('http://', 'https://'))
@@ -1256,8 +1214,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                 try:
                                     # Create and add the image
                                     img = openpyxl.drawing.image.Image(img_path)
-                                    img.width = 80  # Set image width
-                                    img.height = 80  # Set image height
+                                    # FIXED: Larger images in the result file
+                                    img.width = 160  # Set image width - increased from 80
+                                    img.height = 160  # Set image height - increased from 80
                                     img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
                                     worksheet_with_images.add_image(img)
                                     
@@ -1315,17 +1274,89 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                     # Process each cell to extract only the web URL
                     for idx in df_finalized.index:
                         value = df_finalized.at[idx, img_col]
-                        url = '-'  # Default placeholder
+                        url = ''  # Default empty string (changed from '-')
                         
                         if isinstance(value, dict) and 'url' in value:
                             url_value = value['url']
-                            # Only keep web URLs
+                            # Only keep web image URLs (not product page URLs)
                             if isinstance(url_value, str) and url_value.startswith(('http://', 'https://')):
-                                url = url_value
+                                # 이미지 URL 여부 확인 (확장자나 경로 패턴으로 확인)
+                                is_image_url = False
+                                
+                                # 1. 확장자로 확인
+                                if any(ext in url_value.lower() for ext in ['.jpg', '.jpeg', '.gif', '.png', '.webp']):
+                                    is_image_url = True
+                                # 2. 이미지 경로 패턴으로 확인
+                                elif '/upload/' in url_value and ('image' in url_value or 'img' in url_value or 'simg' in url_value):
+                                    is_image_url = True
+                                # 3. 도메인별 특수 패턴 확인
+                                elif 'jclgift.com' in url_value and ('simg' in url_value or '.gif' in url_value):
+                                    is_image_url = True
+                                elif ('koreagift.com' in url_value or 'kogift.com' in url_value) and 'upload' in url_value:
+                                    is_image_url = True
+                                elif 'pstatic.net' in url_value:
+                                    is_image_url = True
+                                
+                                # 4. 상품 상세 페이지 URL 필터링 (제외)
+                                is_product_page = False
+                                if not is_image_url and any(pattern in url_value for pattern in ['/goods/', '/shop/view', '/p/']):
+                                    is_product_page = True
+                                
+                                # 이미지 URL이고 상품 페이지가 아닌 경우만 사용
+                                if is_image_url and not is_product_page:
+                                    url = url_value
+                                    logger.debug(f"Found valid image URL for {img_col}: {url[:50]}...")
+                                else:
+                                    # 이미지 URL이 아닌 경우, 로그를 남기고 빈 값 사용
+                                    logger.debug(f"Skipping non-image URL: {url_value[:50]}...")
                         elif isinstance(value, str) and value.startswith(('http://', 'https://')):
-                            url = value
+                            # 문자열 URL도 동일하게 이미지 URL인지 확인
+                            is_image_url = False
+                            
+                            # 1. 확장자로 확인
+                            if any(ext in value.lower() for ext in ['.jpg', '.jpeg', '.gif', '.png', '.webp']):
+                                is_image_url = True
+                            # 2. 이미지 경로 패턴으로 확인
+                            elif '/upload/' in value and ('image' in value or 'img' in value or 'simg' in value):
+                                is_image_url = True
+                            # 3. 도메인별 특수 패턴 확인
+                            elif 'jclgift.com' in value and ('simg' in value or '.gif' in value):
+                                is_image_url = True
+                            elif ('koreagift.com' in value or 'kogift.com' in value) and 'upload' in value:
+                                is_image_url = True
+                            elif 'pstatic.net' in value:
+                                is_image_url = True
+                            
+                            # 4. 상품 상세 페이지 URL 필터링
+                            is_product_page = False
+                            if not is_image_url and any(pattern in value for pattern in ['/goods/', '/shop/view', '/p/']):
+                                is_product_page = True
+                            
+                            # 이미지 URL이고 상품 페이지가 아닌 경우만 사용
+                            if is_image_url and not is_product_page:
+                                url = value
+                                logger.debug(f"Found valid image URL for {img_col}: {url[:50]}...")
+                            
+                        # 해당 소스 링크 컬럼에서 이미지 URL 찾기 시도
+                        if not url:
+                            # 각 이미지 타입에 따른 원래 링크 컬럼 확인
+                            link_column = None
+                            if img_col == '본사 이미지':
+                                link_column = '본사상품링크'
+                            elif img_col == '고려기프트 이미지':
+                                link_column = '고려기프트 상품링크'
+                            elif img_col == '네이버 이미지':
+                                link_column = '네이버 쇼핑 링크'
+                            
+                            # 원래 링크 컬럼에서 데이터를 가져와서 이미지 링크가 있는지 확인
+                            # 여기서는 실제 크롤링된 데이터에 의존하므로 구현하지 않음
                             
                         web_urls[idx] = url
+                    
+                    # Log some sample URLs for debugging
+                    sample_urls = web_urls.dropna().head(3).tolist()
+                    if sample_urls:
+                        logger.info(f"Sample image URLs for {img_col}: {sample_urls}")
                     
                     # Create a temporary copy of the original data
                     temp_col = df_finalized[img_col].copy()
@@ -1348,7 +1379,18 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                     df_upload[target_col] = df_finalized[source_col]
                 else:
                     # If no matching column found, add an empty column
-                    df_upload[target_col] = None
+                    df_upload[target_col] = ''
+                    
+            # Log image columns in the upload file to confirm
+            for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']:
+                if img_col in df_upload.columns:
+                    non_empty = df_upload[img_col].astype(str).str.strip().str.len() > 0
+                    count = non_empty.sum()
+                    logger.info(f"Upload file: {img_col} column has {count} non-empty values")
+                    # Log a few sample values
+                    if count > 0:
+                        sample_values = df_upload.loc[non_empty, img_col].head(3).tolist()
+                        logger.info(f"Sample values: {sample_values}")
                     
             # IMPORTANT: Restore original image data to df_finalized for result file
             logger.info("Restoring original image data for result file...")
@@ -1605,8 +1647,8 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     for col_name, col_idx in image_cols.items():
         try:
             col_letter = get_column_letter(col_idx)
-            # Use larger column width for image columns
-            worksheet.column_dimensions[col_letter].width = 60  # Doubled from 30
+            # FIXED: Use larger column width for image columns
+            worksheet.column_dimensions[col_letter].width = 80  # Increased from 60
         except Exception as e:
             logger.error(f"Error adjusting column width for {col_name}: {e}")
     
@@ -1653,8 +1695,8 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Apply increased height to rows with images
     for row_idx in rows_with_images:
         try:
-            # Set larger row height to accommodate the bigger images
-            worksheet.row_dimensions[row_idx].height = 280  # Doubled from 140
+            # FIXED: Set larger row height to accommodate bigger images
+            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
             
             # Center-align all cells in this row for better appearance with images
             for col_idx in range(1, worksheet.max_column + 1):
@@ -1712,6 +1754,7 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     
     # Step 2: Rename columns to the target names
     df_final = df_final.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
+    logger.debug(f"Columns after rename: {df_final.columns.tolist()}")
     
     # FIXED: Debug logging for Kogift price data
     logger.info("Checking Kogift price data before column processing:")
@@ -1740,8 +1783,12 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     
     # Copy data from original to new dataframe
     for col in available_cols:
-        output_df[col] = df_final[col]
-    
+        try:
+            output_df[col] = df_final[col]
+        except Exception as e:
+            logger.error(f"Error copying column '{col}' during finalization: {e}")
+            output_df[col] = None # Add empty column on error
+
     # Step 4: Add missing columns with empty values
     for col in FINAL_COLUMN_ORDER:
         if col not in output_df.columns:
@@ -1762,60 +1809,124 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     # FIXED: Special handling for price columns to avoid data loss
     # Check for alternate column names that might hold price data
     price_alternates = {
-        '판매단가(V포함)(2)': ['판매가(V포함)(2)', '고려가격', '고려기프트판매가', '고려기프트 판매가'],
-        '판매단가(V포함)(3)': ['판매가(V포함)(3)', '네이버가격', '네이버판매가']
+        '판매가(V포함)(2)': ['판매단가2(VAT포함)', '판매단가(V포함)(2)', '고려가격', '고려기프트판매가'], # Added original processing name
+        '판매단가(V포함)(3)': ['판매단가3 (VAT포함)', '판매단가(V포함)(3)', '네이버가격', '네이버판매가'] # Added original processing name
     }
-    
+
+    logger.info("Checking for and consolidating data from alternate price columns...")
     for target_col, alt_cols in price_alternates.items():
         if target_col in output_df.columns:
-            # Check if the target column is mostly empty
-            if output_df[target_col].isna().sum() > len(output_df) * 0.9:  # 90% or more is empty
-                logger.warning(f"Target column '{target_col}' is mostly empty, checking alternates")
-                
-                # Try each alternate column
-                for alt_col in alt_cols:
-                    if alt_col in df_final.columns and df_final[alt_col].notnull().sum() > 0:
-                        logger.info(f"Found data in alternate column '{alt_col}', copying to '{target_col}'")
-                        output_df[target_col] = df_final[alt_col]
-                        break
-    
-    # Step 5: Format numeric columns
+            # Count valid data points in the target column currently
+            target_valid_count = output_df[target_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+            logger.debug(f"Target '{target_col}' currently has {target_valid_count} valid entries.")
+
+            # Check each alternate column found in the *renamed* df_final
+            best_alt_col = None
+            best_alt_count = target_valid_count # Start with current count
+
+            for alt_col_potential in alt_cols:
+                # Check if this alternate exists *after renaming*
+                if alt_col_potential in df_final.columns:
+                    alt_valid_count = df_final[alt_col_potential].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+                    logger.debug(f"  Checking alternate '{alt_col_potential}': Found {alt_valid_count} valid entries.")
+                    # If this alternate has more valid data, consider it
+                    if alt_valid_count > best_alt_count:
+                        best_alt_count = alt_valid_count
+                        best_alt_col = alt_col_potential
+
+            # If a better alternate was found, copy its data to the target column
+            if best_alt_col:
+                logger.info(f"Found better data in alternate column '{best_alt_col}' ({best_alt_count} valid). Copying to '{target_col}'.")
+                # Ensure the source column exists before copying
+                if best_alt_col in df_final.columns:
+                     # Copy data, converting potential errors during copy
+                     try:
+                          output_df[target_col] = pd.to_numeric(df_final[best_alt_col], errors='coerce')
+                     except Exception as copy_err:
+                          logger.error(f"Error coercing/copying from {best_alt_col} to {target_col}: {copy_err}")
+                          # Fallback: copy raw data if numeric conversion fails
+                          output_df[target_col] = df_final[best_alt_col]
+                else:
+                     logger.warning(f"Attempted to copy from non-existent column '{best_alt_col}'")
+
+    # Step 5: Format numeric columns (Ensure this runs AFTER alternate consolidation)
     # Get image columns for exclusion from numeric formatting
     image_cols = [col for col in output_df.columns if col in IMAGE_COLUMNS]
-    
+
+    logger.info("Applying numeric formatting to relevant columns...")
     for col in output_df.columns:
         # Skip image columns
         if col in image_cols:
             continue
-            
-        # For numeric columns (prices, quantities)
-        if any(keyword in col for keyword in ['단가', '가격', '수량']):
+
+        # Check if column should be numeric (Prices, Quantities, Differences)
+        # Use final column names here
+        is_numeric_col = (
+            col in PRICE_COLUMNS or
+            col in QUANTITY_COLUMNS or
+            col in PERCENTAGE_COLUMNS or
+            col in ['가격차이(2)', '가격차이(3)'] # Explicitly include difference columns
+        )
+
+        if is_numeric_col:
+            # Log before conversion
+            pre_conversion_sample = output_df[col].head(3).tolist()
+            pre_conversion_dtype = output_df[col].dtype
+            logger.debug(f"Converting column '{col}' (dtype: {pre_conversion_dtype}, sample: {pre_conversion_sample}) to numeric.")
+
             try:
-                # Convert to numeric, coercing errors to NaN
+                # Store original data before attempting conversion
+                original_data = output_df[col].copy()
+                
+                # Attempt conversion to numeric, coercing errors to NaN
                 output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
+                
+                # Log after conversion
+                post_conversion_sample = output_df[col].head(3).tolist()
+                post_conversion_dtype = output_df[col].dtype
+                nan_count = output_df[col].isna().sum()
+                logger.debug(f"  -> Post-conversion '{col}' (dtype: {post_conversion_dtype}, sample: {post_conversion_sample}, NaNs: {nan_count})")
+
+                # If conversion resulted in all NaNs, consider reverting
+                if nan_count == len(output_df[col]):
+                    logger.warning(f"Numeric conversion resulted in all NaN for column '{col}'. Reverting to original data.")
+                    output_df[col] = original_data
+
             except Exception as e:
-                logger.warning(f"Error converting column '{col}' to numeric: {e}")
-                # Keep as is if conversion fails
-    
-    # Step 6: Replace NaN with None for Excel
-    output_df = output_df.replace({pd.NA: None, np.nan: None})
-    
-    # Step 7: Set default values for empty cells
+                logger.warning(f"Error converting column '{col}' to numeric: {e}. Keeping original data.")
+                # Optionally revert if needed, but pd.to_numeric usually handles errors well with coerce
+
+    # Step 6: Replace NaN/NaT with None for Excel compatibility
+    output_df = output_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
+
+    # Step 7: Set default values for empty cells ('-' for non-image, handling None)
+    logger.info("Setting default values for empty cells ('-')...")
     for col in output_df.columns:
         if col not in image_cols:
-            # Set empty cells to '-' for non-image columns
-            output_df[col] = output_df[col].apply(lambda x: '-' if pd.isna(x) or x == '' else x)
-    
+            # Apply '-' default to cells that are None or empty strings after NaN replacement
+            # Ensure we don't overwrite 0 or False
+            output_df[col] = output_df[col].apply(
+                lambda x: '-' if (x is None or x == '') else x
+            )
+
     # Final verification of key data
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
     logger.debug(f"Final columns: {output_df.columns.tolist()}")
-    
-    # FIXED: Final verification of price data
-    for price_col in ['판매단가(V포함)', '판매단가(V포함)(2)', '판매단가(V포함)(3)']:
+
+    # Final verification of price data
+    for price_col in ['판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)', '가격차이(2)', '가격차이(3)']:
         if price_col in output_df.columns:
-            non_empty_count = output_df[price_col].apply(lambda x: x != '-' and pd.notna(x)).sum()
-            logger.info(f"Final verification: Column '{price_col}' has {non_empty_count} non-empty values")
-    
+            try:
+                 # Count non-empty, non-'', non-None values
+                 non_empty_count = output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
+                 # Log sample non-empty values if they exist
+                 sample_values = output_df.loc[output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']), price_col].head(3).tolist()
+                 logger.info(f"Final check: Column '{price_col}' has {non_empty_count} valid entries. Sample: {sample_values}")
+            except Exception as e:
+                 logger.error(f"Error during final check for column '{price_col}': {e}")
+                 logger.info(f"Final check: Column '{price_col}' dtype: {output_df[price_col].dtype}")
+
+
     return output_df
 
 def _apply_basic_excel_formatting(worksheet, column_list):

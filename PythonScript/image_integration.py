@@ -404,9 +404,9 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    # FIXED: Increased thresholds for better matching quality
-    high_confidence_threshold = 0.60  # 높은 신뢰도 임계값 (0.40에서 0.60으로 높임)
-    min_confidence_threshold = 0.25   # 최소 신뢰도 임계값 (0.10에서 0.25로 높임)
+    # FIXED: Lowered thresholds to ensure more image matches
+    high_confidence_threshold = 0.40  # 높은 신뢰도 임계값 (0.60에서 0.40으로 낮춤)
+    min_confidence_threshold = 0.15   # 최소 신뢰도 임계값 (0.25에서 0.15로 낮춤)
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -480,15 +480,14 @@ def find_best_match_with_enhanced_matcher(
         best_match_name = target_images[best_match]['clean_name']
         logging.info(f"  --> Best Match Selected: {best_match_name} (Score: {best_score:.3f})")
         
-        # FIXED: Higher thresholds and stricter rejection for low confidence matches
+        # FIXED: More lenient thresholds to avoid rejecting matches
         if best_score < min_confidence_threshold:
             logging.warning(f"매칭 점수가 최소 임계값({min_confidence_threshold})보다 낮아 매칭을 거부합니다: {best_match_name} (점수: {best_score:.3f})")
             return None
         elif best_score < high_confidence_threshold:
             logging.warning(f"낮은 신뢰도로 매칭되었습니다: {best_match_name} (점수: {best_score:.3f})")
             
-            # FIXED: For very low confidence matches, check if product names are similar
-            # This helps prevent completely unrelated products from matching
+            # FIXED: More lenient checks for low confidence matches
             try:
                 from Levenshtein import ratio as text_similarity
                 source_name = os.path.basename(source_img_path).split('_', 1)[1] if '_' in os.path.basename(source_img_path) else ''
@@ -502,9 +501,9 @@ def find_best_match_with_enhanced_matcher(
                 name_sim = text_similarity(source_name, target_name)
                 logging.debug(f"Name similarity check: '{source_name}' vs '{target_name}' = {name_sim:.3f}")
                 
-                # If images score is low AND names don't match well, reject the match
-                if best_score < high_confidence_threshold * 0.7 and name_sim < 0.3:
-                    logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 낮아 매칭을 거부합니다")
+                # FIXED: Made threshold much more lenient to return more matches
+                if best_score < high_confidence_threshold * 0.5 and name_sim < 0.2:
+                    logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 매우 낮아 매칭을 거부합니다")
                     return None
             except Exception as e:
                 logging.warning(f"이름 유사도 확인 중 오류 발생: {e}")
@@ -892,13 +891,13 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         
         # 임계값 설정 - 설정 파일에서 가져오거나 기본값 사용
         try:
-            # 이미지 표시 임계값을 더 낮게 설정 - 0.3에서 0.05로 대폭 인하하여 거의 모든 매칭 유지
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.05)
+            # FIXED: 이미지 표시 임계값을 더 낮게 설정 - 0.05에서 0.01로 대폭 인하하여 거의 모든 매칭 유지
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
             # 필터링이 사실상 비활성화되어 있음을 표시
             logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (매우 낮은 임계값으로 대부분의 매칭을 유지)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.05을 사용합니다.")
-            similarity_threshold = 0.05
+            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.01을 사용합니다.")
+            similarity_threshold = 0.01
         
         # -------------------------------------------------------------
         # 이미지 유사도 필터링

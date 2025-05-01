@@ -7,7 +7,7 @@ import configparser
 from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
 import re
 import time
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Any
 import numpy as np
 from pathlib import Path
 import ast
@@ -202,7 +202,8 @@ def verify_image_data(img_value, img_col_name):
 
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
-                             naver_results: Dict[str, List[Dict]] = None) -> pd.DataFrame:
+                             naver_results: Dict[str, List[Dict]] = None,
+                             input_file_image_map: Dict[str, Any] = None) -> pd.DataFrame:
     """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
     # Create a copy to avoid modifying the input
@@ -232,6 +233,38 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         if img_col in df.columns:
             # Ensure we have a valid column (not None)
             df[img_col] = df[img_col].apply(lambda x: {} if pd.isna(x) or x is None else x)
+            
+    # Process input file image map (해오름 이미지)
+    if input_file_image_map and '본사 이미지' in df.columns:
+        haoreum_img_count = 0
+        for idx, row in df.iterrows():
+            product_code = row.get('Code')
+            if product_code and product_code in input_file_image_map:
+                img_path = input_file_image_map[product_code]
+                # 이미지 정보가 있는 경우에만 처리
+                if img_path:
+                    # 로컬 경로 및 URL 정보를 포함하는 딕셔너리 생성
+                    img_data = {
+                        'local_path': img_path,
+                        'source': '해오름'
+                    }
+                    
+                    # 해오름 사이트 URL 패턴에 맞게 URL 생성 시도
+                    # 예: https://www.jclgift.com/upload/product/simg3/EEDA00010000s.gif
+                    file_name = os.path.basename(img_path)
+                    if file_name and '.' in file_name:
+                        if '해오름이미지URL' in row and isinstance(row['해오름이미지URL'], str) and row['해오름이미지URL'].startswith(('http://', 'https://')):
+                            # 이미 URL이 있는 경우 그것을 사용
+                            img_data['url'] = row['해오름이미지URL']
+                        elif product_code and product_code.isalnum() and len(product_code) <= 12:
+                            # 상품 코드로 이미지 URL 추정 시도
+                            ext = os.path.splitext(file_name)[1].lower()
+                            img_data['url'] = f"https://www.jclgift.com/upload/product/simg3/{product_code}s{ext}"
+                    
+                    df.at[idx, '본사 이미지'] = img_data
+                    haoreum_img_count += 1
+        
+        logging.info(f"Added {haoreum_img_count} 해오름 images from input file image map")
 
     # Add Kogift data from crawl results if available
     if kogift_results:
@@ -289,19 +322,46 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     
                     if '고려기프트 상품링크' in df.columns and 'link' in item:
                         df.at[idx, '고려기프트 상품링크'] = item['link']
-                    if '고려기프트 이미지' in df.columns and 'image_path' in item:
-                        # Store as proper dictionary instead of string
-                        if isinstance(item['image_path'], str):
-                            if item['image_path'].startswith('http'):
-                                df.at[idx, '고려기프트 이미지'] = {'url': item['image_path'], 'source': '고려기프트'}
-                            else:
-                                df.at[idx, '고려기프트 이미지'] = {'local_path': item['image_path'], 'source': '고려기프트'}
-                        else:
+                    if '고려기프트 이미지' in df.columns:
+                        # IMPROVEMENT: 실제 이미지 URL을 우선적으로 사용
+                        image_url = None
+                        
+                        # 이미지 URL 찾기 (순서대로 시도)
+                        if 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
+                            image_url = item['image_url']
+                        elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path'].startswith(('http://', 'https://')):
+                            image_url = item['image_path']
+                        elif 'src' in item and item['src'] and item['src'].startswith(('http://', 'https://')):
+                            image_url = item['src']
+                            
+                        # 이미지 데이터 사전 생성
+                        if image_url:
+                            # Store as proper dictionary instead of string
+                            df.at[idx, '고려기프트 이미지'] = {'url': image_url, 'source': '고려기프트'}
+                            logging.debug(f"Found Kogift image URL for '{product_name}': {image_url[:50]}...")
+                        elif 'image_path' in item and not isinstance(item['image_path'], str) and item['image_path']:
+                            # 이미지 경로가 문자열이 아닌 객체인 경우 (이미 사전 형태일 수 있음)
                             df.at[idx, '고려기프트 이미지'] = item['image_path']
                     
                     kogift_update_count += 1
         
         logging.info(f"Updated {kogift_update_count} rows with Kogift data")
+
+        # === DEBUG LOGGING START ===
+        if kogift_update_count > 0 and '판매단가(V포함)(2)' in df.columns:
+            try:
+                sample_indices = df[df['판매단가(V포함)(2)'].notna()].index[:3] # Get first 3 rows with Kogift price
+                if not sample_indices.empty:
+                    logger.info("[DEBUG] Sample Kogift Price Data after processing:")
+                    for idx in sample_indices:
+                        product_name = df.at[idx, '상품명']
+                        kogift_price = df.at[idx, '판매단가(V포함)(2)']
+                        logger.info(f"  - Product: '{product_name}', Kogift Price ('판매단가(V포함)(2)'): {kogift_price}")
+                else:
+                    logger.info("[DEBUG] No Kogift price data found in samples after processing, even though update count > 0.")
+            except Exception as log_err:
+                 logger.warning(f"[DEBUG] Error logging sample Kogift data: {log_err}")
+        # === DEBUG LOGGING END ===
 
     # Add Naver data from crawl results if available
     if naver_results:
@@ -346,37 +406,38 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             img_path = None
                             img_url = None
                             
-                            # FIXED: Explicitly capture image URL from Naver crawl data
-                            if 'image_path' in item:
-                                img_path = item['image_path']
-                            if 'image_url' in item:
+                            # IMPROVED: 실제 이미지 URL 찾기 (순서대로 시도)
+                            if 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
                                 img_url = item['image_url']
-                            elif 'image_path' in item and item['image_path'] and item['image_path'].startswith(('http://', 'https://')):
+                            elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path'].startswith(('http://', 'https://')):
                                 img_url = item['image_path']
+                            elif 'image_path' in item:
+                                img_path = item['image_path']
                             
                             if img_path or img_url:
-                                if isinstance(img_path, dict):
-                                    # Dictionary format - make sure image_url is included
+                                # 이미지 URL을 포함하는 사전 생성
+                                if img_url:
+                                    img_dict = {
+                                        'url': img_url,
+                                        'source': '네이버'
+                                    }
+                                    if img_path and not isinstance(img_path, dict) and not img_path.startswith(('http://', 'https://')):
+                                        img_dict['local_path'] = img_path
+                                    
+                                    df.at[idx, '네이버 이미지'] = img_dict
+                                    logging.debug(f"Found Naver image URL: {img_url[:50]}...")
+                                elif isinstance(img_path, dict):
+                                    # 이미 사전 형태인 경우
                                     img_dict = img_path.copy()
-                                    if img_url and 'image_url' not in img_dict:
-                                        img_dict['image_url'] = img_url
+                                    if 'source' not in img_dict:
+                                        img_dict['source'] = '네이버'
                                     df.at[idx, '네이버 이미지'] = img_dict
                                 else:
-                                    # String format - convert to dict for consistency
-                                    img_dict = {
-                                        'source': '네이버',
-                                        'image_url': img_url
+                                    # 로컬 경로만 있는 경우
+                                    df.at[idx, '네이버 이미지'] = {
+                                        'local_path': img_path,
+                                        'source': '네이버'
                                     }
-                                    
-                                    if img_path:
-                                        if str(img_path).startswith('http'):
-                                            img_dict['url'] = img_path
-                                        else:
-                                            img_dict['local_path'] = img_path
-                                    elif img_url:
-                                        img_dict['url'] = img_url
-                                        
-                                    df.at[idx, '네이버 이미지'] = img_dict
         
         logging.info(f"Updated {naver_matched_count} rows with Naver data")
     
@@ -449,7 +510,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
                     kogift_results: Optional[Dict[str, List[Dict]]] = None,
-                    naver_results: Optional[Dict[str, List[Dict]]] = None) -> pd.DataFrame:
+                    naver_results: Optional[Dict[str, List[Dict]]] = None,
+                    input_file_image_map: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """
     Process input DataFrame with necessary data processing steps.
     
@@ -458,6 +520,7 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
         config: Configuration object
         kogift_results: Dictionary mapping product names to Kogift crawl results
         naver_results: Dictionary mapping product names to Naver crawl results
+        input_file_image_map: Dictionary mapping product codes to image paths
     
     Returns:
         Processed DataFrame
@@ -478,7 +541,8 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
         formatted_df = format_product_data_for_output(
             filtered_df,
             kogift_results=kogift_results or {},
-            naver_results=naver_results or {}
+            naver_results=naver_results or {},
+            input_file_image_map=input_file_image_map or {}
         )
         
         # Create output directory if it doesn't exist

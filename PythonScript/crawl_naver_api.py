@@ -75,11 +75,11 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 
     # Get initial similarity threshold from config
     try:
-        # FIXED: Increased default threshold from 0.4 to 0.6 for better matching
-        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.6)
+        # FIXED: Lower default threshold from 0.6 to 0.4 for better matching
+        initial_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.4)
     except (configparser.Error, ValueError):
-        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.6.")
-        initial_sim_threshold = 0.6
+        logger.warning("Could not read 'naver_initial_similarity_threshold' from [Matching] config. Using default 0.4.")
+        initial_sim_threshold = 0.4
     logger.info(f"Using initial Naver result similarity threshold: {initial_sim_threshold}")
 
     # Tokenize the original query once
@@ -681,9 +681,9 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     # FIXED: Add additional similarity check before returning result
     # Get the threshold from config or use a default
     try:
-        min_similarity = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.4)
+        min_similarity = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.15)
     except:
-        min_similarity = 0.4
+        min_similarity = 0.15
     
     # Check the first item's similarity
     first_item = naver_data[0]
@@ -838,6 +838,46 @@ async def _test_main():
                     total_results = data.get('total', 0)
                     print(f"Test search found {total_results} total results for query '테스트'")
                     logger.info(f"Test search found {total_results} total results for query '테스트'")
+                    
+                    # Check if we have items and validate image URLs
+                    items = data.get('items', [])
+                    if items:
+                        print(f"✅ Found {len(items)} items in API response")
+                        logger.info(f"✅ Found {len(items)} items in API response")
+                        
+                        # Verify first item has image URL
+                        first_item = items[0]
+                        image_url = first_item.get('image')
+                        if image_url:
+                            print(f"✅ First item has image URL: {image_url}")
+                            logger.info(f"✅ First item has image URL: {image_url}")
+                            
+                            # Test image URL accessibility
+                            try:
+                                img_response = await client.get(image_url, timeout=10.0)
+                                if img_response.status_code == 200:
+                                    content_type = img_response.headers.get('content-type', '')
+                                    content_length = img_response.headers.get('content-length', '0')
+                                    
+                                    if 'image' in content_type.lower():
+                                        print(f"✅ Image URL is valid! Content-Type: {content_type}, Size: {content_length} bytes")
+                                        logger.info(f"✅ Image URL is valid! Content-Type: {content_type}, Size: {content_length} bytes")
+                                    else:
+                                        print(f"⚠️ URL returns non-image content: {content_type}")
+                                        logger.warning(f"⚠️ URL returns non-image content: {content_type}")
+                                else:
+                                    print(f"⚠️ Image URL returned status code {img_response.status_code}")
+                                    logger.warning(f"⚠️ Image URL returned status code {img_response.status_code}")
+                            except Exception as img_err:
+                                print(f"⚠️ Failed to validate image URL: {img_err}")
+                                logger.warning(f"⚠️ Failed to validate image URL: {img_err}")
+                        else:
+                            print("⚠️ First item has no image URL!")
+                            logger.warning("⚠️ First item has no image URL!")
+                    else:
+                        print("⚠️ No items found in test API response")
+                        logger.warning("⚠️ No items found in test API response")
+                        
                 except json.JSONDecodeError:
                     logger.error("API key test: Successful status code (200) but failed to decode JSON response.")
                     print("Error decoding JSON response from API key test.")
@@ -939,14 +979,84 @@ async def _test_main():
                     
                     logger.info(f"Product: '{product_name}' -> Matched: '{matched_name}' (Price: {price})")
                     
-                    # Print image info if available
+                    # Enhanced image validation
                     if 'image_data' in result and isinstance(result['image_data'], dict):
                         img_path = result['image_data'].get('local_path', 'No local path')
                         img_url = result['image_data'].get('url', 'No URL')
                         logger.info(f"  Image path: {img_path}")
                         logger.info(f"  Image URL: {img_url}")
+                        
+                        # Validate downloaded image exists
+                        if os.path.exists(img_path):
+                            try:
+                                img_size = os.path.getsize(img_path)
+                                print(f"✅ Downloaded image exists: {img_path} ({img_size} bytes)")
+                                logger.info(f"✅ Downloaded image exists: {img_path} ({img_size} bytes)")
+                                
+                                # Validate image can be opened with PIL
+                                try:
+                                    with Image.open(img_path) as img:
+                                        width, height = img.size
+                                        print(f"✅ Image is valid: {width}x{height} pixels, format: {img.format}")
+                                        logger.info(f"✅ Image is valid: {width}x{height} pixels, format: {img.format}")
+                                except Exception as img_err:
+                                    print(f"⚠️ Downloaded image cannot be opened: {img_err}")
+                                    logger.warning(f"⚠️ Downloaded image cannot be opened: {img_err}")
+                            except Exception as os_err:
+                                print(f"⚠️ Error checking image file: {os_err}")
+                                logger.warning(f"⚠️ Error checking image file: {os_err}")
+                        else:
+                            print(f"⚠️ Downloaded image file not found: {img_path}")
+                            logger.warning(f"⚠️ Downloaded image file not found: {img_path}")
+                    else:
+                        print(f"⚠️ No image data for product: {product_name}")
+                        logger.warning(f"⚠️ No image data for product: {product_name}")
                 else:
                     logger.info(f"Result {idx+1} is not a dictionary: {type(result)}")
+            
+            # Additional validation: Check original image URLs are accessible
+            print("\n--- Validating original image URLs ---")
+            logger.info("--- Validating original image URLs ---")
+            
+            async with aiohttp.ClientSession() as session:
+                image_validation_tasks = []
+                
+                for idx, result in enumerate(result_list[:3]):  # Test first 3 for speed
+                    if isinstance(result, dict) and 'image_url' in result and result['image_url']:
+                        image_url = result['image_url']
+                        product_name = result.get('original_product_name', f'Product {idx+1}')
+                        
+                        async def validate_image_url(url, product):
+                            try:
+                                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                                    status = response.status
+                                    content_type = response.headers.get('content-type', '')
+                                    
+                                    if status == 200 and 'image' in content_type.lower():
+                                        content_length = response.headers.get('content-length', 'unknown')
+                                        print(f"✅ Image URL valid for '{product}': {url} ({content_type}, {content_length} bytes)")
+                                        logger.info(f"✅ Image URL valid for '{product}': {url} ({content_type}, {content_length} bytes)")
+                                        return True
+                                    else:
+                                        print(f"⚠️ Image URL issue for '{product}': Status {status}, Content-Type: {content_type}")
+                                        logger.warning(f"⚠️ Image URL issue for '{product}': Status {status}, Content-Type: {content_type}")
+                                        return False
+                            except Exception as e:
+                                print(f"⚠️ Error validating image URL for '{product}': {e}")
+                                logger.warning(f"⚠️ Error validating image URL for '{product}': {e}")
+                                return False
+                        
+                        image_validation_tasks.append(validate_image_url(image_url, product_name))
+                
+                # Execute image validation tasks
+                if image_validation_tasks:
+                    image_validation_results = await asyncio.gather(*image_validation_tasks, return_exceptions=True)
+                    valid_urls = sum(1 for res in image_validation_results if res is True)
+                    print(f"Image URL validation: {valid_urls}/{len(image_validation_tasks)} URLs are valid")
+                    logger.info(f"Image URL validation: {valid_urls}/{len(image_validation_tasks)} URLs are valid")
+                else:
+                    print("No image URLs to validate")
+                    logger.warning("No image URLs to validate")
         else:
             logger.error(f"Unexpected result type: {type(result_list)}")
     
