@@ -1683,59 +1683,27 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
 
 # --- Refactored Data Finalization ---
 def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Finalizes the DataFrame for Excel output: Renames columns, ensures all required columns exist,
-    sets the final column order, and applies basic type formatting.
-    Assumes image data (paths or dicts) is already present.
-    """
-    if df is None:
-        logger.error("Input DataFrame is None, cannot finalize.")
-        # Return empty df with correct columns to avoid downstream errors
-        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
-
-    logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
-    logger.debug(f"Input columns: {df.columns.tolist()}")
-    
-    # Check for duplicate column names - this can cause the 'dtype' error
+    """Finalize DataFrame for Excel output with proper column handling and data validation"""
+    # Step 1: Handle duplicate columns
     duplicate_cols = df.columns[df.columns.duplicated()].tolist()
     if duplicate_cols:
         logger.warning(f"Found {len(duplicate_cols)} duplicate column names: {duplicate_cols}")
         # Create a new DataFrame with deduplicated columns
-        # For each duplicate, keep only the first instance
         unique_cols = []
-        
         for col in df.columns:
-            if col in unique_cols:
-                # Skip this column as we already have it
-                continue
-            unique_cols.append(col)
-        
-        # Create new DataFrame with only unique columns
+            if col not in unique_cols:
+                unique_cols.append(col)
         df = df[unique_cols]
         logger.info(f"Removed duplicate columns. New shape: {df.shape}")
     
-    # Step 1: Create a new DataFrame to avoid modifying the original
+    # Step 2: Create a new DataFrame to avoid modifying the original
     df_final = df.copy()
     
-    # Step 2: Rename columns to the target names
+    # Step 3: Rename columns to the target names
     df_final = df_final.rename(columns=COLUMN_RENAME_MAP, errors='ignore')
     logger.debug(f"Columns after rename: {df_final.columns.tolist()}")
     
-    # FIXED: Debug logging for Kogift price data
-    logger.info("Checking Kogift price data before column processing:")
-    kogift_price_col = '판매단가(V포함)(2)'
-    if kogift_price_col in df_final.columns:
-        price_count = df_final[kogift_price_col].notnull().sum()
-        logger.info(f"Found {price_count} non-null values in '{kogift_price_col}' column")
-        
-        # Log a few sample values
-        if price_count > 0:
-            sample_values = df_final[kogift_price_col].head(3).tolist()
-            logger.info(f"Sample Kogift price values: {sample_values}")
-    else:
-        logger.warning(f"Column '{kogift_price_col}' not found in dataframe!")
-    
-    # Step 3: Create an output DataFrame with columns in the proper order
+    # Step 4: Create an output DataFrame with columns in the proper order
     output_df = pd.DataFrame()
     
     # Identify which columns in the final_order exist in the input
@@ -1746,152 +1714,51 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     if missing_cols:
         logger.warning(f"The following columns from FINAL_COLUMN_ORDER are missing: {missing_cols}")
     
-    # Copy data from original to new dataframe
+    # Step 5: Copy data from original to new dataframe with proper handling
     for col in available_cols:
         try:
-            output_df[col] = df_final[col]
+            # Special handling for image columns
+            if col in ['본사 이미지', '네이버 이미지']:
+                # Ensure we're copying a single column, not a DataFrame
+                if isinstance(df_final[col], pd.DataFrame):
+                    logger.warning(f"Column '{col}' is a DataFrame, taking first column only")
+                    output_df[col] = df_final[col].iloc[:, 0]
+                else:
+                    output_df[col] = df_final[col]
+            else:
+                output_df[col] = df_final[col]
         except Exception as e:
             logger.error(f"Error copying column '{col}' during finalization: {e}")
-            output_df[col] = None # Add empty column on error
-
-    # Step 4: Add missing columns with empty values
+            output_df[col] = None  # Add empty column on error
+    
+    # Step 6: Add missing columns with empty values
     for col in FINAL_COLUMN_ORDER:
         if col not in output_df.columns:
-            output_df[col] = None # Add missing column with None values
+            output_df[col] = None
             logger.debug(f"Added missing column '{col}' with None values")
     
-    # FIXED: Ensure the Kogift price column exists and has data copied correctly
-    # First, check for the specific price column again:
-    if kogift_price_col in df_final.columns and kogift_price_col in output_df.columns:
-        # Explicitly copy the price column data again to ensure it's not lost
-        output_df[kogift_price_col] = df_final[kogift_price_col]
-        logger.info(f"Explicitly copied '{kogift_price_col}' data to ensure preservation")
-        
-        # Verify the copy worked
-        kogift_price_count_after = output_df[kogift_price_col].notnull().sum()
-        logger.info(f"After explicit copy: {kogift_price_count_after} non-null values in '{kogift_price_col}'")
+    # Step 7: Apply numeric formatting to price columns
+    price_columns = ['판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)', 
+                    '가격차이(2)', '가격차이(2)(%)', '가격차이(3)', '가격차이(3)(%)']
     
-    # FIXED: Special handling for price columns to avoid data loss
-    # Check for alternate column names that might hold price data
-    price_alternates = {
-        '판매가(V포함)(2)': ['판매단가2(VAT포함)', '판매단가(V포함)(2)', '고려가격', '고려기프트판매가'], # Added original processing name
-        '판매단가(V포함)(3)': ['판매단가3 (VAT포함)', '판매단가(V포함)(3)', '네이버가격', '네이버판매가'] # Added original processing name
-    }
-
-    logger.info("Checking for and consolidating data from alternate price columns...")
-    for target_col, alt_cols in price_alternates.items():
-        if target_col in output_df.columns:
-            # Count valid data points in the target column currently
-            target_valid_count = output_df[target_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
-            logger.debug(f"Target '{target_col}' currently has {target_valid_count} valid entries.")
-
-            # Check each alternate column found in the *renamed* df_final
-            best_alt_col = None
-            best_alt_count = target_valid_count # Start with current count
-
-            for alt_col_potential in alt_cols:
-                # Check if this alternate exists *after renaming*
-                if alt_col_potential in df_final.columns:
-                    alt_valid_count = df_final[alt_col_potential].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
-                    logger.debug(f"  Checking alternate '{alt_col_potential}': Found {alt_valid_count} valid entries.")
-                    # If this alternate has more valid data, consider it
-                    if alt_valid_count > best_alt_count:
-                        best_alt_count = alt_valid_count
-                        best_alt_col = alt_col_potential
-
-            # If a better alternate was found, copy its data to the target column
-            if best_alt_col:
-                logger.info(f"Found better data in alternate column '{best_alt_col}' ({best_alt_count} valid). Copying to '{target_col}'.")
-                # Ensure the source column exists before copying
-                if best_alt_col in df_final.columns:
-                     # Copy data, converting potential errors during copy
-                     try:
-                          output_df[target_col] = pd.to_numeric(df_final[best_alt_col], errors='coerce')
-                     except Exception as copy_err:
-                          logger.error(f"Error coercing/copying from {best_alt_col} to {target_col}: {copy_err}")
-                          # Fallback: copy raw data if numeric conversion fails
-                          output_df[target_col] = df_final[best_alt_col]
-                else:
-                     logger.warning(f"Attempted to copy from non-existent column '{best_alt_col}'")
-
-    # Step 5: Format numeric columns (Ensure this runs AFTER alternate consolidation)
-    # Get image columns for exclusion from numeric formatting
-    image_cols = [col for col in output_df.columns if col in IMAGE_COLUMNS]
-
-    logger.info("Applying numeric formatting to relevant columns...")
-    for col in output_df.columns:
-        # Skip image columns
-        if col in image_cols:
-            continue
-
-        # Check if column should be numeric (Prices, Quantities, Differences)
-        # Use final column names here
-        is_numeric_col = (
-            col in PRICE_COLUMNS or
-            col in QUANTITY_COLUMNS or
-            col in PERCENTAGE_COLUMNS or
-            col in ['가격차이(2)', '가격차이(3)'] # Explicitly include difference columns
-        )
-
-        if is_numeric_col:
-            # Log before conversion
-            pre_conversion_sample = output_df[col].head(3).tolist()
-            pre_conversion_dtype = output_df[col].dtype
-            logger.debug(f"Converting column '{col}' (dtype: {pre_conversion_dtype}, sample: {pre_conversion_sample}) to numeric.")
-
+    for col in price_columns:
+        if col in output_df.columns:
             try:
-                # Store original data before attempting conversion
-                original_data = output_df[col].copy()
-                
-                # Attempt conversion to numeric, coercing errors to NaN
+                # Convert to numeric, coercing errors to NaN
                 output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
-                
-                # Log after conversion
-                post_conversion_sample = output_df[col].head(3).tolist()
-                post_conversion_dtype = output_df[col].dtype
-                nan_count = output_df[col].isna().sum()
-                logger.debug(f"  -> Post-conversion '{col}' (dtype: {post_conversion_dtype}, sample: {post_conversion_sample}, NaNs: {nan_count})")
-
-                # If conversion resulted in all NaNs, consider reverting
-                if nan_count == len(output_df[col]):
-                    logger.warning(f"Numeric conversion resulted in all NaN for column '{col}'. Reverting to original data.")
-                    output_df[col] = original_data
-
+                # Replace NaN with '-'
+                output_df[col] = output_df[col].fillna('-')
+                # Count valid entries
+                valid_count = output_df[col].apply(lambda x: x != '-').sum()
+                sample_values = output_df[col].head(3).tolist()
+                logger.info(f"Final check: Column '{col}' has {valid_count} valid entries. Sample: {sample_values}")
             except Exception as e:
-                logger.warning(f"Error converting column '{col}' to numeric: {e}. Keeping original data.")
-                # Optionally revert if needed, but pd.to_numeric usually handles errors well with coerce
-
-    # Step 6: Replace NaN/NaT with None for Excel compatibility
-    output_df = output_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
-
-    # Step 7: Set default values for empty cells ('-' for non-image, handling None)
-    logger.info("Setting default values for empty cells ('-')...")
-    for col in output_df.columns:
-        if col not in image_cols:
-            # Apply '-' default to cells that are None or empty strings after NaN replacement
-            # Ensure we don't overwrite 0 or False
-            output_df[col] = output_df[col].apply(
-                lambda x: '-' if (x is None or x == '') else x
-            )
-
-    # Final verification of key data
+                logger.error(f"Error formatting price column '{col}': {e}")
+    
+    # Step 8: Set default values for empty cells
+    output_df = output_df.fillna('-')
+    
     logger.info(f"DataFrame finalized. Output shape: {output_df.shape}")
-    logger.debug(f"Final columns: {output_df.columns.tolist()}")
-
-    # Final verification of price data
-    for price_col in ['판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)', '가격차이(2)', '가격차이(3)']:
-        if price_col in output_df.columns:
-            try:
-                 # Count non-empty, non-'', non-None values
-                 non_empty_count = output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']).sum()
-                 # Log sample non-empty values if they exist
-                 sample_values = output_df.loc[output_df[price_col].apply(lambda x: pd.notna(x) and x not in ['-', '']), price_col].head(3).tolist()
-                 logger.info(f"Final check: Column '{price_col}' has {non_empty_count} valid entries. Sample: {sample_values}")
-            except Exception as e:
-                 logger.error(f"Error during final check for column '{price_col}': {e}")
-                 logger.info(f"Final check: Column '{price_col}' dtype: {output_df[price_col].dtype}")
-
-
     return output_df
 
 def _apply_basic_excel_formatting(worksheet, column_list):

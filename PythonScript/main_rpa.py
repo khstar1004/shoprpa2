@@ -841,8 +841,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         progress_queue.emit("status", "Output files saved successfully")
                                         if isinstance(upload_path, str) and os.path.exists(upload_path):
                                             progress_queue.emit("final_path", upload_path)
+                                            logging.info(f"Emitting final upload path: {upload_path}")
                                         else:
-                                            logging.warning("Upload path is invalid or does not exist, skipping final_path emit")
+                                            logging.warning(f"Upload path is invalid or does not exist: {upload_path}")
+                                            progress_queue.emit("final_path", "Error: Upload file not found")
                                 else:
                                     logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
                                     if progress_queue:
