@@ -28,6 +28,7 @@ from utils import preprocess_and_download_images
 from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
+from upload_filter import apply_filter_to_upload_excel
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -837,7 +838,23 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.info("Successfully created both Excel files:")
                                     logging.info(f"- Result file (with images): {result_path}")
                                     logging.info(f"- Upload file (links only): {upload_path}")
-                                    
+
+                                    # --- Apply Filter to Upload File (Remove rows with no external data) ---
+                                    try:
+                                        # Check if upload path is valid before filtering
+                                        if upload_path and isinstance(upload_path, str):
+                                            logging.info(f"Applying filter to upload file: {upload_path}")
+                                            filter_applied = apply_filter_to_upload_excel(upload_path, config)
+                                            if filter_applied:
+                                                logging.info("Filter successfully applied to upload file.")
+                                            else:
+                                                logging.warning("Filter could not be applied to the upload file. Proceeding without this filter.")
+                                        else:
+                                            logging.warning(f"Invalid or missing upload path ({upload_path}), skipping upload file filter.")
+                                    except Exception as filter_err:
+                                        logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
+                                    # --- End Apply Filter ---
+
                                     # --- Apply Price Highlighting to Excel files ---
                                     try:
                                         logging.info("Applying price difference highlighting to the generated Excel files...")
