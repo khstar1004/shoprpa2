@@ -126,6 +126,7 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     Filters DataFrame based on two criteria:
     1. Removes rows where both Koreagift and Naver data are missing
     2. Removes rows where price difference is >= -1 for either Koreagift or Naver
+       (keeps only rows where price difference is < -1)
     """
     if df.empty:
         logging.warning("Input DataFrame for upload filtering is empty. Returning empty DataFrame.")
@@ -147,41 +148,44 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     missing_links_mask = is_kogift_missing & is_naver_missing
     
     # --- 2. Filter based on price differences ---
-    # Initialize masks for price difference conditions
-    kogift_price_diff_mask = pd.Series(False, index=df.index)
-    naver_price_diff_mask = pd.Series(False, index=df.index)
+    # Instead of identifying rows to remove, let's identify rows to KEEP
+    # Initialize masks for price difference conditions (rows we want to KEEP)
+    kogift_keep_mask = pd.Series(True, index=df.index)  # Default: keep all rows
+    naver_keep_mask = pd.Series(True, index=df.index)   # Default: keep all rows
     
     # Check Koreagift price difference (if column exists)
     if KOREAGIFT_PRICE_DIFF_COL in df.columns:
         # Convert to numeric, coercing errors to NaN
         kogift_price_diff = pd.to_numeric(df[KOREAGIFT_PRICE_DIFF_COL], errors='coerce')
-        # Find rows where price difference is >= -1 and the link is not missing
-        kogift_price_diff_mask = (kogift_price_diff > -1) & (~is_kogift_missing)
+        # Keep rows where price difference is < -1 OR link is missing
+        kogift_keep_mask = (kogift_price_diff < -1) | is_kogift_missing
         
     # Check Naver price difference (if column exists)
     if NAVER_PRICE_DIFF_COL in df.columns:
         # Convert to numeric, coercing errors to NaN
         naver_price_diff = pd.to_numeric(df[NAVER_PRICE_DIFF_COL], errors='coerce')
-        # Find rows where price difference is >= -1 and the link is not missing
-        naver_price_diff_mask = (naver_price_diff > -1) & (~is_naver_missing)
+        # Keep rows where price difference is < -1 OR link is missing
+        naver_keep_mask = (naver_price_diff < -1) | is_naver_missing
     
-    # Combine all conditions: remove rows with missing links OR positive price differences
-    rows_to_remove_mask = missing_links_mask | kogift_price_diff_mask | naver_price_diff_mask
+    # Combined mask for rows to keep:
+    # 1. Either don't have both links missing AND
+    # 2. Satisfy the price difference criteria for both Koreagift and Naver
+    rows_to_keep_mask = (~missing_links_mask) & kogift_keep_mask & naver_keep_mask
 
-    # Apply the filter using boolean indexing, keeping rows where the condition is FALSE
+    # Apply the filter to keep only the rows we want
     initial_rows = len(df)
-    filtered_df = df[~rows_to_remove_mask].copy()
+    filtered_df = df[rows_to_keep_mask].copy()
     removed_count = initial_rows - len(filtered_df)
     
     # Log the filtering results
     if removed_count > 0:
         logging.info(f"Upload filter: Removed {removed_count} rows total:")
         missing_links_count = missing_links_mask.sum()
-        kogift_price_count = kogift_price_diff_mask.sum()
-        naver_price_count = naver_price_diff_mask.sum()
+        kogift_filtered = len(df) - kogift_keep_mask.sum()
+        naver_filtered = len(df) - naver_keep_mask.sum()
         logging.info(f"  - {missing_links_count} rows with both Koreagift and Naver links missing")
-        logging.info(f"  - {kogift_price_count} rows with Koreagift price difference >= -1")
-        logging.info(f"  - {naver_price_count} rows with Naver price difference >= -1")
+        logging.info(f"  - {kogift_filtered} rows with Koreagift price difference >= -1")
+        logging.info(f"  - {naver_filtered} rows with Naver price difference >= -1")
     else:
         logging.info("Upload filter: No rows removed after applying all filtering criteria.")
 

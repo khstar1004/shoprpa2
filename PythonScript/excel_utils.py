@@ -2124,7 +2124,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
         try:
             col_letter = get_column_letter(col_idx)
             # FIXED: Use larger column width for image columns
-            worksheet.column_dimensions[col_letter].width = 80  # Increased from 60
+            worksheet.column_dimensions[col_letter].width = 85  # Increased from 80
         except Exception as e:
             logger.error(f"Error adjusting column width for {col_name}: {e}")
     
@@ -2172,7 +2172,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     for row_idx in rows_with_images:
         try:
             # FIXED: Set larger row height to accommodate bigger images
-            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
+            worksheet.row_dimensions[row_idx].height = 400  # Increased from 380
             
             # Center-align all cells in this row for better appearance with images
             for col_idx in range(1, worksheet.max_column + 1):

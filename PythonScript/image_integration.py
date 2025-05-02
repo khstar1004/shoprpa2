@@ -11,6 +11,7 @@ import shutil
 import sys
 import re
 import hashlib
+from datetime import datetime
 
 # Import enhanced image matcher
 try:
@@ -1730,51 +1731,293 @@ def create_excel_with_images(df, output_file):
     except Exception as e:
         logging.error(f"엑셀 파일 생성 중 오류 발생: {e}", exc_info=True)
 
+def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Improves the matching between Kogift image URLs and local files.
+    Ensures URLs and downloaded images are properly associated.
+    
+    Args:
+        df: DataFrame with image information
+        
+    Returns:
+        DataFrame with improved Kogift image matching
+    """
+    import os
+    import hashlib
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    logger.info("Starting improved Kogift image matching...")
+    
+    # Define column for Kogift images (both old and new naming standards)
+    kogift_img_columns = ['고려기프트 이미지', '고려기프트(이미지링크)']
+    # Keep only columns that exist in the DataFrame
+    kogift_img_columns = [col for col in kogift_img_columns if col in df.columns]
+    
+    if not kogift_img_columns:
+        logger.warning("No Kogift image columns found in DataFrame.")
+        return df
+        
+    # Get RPA image directory from environment or use default
+    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+    
+    # Create a mapping of URLs to local files
+    url_to_local_map = {}
+    
+    # First, build a database of available Kogift images
+    kogift_images = {}
+    
+    # Scan all potential Kogift image directories
+    kogift_dirs = [
+        os.path.join(base_img_dir, 'Main', 'Kogift'),
+        os.path.join(base_img_dir, 'Main', 'kogift'),
+        os.path.join(base_img_dir, 'Kogift'),
+        os.path.join(base_img_dir, 'kogift'),
+        os.path.join(base_img_dir, 'Target', 'Kogift'),
+        os.path.join(base_img_dir, 'Target', 'kogift')
+    ]
+    
+    logger.info("Scanning Kogift image directories...")
+    for dir_path in kogift_dirs:
+        if os.path.exists(dir_path):
+            logger.info(f"Scanning directory: {dir_path}")
+            try:
+                for file in os.listdir(dir_path):
+                    if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                        full_path = os.path.join(dir_path, file)
+                        
+                        # Store by filename (both with and without kogift_ prefix)
+                        base_name = os.path.basename(file)
+                        kogift_images[base_name] = full_path
+                        
+                        # Handle case where filename starts with kogift_
+                        if base_name.lower().startswith('kogift_'):
+                            # Also store without the prefix for easier matching
+                            no_prefix = base_name[7:]  # Remove 'kogift_'
+                            kogift_images[no_prefix] = full_path
+                        else:
+                            # Also store with prefix added
+                            with_prefix = f"kogift_{base_name}"
+                            kogift_images[with_prefix] = full_path
+                            
+                        # Special handling for shop_ prefix in Kogift URLs
+                        if base_name.lower().startswith('shop_'):
+                            # Store without shop_ prefix
+                            no_shop = base_name[5:]  # Remove 'shop_'
+                            kogift_images[no_shop] = full_path
+                            # Also store with kogift_ but without shop_
+                            kogift_without_shop = f"kogift_{no_shop}"
+                            kogift_images[kogift_without_shop] = full_path
+                        elif 'shop_' in base_name.lower():
+                            # If shop_ is in the middle, add alternative version
+                            alt_version = base_name.lower().replace('shop_', '')
+                            kogift_images[alt_version] = full_path
+            except Exception as e:
+                logger.error(f"Error scanning directory {dir_path}: {e}")
+    
+    logger.info(f"Found {len(kogift_images)} Kogift images on disk")
+    
+    # Process each row that has Kogift image data
+    fixed_count = 0
+    rows_processed = 0
+    
+    for idx, row in df.iterrows():
+        for col in kogift_img_columns:
+            img_data = row[col]
+            if pd.isna(img_data) or img_data == '' or img_data == '-':
+                continue
+                
+            rows_processed += 1
+            url = None
+            local_path = None
+            original_path = None
+            
+            # Handle dictionary format
+            if isinstance(img_data, dict):
+                # Extract URL and paths
+                url = img_data.get('url', '')
+                local_path = img_data.get('local_path', '')
+                original_path = img_data.get('original_path', '')
+                
+                # Check if we have a URL without a valid local_path
+                if url and (not local_path or not os.path.exists(local_path)):
+                    logger.debug(f"Row {idx}: Found Kogift URL without valid local_path: {url[:50]}...")
+                    
+                    # Try to find the local file based on URL
+                    if url.startswith(('http://', 'https://')):
+                        filename = os.path.basename(url)
+                        
+                        # Check if the filename exists in our image database
+                        if filename in kogift_images:
+                            new_local_path = kogift_images[filename]
+                            logger.info(f"Row {idx}: Found direct filename match for Kogift URL: {filename}")
+                            
+                            # Update the dictionary
+                            img_data['local_path'] = new_local_path
+                            df.at[idx, col] = img_data
+                            fixed_count += 1
+                            continue
+                            
+                        # Try extracting product code or ID pattern from URL
+                        # Common patterns in Kogift URLs:
+                        # - mall/shop_PRODUCTNAME.jpg
+                        # - product/PRODUCTCODE.jpg
+                        # - shop_NAME.jpg
+                        if 'mall/shop_' in url:
+                            product_part = url.split('mall/shop_')[1].split('?')[0]
+                            
+                            # Check for this product part in our database
+                            if product_part in kogift_images:
+                                new_local_path = kogift_images[product_part]
+                                logger.info(f"Row {idx}: Found product match via mall/shop_ pattern: {product_part}")
+                                
+                                # Update the dictionary
+                                img_data['local_path'] = new_local_path
+                                df.at[idx, col] = img_data
+                                fixed_count += 1
+                                continue
+                                
+                        # Try hash-based matching if direct matching fails
+                        url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                        hash_patterns = [
+                            f"kogift_{url_hash}.jpg",
+                            f"kogift_{url_hash}.png", 
+                            f"kogift_{url_hash}_nobg.png"
+                        ]
+                        
+                        for pattern in hash_patterns:
+                            if pattern in kogift_images:
+                                new_local_path = kogift_images[pattern]
+                                logger.info(f"Row {idx}: Found match via URL hash pattern: {pattern}")
+                                
+                                # Update the dictionary
+                                img_data['local_path'] = new_local_path
+                                df.at[idx, col] = img_data
+                                fixed_count += 1
+                                break
+                                
+                        # If still not found, try fuzzy matching
+                        best_match = None
+                        highest_similarity = 0
+                        
+                        for img_name, img_path in kogift_images.items():
+                            # Skip if filename is very short (to avoid false matches)
+                            if len(img_name) < 5:
+                                continue
+                                
+                            # Calculate similarity between URL basename and image filename
+                            url_base = os.path.basename(url).lower()
+                            img_base = img_name.lower()
+                            
+                            # Check for partial matches
+                            if url_base[:5] in img_base or img_base[:5] in url_base:
+                                # Calculate similarity score (simplified)
+                                similarity = 0
+                                for i in range(min(len(url_base), len(img_base))):
+                                    if i < len(url_base) and i < len(img_base) and url_base[i] == img_base[i]:
+                                        similarity += 1
+                                
+                                similarity = similarity / max(len(url_base), len(img_base))
+                                
+                                if similarity > highest_similarity:
+                                    highest_similarity = similarity
+                                    best_match = img_path
+                        
+                        # If we found a reasonably good match
+                        if best_match and highest_similarity > 0.4:
+                            logger.info(f"Row {idx}: Found fuzzy match with similarity {highest_similarity:.2f}: {os.path.basename(best_match)}")
+                            
+                            # Update the dictionary
+                            img_data['local_path'] = best_match
+                            df.at[idx, col] = img_data
+                            fixed_count += 1
+            
+            # Handle string format (URL or path)
+            elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
+                url = img_data
+                
+                # Try to find local file based on URL
+                filename = os.path.basename(url)
+                
+                # Check if the filename exists in our image database
+                if filename in kogift_images:
+                    new_local_path = kogift_images[filename]
+                    logger.info(f"Row {idx}: Found direct filename match for Kogift URL string: {filename}")
+                    
+                    # Create a dictionary format
+                    df.at[idx, col] = {
+                        'url': url,
+                        'local_path': new_local_path,
+                        'source': 'kogift'
+                    }
+                    fixed_count += 1
+                    continue
+                    
+                # Try hash-based matching
+                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                hash_patterns = [
+                    f"kogift_{url_hash}.jpg",
+                    f"kogift_{url_hash}.png", 
+                    f"kogift_{url_hash}_nobg.png"
+                ]
+                
+                for pattern in hash_patterns:
+                    if pattern in kogift_images:
+                        new_local_path = kogift_images[pattern]
+                        logger.info(f"Row {idx}: Found match via URL hash pattern for string URL: {pattern}")
+                        
+                        # Create a dictionary format
+                        df.at[idx, col] = {
+                            'url': url,
+                            'local_path': new_local_path,
+                            'source': 'kogift'
+                        }
+                        fixed_count += 1
+                        break
+    
+    logger.info(f"Kogift image matching completed. Processed {rows_processed} rows, fixed {fixed_count} image links.")
+    return df
+
 def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
                             save_excel_output=False) -> pd.DataFrame:
     """
-    이미지 통합 및 유사도 기반 이미지 필터링을 순차적으로 수행합니다.
+    Integrates and filters images from all sources, applying all necessary processing.
     
     Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
-        save_excel_output: 결과를 별도의 엑셀 파일로 저장할지 여부 (기본값: False)
-    
+        df: DataFrame with product data
+        config: Configuration settings
+        save_excel_output: Whether to save an Excel output file with images
+        
     Returns:
-        처리된 DataFrame
+        DataFrame with integrated and filtered images
     """
-    try:
-        logging.info("이미지 통합 및 필터링 프로세스 시작...")
-        
-        # 새로운 통합 이미지 함수로 모든 이미지 소스를 한번에 처리
-        result_df = integrate_images(df, config)
-        
-        # --- Add Filtering Step Back In --- 
-        # Apply similarity filtering AFTER integration
-        # This step now correctly skips the Haoreum column
-        logging.info("Applying similarity filtering to integrated images (Kogift/Naver only)...")
-        result_df = filter_images_by_similarity(result_df, config)
-        # ---------------------------------
-        
-        # 필요한 경우에만 결과를 별도의 엑셀 파일로 저장 (이미지 포함)
-        if save_excel_output:
-            try:
-                output_dir = Path(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'))
-                output_dir.mkdir(parents=True, exist_ok=True)
-                output_file = output_dir / "image_integration_results.xlsx"
-                create_excel_with_images(result_df, output_file)
-                logging.info(f"이미지 통합 결과가 별도 파일로 저장되었습니다: {output_file}")
-            except Exception as excel_error:
-                logging.error(f"이미지 통합 결과 엑셀 파일 생성 실패: {excel_error}", exc_info=True)
-                # 엑셀 파일 저장 실패는 전체 처리 실패로 간주하지 않음
-        
-        logging.info("이미지 통합 및 필터링 프로세스 완료!")
-        return result_df
+    logger.info("Integrating and filtering images from all sources...")
     
-    except Exception as e:
-        logging.error(f"이미지 통합 및 필터링 프로세스 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
-        return df
+    # Step 1: Integrate images from all sources
+    df_with_images = integrate_images(df, config)
+    logger.info(f"Image integration completed. DataFrame shape: {df_with_images.shape}")
+    
+    # Step 2: Apply image filtering based on similarity
+    df_filtered = filter_images_by_similarity(df_with_images, config)
+    logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
+    
+    # FIXED: Added step to improve Kogift image matching
+    df_improved = improved_kogift_image_matching(df_filtered)
+    logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_improved.shape}")
+    
+    # Step 3: Save Excel output if requested
+    if save_excel_output:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            excel_output = f"image_integration_result_{timestamp}.xlsx"
+            
+            # Create the Excel file with images
+            create_excel_with_images(df_improved, excel_output)
+            logger.info(f"Created Excel output file with images: {excel_output}")
+        except Exception as e:
+            logger.error(f"Error creating Excel output: {e}")
+    
+    return df_improved
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":
