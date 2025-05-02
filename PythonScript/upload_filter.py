@@ -156,14 +156,14 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         # Convert to numeric, coercing errors to NaN
         kogift_price_diff = pd.to_numeric(df[KOREAGIFT_PRICE_DIFF_COL], errors='coerce')
         # Find rows where price difference is >= -1 and the link is not missing
-        kogift_price_diff_mask = (kogift_price_diff >= -1) & (~is_kogift_missing)
+        kogift_price_diff_mask = (kogift_price_diff > -1) & (~is_kogift_missing)
         
     # Check Naver price difference (if column exists)
     if NAVER_PRICE_DIFF_COL in df.columns:
         # Convert to numeric, coercing errors to NaN
         naver_price_diff = pd.to_numeric(df[NAVER_PRICE_DIFF_COL], errors='coerce')
         # Find rows where price difference is >= -1 and the link is not missing
-        naver_price_diff_mask = (naver_price_diff >= -1) & (~is_naver_missing)
+        naver_price_diff_mask = (naver_price_diff > -1) & (~is_naver_missing)
     
     # Combine all conditions: remove rows with missing links OR positive price differences
     rows_to_remove_mask = missing_links_mask | kogift_price_diff_mask | naver_price_diff_mask

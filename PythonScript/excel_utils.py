@@ -1440,14 +1440,41 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                 
                                 # Try to reconstruct URL based on source
                                 if source == 'haereum' or source == 'haoreum':
+                                    # Try to extract product code from path if available
+                                    product_code = None
+                                    if 'original_path' in img_value and isinstance(img_value['original_path'], str):
+                                        path = img_value['original_path']
+                                        # Look for product code pattern (e.g., BBCA0009349, CCBK0001873)
+                                        code_match = re.search(r'([A-Z]{4}\d{7})', path)
+                                        if code_match:
+                                            product_code = code_match.group(1)
+                                            
+                                    # Use p_idx if available (highest priority)
                                     if 'p_idx' in img_value:
-                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{img_value['p_idx']}.gif"
-                                        logger.debug(f"Generated URL for Haereum image based on p_idx: {img_value['url']}")
+                                        product_code = img_value['p_idx']
+                                    
+                                    if product_code:
+                                        # Try multiple extensions with proper suffix (typically 's')
+                                        extensions = ['.jpg', '.png', '.gif']
+                                        # Default suffix (usually 's' for small image)
+                                        suffix = 's'
+                                        
+                                        # Extract suffix from path if possible
+                                        if 'original_path' in img_value:
+                                            suffix_match = re.search(r'([A-Z]{4}\d{7})(.*?)(\.[a-z]+)$', str(img_value['original_path']))
+                                            if suffix_match and suffix_match.group(2):
+                                                suffix = suffix_match.group(2)
+                                        
+                                        # Generate URL with the first extension (could be enhanced to verify actual existence)
+                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{product_code}{suffix}{extensions[0]}"
+                                        logger.debug(f"Generated URL for Haereum image based on product code: {img_value['url']}")
                                     elif 'product_name' in img_value:
-                                        # Fallback to product name for URL
+                                        # Fallback to product name for URL (try multiple extensions)
                                         product_name = img_value['product_name']
                                         clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
-                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{clean_name}.gif"
+                                        # Try various extensions with priority
+                                        extensions = ['.jpg', '.png', '.gif']
+                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{clean_name}{extensions[0]}"
                                         logger.debug(f"Generated fallback URL for Haereum image based on name: {img_value['url']}")
                                 elif source == 'kogift':
                                     if 'original_path' in img_value and isinstance(img_value['original_path'], str):
@@ -1455,12 +1482,34 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         if 'upload' in orig_path:
                                             parts = orig_path.split('upload/')
                                             if len(parts) > 1:
+                                                # Preserve the original file extension if present
                                                 img_value['url'] = f"https://koreagift.com/ez/upload/{parts[1]}"
                                                 logger.debug(f"Generated URL for Kogift image based on path: {img_value['url']}")
+                                        else:
+                                            # Try to extract product code or ID
+                                            code_match = re.search(r'kogift_(.*?)_[a-f0-9]{8,}', orig_path)
+                                            if code_match:
+                                                product_name = code_match.group(1)
+                                                # Try various extensions
+                                                extensions = ['.jpg', '.png', '.gif']
+                                                img_value['url'] = f"https://koreagift.com/ez/upload/mall/shop_{product_name}{extensions[0]}"
+                                                logger.debug(f"Generated alternative URL for Kogift image: {img_value['url']}")
                                 elif source == 'naver':
                                     if 'product_id' in img_value:
-                                        img_value['url'] = f"https://shopping-phinf.pstatic.net/main_{img_value['product_id']}/{img_value['product_id']}.jpg"
+                                        # Try multiple extensions for Naver images
+                                        extensions = ['.jpg', '.png', '.gif']
+                                        img_value['url'] = f"https://shopping-phinf.pstatic.net/main_{img_value['product_id']}/{img_value['product_id']}{extensions[0]}"
                                         logger.debug(f"Generated URL for Naver image based on product_id: {img_value['url']}")
+                                    elif 'original_path' in img_value and isinstance(img_value['original_path'], str):
+                                        # Try to extract product ID from path
+                                        path = img_value['original_path']
+                                        id_match = re.search(r'naver_(.*?)_[a-f0-9]{8,}', path)
+                                        if id_match:
+                                            product_name = id_match.group(1)
+                                            # Generate a URL based on product name (less reliable)
+                                            extensions = ['.jpg', '.png', '.gif']
+                                            img_value['url'] = f"https://shopping-phinf.pstatic.net/front/{product_name}{extensions[0]}"
+                                            logger.debug(f"Generated fallback URL for Naver image: {img_value['url']}")
                                 
                             # Now check if we have a local path to add the image
                             if 'local_path' in img_value:
