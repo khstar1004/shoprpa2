@@ -21,7 +21,8 @@ from data_processing import process_input_file, filter_results, format_product_d
 from excel_utils import (
     create_split_excel_outputs,
     find_excel_file,
-    finalize_dataframe_for_excel
+    finalize_dataframe_for_excel,
+    IMAGE_COLUMNS
 )
 from crawling_logic import crawl_all_sources
 from utils import preprocess_and_download_images
@@ -677,10 +678,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if not integrated_df.empty:
                         logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
                         # Explicitly check image column sample data
-                        from excel_utils import IMAGE_COLUMNS # Import IMAGE_COLUMNS for logging
-                        img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
-                        if img_cols_to_log:
-                             logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
+                        if IMAGE_COLUMNS:
+                            img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
+                            if img_cols_to_log:
+                                 logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
 
 
                 except Exception as e:

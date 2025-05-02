@@ -13,6 +13,9 @@ import re
 import hashlib
 from datetime import datetime
 
+# Initialize logger
+logger = logging.getLogger(__name__)
+
 # Import enhanced image matcher
 try:
     from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
