@@ -22,6 +22,7 @@ import tempfile
 import requests
 from typing import Optional
 import numpy as np
+import json
 
 # Check Python/PIL version for proper resampling constant
 try:
@@ -1238,12 +1239,81 @@ def safe_excel_operation(func):
 
 # --- Main Public Function --- #
 
+def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flatten any nested dictionaries in image data structures to prevent Excel conversion errors.
+    """
+    df_result = df.copy()
+    
+    # Define image-related columns (can be customized)
+    image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', '해오름 이미지 URL']
+    # Add any columns that might contain image data
+    image_cols.extend([col for col in df.columns if '이미지' in col])
+    # Remove duplicates while preserving order
+    image_cols = list(dict.fromkeys(image_cols))
+    
+    # Only process columns that actually exist in the dataframe
+    image_cols = [col for col in image_cols if col in df.columns]
+    
+    if not image_cols:
+        return df_result  # No processing needed
+    
+    for col in image_cols:
+        for idx in df_result.index:
+            value = df_result.loc[idx, col]
+            
+            # Process dictionaries
+            if isinstance(value, dict):
+                # Handle nested URL
+                if 'url' in value and isinstance(value['url'], dict):
+                    if 'url' in value['url']:
+                        value['original_nested_url'] = value['url']  # Save original for reference
+                        value['url'] = value['url']['url']  # Extract the inner URL
+                
+                # Ensure all dictionary values are strings if needed
+                for k, v in list(value.items()):
+                    if isinstance(v, dict):
+                        value[k] = str(v)
+            
+            # Process the special case where the entire cell is a URL dict
+            elif isinstance(value, str) and value.startswith('{') and value.endswith('}'):
+                try:
+                    # Try to parse as JSON (though this is rarely the issue)
+                    import json
+                    json_value = json.loads(value.replace("'", '"'))
+                    if isinstance(json_value, dict) and 'url' in json_value:
+                        df_result.at[idx, col] = json_value['url']
+                except:
+                    # If parsing fails, just keep the original
+                    pass
+    
+    return df_result
+
+
+@safe_excel_operation
 def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str) -> tuple:
     """
-    Creates two Excel outputs:
-    1. Result file (with images embedded)
-    2. Upload file (with image links only)
+    Create two Excel files:
+    1. Result file: With images, for viewing
+    2. Upload file: URL links only, for uploading to systems
+
+    Args:
+        df_finalized: The finalized DataFrame with all data
+        output_path_base: The base path for output files
+
+    Returns:
+        tuple: (result_file_path, upload_file_path)
     """
+    # Ensure we have valid data
+    if df_finalized is None or df_finalized.empty:
+        logger.error("No data to write to Excel. DataFrame is empty or None.")
+        return None, None
+
+    # Flatten any nested image dictionaries to prevent Excel conversion errors
+    df_finalized = flatten_nested_image_dicts(df_finalized)
+    
+    logger.info(f"Starting creation of split Excel outputs from finalized DataFrame (Shape: {df_finalized.shape})")
+    
     # Default return values (used in case of error)
     result_path = None
     result_success = False
@@ -1354,7 +1424,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                     if isinstance(value, dict):
                         # For dictionary values, store just the URL to make Excel happy
                         if 'url' in value:
-                            df_for_excel.at[idx, col] = value['url']
+                            # Handle case where url itself is a dictionary (nested dict)
+                            if isinstance(value['url'], dict) and 'url' in value['url']:
+                                df_for_excel.at[idx, col] = value['url']['url']
+                            else:
+                                df_for_excel.at[idx, col] = value['url']
                         else:
                             # Just convert to string representation if no URL
                             df_for_excel.at[idx, col] = str(value)
@@ -1363,7 +1437,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         for item in value:
                             if pd.notna(item) and item not in ['-', '']:
                                 if isinstance(item, dict) and 'url' in item:
-                                    df_for_excel.at[idx, col] = item['url']
+                                    # Handle case where url itself is a dictionary (nested dict)
+                                    if isinstance(item['url'], dict) and 'url' in item['url']:
+                                        df_for_excel.at[idx, col] = item['url']['url']
+                                    else:
+                                        df_for_excel.at[idx, col] = item['url']
                                 else:
                                     df_for_excel.at[idx, col] = str(item)
                                 break
@@ -1428,15 +1506,24 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                 not isinstance(img_value['url'], str) or
                                 not img_value['url'].startswith(('http://', 'https://'))):
                                 
-                                # Determine the source based on column name or image data
-                                source = img_value.get('source', '').lower()
-                                if not source:
-                                    if '본사' in img_col:
-                                        source = 'haereum'
-                                    elif '고려' in img_col:
-                                        source = 'kogift'
-                                    elif '네이버' in img_col:
-                                        source = 'naver'
+                                # Handle case where url is a nested dictionary
+                                if isinstance(img_value.get('url'), dict) and 'url' in img_value['url'] and isinstance(img_value['url']['url'], str):
+                                    img_value['url'] = img_value['url']['url']
+                                
+                                # Continue with regular processing if URL is still invalid
+                                if ('url' not in img_value or not img_value['url'] or 
+                                    not isinstance(img_value['url'], str) or
+                                    not img_value['url'].startswith(('http://', 'https://'))):
+                                
+                                    # Determine the source based on column name or image data
+                                    source = img_value.get('source', '').lower()
+                                    if not source:
+                                        if '본사' in img_col:
+                                            source = 'haereum'
+                                        elif '고려' in img_col:
+                                            source = 'kogift'
+                                        elif '네이버' in img_col:
+                                            source = 'naver'
                                 
                                 # Try to reconstruct URL based on source
                                 if source == 'haereum' or source == 'haoreum':
