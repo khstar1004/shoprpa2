@@ -746,55 +746,27 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             if haereum_match:
                 haereum_path, haereum_score = haereum_match
                 img_path = haereum_images[haereum_path]['path']
-                # Get original web URL from the DataFrame
-                web_url_col_name = assumed_url_cols['haereum']
-                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
                 
-                # Always prioritize web URLs over file URLs
-                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
-                    # Try to find a better URL from other available columns
-                    for alt_col in ['본사상품링크']:
-                        if alt_col in row_data and isinstance(row_data[alt_col], str) and row_data[alt_col].startswith(('http://', 'https://')):
-                            web_url = row_data[alt_col]
-                            logging.debug(f"Row {idx}: Using alternative URL from {alt_col} for Haereum")
-                            break
-                    
-                    # If still no web URL, only then use file URL as last resort
-                    if not web_url or not web_url.startswith(('http://', 'https://')):
-                        logging.debug(f"Row {idx}: Using fallback file URL for Haereum (No valid web URL found)")
-                        web_url = f"file:///{str(img_path).replace(os.sep, '/')}"
+                # --- Get original web URL if already present in input data ---
+                existing_img_data = row_data.get(target_col_haereum)
+                web_url = None
+                if isinstance(existing_img_data, dict):
+                    potential_url = existing_img_data.get('url')
+                    # Check if it's a string and looks like a web URL
+                    if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                         web_url = potential_url # Found existing web URL
+                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Haereum: {web_url[:60]}...")
                 
-                # IMPROVED: Try to create a proper image URL for Haereum
-                image_url = web_url
-                try:
-                    # Extract product code if possible (for Haereum, typically XXXX00000000 format)
-                    file_name = os.path.basename(str(img_path))
-                    code_match = re.search(r'([A-Z]{4}\d+)(?:s)?(?:_\d+)?(?:\.)', file_name)
-                    if code_match:
-                        product_code = code_match.group(1)
-                        # Construct direct image URL with proper Haereum format
-                        direct_image_url = f"https://www.jclgift.com/upload/product/simg3/{product_code}s.jpg"
-                        image_url = direct_image_url
-                        logging.debug(f"Row {idx}: Created direct Haereum image URL: {image_url}")
-                    # If code isn't found in filename but URL contains p_idx
-                    elif web_url and 'jclgift.com' in web_url and 'p_idx=' in web_url:
-                        p_idx_match = re.search(r'p_idx=(\d+)', web_url)
-                        if p_idx_match:
-                            p_idx = p_idx_match.group(1)
-                            # Try common brand prefixes
-                            for prefix in ['EEDA', 'DDAC', 'BBCA', 'GGBJ', 'AAZZ', 'CCAA']:
-                                # Use first prefix as fallback
-                                direct_image_url = f"https://www.jclgift.com/upload/product/simg3/{prefix}{p_idx.zfill(8)}s.jpg"
-                                image_url = direct_image_url
-                                break
-                except Exception as e:
-                    logging.warning(f"Row {idx}: Error creating direct image URL: {e}")
+                # If no valid web URL found in existing data, use empty string
+                if not web_url:
+                     logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Haereum ({target_col_haereum}). URL will be empty.")
+                     web_url = "" # Use empty string instead of product link
+                # --- End URL handling ---
                 
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'haereum',
-                    'url': web_url, # Store the web URL (or fallback file URL)
-                    'image_url': image_url, # NEW: Store direct image URL separately
+                    'url': web_url, # Store the preserved or empty URL
                     'original_path': str(img_path), # Keep original local path info if needed
                     'score': haereum_score,
                     'product_name': product_names[idx] # 상품명 추가
@@ -803,7 +775,10 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             else:
                  # Ensure the column exists before assigning (this check might become redundant now, but harmless)
                  if target_col_haereum in result_df.columns:
-                     result_df.loc[idx, target_col_haereum] = '-' # Use consistent placeholder
+                     # If no match found by integrate_images, keep existing data or set to '-'
+                     existing_data = result_df.loc[idx, target_col_haereum]
+                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
+                          result_df.loc[idx, target_col_haereum] = '-' # Use consistent placeholder
                  else:
                      # This case should theoretically not happen anymore after the initial column addition
                      logging.warning(f"Target column '{target_col_haereum}' unexpectedly not found at index {idx} during else block.")
@@ -813,51 +788,27 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             if kogift_match:
                 kogift_path, kogift_score = kogift_match
                 img_path = kogift_images[kogift_path]['path']
-                # Get original web URL
-                web_url_col_name = assumed_url_cols['kogift']
-                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
                 
-                # Always prioritize web URLs over file URLs
-                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
-                    # Try to find a better URL from other available columns
-                    for alt_col in ['고려기프트 상품링크']:
-                        if alt_col in row_data and isinstance(row_data[alt_col], str) and row_data[alt_col].startswith(('http://', 'https://')):
-                            web_url = row_data[alt_col]
-                            logging.debug(f"Row {idx}: Using alternative URL from {alt_col} for Kogift")
-                            break
-                            
-                    # If still no web URL, only then use file URL as last resort
-                    if not web_url or not web_url.startswith(('http://', 'https://')):
-                        logging.debug(f"Row {idx}: Using fallback file URL for Kogift (No valid web URL found)")
-                        web_url = f"file:///{str(img_path).replace(os.sep, '/')}"
+                # --- Get original web URL if already present in input data ---
+                existing_img_data = row_data.get(target_col_kogift)
+                web_url = None
+                if isinstance(existing_img_data, dict):
+                    potential_url = existing_img_data.get('url')
+                    # Check if it's a string and looks like a web URL
+                    if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                         web_url = potential_url # Found existing web URL
+                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Kogift: {web_url[:60]}...")
                 
-                # IMPROVED: Try to create a proper image URL for Kogift
-                image_url = web_url
-                try:
-                    # Try to extract shop ID from filename (typical format: kogift_shop_12345_0.jpg)
-                    file_name = os.path.basename(str(img_path))
-                    shop_match = re.search(r'shop_(\d+)(?:_\d+)?\.', file_name)
-                    if shop_match:
-                        shop_id = shop_match.group(1)
-                        # Construct direct image URL with proper Kogift format
-                        direct_image_url = f"https://koreagift.com/ez/upload/mall/shop_{shop_id}.jpg"
-                        image_url = direct_image_url
-                        logging.debug(f"Row {idx}: Created direct Kogift image URL: {image_url}")
-                    # If no shop ID in filename but URL contains 'no='
-                    elif web_url and 'koreagift.com' in web_url:
-                        no_match = re.search(r'[?&]no=(\d+)', web_url)
-                        if no_match:
-                            no_id = no_match.group(1)
-                            direct_image_url = f"https://koreagift.com/ez/upload/mall/shop_{no_id}_0.jpg"
-                            image_url = direct_image_url
-                except Exception as e:
-                    logging.warning(f"Row {idx}: Error creating direct Kogift image URL: {e}")
+                # If no valid web URL found in existing data, use empty string
+                if not web_url:
+                     logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Kogift ({target_col_kogift}). URL will be empty.")
+                     web_url = "" # Use empty string instead of product link
+                # --- End URL handling ---
                 
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'kogift',
-                    'url': web_url,
-                    'image_url': image_url, # NEW: Store direct image URL separately
+                    'url': web_url, # Store the preserved or empty URL
                     'original_path': str(img_path),
                     'score': kogift_score,
                     'product_name': product_names[idx] # 상품명 추가
@@ -867,7 +818,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 if not os.path.exists(img_path):
                     logging.warning(f"Row {idx}: Kogift image file does not exist at path: {img_path}")
                     # Try to find the image in a different location
-                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\\\RPA\\\\Image')
                     filename = os.path.basename(img_path)
                     
                     # Search for the file in various possible locations
@@ -905,7 +856,10 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
                  if target_col_kogift in result_df.columns:
-                     result_df.loc[idx, target_col_kogift] = '-'
+                     # If no match found by integrate_images, keep existing data or set to '-'
+                     existing_data = result_df.loc[idx, target_col_kogift]
+                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
+                          result_df.loc[idx, target_col_kogift] = '-'
                  else:
                      # This case should theoretically not happen anymore
                      logging.warning(f"Target column '{target_col_kogift}' unexpectedly not found at index {idx} during else block.")
@@ -915,62 +869,27 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             if naver_match:
                 naver_path, naver_score = naver_match
                 img_path = naver_images[naver_path]['path']
-                 # Get original web URL
-                web_url_col_name = assumed_url_cols['naver']
-                web_url = row_data.get(web_url_col_name, '') if web_url_col_name in row_data else ''
                 
-                # Always prioritize web URLs over file URLs
-                if not isinstance(web_url, str) or not web_url.startswith(('http://', 'https://')):
-                    # Try to find a better URL from other available columns
-                    for alt_col in ['네이버 쇼핑 링크']:
-                        if alt_col in row_data and isinstance(row_data[alt_col], str) and row_data[alt_col].startswith(('http://', 'https://')):
-                            web_url = row_data[alt_col]
-                            logging.debug(f"Row {idx}: Using alternative URL from {alt_col} for Naver")
-                            break
-                            
-                    # If still no web URL, only then use file URL as last resort
-                    if not web_url or not web_url.startswith(('http://', 'https://')):
-                        logging.debug(f"Row {idx}: Using fallback file URL for Naver (No valid web URL found)")
-                        web_url = f"file:///{str(img_path).replace(os.sep, '/')}"
+                 # --- Get original web URL if already present in input data ---
+                existing_img_data = row_data.get(target_col_naver)
+                web_url = None
+                if isinstance(existing_img_data, dict):
+                    potential_url = existing_img_data.get('url')
+                    # Check if it's a string and looks like a web URL
+                    if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                         web_url = potential_url # Found existing web URL
+                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Naver: {web_url[:60]}...")
                 
-                # IMPROVED: Try to create a proper image URL for Naver
-                image_url = web_url
-                try:
-                    # Extract product ID from filename (typical format: naver_12345678.jpg)
-                    file_name = os.path.basename(str(img_path))
-                    id_match = re.search(r'_(\d+)\.', file_name)
-                    if id_match:
-                        naver_id = id_match.group(1)
-                        # Construct direct image URL with proper Naver format
-                        direct_image_url = f"https://shopping-phinf.pstatic.net/main_{naver_id}/{naver_id}.jpg"
-                        image_url = direct_image_url
-                        logging.debug(f"Row {idx}: Created direct Naver image URL: {image_url}")
-                    # If no ID in filename but URL contains typical patterns
-                    elif web_url and ('shopping.naver.com' in web_url or 'search.shopping.naver.com' in web_url):
-                        # Try various Naver URL patterns
-                        id_patterns = [
-                            r'/products/(\d+)',  # /products/12345
-                            r'nvMid=(\d+)',      # nvMid=12345
-                            r'nv_mid=(\d+)',     # nv_mid=12345
-                            r'NaPm\.(\d+)',      # NaPm.12345
-                            r'/(\d{7,})(?:/|$)'  # any 7+ digit number in path
-                        ]
-                        
-                        for pattern in id_patterns:
-                            id_match = re.search(pattern, web_url)
-                            if id_match:
-                                naver_id = id_match.group(1)
-                                direct_image_url = f"https://shopping-phinf.pstatic.net/main_{naver_id}/{naver_id}.jpg"
-                                image_url = direct_image_url
-                                break
-                except Exception as e:
-                    logging.warning(f"Row {idx}: Error creating direct Naver image URL: {e}")
+                # If no valid web URL found in existing data, use empty string
+                if not web_url:
+                     logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Naver ({target_col_naver}). URL will be empty.")
+                     web_url = "" # Use empty string instead of product link
+                # --- End URL handling ---
                 
                 image_data = {
                     'local_path': str(img_path),
                     'source': 'naver',
-                    'url': web_url,
-                    'image_url': image_url, # NEW: Store direct image URL separately
+                    'url': web_url, # Store the preserved or empty URL
                     'original_path': str(img_path),
                     'score': naver_score,
                     'product_name': product_names[idx] # 상품명 추가
@@ -978,7 +897,10 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
             else:
                  if target_col_naver in result_df.columns:
-                     result_df.loc[idx, target_col_naver] = '-'
+                     # If no match found by integrate_images, keep existing data or set to '-'
+                     existing_data = result_df.loc[idx, target_col_naver]
+                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
+                          result_df.loc[idx, target_col_naver] = '-'
                  else:
                      # This case should theoretically not happen anymore
                      logging.warning(f"Target column '{target_col_naver}' unexpectedly not found at index {idx} during else block.")
@@ -1193,16 +1115,9 @@ def create_excel_with_images(df, output_file):
                     if isinstance(img_data, dict):
                         # excel_utils.py 형식의 딕셔너리 처리
                         img_path = img_data.get('local_path')
-                        if not img_path:
+                        if not img_path and 'url' in img_data:
                             # URL만 있는 경우 셀에 URL 표시
-                            # IMPROVED: First check for image_url, then fall back to url
-                            if 'image_url' in img_data and img_data['image_url']:
-                                display_url = img_data['image_url']
-                            elif 'url' in img_data:
-                                display_url = img_data['url']
-                            else:
-                                display_url = ''
-                            ws.cell(row=row_idx, column=col_idx, value=display_url)
+                            ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
                             col_idx += 1
                             continue
                     elif isinstance(img_data, str):
@@ -1223,27 +1138,13 @@ def create_excel_with_images(df, output_file):
                             logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
                             # 이미지 추가 실패 시 경로나 URL 표시
                             if isinstance(img_data, dict):
-                                # IMPROVED: First check for image_url, then fall back to url
-                                if 'image_url' in img_data and img_data['image_url']:
-                                    display_url = img_data['image_url']
-                                elif 'url' in img_data:
-                                    display_url = img_data['url']
-                                else:
-                                    display_url = str(img_path)
-                                ws.cell(row=row_idx, column=col_idx, value=display_url)
+                                ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', str(img_path)))
                             else:
                                 ws.cell(row=row_idx, column=col_idx, value=str(img_path))
                     else:
                         # 이미지 파일이 없는 경우 URL이나 경로 표시
                         if isinstance(img_data, dict):
-                            # IMPROVED: First check for image_url, then fall back to url
-                            if 'image_url' in img_data and img_data['image_url']:
-                                display_url = img_data['image_url']
-                            elif 'url' in img_data:
-                                display_url = img_data['url']
-                            else:
-                                display_url = ''
-                            ws.cell(row=row_idx, column=col_idx, value=display_url)
+                            ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', ''))
                         else:
                             ws.cell(row=row_idx, column=col_idx, value=str(img_data))
                 except Exception as e:
