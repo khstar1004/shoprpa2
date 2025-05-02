@@ -1468,14 +1468,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         # Generate URL with the first extension (could be enhanced to verify actual existence)
                                         img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{product_code}{suffix}{extensions[0]}"
                                         logger.debug(f"Generated URL for Haereum image based on product code: {img_value['url']}")
-                                    elif 'product_name' in img_value:
-                                        # Fallback to product name for URL (try multiple extensions)
-                                        product_name = img_value['product_name']
-                                        clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
-                                        # Try various extensions with priority
-                                        extensions = ['.jpg', '.png', '.gif']
-                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{clean_name}{extensions[0]}"
-                                        logger.debug(f"Generated fallback URL for Haereum image based on name: {img_value['url']}")
                                 elif source == 'kogift':
                                     if 'original_path' in img_value and isinstance(img_value['original_path'], str):
                                         orig_path = img_value['original_path']

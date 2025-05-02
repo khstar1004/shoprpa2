@@ -190,11 +190,24 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.debug(f"Naver results type: {type(naver_crawl_results)}")
                 logging.debug(f"Haereum map type: {type(haereum_image_url_map)}")
                 
+            # 여기서 해오름 이미지 URL 맵을 안전하게 보관 (원본 데이터로 저장)
+            # 이 맵은 엑셀 생성 단계에서 바로 사용됨
+            original_haereum_image_urls = haereum_image_url_map.copy() if isinstance(haereum_image_url_map, dict) else {}
+            logging.info(f"원본 해오름 이미지 URL {len(original_haereum_image_urls)}개를 안전하게 보관하였습니다. 엑셀 생성 단계에서 사용 예정.")
+            
+            # 해오름 이미지 URL 디버그 로깅 (최대 5개)
+            if debug_mode and original_haereum_image_urls:
+                sample_count = 0
+                for prod_name, url in list(original_haereum_image_urls.items())[:5]:
+                    logging.debug(f"보관된 해오름 이미지 URL 샘플 #{sample_count+1}: {prod_name} -> {url}")
+                    sample_count += 1
+                
         except Exception as e:
             logging.error(f"Error during crawling: {e}")
             if debug_mode:
                 logging.debug(traceback.format_exc())
             kogift_crawl_results, naver_crawl_results, haereum_image_url_map = {}, [], {}
+            original_haereum_image_urls = {}  # 에러 시 빈 딕셔너리로 초기화
 
         # --- Process Crawl Results (Handle potential failures) ---
         try:
@@ -694,6 +707,55 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     else:
                         logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
                         logging.debug(f"Finalized columns: {df_to_save.columns.tolist()}")
+                        
+                        # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
+                        try:
+                            # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
+                            if original_haereum_image_urls and not df_to_save.empty:
+                                # '상품명' 컬럼이 있는지 확인
+                                if '상품명' in df_to_save.columns:
+                                    applied_count = 0
+                                    logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
+                                    
+                                    # 원본 이미지 URL을 저장할 새 컬럼 생성
+                                    if '해오름 이미지 URL' not in df_to_save.columns:
+                                        df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
+                                    
+                                    # 각 행에 원본 URL 적용
+                                    for idx, row in df_to_save.iterrows():
+                                        product_name = row['상품명']
+                                        if product_name in original_haereum_image_urls:
+                                            orig_url = original_haereum_image_urls[product_name]
+                                            if orig_url:
+                                                df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
+                                                
+                                                # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
+                                                if '본사 이미지' in df_to_save.columns:
+                                                    current_value = df_to_save.at[idx, '본사 이미지']
+                                                    if isinstance(current_value, dict):
+                                                        current_value['url'] = orig_url
+                                                        df_to_save.at[idx, '본사 이미지'] = current_value
+                                                    else:
+                                                        # 딕셔너리 아닌 경우 새로 생성
+                                                        image_data = {
+                                                            'url': orig_url,
+                                                            'source': 'haereum',
+                                                            'product_name': product_name
+                                                        }
+                                                        df_to_save.at[idx, '본사 이미지'] = image_data
+                                                applied_count += 1
+                                                
+                                    logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
+                                else:
+                                    logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
+                            else:
+                                if not original_haereum_image_urls:
+                                    logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
+                                if df_to_save.empty:
+                                    logging.warning("DataFrame이 비어있어 해오름 이미지 URL을 적용할 수 없습니다.")
+                        except Exception as url_apply_err:
+                            logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
+                            # 이 오류는 치명적이지 않으므로 계속 진행
                         
                         # Add Detailed Logging Before Saving
                         if df_to_save is not None and not df_to_save.empty:

@@ -726,8 +726,10 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         
         # --- Get Haoreum specific data ---
         haoreum_scraped_image_url = haoreum_row_dict.get('본사이미지URL')
+        # Add logging to check the fetched URL
+        logging.debug(f"Index {i}: Fetched Haereum scraped URL: {haoreum_scraped_image_url}") 
         if not haoreum_scraped_image_url or not isinstance(haoreum_scraped_image_url, str) or not haoreum_scraped_image_url.startswith(('http://', 'https://')):
-            logging.warning(f"Row {i} ('{product_name}'): Invalid or missing scraped Haoreum image URL: '{haoreum_scraped_image_url}'. Proceeding without Haoreum URL.")
+            logging.warning(f"Row {i} ('{product_name}'): Invalid or missing scraped Haereum image URL: '{haoreum_scraped_image_url}'. Attempting fallback or proceeding without URL.")
             haoreum_scraped_image_url = None # Set URL to None if invalid
 
         # Prepare Haoreum product data structure for matching logic
@@ -754,13 +756,17 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         result = {**haoreum_row_dict} 
 
         # --- Add/Overwrite Haoreum Image Data --- 
+        # Ensure the scraped URL is prioritized
         haoreum_image_data = {
-             'url': haoreum_scraped_image_url,
+             'url': haoreum_scraped_image_url, # Use the fetched URL directly
              'local_path': haoreum_img_path,
              'source': 'haereum'
         }
         result['본사 이미지'] = haoreum_image_data
-        result.pop('해오름이미지경로', None)
+        # Remove the old column if it exists to avoid confusion
+        result.pop('해오름이미지경로', None) 
+        # Also remove the raw URL column if it's just duplicated here
+        result.pop('본사이미지URL', None) 
 
         # --- Add/Update other non-image Haoreum fields --- 
         result.update({
