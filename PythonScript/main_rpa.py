@@ -837,6 +837,32 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.info("Successfully created both Excel files:")
                                     logging.info(f"- Result file (with images): {result_path}")
                                     logging.info(f"- Upload file (links only): {upload_path}")
+                                    
+                                    # --- Apply Price Highlighting to Excel files ---
+                                    try:
+                                        logging.info("Applying price difference highlighting to the generated Excel files...")
+                                        # Get threshold value from config, default to -1
+                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                        logging.info(f"Using price difference threshold: {threshold}")
+                                        
+                                        # Apply highlighting to both result and upload files
+                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            threshold=threshold
+                                        )
+                                        
+                                        if highlight_success_count > 0:
+                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
+                                        else:
+                                            logging.warning("Price highlighting could not be applied to any files")
+                                    except Exception as highlight_err:
+                                        logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
+                                        # Don't treat highlighting failure as a critical error, continue with the process
+                                    # --- End Price Highlighting ---
+                                        
                                     if progress_queue:
                                         progress_queue.emit("status", "Output files saved successfully")
                                         if isinstance(upload_path, str) and os.path.exists(upload_path):

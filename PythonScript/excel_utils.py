@@ -22,6 +22,8 @@ import tempfile
 import requests
 from typing import Optional
 import numpy as np
+import shutil
+from openpyxl import Workbook
 
 # Check Python/PIL version for proper resampling constant
 try:
@@ -791,116 +793,109 @@ def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksh
     # Define yellow fill
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-    # Check dtypes of the relevant columns in the DataFrame
-    for col in price_diff_cols:
-        if col in df.columns:
-            logger.debug(f"Conditional formatting: Column '{col}' dtype is {df[col].dtype}")
-        else:
-            logger.warning(f"Conditional formatting: Column '{col}' not found in DataFrame.")
+    # First check if these columns actually exist in the DataFrame
+    existing_diff_cols = [col for col in price_diff_cols if col in df.columns]
+    if not existing_diff_cols:
+        logger.warning("None of the price difference columns exist in the DataFrame. Skipping conditional formatting.")
+        return
 
     # Add detailed logging for debugging
-    logger.info(f"가격차이 조건부 서식 적용 (음수 강조): {price_diff_cols}")
+    logger.info(f"가격차이 조건부 서식 적용 시작 (음수 강조): {existing_diff_cols}")
     logger.info(f"총 확인할 행 수: {worksheet.max_row - 1}")  # Subtract 1 for header row
+    
+    # Log column data types for debugging
+    for col in existing_diff_cols:
+        logger.info(f"열 '{col}' 데이터 타입: {df[col].dtype}")
+        # Try to count negative values in each column
+        try:
+            if df[col].dtype in ['int64', 'float64']:
+                # For numeric columns, count directly
+                neg_count = (df[col] < -1).sum()
+                logger.info(f"열 '{col}'에서 -1 미만인 값: {neg_count}개")
+            else:
+                # For non-numeric columns, try to convert first
+                try:
+                    neg_count = (pd.to_numeric(df[col], errors='coerce') < -1).sum()
+                    logger.info(f"열 '{col}'에서 -1 미만인 값: {neg_count}개 (변환 후)")
+                except:
+                    logger.warning(f"열 '{col}'의 값을 숫자로 변환할 수 없습니다.")
+        except Exception as e:
+            logger.warning(f"열 '{col}'에서 음수 값 계산 중 오류: {e}")
     
     rows_highlighted = 0
     rows_checked = 0
     errors = 0
 
-    # Process each row - Rely PRIMARILY on DataFrame values for consistency
-    for df_row_idx in range(len(df)):
-        excel_row_idx = df_row_idx + 2 # Adjust for 1-based indexing and header row
-        highlight_row = False # Flag to highlight the row
+    # Get the column indices in the Excel worksheet
+    col_indices = {}
+    for i, header in enumerate(df.columns, 1):
+        col_indices[header] = i
+
+    # Process each row
+    for row_idx in range(2, worksheet.max_row + 1):  # Excel is 1-indexed, row 1 is header
         rows_checked += 1
+        highlight_row = False
         
-        # 먼저 DataFrame에서 확인 - 더 신뢰할 수 있는 데이터
-        for price_diff_col in price_diff_cols:
-            if price_diff_col not in df.columns: # Skip if column doesn't exist
+        # Check each price difference column
+        for diff_col in existing_diff_cols:
+            # Get the Excel column index
+            if diff_col not in col_indices:
+                continue
+                
+            col_idx = col_indices[diff_col]
+            
+            # Get the cell value directly from the worksheet
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            cell_value = cell.value
+            
+            # Skip empty cells
+            if cell_value is None or cell_value == '' or cell_value == '-':
                 continue
                 
             try:
-                # Get value directly from DataFrame
-                value = df.iloc[df_row_idx].get(price_diff_col)
-
-                # Check if the value is numeric and less than -1
-                if pd.notna(value) and value not in ['-', '']:
-                    try:
-                        # 다양한 형식 처리
-                        if isinstance(value, (int, float)):
-                            numeric_value = float(value)
-                        elif isinstance(value, str) and value.strip():
-                            # 문자열 처리 - 콤마 및 기타 문자 제거
-                            cleaned_value = value.replace(',', '').replace(' ', '')
-                            # 음수 표시 처리 ("(100)" 형식을 "-100"으로 변환)
-                            if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
-                                cleaned_value = '-' + cleaned_value[1:-1]
-                            numeric_value = float(cleaned_value)
-                        else:
-                            # 변환 불가능한 값
-                            continue
-
-                        # Apply highlight if value is less than -1 (negative)
-                        if numeric_value < -1:
-                            highlight_row = True
-                            logger.debug(f"행 {excel_row_idx}: 가격차이 {numeric_value} < -1 (컬럼 {price_diff_col}). 하이라이팅 적용.")
-                            break  # Found a reason to highlight this row
-                    except (ValueError, TypeError) as e:
-                        # Log if conversion fails, but don't highlight
-                        logger.debug(f"행 {excel_row_idx}: 숫자 변환 실패 '{value}' (컬럼 {price_diff_col}): {e}")
-                        # 변환 오류는 무시하고 계속 진행
-            except IndexError:
-                 logger.warning(f"인덱스 오류: DataFrame 행 {df_row_idx} 접근 실패 (조건부 서식 적용 중)")
-                 continue # Skip this row if index is out of bounds
-            except Exception as e:
-                 logger.error(f"DataFrame 행 {df_row_idx}, 컬럼 {price_diff_col} 처리 중 오류: {e}")
-                 errors += 1
-
-        # 이제 실제 Excel 워크시트에서 확인 (데이터프레임에서 찾지 못한 경우)
-        if not highlight_row:
-            try:
-                # Excel columns are 1-indexed
-                for col_idx in range(1, worksheet.max_column + 1):
-                    # Get header to identify price difference columns
-                    header = worksheet.cell(row=1, column=col_idx).value
+                # Handle different types of values
+                numeric_value = None
+                
+                if isinstance(cell_value, (int, float)):
+                    # Direct numeric value
+                    numeric_value = float(cell_value)
+                elif isinstance(cell_value, str):
+                    # Strip any whitespace, commas, currency symbols
+                    clean_value = cell_value.strip().replace(',', '').replace(' ', '')
                     
-                    if header in price_diff_cols:
-                        cell = worksheet.cell(row=excel_row_idx, column=col_idx)
-                        if cell.value and cell.value != '-':
-                            try:
-                                # Similar conversion logic as above
-                                if isinstance(cell.value, (int, float)):
-                                    numeric_value = float(cell.value)
-                                elif isinstance(cell.value, str) and cell.value.strip():
-                                    cleaned_value = cell.value.replace(',', '').replace(' ', '')
-                                    if cleaned_value.startswith('(') and cleaned_value.endswith(')'):
-                                        cleaned_value = '-' + cleaned_value[1:-1]
-                                    numeric_value = float(cleaned_value)
-                                else:
-                                    continue
-                                    
-                                if numeric_value < -1:
-                                    highlight_row = True
-                                    logger.debug(f"Excel에서 직접 찾음: 행 {excel_row_idx}, 컬럼 {header} 값 {numeric_value} < -1")
-                                    break
-                            except (ValueError, TypeError):
-                                # Invalid value, just continue
-                                pass
-            except Exception as excel_err:
-                logger.warning(f"Excel 확인 중 오류 발생 (행 {excel_row_idx}): {excel_err}")
-                # Continue to use the DataFrame result
-
-        # If the flag is set, highlight the entire row in Excel
+                    # Handle parentheses format for negative numbers like (100)
+                    if clean_value.startswith('(') and clean_value.endswith(')'):
+                        clean_value = '-' + clean_value[1:-1]
+                        
+                    # Attempt conversion to float if it's not just a dash or empty
+                    if clean_value and clean_value != '-':
+                        try:
+                            numeric_value = float(clean_value)
+                        except ValueError:
+                            # If conversion fails, skip this cell
+                            continue
+                
+                # If we successfully got a numeric value and it's < -1, highlight the row
+                if numeric_value is not None and numeric_value < -1:
+                    highlight_row = True
+                    logger.debug(f"음수 가격차이 발견: 행 {row_idx}, 열 '{diff_col}', 값 {numeric_value} < -1")
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"행 {row_idx}, 열 '{diff_col}' 처리 중 오류: {e}")
+                errors += 1
+                continue
+                
+        # Apply highlighting to the entire row if needed
         if highlight_row:
             rows_highlighted += 1
-            for col_idx_excel in range(1, worksheet.max_column + 1):
+            for col_idx in range(1, worksheet.max_column + 1):
                 try:
-                    cell_to_fill = worksheet.cell(row=excel_row_idx, column=col_idx_excel)
-                    # 현재 값 및 서식 보존
-                    current_value = cell_to_fill.value
-                    
-                    # 기존 서식에 노란색 배경 추가
-                    cell_to_fill.fill = yellow_fill
+                    # Apply yellow fill to all cells in the row
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    cell.fill = yellow_fill
                 except Exception as e:
-                    logger.error(f"셀 서식 적용 오류 R{excel_row_idx}C{col_idx_excel}: {e}")
+                    logger.error(f"셀 서식 적용 오류 (행 {row_idx}, 열 {col_idx}): {e}")
                     errors += 1
 
     # Log summary of highlighting results
@@ -1428,31 +1423,129 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         col_idx = df_finalized.columns.get_loc(img_col) + 1
                         img_value = row[img_col]
                         
-                        if isinstance(img_value, dict) and 'local_path' in img_value:
-                            img_path = img_value['local_path']
-                            if os.path.exists(img_path):
-                                try:
-                                    # Create and add the image
-                                    img = openpyxl.drawing.image.Image(img_path)
-                                    # FIXED: Larger images in the result file
-                                    img.width = 160  # Set image width - increased from 80
-                                    img.height = 160  # Set image height - increased from 80
-                                    img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
-                                    worksheet_with_images.add_image(img)
-                                    
-                                    # Clear the cell content
+                        # Check if we have a dictionary with image data
+                        if isinstance(img_value, dict):
+                            # Try to reconstruct/find URLs for images if missing
+                            if ('url' not in img_value or not img_value['url'] or 
+                                not isinstance(img_value['url'], str) or
+                                not img_value['url'].startswith(('http://', 'https://'))):
+                                
+                                # Determine the source based on column name or image data
+                                source = img_value.get('source', '').lower()
+                                if not source:
+                                    if '본사' in img_col:
+                                        source = 'haereum'
+                                    elif '고려' in img_col:
+                                        source = 'kogift'
+                                    elif '네이버' in img_col:
+                                        source = 'naver'
+                                
+                                # Try to reconstruct URL based on source
+                                if source == 'haereum' or source == 'haoreum':
+                                    if 'p_idx' in img_value:
+                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{img_value['p_idx']}.gif"
+                                        logger.debug(f"Generated URL for Haereum image based on p_idx: {img_value['url']}")
+                                    elif 'product_name' in img_value:
+                                        # Fallback to product name for URL
+                                        product_name = img_value['product_name']
+                                        clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
+                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{clean_name}.gif"
+                                        logger.debug(f"Generated fallback URL for Haereum image based on name: {img_value['url']}")
+                                elif source == 'kogift':
+                                    if 'original_path' in img_value and isinstance(img_value['original_path'], str):
+                                        orig_path = img_value['original_path']
+                                        if 'upload' in orig_path:
+                                            parts = orig_path.split('upload/')
+                                            if len(parts) > 1:
+                                                img_value['url'] = f"https://koreagift.com/ez/upload/{parts[1]}"
+                                                logger.debug(f"Generated URL for Kogift image based on path: {img_value['url']}")
+                                elif source == 'naver':
+                                    if 'product_id' in img_value:
+                                        img_value['url'] = f"https://shopping-phinf.pstatic.net/main_{img_value['product_id']}/{img_value['product_id']}.jpg"
+                                        logger.debug(f"Generated URL for Naver image based on product_id: {img_value['url']}")
+                                
+                            # Now check if we have a local path to add the image
+                            if 'local_path' in img_value:
+                                img_path = img_value['local_path']
+                                has_url = 'url' in img_value and isinstance(img_value['url'], str) and img_value['url'].startswith(('http://', 'https://'))
+                                
+                                # Log URL information for debugging
+                                if has_url:
+                                    logger.debug(f"이미지에 URL 있음 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
+                                else:
+                                    logger.debug(f"이미지에 URL 없음 (행 {row_idx}, 열 {col_idx})")
+                                
+                                if os.path.exists(img_path):
+                                    try:
+                                        # Create and add the image
+                                        img = openpyxl.drawing.image.Image(img_path)
+                                        # FIXED: Larger images in the result file
+                                        img.width = 160  # Set image width - increased from 80
+                                        img.height = 160  # Set image height - increased from 80
+                                        img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
+                                        worksheet_with_images.add_image(img)
+                                        
+                                        # Clear the cell content
+                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                        cell.value = ""
+                                        
+                                        # Add hyperlink to the image URL if available (the image will have a link)
+                                        if has_url:
+                                            # Use openpyxl hyperlink object - will show on hover
+                                            cell.hyperlink = img_value['url']
+                                            
+                                            # Add a very small marker to indicate there's a URL (using a comment)
+                                            try:
+                                                comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
+                                                comment.width = 300
+                                                comment.height = 50
+                                                cell.comment = comment
+                                            except Exception as comment_err:
+                                                logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
+                                        
+                                        images_added += 1
+                                        logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
+                                    except Exception as img_err:
+                                        logger.warning(f"이미지 추가 실패 (행 {row_idx}, 열 {col_idx}): {img_err}")
+                                        # Keep the web URL as fallback
+                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                        if has_url:
+                                            cell.value = img_value['url']
+                                            # Add hyperlink to the URL text
+                                            cell.hyperlink = img_value['url']
+                                            cell.font = Font(color="0563C1", underline="single")
+                                            logger.debug(f"이미지 대신 URL 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
+                                        else:
+                                            # If no URL, show the local path as a fallback
+                                            cell.value = f"로컬 이미지: {os.path.basename(img_path)}"
+                                            logger.warning(f"이미지 및 URL 없음, 로컬 경로만 표시 (행 {row_idx}, 열 {col_idx}): {img_path}")
+                                else:
+                                    logger.warning(f"로컬 이미지 파일 없음 (행 {row_idx}, 열 {col_idx}): {img_path}")
                                     cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                    cell.value = ""
-                                    
-                                    images_added += 1
-                                except Exception as img_err:
-                                    logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
-                                    # Keep the web URL as fallback
-                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                    if 'url' in img_value and img_value['url']:
+                                    if has_url:
+                                        # If we have a URL but no local image, show the URL
                                         cell.value = img_value['url']
+                                        cell.hyperlink = img_value['url']
+                                        cell.font = Font(color="0563C1", underline="single")
+                                        logger.debug(f"로컬 이미지 없어 URL만 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
                                     else:
-                                        cell.value = str(img_path)
+                                        # No image and no URL, add an error message
+                                        cell.value = "이미지 및 URL 없음"
+                                        logger.warning(f"이미지 및 URL 모두 없음 (행 {row_idx}, 열 {col_idx})")
+                            else:
+                                # No local path in the dictionary
+                                logger.warning(f"이미지 로컬 경로 정보 없음 (행 {row_idx}, 열 {col_idx})")
+                                cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                if 'url' in img_value and isinstance(img_value['url'], str) and img_value['url'].startswith(('http://', 'https://')):
+                                    # If we have only a URL, show it
+                                    cell.value = img_value['url']
+                                    cell.hyperlink = img_value['url']
+                                    cell.font = Font(color="0563C1", underline="single")
+                                    logger.debug(f"이미지 로컬 경로 없어 URL만 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
+                                else:
+                                    # No local path and no valid URL
+                                    cell.value = "유효한 이미지 정보 없음"
+                                    logger.warning(f"유효한 이미지 정보가 없음 (행 {row_idx}, 열 {col_idx})")
                 
                 # FIXED: Ensure filter is removed after image addition too
                 if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
@@ -1489,178 +1582,273 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             
             # Process each image column to extract only web URLs
             for img_col in IMAGE_COLUMNS:
-                if img_col in df_finalized.columns:
-                    logger.info(f"Extracting image URLs from {img_col} column...")
+                if img_col not in df_finalized.columns:
+                    continue
                     
-                    # Process all rows to extract image URLs
-                    for idx in df_finalized.index:
-                        value = df_finalized.at[idx, img_col]
-                        
-                        # Default to empty string (not "-") to avoid showing placeholders in cells
-                        image_url = ""
-                        
-                        # FIX: Improved image URL extraction logic
+                logger.info(f"Extracting image URLs from {img_col} column...")
+                
+                # Map the column names to the upload file column names
+                # This maps: '본사 이미지' -> '해오름(이미지링크)', '고려기프트 이미지' -> '고려기프트(이미지링크)', '네이버 이미지' -> '네이버쇼핑(이미지링크)'
+                upload_img_col = None
+                if img_col == '본사 이미지':
+                    upload_img_col = '해오름(이미지링크)'
+                elif img_col == '고려기프트 이미지':
+                    upload_img_col = '고려기프트(이미지링크)'
+                elif img_col == '네이버 이미지':
+                    upload_img_col = '네이버쇼핑(이미지링크)'
+                else:
+                    # Default to the same column name if not in the mapping
+                    upload_img_col = img_col
+                
+                # Create the column if it doesn't exist
+                if upload_img_col not in df_with_image_urls.columns:
+                    df_with_image_urls[upload_img_col] = ""
+                
+                # Track URL extraction results for this column
+                urls_found = 0
+                fallback_urls_generated = 0
+                url_errors = 0
+                
+                # Process all rows to extract image URLs
+                for idx in df_finalized.index:
+                    value = df_finalized.at[idx, img_col]
+                    
+                    # Default to empty string (not "-") to avoid showing placeholders in cells
+                    image_url = ""
+                    url_source = "unknown"
+                    
+                    try:
+                        # FIXED: Improved image URL extraction logic
                         if isinstance(value, dict):
                             # Try multiple keys to find a usable URL
-                            for url_key in ['url', 'original_url', 'image_url']:
-                                if url_key in value and isinstance(value[url_key], str) and value[url_key].strip() and value[url_key].startswith(('http://', 'https://')):
-                                    image_url = value[url_key].strip()
-                                    logger.debug(f"Found URL in {img_col} at idx {idx} using key '{url_key}': {image_url[:50]}...")
-                                    break
+                            # Prioritize direct image URLs over product page URLs
+                            # UPDATED: First check if we have the new 'image_url' field
+                            if 'image_url' in value and isinstance(value['image_url'], str) and value['image_url'].strip():
+                                image_url = value['image_url'].strip()
+                                if image_url.startswith(('http://', 'https://')):
+                                    url_source = "direct_from_image_url_field"
+                                    logger.debug(f"Using dedicated image_url field for {img_col} at idx {idx}: {image_url[:50]}...")
+                                    # We found a direct image URL field, use it
+                                    df_with_image_urls.at[idx, upload_img_col] = image_url
+                                    
+                                    # Update extraction statistics
+                                    if image_url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) or '/upload/' in image_url.lower() or 'phinf.pstatic.net' in image_url.lower():
+                                        urls_found += 1
+                                    else:
+                                        fallback_urls_generated += 1
+                                    
+                                    # Skip remaining URL extraction code since we already found what we need
+                                    continue
+                                    
+                            # Previous extraction code continues if 'image_url' field wasn't present or valid
+                            image_url_keys = ['image_url', 'url']
                             
-                            # If no URL found but there's source info, try to extract from known patterns
-                            if not image_url and 'source' in value:
+                            for url_key in image_url_keys:
+                                if url_key in value and isinstance(value[url_key], str) and value[url_key].strip():
+                                    url = value[url_key].strip()
+                                    # Check if it's an actual image URL (not just a product page)
+                                    if (url.startswith(('http://', 'https://')) and 
+                                        (url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) or 
+                                         '/upload/' in url.lower() or 
+                                         'image' in url.lower() or
+                                         'img' in url.lower())):
+                                        image_url = url
+                                        url_source = f"direct_image_url_from_{url_key}"
+                                        logger.debug(f"Found actual image URL in {img_col} at idx {idx} using key '{url_key}': {image_url[:50]}...")
+                                        break
+                            
+                            # If no direct image URL found, try to extract or construct one based on source
+                            if not image_url:
+                                # Determine the source from the value or column name
                                 source = value.get('source', '').lower()
+                                if not source:
+                                    if '본사' in img_col:
+                                        source = 'haereum'
+                                    elif '고려' in img_col:
+                                        source = 'kogift'
+                                    elif '네이버' in img_col:
+                                        source = 'naver'
                                 
-                                # Handle known source formats
-                                if source == 'haereum' and 'product_name' in value:
-                                    # Construct a jclgift URL if possible
-                                    if 'p_idx' in value:
-                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{value['p_idx']}.gif"
-                                        logger.debug(f"Constructed Haereum URL: {image_url}")
-                                elif source == 'kogift' and 'product_name' in value:
-                                    # For Kogift, check if we can extract from original_path
-                                    if 'original_path' in value and 'koreagift.com' in str(value.get('original_path', '')):
-                                        orig_path = str(value['original_path'])
-                                        if 'upload' in orig_path:
-                                            # Try to extract the filename part
-                                            parts = orig_path.split('upload/')
-                                            if len(parts) > 1:
-                                                image_url = f"https://koreagift.com/ez/upload/{parts[1]}"
-                                                logger.debug(f"Constructed Kogift URL from original_path: {image_url}")
-                                elif source == 'naver' and 'product_id' in value:
-                                    # For Naver, construct URL from product_id if available
-                                    image_url = f"https://shopping-phinf.pstatic.net/main_{value['product_id']}/{value['product_id']}.jpg"
-                                    logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                                # NEW: Try to use the original_product_id if available
+                                product_id = None
+                                if 'p_idx' in value:
+                                    product_id = value['p_idx']
+                                elif 'product_id' in value:
+                                    product_id = value['product_id']
+                                
+                                # Check if local_path exists and is valid
+                                local_path = None
+                                if 'local_path' in value and value['local_path'] and isinstance(value['local_path'], str):
+                                    local_path = value['local_path']
+                                
+                                # Try to reconstruct URL based on source
+                                if source == 'haereum' or source == 'haoreum':
+                                    # Construct a direct image URL for Haereum
+                                    if local_path and 'haereum_' in local_path:
+                                        try:
+                                            file_name = os.path.basename(local_path)
+                                            # Try to extract product code from filename
+                                            code_match = re.search(r'([A-Z]{4}\d+)(?:s)?(?:_\d+)?(?:\.)', file_name)
+                                            if code_match:
+                                                product_code = code_match.group(1)
+                                                # Use proper format for Haereum image URLs
+                                                image_url = f"https://www.jclgift.com/upload/product/simg3/{product_code}s.jpg"
+                                                url_source = "extracted_from_product_code"
+                                                logger.debug(f"Extracted Haereum product code {product_code} from {file_name}")
+                                        except Exception as e:
+                                            logger.debug(f"Error extracting product code from path: {e}")
+                                    
+                                    # If still no URL, try other approaches
+                                    if not image_url:
+                                        url = value.get('url', '')
+                                        if url and 'jclgift.com' in url and 'p_idx=' in url:
+                                            # Extract p_idx from URL
+                                            p_idx_match = re.search(r'p_idx=(\d+)', url)
+                                            if p_idx_match:
+                                                p_idx = p_idx_match.group(1)
+                                                # Try common brand prefixes for Haereum
+                                                for prefix in ['EEDA', 'DDAC', 'BBCA', 'GGBJ', 'AAZZ', 'CCAA']:
+                                                    # Construct Haereum image URL using proper format
+                                                    test_url = f"https://www.jclgift.com/upload/product/simg3/{prefix}{p_idx.zfill(8)}s.jpg"
+                                                    image_url = test_url
+                                                    url_source = "constructed_from_p_idx"
+                                                    break  # Use first prefix for now
+                                
+                                elif source == 'kogift':
+                                    # Construct a direct image URL for Kogift
+                                    if local_path:
+                                        try:
+                                            file_name = os.path.basename(local_path)
+                                            # Try to extract shop ID from filename
+                                            shop_match = re.search(r'shop_(\d+)(?:_\d+)?\.', file_name)
+                                            if shop_match:
+                                                shop_id = shop_match.group(1)
+                                                # Use proper format for Kogift image URLs
+                                                image_url = f"https://koreagift.com/ez/upload/mall/shop_{shop_id}.jpg"
+                                                url_source = "extracted_from_shop_id"
+                                                logger.debug(f"Extracted Kogift shop_id {shop_id} from {file_name}")
+                                            else:
+                                                # If no shop ID found, try to find any number sequence
+                                                num_match = re.search(r'_(\d+)_', file_name)
+                                                if num_match:
+                                                    num_id = num_match.group(1)
+                                                    image_url = f"https://koreagift.com/ez/upload/mall/shop_{num_id}.jpg"
+                                                    url_source = "extracted_from_filename_number"
+                                                    logger.debug(f"Extracted possible Kogift number {num_id} from {file_name}")
+                                        except Exception as e:
+                                            logger.debug(f"Error extracting Kogift ID: {e}")
+                                    
+                                    # If still no URL, try to extract from product URL
+                                    if not image_url:
+                                        url = value.get('url', '')
+                                        # Check for various Kogift URL formats
+                                        if url:
+                                            # mall.php format
+                                            no_match = re.search(r'[?&]no=(\d+)', url)
+                                            if no_match:
+                                                no_id = no_match.group(1)
+                                                image_url = f"https://koreagift.com/ez/upload/mall/shop_{no_id}_0.jpg"
+                                                url_source = "constructed_from_no_param"
+                                                logger.debug(f"Constructed Kogift URL from no parameter: {image_url}")
+                                            else:
+                                                # Try extracting any number from the URL that could be a product ID
+                                                path_match = re.search(r'/(\d+)(?:/|$)', url)
+                                                if path_match:
+                                                    path_id = path_match.group(1)
+                                                    image_url = f"https://koreagift.com/ez/upload/mall/shop_{path_id}_0.jpg"
+                                                    url_source = "constructed_from_path_number"
+                                                    logger.debug(f"Constructed Kogift URL from path number: {image_url}")
+                                
+                                elif source == 'naver':
+                                    # Naver images follow specific patterns
+                                    if 'product_id' in value:
+                                        product_id = value['product_id']
+                                        # Standard Naver Shopping image URL
+                                        image_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                        url_source = "constructed_from_product_id"
+                                        logger.debug(f"Constructed Naver URL from product_id: {image_url}")
+                                    elif local_path:
+                                        # Try to extract product ID from filename
+                                        file_name = os.path.basename(local_path)
+                                        id_match = re.search(r'_(\d+)\.', file_name)
+                                        if id_match:
+                                            naver_id = id_match.group(1)
+                                            image_url = f"https://shopping-phinf.pstatic.net/main_{naver_id}/{naver_id}.jpg"
+                                            url_source = "extracted_from_filename"
+                                            logger.debug(f"Constructed Naver URL from filename ID: {image_url}")
+                                    
+                                    # Try to extract product ID from URL
+                                    if not image_url:
+                                        url = value.get('url', '')
+                                        if url and ('shopping.naver.com' in url or 'search.shopping.naver.com' in url):
+                                            # Extract product ID from URL patterns
+                                            id_patterns = [
+                                                r'/products/(\d+)',  # /products/12345
+                                                r'nvMid=(\d+)',      # nvMid=12345
+                                                r'nv_mid=(\d+)',     # nv_mid=12345
+                                                r'NaPm\.(\d+)',      # NaPm.12345
+                                                r'/(\d{7,})(?:/|$)'  # any 7+ digit number in path
+                                            ]
+                                            
+                                            for pattern in id_patterns:
+                                                id_match = re.search(pattern, url)
+                                                if id_match:
+                                                    naver_id = id_match.group(1)
+                                                    image_url = f"https://shopping-phinf.pstatic.net/main_{naver_id}/{naver_id}.jpg"
+                                                    url_source = f"extracted_from_url_{pattern}"
+                                                    logger.debug(f"Constructed Naver URL from URL pattern: {image_url}")
+                                                    break
                             
-                        # Handle string URL format
+                            # If we still don't have a URL but have a product page URL, add it as fallback
+                            if not image_url and 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
+                                image_url = value['url']
+                                url_source = "fallback_product_url"
+                                logger.debug(f"Using product page URL as fallback: {image_url[:50]}...")
+                        
+                        # String URL handling (for directly used URLs)
                         elif isinstance(value, str) and value.strip() and value != '-':
                             url = value.strip()
                             if url.startswith(('http://', 'https://')):
-                                # Check if it's an image URL
-                                image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-                                image_identifiers = ['upload/', 'simg', 'pstatic.net', 'phinf', '/image/', 'thumb']
-                                
-                                if any(url.lower().endswith(ext) for ext in image_extensions) or any(ident in url.lower() for ident in image_identifiers):
-                                    image_url = url
-                                    logger.debug(f"Found image URL string in {img_col} at idx {idx}: {url[:50]}...")
+                                image_url = url
+                                url_source = "direct_string_url"
+                                logger.debug(f"Using direct string URL: {url[:50]}...")
                         
-                        # Additional logic to handle complex nested structures
-                        if not image_url and isinstance(value, (dict, str)) and str(value).find('http') >= 0:
-                            # Attempt to extract URLs from complex string representations
-                            try:
-                                str_value = str(value)
-                                url_start = str_value.find('http')
-                                if url_start >= 0:
-                                    url_end = min(x for x in [str_value.find(' ', url_start), 
-                                                              str_value.find('"', url_start), 
-                                                              str_value.find("'", url_start), 
-                                                              str_value.find(')', url_start),
-                                                              str_value.find(',', url_start),
-                                                              len(str_value)] if x > url_start)
-                                    
-                                    potential_url = str_value[url_start:url_end]
-                                    if potential_url.startswith(('http://', 'https://')) and ('jclgift.com' in potential_url or 
-                                                                                             'koreagift.com' in potential_url or 
-                                                                                             'pstatic.net' in potential_url):
-                                        image_url = potential_url
-                                        logger.debug(f"Extracted URL from string representation: {image_url[:50]}...")
-                            except Exception as e:
-                                logger.warning(f"Error extracting URL from complex value: {e}")
+                        # Store the final URL (after all extraction/construction attempts)
+                        df_with_image_urls.at[idx, upload_img_col] = image_url
                         
-                        # Special case handling for each source type
-                        if not image_url:
-                            if '본사 이미지' == img_col:
-                                # Try to extract Haereum URLs based on indicators
-                                if isinstance(value, dict) and ('product_name' in value or 'haereum' in str(value).lower()):
-                                    # Check for p_idx in the data or URLs
-                                    p_idx = None
-                                    if 'p_idx' in value:
-                                        p_idx = value['p_idx']
-                                    elif 'url' in value and 'p_idx=' in value['url']:
-                                        try:
-                                            p_idx = value['url'].split('p_idx=')[1].split('&')[0]
-                                        except:
-                                            pass
-                                    
-                                    if p_idx:
-                                        # Construct standard Haereum image URL
-                                        image_url = f"https://www.jclgift.com/upload/product/simg3/{p_idx}.gif"
-                                        logger.debug(f"Constructed Haereum URL from p_idx: {image_url}")
-                                    else:
-                                        # If product name exists, construct a more generic URL pattern
-                                        product_name = value.get('product_name', '')
-                                        if product_name:
-                                            clean_name = re.sub(r'[^\w가-힣]', '', product_name)[:20]
-                                            image_url = f"https://www.jclgift.com/upload/product/simg3/{clean_name}.gif"
-                                            logger.debug(f"Constructed approximate Haereum URL: {image_url}")
-                                
-                                # Look for jclgift.com links in any string
-                                elif isinstance(value, str) and ('jclgift' in value.lower()):
-                                    matches = re.findall(r'https?://[^"\'\s,)]+jclgift[^"\'\s,)]*', value)
-                                    if matches:
-                                        image_url = matches[0]
-                                        logger.debug(f"Extracted jclgift URL from string: {image_url}")
-                            
-                            elif '고려기프트 이미지' == img_col:
-                                # Try to extract Kogift URLs
-                                if isinstance(value, dict) and ('kogift' in str(value).lower() or 'koreagift' in str(value).lower()):
-                                    # Standard Kogift image URL pattern
-                                    image_url = "https://koreagift.com/ez/upload/mall/shop_default.jpg"  # Default fallback
-                                    
-                                    # Try to find any URL with koreagift in the dictionary
-                                    for k, v in value.items():
-                                        if isinstance(v, str) and 'koreagift' in v.lower() and 'http' in v.lower():
-                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift)[^"\'\s,)]*', v)
-                                            if matches:
-                                                image_url = matches[0]
-                                                logger.debug(f"Extracted Kogift URL from dict value: {image_url}")
-                                                break
-                                
-                                # Look for koreagift.com links in any string
-                                elif isinstance(value, str):
-                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:koreagift|kogift|adpanchok)[^"\'\s,)]*', value)
-                                    if matches:
-                                        image_url = matches[0]
-                                        logger.debug(f"Extracted Kogift URL from string: {image_url}")
-                            
-                            elif '네이버 이미지' == img_col:
-                                # Try to extract Naver URLs
-                                if isinstance(value, dict) and ('naver' in str(value).lower() or 'pstatic' in str(value).lower()):
-                                    # Look for standard Naver image URL patterns
-                                    for k, v in value.items():
-                                        if isinstance(v, str) and ('pstatic.net' in v.lower() or 'shopping.naver' in v.lower()):
-                                            matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', v)
-                                            if matches:
-                                                image_url = matches[0]
-                                                logger.debug(f"Extracted Naver URL from dict value: {image_url}")
-                                                break
-                                    
-                                    # If product_id is available, construct a standard URL
-                                    if not image_url and 'product_id' in value:
-                                        product_id = value['product_id']
-                                        image_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                        logger.debug(f"Constructed Naver URL from product_id: {image_url}")
-                                
-                                # Look for pstatic.net links in any string
-                                elif isinstance(value, str):
-                                    matches = re.findall(r'https?://[^"\'\s,)]+(?:pstatic\.net|shopping\.naver)[^"\'\s,)]*', value)
-                                    if matches:
-                                        image_url = matches[0]
-                                        logger.debug(f"Extracted Naver URL from string: {image_url}")
-                        
-                        # Update the value in the intermediate DataFrame
-                        df_with_image_urls.at[idx, img_col] = image_url
+                        # Update extraction statistics
+                        if image_url:
+                            if (image_url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) or 
+                                '/upload/' in image_url.lower() or 
+                                'phinf.pstatic.net' in image_url.lower()):
+                                urls_found += 1
+                            else:
+                                # This is likely a product page URL, not a direct image URL
+                                fallback_urls_generated += 1
+                    except Exception as e:
+                        logger.error(f"Error extracting image URL for row {idx}, column {img_col}: {e}")
+                        url_errors += 1
+                
+                # Log summary for this column
+                logger.info(f"URL 추출 결과 ({img_col}): 총 {urls_found}개 이미지 URL 추출 성공, {fallback_urls_generated}개 제품 페이지 URL 생성, {url_errors}개 오류")
             
             # Check if we extracted any image URLs
             for img_col in IMAGE_COLUMNS:
-                if img_col in df_with_image_urls.columns:
-                    url_count = (df_with_image_urls[img_col].astype(str).str.startswith(('http://', 'https://'))).sum()
+                upload_col = None
+                if img_col == '본사 이미지':
+                    upload_col = '해오름(이미지링크)'
+                elif img_col == '고려기프트 이미지':
+                    upload_col = '고려기프트(이미지링크)'
+                elif img_col == '네이버 이미지':
+                    upload_col = '네이버쇼핑(이미지링크)'
+                
+                if upload_col and upload_col in df_with_image_urls.columns:
+                    url_count = (df_with_image_urls[upload_col].astype(str).str.startswith(('http://', 'https://'))).sum()
                     logger.info(f"Extracted {url_count} image URLs from {img_col}")
                     
                     # Log a few examples if any URLs were found
                     if url_count > 0:
-                        sample_urls = df_with_image_urls[df_with_image_urls[img_col].astype(str).str.startswith(('http://', 'https://'))][img_col].head(3).tolist()
+                        sample_urls = df_with_image_urls[df_with_image_urls[upload_col].astype(str).str.startswith(('http://', 'https://'))][upload_col].head(3).tolist()
                         logger.info(f"Sample image URLs for {img_col}: {sample_urls}")
             
             # Map columns from result format to upload format 
@@ -1746,6 +1934,108 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             upload_success = True
             logger.info(f"Successfully created upload file (with image links): {upload_path}")
             
+            # Create a mapping between original DataFrame and final upload column order
+            df_upload = pd.DataFrame()
+            original_to_upload_mapping = {
+                # Regular columns mapping (original column name: upload column name)
+                '구분': '구분(승인관리:A/가격관리:P)',
+                '담당자': '담당자',
+                '업체명': '공급사명',
+                '업체코드': '공급처코드',
+                'Code': '상품코드',
+                '중분류카테고리': '카테고리(중분류)',
+                '상품명': '상품명',
+                '본사 기본수량': '본사 기본수량',
+                '본사 기준가': '판매단가1(VAT포함)',
+                '본사상품링크': '본사링크',
+                '고려 기본수량': '고려 기본수량',
+                '고려 기준가': '판매단가2(VAT포함)',
+                '고려 가격차이': '고려 가격차이',
+                '고려 가격차이(%)': '고려 가격차이(%)',
+                '고려기프트 상품링크': '고려 링크',
+                '네이버 기본수량': '네이버 기본수량',
+                '네이버 기준가': '판매단가3 (VAT포함)',
+                '네이버 가격차이': '네이버 가격차이',
+                '네이버 가격차이(%)': '네이버가격차이(%)',
+                '네이버 공급사명': '네이버 공급사명',
+                '네이버 쇼핑 링크': '네이버 링크',
+                # Image URL columns will be added separately
+            }
+
+            # Fill regular columns from df_finalized
+            for orig_col, upload_col in original_to_upload_mapping.items():
+                if orig_col in df_finalized.columns:
+                    df_upload[upload_col] = df_finalized[orig_col]
+                else:
+                    df_upload[upload_col] = ""  # Add empty column if original doesn't exist
+
+            # Now add image URL columns from df_with_image_urls
+            image_url_mapping = {
+                '해오름(이미지링크)': '해오름(이미지링크)',
+                '고려기프트(이미지링크)': '고려기프트(이미지링크)',
+                '네이버쇼핑(이미지링크)': '네이버쇼핑(이미지링크)'
+            }
+
+            for orig_col, upload_col in image_url_mapping.items():
+                if orig_col in df_with_image_urls.columns:
+                    df_upload[upload_col] = df_with_image_urls[orig_col]
+                else:
+                    df_upload[upload_col] = ""  # Add empty column if doesn't exist
+
+            # Reorder columns according to UPLOAD_COLUMN_ORDER with fallback
+            final_columns = []
+            for col in UPLOAD_COLUMN_ORDER:
+                if col in df_upload.columns:
+                    final_columns.append(col)
+
+            # Add any columns that might not be in the order but exist in the dataframe
+            for col in df_upload.columns:
+                if col not in final_columns:
+                    final_columns.append(col)
+
+            # Reorder the dataframe
+            df_upload = df_upload[final_columns]
+
+            # Create the Excel file with pandas's to_excel
+            df_upload.to_excel(upload_path, index=False, engine='openpyxl')
+
+            # Open the created file to add hyperlinks
+            try:
+                workbook_upload = openpyxl.load_workbook(upload_path)
+                worksheet_upload = workbook_upload.active
+                
+                # Add hyperlinks to all image URL cells
+                logger.info("Adding hyperlinks to image URLs in upload file...")
+                
+                # Define upload image columns
+                upload_image_cols = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+                
+                # Get the column indices for these columns
+                col_indices = {}
+                for i, col_name in enumerate(df_upload.columns, 1):
+                    if col_name in upload_image_cols:
+                        col_indices[col_name] = i
+                
+                # Add hyperlinks to the cells
+                for row_idx in range(2, len(df_upload) + 2):  # Start from row 2 (after header)
+                    for col_name, col_idx in col_indices.items():
+                        cell = worksheet_upload.cell(row=row_idx, column=col_idx)
+                        url = cell.value
+                        
+                        # Only add hyperlink if the cell contains a valid URL
+                        if isinstance(url, str) and url.strip() and url.startswith(('http://', 'https://')):
+                            cell.hyperlink = url
+                            cell.font = Font(color="0563C1", underline="single")
+                
+                # Save the updated workbook
+                workbook_upload.save(upload_path)
+                logger.info("Hyperlinks added to upload file successfully")
+            except Exception as e:
+                logger.warning(f"Error adding hyperlinks to upload file: {e}")
+
+            upload_success = True
+            logger.info(f"Successfully created upload file: {upload_path}")
+
         except Exception as upload_err:
             logger.error(f"Error creating upload file: {upload_err}")
             logger.debug(traceback.format_exc())
@@ -2243,4 +2533,173 @@ def _apply_basic_excel_formatting(worksheet, column_list):
     except Exception as e:
         logger.warning(f"Error applying basic Excel formatting: {e}")
         logger.debug(traceback.format_exc())
+
+def _add_table_format(worksheet: openpyxl.worksheet.worksheet.Worksheet):
+    """Applies Excel table formatting to the data range."""
+    # 테이블 서식 적용 함수 비우기 - 필터 적용 방지
+    logger.debug("Table formatting skipped as requested.")
+    return
+
+def create_excel_with_images(df, output_file):
+    """이미지가 포함된 엑셀 파일 생성"""
+    try:
+        # '번호' 컬럼이 없으면 추가
+        if '번호' not in df.columns:
+            df['번호'] = range(1, len(df) + 1)
+        
+        # 임시 디렉토리 생성
+        temp_dir = Path("temp_images")
+        temp_dir.mkdir(exist_ok=True)
+        
+        # 워크북 생성
+        wb = Workbook()
+        ws = wb.active
+        
+        # 사용 가능한 컬럼 확인
+        available_columns = df.columns.tolist()
+        logging.info(f"엑셀 생성: 사용 가능한 컬럼: {available_columns}")
+        
+        # 기본 헤더 및 데이터 컬럼 정의 (Use new column names)
+        base_headers = ['번호', '상품명']
+        optional_headers = ['파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
+        
+        # 실제 사용할 헤더 목록 생성
+        headers = base_headers + [h for h in optional_headers if h in available_columns]
+        
+        # 헤더 작성
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col, value=header)
+        
+        # 행 높이 설정
+        ws.row_dimensions[1].height = 30  # 헤더 행 높이
+        for row in range(2, len(df) + 2):
+            ws.row_dimensions[row].height = 200  # 데이터 행 높이 (doubled from 100)
+        
+        # 열 너비 설정
+        column_widths = {}
+        for i, header in enumerate(headers):
+            col_letter = get_column_letter(i+1)
+            if header == '번호':
+                column_widths[col_letter] = 5
+            elif header == '상품명':
+                column_widths[col_letter] = 30
+            elif header == '파일명':
+                column_widths[col_letter] = 30
+            else:
+                column_widths[col_letter] = 30  # Image columns width doubled from 15
+        
+        for col, width in column_widths.items():
+            ws.column_dimensions[col].width = width
+        
+        # 데이터 및 이미지 추가
+        for row_idx, (_, row) in enumerate(df.iterrows(), 2):
+            # 기본 데이터 추가
+            col_idx = 1
+            
+            # 번호 추가
+            ws.cell(row=row_idx, column=col_idx, value=row['번호'])
+            col_idx += 1
+            
+            # 상품명 추가
+            ws.cell(row=row_idx, column=col_idx, value=row['상품명'])
+            col_idx += 1
+            
+            # 파일명 추가 (있을 경우)
+            if '파일명' in available_columns:
+                ws.cell(row=row_idx, column=col_idx, value=row['파일명'])
+                col_idx += 1
+            
+            # 이미지 데이터 처리
+            image_columns = {}
+            # Use new image column names
+            for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+                if col_name in available_columns:
+                    image_columns[col_name] = row.get(col_name)
+            
+            # 이미지 추가
+            for col_name, img_data in image_columns.items():
+                if pd.isna(img_data) or img_data is None:
+                    ws.cell(row=row_idx, column=col_idx, value="")
+                    col_idx += 1
+                    continue
+                
+                try:
+                    # 이미지 경로 추출
+                    img_path = None
+                    if isinstance(img_data, dict):
+                        # excel_utils.py 형식의 딕셔너리 처리
+                        img_path = img_data.get('local_path')
+                        if not img_path:
+                            # URL만 있는 경우 셀에 URL 표시
+                            # IMPROVED: First check for image_url, then fall back to url
+                            if 'image_url' in img_data and img_data['image_url']:
+                                display_url = img_data['image_url']
+                            elif 'url' in img_data:
+                                display_url = img_data['url']
+                            else:
+                                display_url = ''
+                            ws.cell(row=row_idx, column=col_idx, value=display_url)
+                            col_idx += 1
+                            continue
+                    elif isinstance(img_data, str):
+                        # 문자열 경로 처리
+                        img_path = img_data
+                    
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            # 이미지 파일 복사
+                            img = Image(img_path)
+                            # 이미지 크기 조정 (최대 200x200, doubled from 100x100)
+                            img.width = 200
+                            img.height = 200
+                            # 이미지 추가
+                            ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
+                            ws.cell(row=row_idx, column=col_idx, value="")  # 이미지가 있으면 셀 값 비움
+                        except Exception as e:
+                            logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
+                            # 이미지 추가 실패 시 경로나 URL 표시
+                            if isinstance(img_data, dict):
+                                # IMPROVED: First check for image_url, then fall back to url
+                                if 'image_url' in img_data and img_data['image_url']:
+                                    display_url = img_data['image_url']
+                                elif 'url' in img_data:
+                                    display_url = img_data['url']
+                                else:
+                                    display_url = str(img_path)
+                                ws.cell(row=row_idx, column=col_idx, value=display_url)
+                            else:
+                                ws.cell(row=row_idx, column=col_idx, value=str(img_path))
+                    else:
+                        # 이미지 파일이 없는 경우 URL이나 경로 표시
+                        if isinstance(img_data, dict):
+                            # IMPROVED: First check for image_url, then fall back to url
+                            if 'image_url' in img_data and img_data['image_url']:
+                                display_url = img_data['image_url']
+                            elif 'url' in img_data:
+                                display_url = img_data['url']
+                            else:
+                                display_url = ''
+                            ws.cell(row=row_idx, column=col_idx, value=display_url)
+                        else:
+                            ws.cell(row=row_idx, column=col_idx, value=str(img_data))
+                except Exception as e:
+                    logging.error(f"이미지 처리 중 오류 발생 ({col_name}): {e}")
+                    ws.cell(row=row_idx, column=col_idx, value="이미지 처리 오류")
+                
+                col_idx += 1
+            
+            # 이미지 유사도 추가 (있을 경우)
+            if '이미지_유사도' in available_columns:
+                ws.cell(row=row_idx, column=col_idx, value=row['이미지_유사도'])
+                col_idx += 1
+        
+        # 엑셀 파일 저장
+        wb.save(output_file)
+        logging.info(f"이미지가 포함된 엑셀 파일이 저장되었습니다: {output_file}")
+        
+        # 임시 디렉토리 정리
+        shutil.rmtree(temp_dir)
+        
+    except Exception as e:
+        logging.error(f"엑셀 파일 생성 중 오류 발생: {e}", exc_info=True)
 
