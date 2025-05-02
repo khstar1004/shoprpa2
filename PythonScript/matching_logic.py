@@ -699,9 +699,10 @@ class ProductMatcher:
 def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict], naver_data: List[Dict], product_type: str, matcher: ProductMatcher, haoreum_img_path: Optional[str]) -> Tuple[int, Optional[Dict]]:
     """Matches a single Haoreum product against Kogift and Naver data."""
     if not matcher:
-        logging.error(f"Matcher object missing for index {i}.")
+        logging.error(f"Matcher object missing for index {i}. Cannot process.")
         return i, None
 
+    # Wrap the main logic in a single try-except block
     try:
         # Validate input data
         if not isinstance(haoreum_row_dict, dict):
@@ -715,170 +716,150 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         # Validate product name
         product_name = haoreum_row_dict.get('상품명')
         if not product_name or not isinstance(product_name, str):
-            logging.error(f"Invalid product name for index {i}: {product_name}")
-            return i, None
+            # Try alternative key '상품명(자체)'
+            product_name = haoreum_row_dict.get('상품명(자체)')
+            if not product_name or not isinstance(product_name, str):
+                logging.error(f"Invalid or missing product name (checked '상품명' and '상품명(자체)') for index {i}: {product_name}")
+                return i, None
             
         logging.debug(f"Matching product index {i}: {product_name}")
         
-        # Validate and prepare Haoreum product data
-        try:
-            haoreum_product = {
-                'name': product_name,
-                'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
-                'link': haoreum_row_dict.get('본사상품링크'),
-                'image_path': haoreum_img_path,
-                'code': haoreum_row_dict.get('Code'),
-                '담당자': haoreum_row_dict.get('담당자'),
-                '업체명': haoreum_row_dict.get('업체명'),
-                '업체코드': haoreum_row_dict.get('업체코드'),
-                '공급사명': haoreum_row_dict.get('공급사명'),
-                '공급처코드': haoreum_row_dict.get('공급처코드'),
-                '상품코드': haoreum_row_dict.get('상품코드'),
-                '카테고리(중분류)': haoreum_row_dict.get('카테고리(중분류)'),
-                '본사 기본수량': haoreum_row_dict.get('본사 기본수량')
-            }
-        except Exception as e:
-            logging.error(f"Error preparing Haoreum product data for index {i}: {e}")
-            return i, None
+        # --- Get Haoreum specific data ---
+        haoreum_scraped_image_url = haoreum_row_dict.get('본사이미지URL')
+        if not haoreum_scraped_image_url or not isinstance(haoreum_scraped_image_url, str) or not haoreum_scraped_image_url.startswith(('http://', 'https://')):
+            logging.warning(f"Row {i} ('{product_name}'): Invalid or missing scraped Haoreum image URL: '{haoreum_scraped_image_url}'. Proceeding without Haoreum URL.")
+            haoreum_scraped_image_url = None # Set URL to None if invalid
 
-        # Validate required fields
-        if not haoreum_product['name'] or pd.isna(haoreum_product['name']):
-            logging.warning(f"Missing product name for index {i}")
-            return i, None
+        # Prepare Haoreum product data structure for matching logic
+        haoreum_product_for_match = {
+            'name': product_name,
+            'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
+            'image_path': haoreum_img_path, # This is the LOCAL path passed in
+            'code': haoreum_row_dict.get('Code'),
+            '카테고리(중분류)': haoreum_row_dict.get('카테고리(중분류)')
+        }
 
-        # Find best matches with improved error handling
+        # Find best matches
         best_kogift_match = None
         best_naver_match = None
         
-        try:
-            if kogift_data:  # Only attempt matching if we have candidates
-                best_kogift_match = _find_best_match(haoreum_product, kogift_data, matcher, 'kogift')
-        except Exception as e:
-            logging.error(f"Error finding Kogift match for product {haoreum_product['name']}: {e}")
-            
-        try:
-            if naver_data:  # Only attempt matching if we have candidates
-                best_naver_match = _find_best_match(haoreum_product, naver_data, matcher, 'naver')
-        except Exception as e:
-            logging.error(f"Error finding Naver match for product {haoreum_product['name']}: {e}")
+        if kogift_data:  
+            best_kogift_match = _find_best_match(haoreum_product_for_match, kogift_data, matcher, 'kogift')
+        
+        if naver_data:  
+            best_naver_match = _find_best_match(haoreum_product_for_match, naver_data, matcher, 'naver')
 
-        # Combine results if matches found
-        if best_kogift_match or best_naver_match:
-            try:
-                result = {**haoreum_row_dict}  # Copy all original fields
-                
-                # Add or update fields
-                result.update({
-                    '구분(승인관리:A/가격관리:P)': product_type,
-                    'name': haoreum_product['name'],
-                    '본사링크': haoreum_product['link'],
-                    '판매단가(V포함)': haoreum_product['price'],
-                    '해오름이미지경로': haoreum_product['image_path'],
-                })
+        # --- Combine results into the final structure --- 
+        # Start with the original Haoreum row data
+        result = {**haoreum_row_dict} 
 
-                # Add Kogift data if available
-                if best_kogift_match:
-                    result.update({
-                        '고려 링크': best_kogift_match['match_data'].get('link'),
-                        '고려기프트(이미지링크)': best_kogift_match['match_data'].get('image_path'),
-                        '판매단가2(VAT포함)': best_kogift_match['match_data'].get('price'),
-                        '_고려_TextSim': best_kogift_match['text_similarity'],
-                        '_해오름_고려_ImageSim': best_kogift_match['image_similarity'],
-                        '_고려_Combined': best_kogift_match['combined_score'],
-                        '고려 기본수량': best_kogift_match['match_data'].get('quantity', '-')
-                    })
-                else:
-                    result.update({
-                        '고려 링크': None,
-                        '고려기프트(이미지링크)': None,
-                        '판매단가2(VAT포함)': None,
-                        '_고려_TextSim': 0.0,
-                        '_해오름_고려_ImageSim': 0.0,
-                        '_고려_Combined': None,
-                        '고려 기본수량': '-'
-                    })
+        # --- Add/Overwrite Haoreum Image Data --- 
+        haoreum_image_data = {
+             'url': haoreum_scraped_image_url,
+             'local_path': haoreum_img_path,
+             'source': 'haereum'
+        }
+        result['본사 이미지'] = haoreum_image_data
+        result.pop('해오름이미지경로', None)
 
-                # Add Naver data if available
-                if best_naver_match:
-                    # Extract image data from best match
-                    naver_image_data = None
-                    naver_match_data = best_naver_match['match_data']
-                    
-                    # Create proper dictionary format for image data
-                    if 'image_path' in naver_match_data:
-                        img_path = naver_match_data.get('image_path')
-                        img_url = naver_match_data.get('image_url') or naver_match_data.get('link')
-                        
-                        if img_path and img_url:
-                            # Create dictionary with both URL and local path
-                            naver_image_data = {
-                                'url': img_url,
-                                'local_path': img_path,
-                                'source': 'naver'
-                            }
-                        elif img_path:
-                            # Only have local path
-                            if isinstance(img_path, str) and img_path.startswith('http'):
-                                # It's actually a URL
-                                naver_image_data = {
-                                    'url': img_path,
-                                    'source': 'naver'
-                                }
-                            else:
-                                # It's a local path
-                                naver_image_data = {
-                                    'local_path': img_path,
-                                    'source': 'naver'
-                                }
-                        elif img_url:
-                            # Only have URL
-                            naver_image_data = {
-                                'url': img_url,
-                                'source': 'naver'
-                            }
-                    
-                    # Update result with Naver data
-                    result.update({
-                        '매칭_사이트': 'Naver',
-                        '공급사명': naver_match_data.get('mallName', naver_match_data.get('seller', '')),
-                        '네이버 쇼핑 링크': naver_match_data.get('link'),
-                        '공급사 상품링크': naver_match_data.get('mallProductUrl', naver_match_data.get('originallink')),
-                        '네이버 이미지': naver_image_data, # Use the dictionary format
-                        '판매단가(V포함)(3)': naver_match_data.get('price'),
-                        '텍스트_유사도': best_naver_match['text_similarity'],
-                        '이미지_유사도': best_naver_match['image_similarity'],
-                        '매칭_정확도': best_naver_match['combined_score'],
-                        '기본수량(3)': naver_match_data.get('quantity', '1'),
-                        '매칭_여부': 'Y',
-                        '매칭_품질': '상' if best_naver_match['combined_score'] > 0.8 else '중' if best_naver_match['combined_score'] > 0.6 else '하'
-                    })
-                else:
-                    result.update({
-                        '공급사명': None,
-                        '네이버 쇼핑 링크': None,
-                        '공급사 상품링크': None,
-                        '네이버 이미지': None,
-                        '판매단가(V포함)(3)': None,
-                        '텍스트_유사도': 0.0 if best_kogift_match else None,
-                        '이미지_유사도': 0.0 if best_kogift_match else None,
-                        '매칭_정확도': None,
-                        '기본수량(3)': None,
-                        '매칭_여부': 'Y' if best_kogift_match else 'N',
-                        '매칭_품질': '실패'
-                    })
+        # --- Add/Update other non-image Haoreum fields --- 
+        result.update({
+            '구분': product_type,
+            '본사상품링크': haoreum_row_dict.get('본사상품링크'),
+        })
 
-                logging.debug(f"Successfully matched product {haoreum_product['name']}")
-                return i, result
-            except Exception as e:
-                logging.error(f"Error combining match results for product {haoreum_product['name']}: {e}")
-                return i, None
+        # --- Add Kogift Data --- 
+        if best_kogift_match:
+             kogift_img_path = best_kogift_match['match_data'].get('image_path')
+             kogift_url = best_kogift_match['match_data'].get('image_url') or best_kogift_match['match_data'].get('link')
+             kogift_image_data = None
+             if kogift_url or kogift_img_path:
+                 kogift_image_data = {
+                     'url': kogift_url,
+                     'local_path': kogift_img_path,
+                     'source': 'kogift'
+                 }
+
+             result.update({
+                '고려기프트 상품링크': best_kogift_match['match_data'].get('link'),
+                '고려기프트 이미지': kogift_image_data,
+                '판매단가(V포함)(2)': best_kogift_match['match_data'].get('price'), 
+                '_고려_TextSim': best_kogift_match['text_similarity'],
+                '_해오름_고려_ImageSim': best_kogift_match['image_similarity'],
+                '_고려_Combined': best_kogift_match['combined_score'],
+                '기본수량(2)': best_kogift_match['match_data'].get('quantity', '-') 
+            })
         else:
-            logging.debug(f"No sufficient match found for product {haoreum_product['name']}")
-            return i, None
+             result.update({
+                '고려기프트 상품링크': None,
+                '고려기프트 이미지': None,
+                '판매단가(V포함)(2)': None,
+                '_고려_TextSim': 0.0,
+                '_해오름_고려_ImageSim': 0.0,
+                '_고려_Combined': None,
+                '기본수량(2)': '-'
+            })
 
+        # --- Add Naver Data --- 
+        if best_naver_match:
+            naver_img_path = best_naver_match['match_data'].get('image_path')
+            naver_url = (best_naver_match['match_data'].get('image_url') or 
+                         best_naver_match['match_data'].get('image') or 
+                         best_naver_match['match_data'].get('imageUrl') or 
+                         best_naver_match['match_data'].get('네이버 이미지'))
+            
+            existing_naver_img_dict = best_naver_match['match_data'].get('네이버 이미지')
+            if isinstance(existing_naver_img_dict, dict) and existing_naver_img_dict.get('url'):
+                naver_url = existing_naver_img_dict.get('url')
+                if not naver_img_path and existing_naver_img_dict.get('local_path'):
+                    naver_img_path = existing_naver_img_dict.get('local_path')
+
+            naver_image_data = None
+            if naver_url or naver_img_path:
+                 naver_image_data = {
+                     'url': naver_url,
+                     'local_path': naver_img_path,
+                     'source': 'naver'
+                 }
+                
+            result.update({
+                '매칭_사이트': 'Naver',
+                '공급사명': best_naver_match['match_data'].get('mallName', best_naver_match['match_data'].get('seller', '')), 
+                '네이버 쇼핑 링크': best_naver_match['match_data'].get('link'), 
+                '공급사 상품링크': best_naver_match['match_data'].get('mallProductUrl', best_naver_match['match_data'].get('originallink')),
+                '네이버 이미지': naver_image_data,
+                '판매단가(V포함)(3)': best_naver_match['match_data'].get('price'), 
+                '텍스트_유사도': best_naver_match['text_similarity'],
+                '이미지_유사도': best_naver_match['image_similarity'],
+                '매칭_정확도': best_naver_match['combined_score'],
+                '기본수량(3)': best_naver_match['match_data'].get('quantity', '1'),
+                '매칭_여부': 'Y',
+                '매칭_품질': '상' if best_naver_match['combined_score'] > 0.8 else '중' if best_naver_match['combined_score'] > 0.6 else '하'
+            })
+        else:
+            result.update({
+                '매칭_여부': 'Y' if best_kogift_match else 'N', 
+                '매칭_품질': '실패' if not best_kogift_match else result.get('매칭_품질', '-'),
+                '공급사명': None,
+                '네이버 쇼핑 링크': None,
+                '공급사 상품링크': None,
+                '네이버 이미지': None,
+                '판매단가(V포함)(3)': None,
+                '기본수량(3)': None,
+                '텍스트_유사도': result.get('_고려_TextSim', 0.0) if best_kogift_match else None,
+                '이미지_유사도': result.get('_해오름_고려_ImageSim', 0.0) if best_kogift_match else None,
+                '매칭_정확도': result.get('_고려_Combined') if best_kogift_match else None,
+                '매칭_사이트': 'Kogift' if best_kogift_match else None
+            })
+
+        # If combination is successful, return the result
+        logging.debug(f"Successfully processed product {product_name} (index {i})")
+        return i, result 
+            
     except Exception as e:
-        logging.error(f"Error in _match_single_product for index {i}: {e}", exc_info=True)
-        return i, None
+        # Catch any error during the processing of this product
+        logging.error(f"Error processing product {product_name} (index {i}): {e}", exc_info=True)
+        return i, None # Return None if processing fails for this product
 
 def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
     """
