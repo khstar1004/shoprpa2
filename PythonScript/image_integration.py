@@ -809,7 +809,26 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
             # --- Process Kogift Image (Keep existing logic, but ensure URL preservation) ---
             target_col_kogift = '고려기프트 이미지'
-            if kogift_match:
+            
+            # Check if there's actual Kogift product information before trying to match images
+            has_kogift_product_info = False
+            
+            # Check key columns that indicate Kogift product exists
+            kogift_link_col = '고려기프트 상품링크'
+            if kogift_link_col in row_data and row_data[kogift_link_col]:
+                if isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
+                    has_kogift_product_info = True
+            
+            # If no Kogift product link found, check for other potential Kogift product indicators
+            if not has_kogift_product_info:
+                kogift_price_col = '판매가(V포함)(2)'
+                if kogift_price_col in row_data and pd.notna(row_data[kogift_price_col]) and row_data[kogift_price_col] not in [0, '-', '', None]:
+                    has_kogift_product_info = True
+            
+            logging.debug(f"Row {idx}: Kogift product info exists: {has_kogift_product_info}")
+            
+            # Only try to match Kogift images if we have Kogift product information
+            if has_kogift_product_info and kogift_match:
                 kogift_path, kogift_score = kogift_match
                 img_path_obj = kogift_images.get(kogift_path, {}).get('path')
                 if not img_path_obj:
@@ -846,10 +865,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
                  if target_col_kogift in result_df.columns:
-                     # If no match found by integrate_images, keep existing data or set to '-'
-                     existing_data = result_df.loc[idx, target_col_kogift]
-                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
-                          result_df.loc[idx, target_col_kogift] = '-'
+                     # If no Kogift product info or no match found, ensure Kogift image is not included
+                     result_df.loc[idx, target_col_kogift] = '-'
                  else:
                      # This case should theoretically not happen anymore
                      logging.warning(f"Target column '{target_col_kogift}' unexpectedly not found at index {idx} during else block.")
