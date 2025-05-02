@@ -1777,26 +1777,82 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
         os.path.join(base_img_dir, 'Target', 'kogift')
     ]
     
-    logger.info("Scanning Kogift image directories...")
+    # Scan each directory for images
     for dir_path in kogift_dirs:
         if os.path.exists(dir_path):
-            logger.info(f"Scanning directory: {dir_path}")
             try:
+                logger.info(f"Scanning directory: {dir_path}")
+                # Get all image files in the directory
                 for file in os.listdir(dir_path):
                     if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
                         full_path = os.path.join(dir_path, file)
                         
-                        # Store by filename (both with and without kogift_ prefix)
+                        # Skip small files
+                        if os.path.getsize(full_path) < 1000:  # Less than 1KB
+                            continue
+                            
+                        # Store by full filename
                         base_name = os.path.basename(file)
                         kogift_images[base_name] = full_path
                         
-                        # Handle case where filename starts with kogift_
+                        # Store by lowercase filename
+                        kogift_images[base_name.lower()] = full_path
+                        
+                        # For filenames with kogift_ prefix
                         if base_name.lower().startswith('kogift_'):
-                            # Also store without the prefix for easier matching
+                            # Strip the prefix and store that too
                             no_prefix = base_name[7:]  # Remove 'kogift_'
                             kogift_images[no_prefix] = full_path
+                            kogift_images[no_prefix.lower()] = full_path
+                            
+                            # Try to extract hash part
+                            hash_match = re.search(r'kogift_.*?_([a-f0-9]{8,})\.', base_name.lower())
+                            if hash_match:
+                                hash_val = hash_match.group(1)
+                                # Store hash-only versions
+                                kogift_images[hash_val] = full_path
+                                # Store with various extensions/prefixes
+                                kogift_images[f"kogift_{hash_val}.jpg"] = full_path
+                                kogift_images[f"kogift_{hash_val}.png"] = full_path
+                                
+                            # ADDED: Special handling for _nobg images
+                            if '_nobg' in base_name.lower():
+                                # Get the name without _nobg suffix
+                                base_without_nobg = re.sub(r'_nobg\.[^.]+$', '', base_name)
+                                # Store mappings for regular image names to find _nobg versions
+                                regular_name = f"{base_without_nobg}.jpg"
+                                kogift_images[regular_name] = full_path
+                                regular_name_png = f"{base_without_nobg}.png"
+                                kogift_images[regular_name_png] = full_path
+                                
+                                # If it has the kogift_ prefix, also store without it
+                                if base_without_nobg.lower().startswith('kogift_'):
+                                    base_without_prefix = base_without_nobg[7:]  # Remove 'kogift_'
+                                    kogift_images[f"{base_without_prefix}.jpg"] = full_path
+                                    kogift_images[f"{base_without_prefix}.png"] = full_path
+                            
+                            # ADDED: Also map from regular images to their _nobg counterparts
+                            # This ensures we can find _nobg versions when looking for regular images
+                            elif not '_nobg' in base_name.lower():
+                                # Create the _nobg variant name
+                                base_without_ext = os.path.splitext(base_name)[0]
+                                nobg_name = f"{base_without_ext}_nobg.png"
+                                nobg_path = os.path.join(dir_path, nobg_name)
+                                
+                                # If the _nobg file exists, create a mapping
+                                if os.path.exists(nobg_path):
+                                    # Continue using the regular name as key, but point to nobg file
+                                    logger.debug(f"Mapped regular image {base_name} to _nobg version {nobg_name}")
+                                    kogift_images[base_name] = nobg_path
+                                    kogift_images[base_name.lower()] = nobg_path
+                                    
+                                    # Also map hash variants if they exist
+                                    if hash_match:
+                                        kogift_images[f"kogift_{hash_val}.jpg"] = nobg_path
+                                        kogift_images[f"kogift_{hash_val}.png"] = nobg_path
+                                        kogift_images[hash_val] = nobg_path
                         else:
-                            # Also store with prefix added
+                            # For files without kogift_ prefix, add it as an alternate key
                             with_prefix = f"kogift_{base_name}"
                             kogift_images[with_prefix] = full_path
                             
@@ -1882,7 +1938,7 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                         hash_patterns = [
                             f"kogift_{url_hash}.jpg",
                             f"kogift_{url_hash}.png", 
-                            f"kogift_{url_hash}_nobg.png"
+                            f"kogift_{url_hash}_nobg.png"  # ADDED: Explicit _nobg pattern for hash
                         ]
                         
                         for pattern in hash_patterns:
@@ -1895,6 +1951,22 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                                 df.at[idx, col] = img_data
                                 fixed_count += 1
                                 break
+                                
+                        # ADDED: Try looking for _nobg version if regular image not found
+                        if not local_path and filename.lower().endswith(('.jpg', '.png')) and '_nobg' not in filename.lower():
+                            # Generate _nobg variant of the filename
+                            base_name = os.path.splitext(filename)[0]
+                            nobg_variant = f"{base_name}_nobg.png"
+                            
+                            if nobg_variant in kogift_images:
+                                new_local_path = kogift_images[nobg_variant]
+                                logger.info(f"Row {idx}: Found _nobg variant for regular image: {nobg_variant}")
+                                
+                                # Update the dictionary
+                                img_data['local_path'] = new_local_path
+                                df.at[idx, col] = img_data
+                                fixed_count += 1
+                                continue
                                 
                         # If still not found, try fuzzy matching
                         best_match = None
@@ -1953,12 +2025,30 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                     fixed_count += 1
                     continue
                     
+                # ADDED: Try _nobg variant for regular image names
+                if filename.lower().endswith(('.jpg', '.png')) and '_nobg' not in filename.lower():
+                    base_name = os.path.splitext(filename)[0]
+                    nobg_variant = f"{base_name}_nobg.png"
+                    
+                    if nobg_variant in kogift_images:
+                        new_local_path = kogift_images[nobg_variant]
+                        logger.info(f"Row {idx}: Found _nobg variant for regular image URL string: {nobg_variant}")
+                        
+                        # Create a dictionary format
+                        df.at[idx, col] = {
+                            'url': url,
+                            'local_path': new_local_path,
+                            'source': 'kogift'
+                        }
+                        fixed_count += 1
+                        continue
+                    
                 # Try hash-based matching
                 url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
                 hash_patterns = [
                     f"kogift_{url_hash}.jpg",
                     f"kogift_{url_hash}.png", 
-                    f"kogift_{url_hash}_nobg.png"
+                    f"kogift_{url_hash}_nobg.png"  # ADDED: Include _nobg pattern
                 ]
                 
                 for pattern in hash_patterns:

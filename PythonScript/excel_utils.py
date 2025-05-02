@@ -545,6 +545,28 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                     os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}_nobg.png")
                                 ])
                             
+                            # ADDED: Additional _nobg pattern search
+                            # Extract base filename and check for _nobg variants
+                            if '_nobg' not in filename.lower():
+                                base_name = os.path.splitext(filename)[0]
+                                nobg_variant = f"{base_name}_nobg.png"
+                                possible_locations.extend([
+                                    os.path.join(base_img_dir, 'Main', 'Kogift', nobg_variant),
+                                    os.path.join(base_img_dir, 'Main', 'kogift', nobg_variant),
+                                    os.path.join(base_img_dir, 'Kogift', nobg_variant),
+                                    os.path.join(base_img_dir, 'kogift', nobg_variant)
+                                ])
+                                
+                                # If filename doesn't start with kogift_, also try with prefix
+                                if not base_name.lower().startswith('kogift_'):
+                                    prefixed_nobg = f"kogift_{base_name}_nobg.png"
+                                    possible_locations.extend([
+                                        os.path.join(base_img_dir, 'Main', 'Kogift', prefixed_nobg),
+                                        os.path.join(base_img_dir, 'Main', 'kogift', prefixed_nobg),
+                                        os.path.join(base_img_dir, 'Kogift', prefixed_nobg),
+                                        os.path.join(base_img_dir, 'kogift', prefixed_nobg)
+                                    ])
+                            
                             for loc in possible_locations:
                                 if os.path.exists(loc):
                                     img_path = loc
@@ -657,10 +679,40 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 for subdir, _, files in os.walk(root_dir):
                                     if 'kogift' in subdir.lower():
                                         for file in files:
-                                            if filename.lower() in file.lower():
+                                            # ENHANCED: Check for both exact matches and _nobg variants
+                                            filename_to_check = os.path.basename(cell_value)
+                                            
+                                            # Direct match
+                                            if filename_to_check.lower() in file.lower():
                                                 img_path = os.path.join(subdir, file)
                                                 logger.debug(f"Found Kogift file via path search: {img_path}")
                                                 break
+                                                
+                                            # Check if this could be a _nobg variant of our target
+                                            if '_nobg' in file.lower() and filename_to_check.lower().endswith(('.jpg', '.png', '.jpeg')):
+                                                # Extract the base part of our filename (remove extension)
+                                                base_filename = os.path.splitext(filename_to_check)[0]
+                                                # Check if this file is the _nobg variant
+                                                if f"{base_filename}_nobg" in file.lower():
+                                                    img_path = os.path.join(subdir, file)
+                                                    logger.debug(f"Found Kogift _nobg variant via path search: {img_path}")
+                                                    break
+                                                    
+                                            # Check if this is a regular file that has a matching _nobg variant
+                                            if not '_nobg' in file.lower() and file.lower() == filename_to_check.lower():
+                                                # Check if there's a corresponding _nobg file
+                                                base_file = os.path.splitext(file)[0]
+                                                nobg_variant = f"{base_file}_nobg.png"
+                                                nobg_path = os.path.join(subdir, nobg_variant)
+                                                if os.path.exists(nobg_path):
+                                                    img_path = nobg_path  # Use the _nobg version instead
+                                                    logger.debug(f"Found and using Kogift _nobg variant for regular file: {img_path}")
+                                                    break
+                                                else:
+                                                    # Still use the regular file if no _nobg exists
+                                                    img_path = os.path.join(subdir, file)
+                                                    logger.debug(f"Found Kogift regular file (no _nobg variant): {img_path}")
+                                                    break
                                     if img_path:
                                         break
                             if img_path:

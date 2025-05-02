@@ -148,6 +148,30 @@ def scan_kogift_images(base_dirs=None) -> Dict[str, str]:
                                 kogift_images[f"kogift_{hash_val}.jpg"] = full_path
                                 kogift_images[f"kogift_{hash_val}.png"] = full_path
                                 kogift_images[hash_val] = full_path
+                                
+                            # 3c. Check if the file has _nobg suffix (new)
+                            if '_nobg' in base_name.lower():
+                                # Extract the part before _nobg
+                                name_without_nobg = re.sub(r'_nobg\.[^.]+$', '', base_name)
+                                # Store alternative versions for mapping
+                                kogift_images[f"{name_without_nobg}.jpg"] = full_path
+                                kogift_images[f"{name_without_nobg}.png"] = full_path
+                                
+                                # Also store without the kogift_ prefix
+                                if name_without_nobg.lower().startswith('kogift_'):
+                                    base_without_prefix = name_without_nobg[7:] # Remove 'kogift_'
+                                    kogift_images[f"{base_without_prefix}.jpg"] = full_path
+                                    kogift_images[f"{base_without_prefix}.png"] = full_path
+                            # 3d. Also map regular image names to their _nobg counterparts (new)
+                            else:
+                                # Create the _nobg variant names to check if they exist
+                                name_without_ext, ext = os.path.splitext(base_name)
+                                nobg_variant = f"{name_without_ext}_nobg.png"
+                                nobg_path = os.path.join(root, nobg_variant)
+                                # If the _nobg file exists, map the regular name to it as well
+                                if os.path.exists(nobg_path):
+                                    kogift_images[f"{base_name}"] = nobg_path
+                                    kogift_images[f"{base_name.lower()}"] = nobg_path
                         else:
                             # 4. For files without kogift_ prefix, add it as an alternate key
                             with_prefix = f"kogift_{base_name}"
