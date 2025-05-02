@@ -740,119 +740,109 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 continue
             row_data = result_df.iloc[idx] # Get the current row's data to access scraped URLs
 
-            # 해오름 이미지 - Target Column standardized for final Excel
-            # Use the same column names defined in excel_utils.IMAGE_COLUMNS
+            # --- Process Haoreum Image --- 
             target_col_haereum = '본사 이미지'
-            if haereum_match:
-                haereum_path, haereum_score = haereum_match
-                img_path = haereum_images[haereum_path]['path']
-                
-                # --- Get original web URL if already present in input data ---
-                existing_img_data = row_data.get(target_col_haereum)
-                web_url = None
-                if isinstance(existing_img_data, dict):
-                    potential_url = existing_img_data.get('url')
-                    # Check if it's a string and looks like a web URL
-                    if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
-                         web_url = potential_url # Found existing web URL
-                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Haereum: {web_url[:60]}...")
-                
-                # If no valid web URL found in existing data, use empty string
-                if not web_url:
-                     logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Haereum ({target_col_haereum}). URL will be empty.")
-                     web_url = "" # Use empty string instead of product link
-                # --- End URL handling ---
-                
-                image_data = {
-                    'local_path': str(img_path),
-                    'source': 'haereum',
-                    'url': web_url, # Store the preserved or empty URL
-                    'original_path': str(img_path), # Keep original local path info if needed
-                    'score': haereum_score,
-                    'product_name': product_names[idx] # 상품명 추가
-                }
-                result_df.at[idx, target_col_haereum] = image_data # Use .at for scalar assignment
-            else:
-                 # Ensure the column exists before assigning (this check might become redundant now, but harmless)
-                 if target_col_haereum in result_df.columns:
-                     # If no match found by integrate_images, keep existing data or set to '-'
-                     existing_data = result_df.loc[idx, target_col_haereum]
-                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
-                          result_df.loc[idx, target_col_haereum] = '-' # Use consistent placeholder
-                 else:
-                     # This case should theoretically not happen anymore after the initial column addition
-                     logging.warning(f"Target column '{target_col_haereum}' unexpectedly not found at index {idx} during else block.")
+            existing_haereum_data = row_data.get(target_col_haereum)
+            haereum_data_preserved = False
 
-            # 고려기프트 이미지 column
+            # Check if data already exists and has a valid URL (placed by format_product_data_for_output)
+            if isinstance(existing_haereum_data, dict) and \
+               existing_haereum_data.get('url') and \
+               isinstance(existing_haereum_data.get('url'), str) and \
+               existing_haereum_data['url'].startswith(('http://', 'https://')):
+                logging.debug(f"Row {idx}: Preserving existing Haoreum image data (with URL) placed by format_product_data_for_output.")
+                haereum_data_preserved = True
+                # Ensure local_path is also present if possible (it might have been added by format_product_data)
+                # Check if path exists in dict AND on disk
+                if 'local_path' not in existing_haereum_data or not os.path.exists(existing_haereum_data.get('local_path', '')):
+                    if haereum_match: # Try to get path from current match results if needed
+                         haereum_path, _ = haereum_match
+                         local_path = haereum_images.get(haereum_path, {}).get('path')
+                         if local_path and os.path.exists(str(local_path)):
+                              existing_haereum_data['local_path'] = str(local_path)
+                              existing_haereum_data['original_path'] = str(local_path)
+                              result_df.at[idx, target_col_haereum] = existing_haereum_data # Update the dict in DF
+                              logging.debug(f"Row {idx}: Added missing local_path to preserved Haoreum data.")
+                # No further assignment needed for Haoreum if data was preserved
+
+            # If data wasn't preserved (no valid URL found beforehand), use the match result from find_best_image_matches
+            if not haereum_data_preserved:
+                logging.debug(f"Row {idx}: No valid pre-existing Haoreum data found. Using match results.")
+                if haereum_match:
+                    haereum_path, haereum_score = haereum_match
+                    img_path_obj = haereum_images.get(haereum_path, {}).get('path')
+                    if not img_path_obj:
+                         logging.warning(f"Row {idx}: Haoreum match found ({haereum_path}) but no corresponding image path in metadata.")
+                         result_df.at[idx, target_col_haereum] = '-'
+                         continue # Skip to next source if path object missing
+                         
+                    img_path = str(img_path_obj)
+                    
+                    # Try to get URL from existing data again (e.g., if format_product only added path)
+                    web_url = None
+                    if isinstance(existing_haereum_data, dict):
+                        potential_url = existing_haereum_data.get('url')
+                        if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                             web_url = potential_url
+                    if not web_url: # Default to empty if no URL found
+                         web_url = "" 
+
+                    image_data = {
+                        'local_path': img_path,
+                        'source': 'haereum',
+                        'url': web_url, # Use found or empty URL
+                        'original_path': img_path,
+                        'score': haereum_score,
+                        'product_name': product_names[idx]
+                    }
+                    result_df.at[idx, target_col_haereum] = image_data
+                else:
+                     # Handle case where no match was found *and* no prior data existed
+                     if target_col_haereum in result_df.columns:
+                         # Check again to avoid overwriting dicts that maybe just lack URL
+                         current_val = result_df.loc[idx, target_col_haereum]
+                         if not isinstance(current_val, dict):
+                              result_df.loc[idx, target_col_haereum] = '-'
+                     else:
+                         # This case should not happen due to earlier column addition
+                         logging.warning(f"Target column '{target_col_haereum}' unexpectedly missing at index {idx}.")
+
+            # --- Process Kogift Image (Keep existing logic, but ensure URL preservation) ---
             target_col_kogift = '고려기프트 이미지'
             if kogift_match:
                 kogift_path, kogift_score = kogift_match
-                img_path = kogift_images[kogift_path]['path']
+                img_path_obj = kogift_images.get(kogift_path, {}).get('path')
+                if not img_path_obj:
+                    logging.warning(f"Row {idx}: Kogift match found ({kogift_path}) but no corresponding image path in metadata.")
+                    # Check existing data before setting to '-'
+                    existing_kogift_data = row_data.get(target_col_kogift)
+                    if not isinstance(existing_kogift_data, dict):
+                         result_df.at[idx, target_col_kogift] = '-'
+                    continue # Skip Kogift if path is missing
+                    
+                img_path = str(img_path_obj)
                 
-                # --- Get original web URL if already present in input data ---
-                existing_img_data = row_data.get(target_col_kogift)
+                # Prioritize URL from existing data if available
+                existing_kogift_data = row_data.get(target_col_kogift)
                 web_url = None
-                if isinstance(existing_img_data, dict):
-                    potential_url = existing_img_data.get('url')
-                    # Check if it's a string and looks like a web URL
+                if isinstance(existing_kogift_data, dict):
+                    potential_url = existing_kogift_data.get('url')
                     if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
-                         web_url = potential_url # Found existing web URL
-                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Kogift: {web_url[:60]}...")
+                        web_url = potential_url
+                        logging.debug(f"Row {idx}: Preserving existing Kogift URL: {web_url[:60]}...")
                 
-                # If no valid web URL found in existing data, use empty string
-                if not web_url:
+                if not web_url: # If URL wasn't preserved from earlier step
                      logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Kogift ({target_col_kogift}). URL will be empty.")
-                     web_url = "" # Use empty string instead of product link
-                # --- End URL handling ---
-                
+                     web_url = ""
+
                 image_data = {
-                    'local_path': str(img_path),
+                    'local_path': img_path,
                     'source': 'kogift',
-                    'url': web_url, # Store the preserved or empty URL
+                    'url': web_url, # Use preserved or empty URL
                     'original_path': str(img_path),
                     'score': kogift_score,
                     'product_name': product_names[idx] # 상품명 추가
                 }
-                
-                # Additional checks to ensure image file exists
-                if not os.path.exists(img_path):
-                    logging.warning(f"Row {idx}: Kogift image file does not exist at path: {img_path}")
-                    # Try to find the image in a different location
-                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\\\RPA\\\\Image')
-                    filename = os.path.basename(img_path)
-                    
-                    # Search for the file in various possible locations
-                    possible_locations = [
-                        os.path.join(base_img_dir, 'Main', 'Kogift', filename),
-                        os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
-                        os.path.join(base_img_dir, 'Main', 'kogift', filename),
-                        os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
-                        os.path.join(base_img_dir, 'Kogift', filename),
-                        os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}"),
-                        os.path.join(base_img_dir, 'kogift', filename),
-                        os.path.join(base_img_dir, 'kogift', f"kogift_{filename}")
-                    ]
-                    
-                    # If URL is available, also try searching by URL hash
-                    if web_url and web_url.startswith(('http://', 'https://')):
-                        import hashlib
-                        url_hash = hashlib.md5(web_url.encode()).hexdigest()[:10]
-                        possible_locations.extend([
-                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.jpg"),
-                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.jpg"),
-                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.png"),
-                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.png"),
-                            os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}_nobg.png"),
-                            os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}_nobg.png")
-                        ])
-                    
-                    for alt_path in possible_locations:
-                        if os.path.exists(alt_path):
-                            logging.info(f"Row {idx}: Found alternative Kogift image path: {alt_path}")
-                            image_data['local_path'] = str(alt_path)
-                            image_data['original_path'] = str(alt_path)
-                            break
-                
                 result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
             else:
                  if target_col_kogift in result_df.columns:
@@ -866,30 +856,55 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
             # 네이버 이미지 column
             target_col_naver = '네이버 이미지'
-            if naver_match:
+            link_col_naver = '네이버 쇼핑 링크' # Define the fallback link column
+            
+            # Check if there's actual Naver product information before trying to match images
+            has_naver_product_info = False
+            
+            # Check key columns that indicate Naver product exists
+            if link_col_naver in row_data and row_data[link_col_naver]:
+                if isinstance(row_data[link_col_naver], str) and row_data[link_col_naver].strip() not in ['', '-', 'None', None]:
+                    has_naver_product_info = True
+            
+            # If no Naver product link found, check for other potential Naver product indicators
+            if not has_naver_product_info:
+                naver_price_col = '판매단가(V포함)(3)'
+                if naver_price_col in row_data and pd.notna(row_data[naver_price_col]) and row_data[naver_price_col] not in [0, '-', '', None]:
+                    has_naver_product_info = True
+            
+            logging.debug(f"Row {idx}: Naver product info exists: {has_naver_product_info}")
+            
+            # Only try to match Naver images if we have Naver product information
+            if has_naver_product_info and naver_match:
                 naver_path, naver_score = naver_match
-                img_path = naver_images[naver_path]['path']
-                
-                 # --- Get original web URL if already present in input data ---
-                existing_img_data = row_data.get(target_col_naver)
+                img_path_obj = naver_images.get(naver_path, {}).get('path')
+                if not img_path_obj:
+                    logging.warning(f"Row {idx}: Naver match found ({naver_path}) but no corresponding image path in metadata.")
+                    # Check existing data before setting to '-'
+                    existing_naver_data = row_data.get(target_col_naver)
+                    if not isinstance(existing_naver_data, dict):
+                         result_df.at[idx, target_col_naver] = '-'
+                    continue # Skip Naver if path is missing
+                    
+                img_path = str(img_path_obj)
+
+                # Prioritize URL from existing data if available
+                existing_naver_data = row_data.get(target_col_naver)
                 web_url = None
-                if isinstance(existing_img_data, dict):
-                    potential_url = existing_img_data.get('url')
-                    # Check if it's a string and looks like a web URL
+                if isinstance(existing_naver_data, dict):
+                    potential_url = existing_naver_data.get('url')
                     if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
-                         web_url = potential_url # Found existing web URL
-                         logging.debug(f"Row {idx}: Preserving existing web URL from input data for Naver: {web_url[:60]}...")
+                        web_url = potential_url
+                        logging.debug(f"Row {idx}: Preserving existing Naver URL: {web_url[:60]}...")
                 
-                # If no valid web URL found in existing data, use empty string
-                if not web_url:
+                if not web_url: # If URL wasn't preserved
                      logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Naver ({target_col_naver}). URL will be empty.")
-                     web_url = "" # Use empty string instead of product link
-                # --- End URL handling ---
-                
+                     web_url = ""
+
                 image_data = {
-                    'local_path': str(img_path),
+                    'local_path': img_path,
                     'source': 'naver',
-                    'url': web_url, # Store the preserved or empty URL
+                    'url': web_url, # Use preserved or empty URL
                     'original_path': str(img_path),
                     'score': naver_score,
                     'product_name': product_names[idx] # 상품명 추가
@@ -897,10 +912,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
             else:
                  if target_col_naver in result_df.columns:
-                     # If no match found by integrate_images, keep existing data or set to '-'
-                     existing_data = result_df.loc[idx, target_col_naver]
-                     if not isinstance(existing_data, dict): # Don't overwrite potentially correct data from previous steps
-                          result_df.loc[idx, target_col_naver] = '-'
+                     # If no Naver product info or no match found, ensure Naver image is not included
+                     result_df.loc[idx, target_col_naver] = '-'
                  else:
                      # This case should theoretically not happen anymore
                      logging.warning(f"Target column '{target_col_naver}' unexpectedly not found at index {idx} during else block.")

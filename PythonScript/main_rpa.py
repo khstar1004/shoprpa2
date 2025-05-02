@@ -333,73 +333,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             naver_crawl_results = []
             haereum_image_url_map = {}
 
-        # --- Merge & Download Crawled Haereum Data ---
-        merge_dl_start_time = time.time()
-        logging.info("Merging crawled Haereum image URLs and downloading images...")
-        
-        try:
-            # Log data structure before merge
-            logging.debug("Pre-merge data structure check:")
-            logging.debug(f"- haoreum_df columns: {haoreum_df.columns.tolist()}")
-            logging.debug(f"- haereum_image_url_map keys count: {len(haereum_image_url_map)}")
-            
-            # Merge URLs with detailed logging
-            haoreum_df['해오름이미지URL'] = haoreum_df['상품명'].map(haereum_image_url_map).fillna('')
-            added_url_count = (haoreum_df['해오름이미지URL'] != '').sum()
-            logging.info(f"Merged {added_url_count} Haereum image URLs")
-            
-            if debug_mode:
-                # Sample check of merged data
-                sample_size = min(5, len(haoreum_df))
-                logging.debug("Sample of merged data:")
-                for idx in range(sample_size):
-                    row = haoreum_df.iloc[idx]
-                    logging.debug(f"Product {idx + 1}: Name='{row['상품명']}', URL='{row['해오름이미지URL']}'")
-            
-            # Download Images with progress tracking
-            if added_url_count > 0:
-                logging.info(f"Starting download of {added_url_count} Haereum images...")
-                if progress_queue:
-                    progress_queue.emit("status", f"Haereum 이미지 다운로드 중 ({added_url_count}개)...")
-                
-                crawled_haereum_image_path_map = await preprocess_and_download_images(
-                    df=haoreum_df[haoreum_df['해오름이미지URL'] != ''],
-                    url_column_name='해오름이미지URL',
-                    id_column_name='Code',
-                    prefix='haereum',
-                    config=config,
-                    max_workers=download_workers
-                )
-                
-                # Verify download results
-                download_success_count = len(crawled_haereum_image_path_map)
-                logging.info(f"Downloaded {download_success_count}/{added_url_count} Haereum images successfully")
-                
-                # Merge downloaded image paths
-                haoreum_df['해오름이미지경로'] = haoreum_df['Code'].map(crawled_haereum_image_path_map).fillna('')
-                final_path_count = (haoreum_df['해오름이미지경로'] != '').sum()
-                
-                logging.info(f"Final image path merge results: {final_path_count} paths added")
-                if debug_mode and final_path_count < added_url_count:
-                    logging.debug(f"Missing paths: {added_url_count - final_path_count} images failed to download/process")
-            else:
-                logging.warning("No Haereum image URLs to process")
-                # Ensure the column exists even if no images were processed
-                if '해오름이미지경로' not in haoreum_df.columns:
-                    haoreum_df['해오름이미지경로'] = None # Use None or pd.NA instead of ''
-
-            process_duration = time.time() - merge_dl_start_time
-            logging.info(f"Haereum image processing completed in {process_duration:.2f} seconds")
-            
-        except Exception as e:
-            logging.error(f"Error processing Haereum images: {e}")
-            if debug_mode:
-                logging.debug(traceback.format_exc())
-            if '해오름이미지URL' not in haoreum_df.columns:
-                haoreum_df['해오름이미지URL'] = None # Use None or pd.NA
-            if '해오름이미지경로' not in haoreum_df.columns:
-                haoreum_df['해오름이미지경로'] = None # Use None or pd.NA
-
         # --- Prepare Data for Matching ---
         map_prep_start_time = time.time()
         logging.info("Preparing crawled data maps for matching...")
@@ -736,42 +669,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if img_cols_to_log:
                              logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
 
-                    # --- Image Matching Result Verification ---
-                    logging.info("Verifying image matching results post-integration...")
-                    image_columns_to_check = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
-                    valid_data_count = 0
-                    invalid_rows_details = []
-
-                    for col in image_columns_to_check:
-                        if col in integrated_df.columns: # Check against integrated_df
-                            # Calculate valid matches based on dictionary structure and content
-                            valid_matches = integrated_df[col].apply(lambda x:
-                                isinstance(x, dict) and (
-                                    (x.get('local_path') and isinstance(x.get('local_path'), str) and x.get('local_path').strip() not in ['','-']) or
-                                    (x.get('url') and isinstance(x.get('url'), str) and x.get('url').strip().startswith(('http', 'file:')))
-                                )
-                            ).sum()
-                            logging.info(f"  - '{col}': {valid_matches} valid image data dictionaries found.")
-
-                            # Check for invalid data formats
-                            for index, value in integrated_df[col].items():
-                                if pd.notna(value) and value not in ['-', '']: # Check non-empty values
-                                    is_valid_dict = isinstance(value, dict) and (
-                                        (value.get('local_path') and isinstance(value.get('local_path'), str) and value.get('local_path').strip() not in ['','-']) or
-                                        (value.get('url') and isinstance(value.get('url'), str) and value.get('url').strip().startswith(('http', 'file:')))
-                                    )
-                                    if not is_valid_dict:
-                                        invalid_rows_details.append(f"    - Row {index}, Col '{col}': Invalid format -> {str(value)[:100]}...")
-
-                        else:
-                            logging.warning(f"  - '{col}': Column not found in DataFrame post-integration.")
-
-                    if invalid_rows_details:
-                         logging.warning(f"Verification: Found {len(invalid_rows_details)} invalid data formats in image columns post-integration:")
-                         for detail in invalid_rows_details[:10]: # Log details for first few invalid entries
-                              logging.warning(detail)
-                    else:
-                         logging.info("Verification: All image data formats appear valid post-integration.")
 
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)

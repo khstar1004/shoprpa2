@@ -203,7 +203,8 @@ def verify_image_data(img_value, img_col_name):
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
                              naver_results: Dict[str, List[Dict]] = None,
-                             input_file_image_map: Dict[str, Any] = None) -> pd.DataFrame:
+                             input_file_image_map: Dict[str, Any] = None,
+                             haereum_image_url_map: Dict[str, str] = None) -> pd.DataFrame:
     """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
     # Create a copy to avoid modifying the input
@@ -235,34 +236,49 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             df[img_col] = df[img_col].apply(lambda x: {} if pd.isna(x) or x is None else x)
             
     # Process input file image map (해오름 이미지)
-    if input_file_image_map and '본사 이미지' in df.columns:
+    if (input_file_image_map or haereum_image_url_map) and '본사 이미지' in df.columns:
         haoreum_img_count = 0
         for idx, row in df.iterrows():
             product_code = row.get('Code')
-            if product_code and product_code in input_file_image_map:
+            product_name = row.get('상품명')
+            
+            img_path = None
+            web_url = None
+            
+            # 1. Try getting the URL from the crawled map first (most reliable source)
+            if haereum_image_url_map and product_name in haereum_image_url_map and haereum_image_url_map[product_name]:
+                web_url = haereum_image_url_map[product_name]
+                logging.debug(f"Row {idx} ('{product_name}'): Using crawled Haoreum URL: {web_url}")
+            
+            # 2. Get local path from input file map (if available)
+            if input_file_image_map and product_code and product_code in input_file_image_map:
                 img_path = input_file_image_map[product_code]
+            
+            # Only proceed if we have either a valid URL or a valid path
+            if web_url or (img_path and os.path.exists(img_path)):
                 # 이미지 정보가 있는 경우에만 처리
-                if img_path:
-                    # 로컬 경로 및 URL 정보를 포함하는 딕셔너리 생성
-                    img_data = {
-                        'local_path': img_path,
-                        'source': '해오름'
-                    }
-                    
-                    # 해오름 사이트 URL 패턴에 맞게 URL 생성 시도
-                    # 예: https://www.jclgift.com/upload/product/simg3/EEDA00010000s.gif
-                    file_name = os.path.basename(img_path)
-                    if file_name and '.' in file_name:
-                        if '해오름이미지URL' in row and isinstance(row['해오름이미지URL'], str) and row['해오름이미지URL'].startswith(('http://', 'https://')):
-                            # 이미 URL이 있는 경우 그것을 사용
-                            img_data['url'] = row['해오름이미지URL']
-                        elif product_code and product_code.isalnum() and len(product_code) <= 12:
-                            # 상품 코드로 이미지 URL 추정 시도
-                            ext = os.path.splitext(file_name)[1].lower()
-                            img_data['url'] = f"https://www.jclgift.com/upload/product/simg3/{product_code}s{ext}"
-                    
-                    df.at[idx, '본사 이미지'] = img_data
-                    haoreum_img_count += 1
+                # 로컬 경로 및 URL 정보를 포함하는 딕셔너리 생성
+                img_data = {
+                    'source': 'haereum' # CHANGED source name for consistency
+                }
+                
+                if img_path and os.path.exists(img_path):
+                    img_data['local_path'] = img_path
+                    img_data['original_path'] = img_path # Add original path
+                
+                # Use the reliably crawled URL if found
+                if web_url:
+                    img_data['url'] = web_url
+                # If no web_url found via crawling, try to get it from the row (less reliable)
+                elif '해오름이미지URL' in row and isinstance(row['해오름이미지URL'], str) and row['해오름이미지URL'].startswith(('http://', 'https://')):
+                     img_data['url'] = row['해오름이미지URL']
+                     logging.debug(f"Row {idx} ('{product_name}'): Using Haoreum URL from existing DF column as fallback.")
+                # If still no URL, leave it blank in the dictionary
+                elif 'url' not in img_data:
+                    img_data['url'] = '' 
+                
+                df.at[idx, '본사 이미지'] = img_data
+                haoreum_img_count += 1
         
         logging.info(f"Added {haoreum_img_count} 해오름 images from input file image map")
 
@@ -555,7 +571,10 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     
     # --- Final formatting and cleanup ---
     # Convert NaN values to None/empty for cleaner Excel output
-    df = df.replace({pd.NA: None, np.nan: None})
+    # Important: Do not replace '-' here as it's used as a valid placeholder
+    df = df.replace({pd.NA: None, np.nan: None}) # Keep NaN -> None for general cleaning
+    # Explicitly replace None with '-' only for specific columns where needed BEFORE final output
+    # This step is usually handled in finalize_dataframe_for_excel
     
     # Count image URLs per column for logging
     img_url_counts = {
@@ -577,7 +596,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
                     kogift_results: Optional[Dict[str, List[Dict]]] = None,
                     naver_results: Optional[Dict[str, List[Dict]]] = None,
-                    input_file_image_map: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+                    input_file_image_map: Optional[Dict[str, Any]] = None,
+                    haereum_image_url_map: Dict[str, str] = None) -> pd.DataFrame:
     """
     Process input DataFrame with necessary data processing steps.
     
@@ -587,6 +607,7 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
         kogift_results: Dictionary mapping product names to Kogift crawl results
         naver_results: Dictionary mapping product names to Naver crawl results
         input_file_image_map: Dictionary mapping product codes to image paths
+        haereum_image_url_map: Dictionary mapping product names to Haoreum image URLs
     
     Returns:
         Processed DataFrame
@@ -608,7 +629,8 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
             filtered_df,
             kogift_results=kogift_results or {},
             naver_results=naver_results or {},
-            input_file_image_map=input_file_image_map or {}
+            input_file_image_map=input_file_image_map or {},
+            haereum_image_url_map=haereum_image_url_map or {}
         )
         
         # Create output directory if it doesn't exist
