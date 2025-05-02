@@ -894,43 +894,26 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     original_file_path = haereum_images.get(haereum_path, {}).get('original_path', img_path) # Get original path if stored
 
                     # --- Get Haoreum URL ---
-                    # 1. PRIORITIZE the URL directly scraped and stored in the input DataFrame
-                    web_url = scraped_url
+                    # 1. Get the URL directly scraped and stored in the input DataFrame
+                    scraped_url = scraped_url # Fetched earlier
+                    web_url = "" # Initialize web_url to empty string
 
-                    # 2. Fallback: URL from image metadata (less reliable now)
-                    if not web_url:
-                        web_url = haereum_images.get(haereum_path, {}).get('url')
-                        if web_url:
-                             logging.warning(f"Row {idx}: Using Haoreum URL from image metadata '{web_url}' as scraped URL was missing.")
-
-                    # 3. Fallback: Try generating (LAST RESORT - Original problematic logic, kept only as final fallback)
-                    if not web_url:
-                        logging.warning(f"Row {idx}: Haoreum URL missing from scraped data and metadata. Attempting generation (fallback).")
-                        # 파일명에서 제품 코드 추출 시도
-                        product_code_match = re.search(r'([A-Z]{4}\d{7})', img_path)
-                        if product_code_match:
-                            product_code = product_code_match.group(1)
-                            extensions = ['.jpg', '.png', '.gif'] # Try common extensions
-                            # Try to guess suffix based on filename
-                            suffix_match = re.search(r'[A-Z]{4}\d{7}(.*?)\.[a-z]+$', os.path.basename(img_path))
-                            suffix = suffix_match.group(1) if suffix_match else 's' # Default to 's'
-
-                            for ext in extensions:
-                                potential_url = f"https://www.jclgift.com/upload/product/simg3/{product_code}{suffix}{ext}"
-                                # NOTE: This doesn't verify if the URL is valid, it's just a guess
-                                web_url = potential_url
-                                logging.debug(f"Row {idx}: Generated potential Haereum URL: {potential_url}")
-                                break # Use first generated guess
-
-                    # 4. If still no URL, use empty string
-                    if not web_url:
-                        web_url = ""
-                        logging.error(f"Row {idx}: CRITICAL - Could not determine URL for Haereum image {img_path}. Scraped URL was missing.")
+                    # 2. Validate the scraped URL
+                    if scraped_url and isinstance(scraped_url, str) and scraped_url.startswith(('http://', 'https://')):
+                        web_url = scraped_url # Use the valid scraped URL
+                    else:
+                        # If scraped_url is missing or not a valid HTTP/HTTPS URL
+                        logging.error(
+                            f"Row {idx}: CRITICAL - Invalid or missing Haoreum URL in scraped data "
+                            f"('{scraped_haereum_url_col}' column) for product '{product_names[idx]}'. "
+                            f"Value found: '{scraped_url}'. Image path (if matched): {img_path}"
+                        )
+                        # web_url remains "" as initialized above
 
                     image_data = {
                         'local_path': img_path,
                         'source': 'haereum',
-                        'url': web_url, # Use the determined URL (prioritizing scraped)
+                        'url': web_url, # Use the ONLY determined URL (scraped or empty)
                         'original_path': original_file_path, # Store the original path from metadata
                         'score': haereum_score,
                         'product_name': product_names[idx]
