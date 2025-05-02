@@ -1800,7 +1800,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                 '가격차이(3)(%)': '네이버가격차이(%)',
                 '공급사명': '네이버 공급사명',
                 '네이버 쇼핑 링크': '네이버 링크',
-                '공급사 상품링크': '공급사 상품링크',
                 # Image URL columns will be added separately
             }
 

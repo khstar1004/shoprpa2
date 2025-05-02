@@ -733,6 +733,40 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             'naver': '네이버 쇼핑 링크'     # Changed from '네이버 링크'
         }
 
+        # Pre-compute Koreagift product info existence for all rows
+        # Will be used to determine if image should be assigned
+        kogift_product_info_exists = []
+        for idx in range(len(result_df)):
+            if idx >= len(result_df):
+                kogift_product_info_exists.append(False)
+                continue
+                
+            row_data = result_df.iloc[idx]
+            has_kogift_info = False
+            
+            # Check for Koreagift link
+            kogift_link_col = '고려기프트 상품링크'
+            if kogift_link_col in row_data and row_data[kogift_link_col]:
+                if isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
+                    has_kogift_info = True
+            
+            # Check for Koreagift price
+            if not has_kogift_info:
+                kogift_price_col = '판매가(V포함)(2)'
+                if kogift_price_col in row_data and pd.notna(row_data[kogift_price_col]) and row_data[kogift_price_col] not in [0, '-', '', None]:
+                    has_kogift_info = True
+                    
+            # Check for alternative price column
+            if not has_kogift_info:
+                alt_kogift_price_col = '판매단가(V포함)(2)'
+                if alt_kogift_price_col in row_data and pd.notna(row_data[alt_kogift_price_col]) and row_data[alt_kogift_price_col] not in [0, '-', '', None]:
+                    has_kogift_info = True
+            
+            kogift_product_info_exists.append(has_kogift_info)
+        
+        logging.info(f"Pre-computed Koreagift product info existence for {len(kogift_product_info_exists)} rows")
+        logging.info(f"Found {sum(kogift_product_info_exists)} rows with Koreagift product info")
+
         for idx, (haereum_match, kogift_match, naver_match) in enumerate(verified_matches):
             # Check index bounds
             if idx >= len(result_df):
@@ -807,69 +841,62 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                          # This case should not happen due to earlier column addition
                          logging.warning(f"Target column '{target_col_haereum}' unexpectedly missing at index {idx}.")
 
-            # --- Process Kogift Image (Keep existing logic, but ensure URL preservation) ---
+            # --- Process Kogift Image ---
             target_col_kogift = '고려기프트 이미지'
             
             # Check if there's actual Kogift product information before trying to match images
-            has_kogift_product_info = False
-            
-            # Check key columns that indicate Kogift product exists
-            kogift_link_col = '고려기프트 상품링크'
-            if kogift_link_col in row_data and row_data[kogift_link_col]:
-                if isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
-                    has_kogift_product_info = True
-            
-            # If no Kogift product link found, check for other potential Kogift product indicators
-            if not has_kogift_product_info:
-                kogift_price_col = '판매가(V포함)(2)'
-                if kogift_price_col in row_data and pd.notna(row_data[kogift_price_col]) and row_data[kogift_price_col] not in [0, '-', '', None]:
-                    has_kogift_product_info = True
+            has_kogift_product_info = kogift_product_info_exists[idx]  # Use pre-computed value
             
             logging.debug(f"Row {idx}: Kogift product info exists: {has_kogift_product_info}")
             
-            # Only try to match Kogift images if we have Kogift product information
-            if has_kogift_product_info and kogift_match:
-                kogift_path, kogift_score = kogift_match
-                img_path_obj = kogift_images.get(kogift_path, {}).get('path')
-                if not img_path_obj:
-                    logging.warning(f"Row {idx}: Kogift match found ({kogift_path}) but no corresponding image path in metadata.")
-                    # Check existing data before setting to '-'
-                    existing_kogift_data = row_data.get(target_col_kogift)
-                    if not isinstance(existing_kogift_data, dict):
-                         result_df.at[idx, target_col_kogift] = '-'
-                    continue # Skip Kogift if path is missing
+            # Only process Koreagift image if product info exists
+            if has_kogift_product_info:
+                if kogift_match:
+                    kogift_path, kogift_score = kogift_match
+                    img_path_obj = kogift_images.get(kogift_path, {}).get('path')
+                    if not img_path_obj:
+                        logging.warning(f"Row {idx}: Kogift match found ({kogift_path}) but no corresponding image path in metadata.")
+                        # Check existing data before setting to '-'
+                        existing_kogift_data = row_data.get(target_col_kogift)
+                        if not isinstance(existing_kogift_data, dict):
+                             result_df.at[idx, target_col_kogift] = '-'
+                        continue # Skip Kogift if path is missing
+                        
+                    img_path = str(img_path_obj)
                     
-                img_path = str(img_path_obj)
-                
-                # Prioritize URL from existing data if available
-                existing_kogift_data = row_data.get(target_col_kogift)
-                web_url = None
-                if isinstance(existing_kogift_data, dict):
-                    potential_url = existing_kogift_data.get('url')
-                    if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
-                        web_url = potential_url
-                        logging.debug(f"Row {idx}: Preserving existing Kogift URL: {web_url[:60]}...")
-                
-                if not web_url: # If URL wasn't preserved from earlier step
-                     logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Kogift ({target_col_kogift}). URL will be empty.")
-                     web_url = ""
+                    # Prioritize URL from existing data if available
+                    existing_kogift_data = row_data.get(target_col_kogift)
+                    web_url = None
+                    if isinstance(existing_kogift_data, dict):
+                        potential_url = existing_kogift_data.get('url')
+                        if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                            web_url = potential_url
+                            logging.debug(f"Row {idx}: Preserving existing Kogift URL: {web_url[:60]}...")
+                    
+                    if not web_url: # If URL wasn't preserved from earlier step
+                         logging.warning(f"Row {idx}: Could not find existing valid web URL in input data for Kogift ({target_col_kogift}). URL will be empty.")
+                         web_url = ""
 
-                image_data = {
-                    'local_path': img_path,
-                    'source': 'kogift',
-                    'url': web_url, # Use preserved or empty URL
-                    'original_path': str(img_path),
-                    'score': kogift_score,
-                    'product_name': product_names[idx] # 상품명 추가
-                }
-                result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
+                    image_data = {
+                        'local_path': img_path,
+                        'source': 'kogift',
+                        'url': web_url, # Use preserved or empty URL
+                        'original_path': str(img_path),
+                        'score': kogift_score,
+                        'product_name': product_names[idx] # 상품명 추가
+                    }
+                    result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
+                else:
+                    # If Koreagift product info exists but no matching image was found
+                    logging.debug(f"Row {idx}: Koreagift product info exists but no image match found")
+                    if target_col_kogift in result_df.columns:
+                        current_val = result_df.loc[idx, target_col_kogift]
+                        if not isinstance(current_val, dict):
+                            result_df.loc[idx, target_col_kogift] = '-'
             else:
-                 if target_col_kogift in result_df.columns:
-                     # If no Kogift product info or no match found, ensure Kogift image is not included
-                     result_df.loc[idx, target_col_kogift] = '-'
-                 else:
-                     # This case should theoretically not happen anymore
-                     logging.warning(f"Target column '{target_col_kogift}' unexpectedly not found at index {idx} during else block.")
+                # If no Koreagift product info exists, ensure no image is assigned
+                logging.debug(f"Row {idx}: No Koreagift product info exists, removing any image")
+                result_df.loc[idx, target_col_kogift] = '-'
 
             # 네이버 이미지 column
             target_col_naver = '네이버 이미지'
@@ -935,6 +962,42 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                      # This case should theoretically not happen anymore
                      logging.warning(f"Target column '{target_col_naver}' unexpectedly not found at index {idx} during else block.")
 
+        # Final post-processing: Ensure Koreagift product info and images are properly paired
+        kogift_image_col = '고려기프트 이미지'
+        kogift_link_col = '고려기프트 상품링크'
+        kogift_price_col = '판매가(V포함)(2)'
+        alt_kogift_price_col = '판매단가(V포함)(2)'
+        
+        mismatch_count = 0
+        for idx in range(len(result_df)):
+            # Skip if index out of bounds
+            if idx >= len(result_df):
+                continue
+                
+            # Get row data
+            row_data = result_df.iloc[idx]
+            
+            # Get Koreagift image data
+            kogift_image_data = row_data.get(kogift_image_col)
+            has_kogift_image = isinstance(kogift_image_data, dict)
+            
+            # Get Koreagift product info
+            has_kogift_info = kogift_product_info_exists[idx]  # Use pre-computed value
+            
+            # Check for mismatch: Image without product info, or product info without image
+            if has_kogift_image != has_kogift_info:
+                mismatch_count += 1
+                if has_kogift_image and not has_kogift_info:
+                    # Remove image if no product info
+                    logging.warning(f"Row {idx}: Found Koreagift image without product info. Removing image.")
+                    result_df.at[idx, kogift_image_col] = '-'
+                elif has_kogift_info and not has_kogift_image:
+                    # This case is already handled above, but log for completeness
+                    logging.warning(f"Row {idx}: Found Koreagift product info without image.")
+                    
+        if mismatch_count > 0:
+            logging.info(f"Fixed {mismatch_count} mismatches between Koreagift product info and images")
+
         # 매칭 결과 요약 - Use new target column names
         # These checks are now safer as columns are guaranteed to exist
         haereum_count = result_df['본사 이미지'].apply(lambda x: isinstance(x, dict)).sum()
@@ -996,7 +1059,45 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         rows_affected = set() # Track unique rows affected
         # Define Haereum column name
         haoreum_col_name = '본사 이미지'
+        kogift_col_name = '고려기프트 이미지'
 
+        # Double check Koreagift product info and image pairing
+        kogift_mismatch_count = 0
+        for idx, row in result_df.iterrows():
+            # Ensure Koreagift product info and image are paired correctly
+            # First, check if Koreagift product info exists
+            has_kogift_info = False
+            
+            # Check for Koreagift link
+            kogift_link_col = '고려기프트 상품링크'
+            if kogift_link_col in row and row[kogift_link_col]:
+                if isinstance(row[kogift_link_col], str) and row[kogift_link_col].strip() not in ['', '-', 'None', None]:
+                    has_kogift_info = True
+            
+            # Check for Koreagift price
+            if not has_kogift_info:
+                kogift_price_col = '판매가(V포함)(2)'
+                if kogift_price_col in row and pd.notna(row[kogift_price_col]) and row[kogift_price_col] not in [0, '-', '', None]:
+                    has_kogift_info = True
+                    
+            # Check for alternative price column
+            if not has_kogift_info:
+                alt_kogift_price_col = '판매단가(V포함)(2)'
+                if alt_kogift_price_col in row and pd.notna(row[alt_kogift_price_col]) and row[alt_kogift_price_col] not in [0, '-', '', None]:
+                    has_kogift_info = True
+            
+            # Check if Koreagift image exists
+            has_kogift_image = isinstance(row[kogift_col_name], dict) if kogift_col_name in row else False
+            
+            # If mismatch found, fix it by removing the image if no product info exists
+            if has_kogift_image and not has_kogift_info:
+                logging.warning(f"Row {idx}: Found Koreagift image without product info during filtering. Removing image.")
+                result_df.at[idx, kogift_col_name] = '-'
+                kogift_mismatch_count += 1
+                rows_affected.add(idx)
+                filtered_count += 1
+
+        # Now apply similarity filtering on remaining images
         for idx, row in result_df.iterrows():
             # Iterate only through Kogift and Naver columns for filtering
             for col_name in ['고려기프트 이미지', '네이버 이미지']:
@@ -1027,6 +1128,8 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         # Log count based on unique rows affected
         final_filtered_count = len(rows_affected)
         logging.info(f"통합: 이미지 점수 기준으로 고려/네이버 이미지를 필터링 ({filtered_count}개 셀 수정됨, {final_filtered_count}개 행 영향 받음, 임계값 < {similarity_threshold})")
+        if kogift_mismatch_count > 0:
+            logging.info(f"통합: {kogift_mismatch_count}개의 고려기프트 이미지/상품정보 불일치 수정됨")
         logging.info(f"통합: 해오름 이미지는 점수와 관계없이 유지됩니다.")
         
         # 이미지 존재 여부 확인 로깅
