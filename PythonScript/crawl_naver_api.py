@@ -534,6 +534,10 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             except Exception as config_err:
                 logger.warning(f"Error reading background removal config: {config_err}. Using original image.")
             
+            # Make sure the path exists and absolute (fixing a common issue)
+            final_image_path = os.path.abspath(final_image_path)
+            logger.debug(f"Using absolute path for existing image: {final_image_path}")
+            
             return final_image_path
 
         # 네트워크 요청 헤더 설정 (한국 사이트 호환성 위한 사용자 에이전트 등 추가)
@@ -689,10 +693,12 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
             if 'image_data' in result and isinstance(result['image_data'], dict):
                 # Make sure image_data has required fields
                 image_data = result['image_data']
+                
+                # Check if local_path exists and fix it if necessary
                 if 'local_path' not in image_data or not image_data['local_path']:
                     # Check if we have image_url but no local_path
                     if 'image_url' in result and result['image_url']:
-                        # Try to download image again
+                        # Try to download image again or find existing one
                         try:
                             local_path = await download_naver_image(
                                 result['image_url'], naver_image_dir, 
@@ -703,6 +709,12 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
                                 logger.info(f"Fixed missing local_path for {result['original_product_name']}")
                         except Exception as e:
                             logger.error(f"Failed to download image during validation: {e}")
+                elif image_data['local_path']:
+                    # Make sure it's an absolute path
+                    abs_path = os.path.abspath(image_data['local_path'])
+                    if abs_path != image_data['local_path']:
+                        logger.info(f"Converting relative path to absolute: {image_data['local_path']} -> {abs_path}")
+                        image_data['local_path'] = abs_path
                 
                 # Ensure URL is present
                 if 'url' not in image_data and 'image_url' in result:
@@ -712,7 +724,27 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
                 if 'source' not in image_data:
                     image_data['source'] = 'naver'
                 
-                # Update result
+                # Verify local_path exists if specified
+                if 'local_path' in image_data and image_data['local_path']:
+                    if not os.path.exists(image_data['local_path']):
+                        logger.warning(f"Image path doesn't exist: {image_data['local_path']} for {result['original_product_name']}")
+                        
+                        # Try to find the image with a different extension
+                        base_path = os.path.splitext(image_data['local_path'])[0]
+                        for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                            alt_path = f"{base_path}{ext}"
+                            if os.path.exists(alt_path):
+                                logger.info(f"Found alternative image path: {alt_path}")
+                                image_data['local_path'] = alt_path
+                                break
+                        else:
+                            # If no extension alternatives found, try _nobg version
+                            nobg_path = f"{base_path}_nobg.png"
+                            if os.path.exists(nobg_path):
+                                logger.info(f"Found _nobg version of image: {nobg_path}")
+                                image_data['local_path'] = nobg_path
+                
+                # Update result with fixed image_data
                 result['image_data'] = image_data
             
             validated_results.append(result)
@@ -788,18 +820,55 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         # Download the image
         local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
         if local_path:
+            # FIXED: Ensure we use absolute path
+            abs_local_path = os.path.abspath(local_path)
+            
             # Kogift처럼 image_path 대신 더 명확한 구조화된 이미지 정보 제공
-            result_data['image_path'] = local_path
+            result_data['image_path'] = abs_local_path
+            
+            # Verify the file exists to prevent missing images in Excel
+            if not os.path.exists(abs_local_path):
+                logger.error(f"Downloaded image file does not exist: {abs_local_path}")
+                # Try to find alternative paths
+                base_path = os.path.splitext(abs_local_path)[0]
+                for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                    alt_path = f"{base_path}{ext}"
+                    if os.path.exists(alt_path):
+                        logger.info(f"Found alternative image path: {alt_path}")
+                        abs_local_path = alt_path
+                        break
+                
+                # Also check for _nobg version
+                nobg_path = f"{base_path}_nobg.png"
+                if os.path.exists(nobg_path):
+                    logger.info(f"Found _nobg image version: {nobg_path}")
+                    abs_local_path = nobg_path
+            
             # 이미지 데이터를 excel_utils.py에서 사용할 수 있는 형식으로 제공
             result_data['image_data'] = {
                 'url': image_url,
-                'local_path': local_path,
-                'original_path': local_path,
+                'local_path': abs_local_path,  # Use absolute path
+                'original_path': abs_local_path,  # Keep consistent path references
                 'source': 'naver',
                 'image_url': image_url,  # FIXED: Explicitly add image_url to the dictionary
                 'product_name': product_name,  # FIXED: Add product name for better traceability
                 'similarity': similarity  # FIXED: Add similarity score to image data
             }
+            
+            # Log success with verification
+            if os.path.exists(abs_local_path):
+                logger.info(f"Successfully downloaded and verified Naver image for {product_name}")
+                try:
+                    img_size = os.path.getsize(abs_local_path)
+                    logger.debug(f"Image file size: {img_size} bytes")
+                    if img_size == 0:
+                        logger.warning(f"Image file exists but is empty (0 bytes): {abs_local_path}")
+                except Exception as e:
+                    logger.warning(f"Error checking image file size: {e}")
+            else:
+                logger.warning(f"Failed to verify image existence: {abs_local_path}")
+    else:
+        logger.warning(f"No image URL found for Naver product: {product_name}")
     
     return result_data
 

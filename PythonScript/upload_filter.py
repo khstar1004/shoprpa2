@@ -203,8 +203,8 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         naver_filtered = len(df) - naver_keep_mask.sum()
         front_url_filtered = front_url_mask.sum()
         logging.info(f"  - {missing_links_count} rows with both Koreagift and Naver links missing")
-        logging.info(f"  - {kogift_filtered} rows with Koreagift price difference >= -1")
-        logging.info(f"  - {naver_filtered} rows with Naver price difference >= -1")
+        logging.info(f"  - {kogift_filtered} rows with Koreagift price difference > -1")
+        logging.info(f"  - {naver_filtered} rows with Naver price difference > -1")
         logging.info(f"  - {front_url_filtered} rows with unreliable 'front' URLs in Naver image column")
     else:
         logging.info("Upload filter: No rows removed after applying all filtering criteria.")

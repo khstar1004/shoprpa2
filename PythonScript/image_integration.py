@@ -12,6 +12,7 @@ import sys
 import re
 import hashlib
 from datetime import datetime
+import glob
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -1384,6 +1385,27 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
             if img_path_obj:
                 img_path = str(img_path_obj)
                 
+                # Verify the file exists 
+                if not os.path.exists(img_path):
+                    logging.warning(f"Fallback Naver image path doesn't exist: {img_path}")
+                    # Try to find the file with different extensions
+                    base_path = os.path.splitext(img_path)[0]
+                    for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                        alt_path = f"{base_path}{ext}"
+                        if os.path.exists(alt_path):
+                            logging.info(f"Found alternative path for fallback Naver image: {alt_path}")
+                            img_path = alt_path
+                            break
+                    else:
+                        # If still not found, try _nobg version
+                        nobg_path = f"{base_path}_nobg.png"
+                        if os.path.exists(nobg_path):
+                            logging.info(f"Found _nobg version of fallback Naver image: {nobg_path}")
+                            img_path = nobg_path
+                
+                # Use absolute path to ensure Excel can find it
+                img_path = os.path.abspath(img_path)
+                
                 # Try to get a URL
                 web_url = naver_images.get(best_match, {}).get('url', '')
                 
@@ -1401,7 +1423,13 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                     'product_name': product_name,
                     'fallback': True  # Mark as fallback
                 }
-                return image_data
+                
+                # Final verification - does the file actually exist and have size > 0?
+                if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
+                    logging.info(f"Verified fallback Naver image exists: {img_path} ({os.path.getsize(img_path)} bytes)")
+                    return image_data
+                else:
+                    logging.warning(f"Fallback Naver image verification failed - file missing or empty: {img_path}")
                 
         # 2. If no matching image found, try to get any available Naver image as fallback
         if not best_match:
@@ -1410,23 +1438,58 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 img_path_obj = info.get('path')
                 if img_path_obj:
                     img_path = str(img_path_obj)
-                    web_url = info.get('url', '')
                     
-                    # Reject "front" URLs which are unreliable
-                    if web_url and "pstatic.net/front/" in web_url:
-                        logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
-                        web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                    # Verify file exists and use absolute path
+                    if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
+                        img_path = os.path.abspath(img_path)
+                        web_url = info.get('url', '')
+                        
+                        # Reject "front" URLs which are unreliable
+                        if web_url and "pstatic.net/front/" in web_url:
+                            logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
+                            web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                        
+                        image_data = {
+                            'local_path': img_path,
+                            'source': 'naver',
+                            'url': web_url,
+                            'original_path': img_path,
+                            'score': 0.1,  # Very low score since it's just a random image
+                            'product_name': product_name,
+                            'fallback': True  # Mark as fallback
+                        }
+                        logging.info(f"Using random fallback Naver image: {img_path}")
+                        return image_data
+        
+        # 3. If all else fails, look in the Naver directory for any image
+        try:
+            # Get the Naver directory path
+            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+            naver_dir = os.path.join(base_img_dir, 'Main', 'Naver')
+            
+            if os.path.exists(naver_dir):
+                # List all image files
+                image_files = []
+                for ext in ['*.jpg', '*.jpeg', '*.png', '*.gif']:
+                    image_files.extend(glob.glob(os.path.join(naver_dir, ext)))
+                
+                if image_files:
+                    # Use the first image file
+                    img_path = image_files[0]
+                    logging.info(f"Using first available Naver image as last resort: {img_path}")
                     
-                    image_data = {
+                    return {
                         'local_path': img_path,
                         'source': 'naver',
-                        'url': web_url,
+                        'url': '',
                         'original_path': img_path,
-                        'score': 0.1,  # Very low score since it's just a random image
+                        'score': 0.05,  # Very low score
                         'product_name': product_name,
-                        'fallback': True  # Mark as fallback
+                        'fallback': True,
+                        'last_resort': True
                     }
-                    return image_data
+        except Exception as e:
+            logging.error(f"Error looking for last resort Naver image: {e}")
         
         return None
     except Exception as e:

@@ -404,6 +404,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     attempted_embeddings = 0
     kogift_successful = 0
     kogift_attempted = 0
+    naver_successful = 0
+    naver_attempted = 0
     
     # Only handle these image-specific columns
     global IMAGE_COLUMNS
@@ -458,6 +460,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     # For each image column in the DataFrame
     for col_idx, column in enumerate(columns_to_process):
         is_kogift_image = 'kogift' in column.lower() or '고려기프트' in column  # Track whether it's a Kogift column
+        is_naver_image = 'naver' in column.lower() or '네이버' in column       # Add tracking for Naver columns
         
         # Excel column letter for this column (e.g., 'A', 'B', ...)
         excel_col = get_column_letter(df.columns.get_loc(column) + 1)
@@ -480,7 +483,36 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 # Try local path first, then URL
                 if 'local_path' in cell_value and cell_value['local_path']:
                     img_path = cell_value['local_path']
-                    if is_kogift_image:
+                    
+                    # FIXED: Special handling for Naver images - log and verify paths
+                    if is_naver_image:
+                        logger.debug(f"Found Naver local_path: {img_path}")
+                        
+                        # Verify the path exists and is absolute
+                        if not os.path.isabs(img_path):
+                            abs_path = os.path.abspath(img_path)
+                            logger.debug(f"Converting relative Naver path to absolute: {img_path} -> {abs_path}")
+                            img_path = abs_path
+                        
+                        # Verify the file exists
+                        if not os.path.exists(img_path):
+                            logger.warning(f"Naver image path doesn't exist: {img_path}")
+                            
+                            # Try alternative extensions
+                            base_path = os.path.splitext(img_path)[0]
+                            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                                alt_path = f"{base_path}{ext}"
+                                if os.path.exists(alt_path):
+                                    logger.info(f"Found alternative Naver image path: {alt_path}")
+                                    img_path = alt_path
+                                    break
+                            else:
+                                # If no alternative found, try looking for _nobg version
+                                nobg_path = f"{base_path}_nobg.png"
+                                if os.path.exists(nobg_path):
+                                    logger.info(f"Found _nobg version of Naver image: {nobg_path}")
+                                    img_path = nobg_path
+                    elif is_kogift_image:
                         logger.debug(f"Found Kogift local_path: {img_path}")
                 elif 'url' in cell_value and cell_value['url'] and cell_value['url'].startswith(('http', 'https', 'file:')):
                     # For URLs, we need to find corresponding downloaded file
@@ -760,11 +792,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 attempted_embeddings += 1
                 if is_kogift_image:
                     kogift_attempted += 1
+                if is_naver_image:
+                    naver_attempted += 1
                 
                 # Verify file exists and is not empty
                 if not os.path.exists(img_path):
                     if is_kogift_image:
                         logger.warning(f"Kogift image file not found: {img_path}")
+                    elif is_naver_image:
+                        logger.warning(f"Naver image file not found: {img_path}")
                     else:
                         logger.warning(f"Image file not found: {img_path}")
                     continue
@@ -772,6 +808,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 if os.path.getsize(img_path) == 0:
                     if is_kogift_image:
                         logger.warning(f"Kogift image file is empty: {img_path}")
+                    elif is_naver_image:
+                        logger.warning(f"Naver image file is empty: {img_path}")
                     else:
                         logger.warning(f"Image file is empty: {img_path}")
                     continue
@@ -798,10 +836,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                     if is_kogift_image:
                         kogift_successful += 1
                         logger.debug(f"Successfully added Kogift image at row {row_idx}, column {col_idx}")
+                    if is_naver_image:
+                        naver_successful += 1
+                        logger.debug(f"Successfully added Naver image at row {row_idx}, column {col_idx}")
                     
                 except Exception as img_err:
                     if is_kogift_image:
                         logger.warning(f"Failed to add Kogift image at row {row_idx}, column {col_idx}: {img_err}")
+                    elif is_naver_image:
+                        logger.warning(f"Failed to add Naver image at row {row_idx}, column {col_idx}: {img_err}")
                     else:
                         logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
                     # Don't clear the cell value here - keep text as fallback
@@ -809,6 +852,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             except Exception as e:
                 if is_kogift_image:
                     logger.warning(f"Error processing Kogift image at row {row_idx}, column {col_idx}: {e}")
+                elif is_naver_image:
+                    logger.warning(f"Error processing Naver image at row {row_idx}, column {col_idx}: {e}")
                 else:
                     logger.warning(f"Error processing image at row {row_idx}, column {col_idx}: {e}")
                 # Keep cell value as is for reference
@@ -816,6 +861,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
     if kogift_attempted > 0:
         logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
+    if naver_attempted > 0:
+        logger.info(f"Naver image processing: {naver_successful}/{naver_attempted} images embedded successfully.")
     
     # Track image columns for dimension adjustment
     image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
@@ -1561,6 +1608,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         
                         # Check if we have a dictionary with image data
                         if isinstance(img_value, dict):
+                            # FIXED: Enhanced image path validation for Naver images
+                            is_naver_col = 'naver' in img_col.lower() or '네이버' in img_col
+                            
                             # Try to reconstruct/find URLs for images if missing
                             if ('url' not in img_value or not img_value['url'] or 
                                 not isinstance(img_value['url'], str) or
@@ -1657,11 +1707,59 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                 img_path = img_value['local_path']
                                 has_url = 'url' in img_value and isinstance(img_value['url'], str) and img_value['url'].startswith(('http://', 'https://'))
                                 
-                                # Log URL information for debugging
-                                if has_url:
-                                    logger.debug(f"이미지에 URL 있음 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
-                                else:
-                                    logger.debug(f"이미지에 URL 없음 (행 {row_idx}, 열 {col_idx})")
+                                # FIXED: Ensure path is absolute and standardized
+                                if img_path and not os.path.isabs(img_path):
+                                    try:
+                                        img_path = os.path.abspath(img_path)
+                                        img_value['local_path'] = img_path  # Update the dictionary with absolute path
+                                        logger.debug(f"Converted relative path to absolute: {img_path}")
+                                    except Exception as path_err:
+                                        logger.warning(f"Error converting to absolute path: {path_err}")
+                                
+                                # FIXED: For Naver images, do extra validation and try harder to find the file
+                                if is_naver_col and img_path and not os.path.exists(img_path):
+                                    logger.warning(f"Naver image file not found: {img_path}")
+                                    
+                                    # Try to find the image with different extensions
+                                    base_path = os.path.splitext(img_path)[0]
+                                    for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                                        alt_path = f"{base_path}{ext}"
+                                        if os.path.exists(alt_path):
+                                            logger.info(f"Found alternative path for Naver image: {alt_path}")
+                                            img_path = alt_path
+                                            img_value['local_path'] = img_path  # Update the dictionary
+                                            break
+                                    
+                                    # If still not found, try _nobg version
+                                    if not os.path.exists(img_path):
+                                        nobg_path = f"{base_path}_nobg.png"
+                                        if os.path.exists(nobg_path):
+                                            logger.info(f"Found _nobg version of Naver image: {nobg_path}")
+                                            img_path = nobg_path
+                                            img_value['local_path'] = img_path  # Update the dictionary
+                                
+                                # Extra verification for any image type
+                                if img_path and not os.path.exists(img_path):
+                                    logger.warning(f"Image file not found after all attempts: {img_path}")
+                                    
+                                    # Try to find any image with similar name in expected directory
+                                    try:
+                                        dir_path = os.path.dirname(img_path)
+                                        file_base = os.path.basename(img_path)
+                                        base_name = os.path.splitext(file_base)[0]
+                                        
+                                        if os.path.exists(dir_path):
+                                            # List files in directory
+                                            for file in os.listdir(dir_path):
+                                                # Check if base name is contained in this file
+                                                if base_name[:8] in file and os.path.isfile(os.path.join(dir_path, file)):
+                                                    found_path = os.path.join(dir_path, file)
+                                                    logger.info(f"Found similar file: {found_path}")
+                                                    img_path = found_path
+                                                    img_value['local_path'] = img_path  # Update the dictionary
+                                                    break
+                                    except Exception as e:
+                                        logger.warning(f"Error searching for similar files: {e}")
                                 
                                 if os.path.exists(img_path):
                                     try:
@@ -1671,69 +1769,61 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         img.width = 160  # Set image width - increased from 80
                                         img.height = 160  # Set image height - increased from 80
                                         img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
-                                        worksheet_with_images.add_image(img)
                                         
-                                        # Clear the cell content
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                        cell.value = ""
-                                        
-                                        # Add hyperlink to the image URL if available (the image will have a link)
-                                        if has_url:
-                                            # Use openpyxl hyperlink object - will show on hover
-                                            cell.hyperlink = img_value['url']
+                                        # FIXED: Add error handling for image loading
+                                        try:
+                                            worksheet_with_images.add_image(img)
                                             
-                                            # Add a very small marker to indicate there's a URL (using a comment)
-                                            try:
-                                                comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
-                                                comment.width = 300
-                                                comment.height = 50
-                                                cell.comment = comment
-                                            except Exception as comment_err:
-                                                logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
-                                        
-                                        images_added += 1
-                                        logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
-                                    except Exception as img_err:
-                                        logger.warning(f"이미지 추가 실패 (행 {row_idx}, 열 {col_idx}): {img_err}")
-                                        # Keep the web URL as fallback
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                            # Clear the cell content
+                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                            cell.value = ""
+                                            
+                                            # Add hyperlink to the image URL if available (the image will have a link)
+                                            if has_url:
+                                                # Use openpyxl hyperlink object - will show on hover
+                                                cell.hyperlink = img_value['url']
+                                                
+                                                # Add a very small marker to indicate there's a URL (using a comment)
+                                                try:
+                                                    comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
+                                                    comment.width = 300
+                                                    comment.height = 50
+                                                    cell.comment = comment
+                                                except Exception as comment_err:
+                                                    logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
+                                            
+                                            images_added += 1
+                                            logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
+                                        except Exception as img_add_err:
+                                            # More specific handling for common image errors
+                                            if "not an image file" in str(img_add_err).lower():
+                                                logger.warning(f"Not a valid image file: {img_path}")
+                                                # Try to verify with PIL
+                                                try:
+                                                    from PIL import Image as PILImage
+                                                    img_test = PILImage.open(img_path)
+                                                    img_test.verify()  # Verify it's a valid image
+                                                    logger.warning(f"Image verified with PIL but failed in openpyxl: {img_path}")
+                                                except Exception as pil_err:
+                                                    logger.warning(f"Image verification with PIL also failed: {pil_err}")
+                                            
+                                            logger.warning(f"Failed to add image (행 {row_idx}, 열 {col_idx}): {img_add_err}")
+                                            
+                                            # Fallback to displaying URL if available
+                                            if has_url:
+                                                cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                                cell.value = img_value['url']
+                                                cell.hyperlink = img_value['url']
+                                                cell.font = Font(color="0563C1", underline="single")
+                                                logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
+                                    except Exception as e:
+                                        logger.error(f"Error creating/configuring image object for {img_path}: {e}")
+                                        # Fallback to displaying URL if available
                                         if has_url:
+                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
                                             cell.value = img_value['url']
-                                            # Add hyperlink to the URL text
                                             cell.hyperlink = img_value['url']
                                             cell.font = Font(color="0563C1", underline="single")
-                                            logger.debug(f"이미지 대신 URL 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
-                                        else:
-                                            # If no URL, show the local path as a fallback
-                                            cell.value = f"로컬 이미지: {os.path.basename(img_path)}"
-                                            logger.warning(f"이미지 및 URL 없음, 로컬 경로만 표시 (행 {row_idx}, 열 {col_idx}): {img_path}")
-                                else:
-                                    logger.warning(f"로컬 이미지 파일 없음 (행 {row_idx}, 열 {col_idx}): {img_path}")
-                                    cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                    if has_url:
-                                        # If we have a URL but no local image, show the URL
-                                        cell.value = img_value['url']
-                                        cell.hyperlink = img_value['url']
-                                        cell.font = Font(color="0563C1", underline="single")
-                                        logger.debug(f"로컬 이미지 없어 URL만 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
-                                    else:
-                                        # No image and no URL, add an error message
-                                        cell.value = "이미지 및 URL 없음"
-                                        logger.warning(f"이미지 및 URL 모두 없음 (행 {row_idx}, 열 {col_idx})")
-                            else:
-                                # No local path in the dictionary
-                                logger.warning(f"이미지 로컬 경로 정보 없음 (행 {row_idx}, 열 {col_idx})")
-                                cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                if 'url' in img_value and isinstance(img_value['url'], str) and img_value['url'].startswith(('http://', 'https://')):
-                                    # If we have only a URL, show it
-                                    cell.value = img_value['url']
-                                    cell.hyperlink = img_value['url']
-                                    cell.font = Font(color="0563C1", underline="single")
-                                    logger.debug(f"이미지 로컬 경로 없어 URL만 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
-                                else:
-                                    # No local path and no valid URL
-                                    cell.value = "유효한 이미지 정보 없음"
-                                    logger.warning(f"유효한 이미지 정보가 없음 (행 {row_idx}, 열 {col_idx})")
                 
                 # FIXED: Ensure filter is removed after image addition too
                 if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
@@ -1991,7 +2081,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             logger.info(f"Successfully created upload file (with image links): {upload_path}")
                 
             return result_success, upload_success, result_path, upload_path
-            
+        
         except Exception as upload_err:
             logger.error(f"Error creating upload file: {upload_err}")
             logger.debug(traceback.format_exc())
@@ -2905,42 +2995,61 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         img.width = 160  # Set image width - increased from 80
                                         img.height = 160  # Set image height - increased from 80
                                         img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
-                                        worksheet_with_images.add_image(img)
                                         
-                                        # Clear the cell content
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                        cell.value = ""
-                                        
-                                        # Add hyperlink to the image URL if available (the image will have a link)
-                                        if has_url:
-                                            # Use openpyxl hyperlink object - will show on hover
-                                            cell.hyperlink = img_value['url']
+                                        # FIXED: Add error handling for image loading
+                                        try:
+                                            worksheet_with_images.add_image(img)
                                             
-                                            # Add a very small marker to indicate there's a URL (using a comment)
-                                            try:
-                                                comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
-                                                comment.width = 300
-                                                comment.height = 50
-                                                cell.comment = comment
-                                            except Exception as comment_err:
-                                                logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
-                                        
-                                        images_added += 1
-                                        logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
-                                    except Exception as img_err:
-                                        logger.warning(f"이미지 추가 실패 (행 {row_idx}, 열 {col_idx}): {img_err}")
-                                        # Keep the web URL as fallback
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                            # Clear the cell content
+                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                            cell.value = ""
+                                            
+                                            # Add hyperlink to the image URL if available (the image will have a link)
+                                            if has_url:
+                                                # Use openpyxl hyperlink object - will show on hover
+                                                cell.hyperlink = img_value['url']
+                                                
+                                                # Add a very small marker to indicate there's a URL (using a comment)
+                                                try:
+                                                    comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
+                                                    comment.width = 300
+                                                    comment.height = 50
+                                                    cell.comment = comment
+                                                except Exception as comment_err:
+                                                    logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
+                                            
+                                            images_added += 1
+                                            logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
+                                        except Exception as img_add_err:
+                                            # More specific handling for common image errors
+                                            if "not an image file" in str(img_add_err).lower():
+                                                logger.warning(f"Not a valid image file: {img_path}")
+                                                # Try to verify with PIL
+                                                try:
+                                                    from PIL import Image as PILImage
+                                                    img_test = PILImage.open(img_path)
+                                                    img_test.verify()  # Verify it's a valid image
+                                                    logger.warning(f"Image verified with PIL but failed in openpyxl: {img_path}")
+                                                except Exception as pil_err:
+                                                    logger.warning(f"Image verification with PIL also failed: {pil_err}")
+                                            
+                                            logger.warning(f"Failed to add image (행 {row_idx}, 열 {col_idx}): {img_add_err}")
+                                            
+                                            # Fallback to displaying URL if available
+                                            if has_url:
+                                                cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                                cell.value = img_value['url']
+                                                cell.hyperlink = img_value['url']
+                                                cell.font = Font(color="0563C1", underline="single")
+                                                logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
+                                    except Exception as e:
+                                        logger.error(f"Error creating/configuring image object for {img_path}: {e}")
+                                        # Fallback to displaying URL if available
                                         if has_url:
+                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
                                             cell.value = img_value['url']
-                                            # Add hyperlink to the URL text
                                             cell.hyperlink = img_value['url']
                                             cell.font = Font(color="0563C1", underline="single")
-                                            logger.debug(f"이미지 대신 URL 추가 (행 {row_idx}, 열 {col_idx}): {img_value['url'][:50]}...")
-                                        else:
-                                            # If no URL, show the local path as a fallback
-                                            cell.value = f"로컬 이미지: {os.path.basename(img_path)}"
-                                            logger.warning(f"이미지 및 URL 없음, 로컬 경로만 표시 (행 {row_idx}, 열 {col_idx}): {img_path}")
                                 else:
                                     logger.warning(f"로컬 이미지 파일 없음 (행 {row_idx}, 열 {col_idx}): {img_path}")
                                     cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
@@ -3222,7 +3331,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             logger.info(f"Successfully created upload file (with image links): {upload_path}")
                 
             return result_success, upload_success, result_path, upload_path
-            
+        
         except Exception as upload_err:
             logger.error(f"Error creating upload file: {upload_err}")
             logger.debug(traceback.format_exc())
