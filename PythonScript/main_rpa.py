@@ -14,6 +14,7 @@ import traceback
 import shutil
 from pathlib import Path
 import openpyxl
+from email_sender import validate_email_config, send_excel_by_email
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -30,6 +31,7 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
+from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -814,6 +816,25 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     except Exception as filter_err:
                                         logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
                                     # --- End Apply Filter ---
+
+                                    # --- Apply Excel Formatting (NEW) ---
+                                    try:
+                                        logging.info("Applying final Excel formatting to result and upload files...")
+                                        format_success_count, total_format_files = apply_excel_formatting(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None
+                                        )
+                                        
+                                        if format_success_count > 0:
+                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
+                                        else:
+                                            logging.warning("Excel formatting could not be applied to any files")
+                                    except Exception as format_err:
+                                        logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
+                                        # Don't treat formatting failure as a critical error, continue with the process
+                                    # --- End Excel Formatting ---
 
                                     # --- Apply Price Highlighting to Excel files ---
                                     try:
