@@ -839,6 +839,48 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
                                         # Don't treat highlighting failure as a critical error, continue with the process
                                     # --- End Price Highlighting ---
+                                    
+                                    # --- Send Excel files by email ---
+                                    try:
+                                        # Check if email functionality is enabled in config
+                                        email_enabled = config.getboolean('Email', 'enabled', fallback=False)
+                                        
+                                        if email_enabled:
+                                            logging.info("Email functionality is enabled. Validating email configuration...")
+                                            # Validate email configuration
+                                            if validate_email_config(config):
+                                                logging.info("Email configuration is valid. Preparing to send email...")
+                                                
+                                                # Prepare paths for email
+                                                excel_paths = {
+                                                    'result': result_path if result_success else None,
+                                                    'upload': upload_path if upload_success else None
+                                                }
+                                                
+                                                # Get email subject prefix from config
+                                                subject_prefix = config.get('Email', 'email_subject_prefix', fallback="ShopRPA 결과")
+                                                
+                                                # Send email
+                                                email_sent = send_excel_by_email(excel_paths, config, subject_prefix)
+                                                
+                                                if email_sent:
+                                                    logging.info("Email sent successfully with Excel attachments.")
+                                                    if progress_queue:
+                                                        progress_queue.emit("status", "Email sent successfully.")
+                                                else:
+                                                    logging.warning("Failed to send email with Excel attachments.")
+                                                    if progress_queue:
+                                                        progress_queue.emit("status", "Failed to send email.")
+                                            else:
+                                                logging.warning("Email configuration is invalid. Email will not be sent.")
+                                                if progress_queue:
+                                                    progress_queue.emit("status", "Email configuration is invalid.")
+                                        else:
+                                            logging.info("Email functionality is disabled in configuration.")
+                                    except Exception as email_err:
+                                        logging.error(f"Error in email sending step: {email_err}", exc_info=True)
+                                        # Don't treat email failure as a critical error, continue with the process
+                                    # --- End Email Sending ---
                                         
                                     if progress_queue:
                                         progress_queue.emit("status", "Output files saved successfully")

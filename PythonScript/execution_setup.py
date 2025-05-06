@@ -291,7 +291,32 @@ def validate_program_operation(config: configparser.ConfigParser) -> bool:
         logging.warning("Validation Hint: Naver API Client ID or Secret missing in [API_Keys]. Naver search will fail.")
         # Decide if this should be fatal: checks_passed = False
 
-    # 3. Check External Dependencies (Basic Import Checks)
+    # 3. Check Email Configuration (when enabled)
+    if config.has_section('Email') and config.getboolean('Email', 'enabled', fallback=False):
+        logging.info("Email functionality is enabled. Validating email configuration...")
+        try:
+            # Import the validation function if email is enabled
+            from email_sender import validate_email_config
+            
+            # Validate email configuration
+            if validate_email_config(config):
+                logging.info("Email configuration validated successfully.")
+            else:
+                logging.warning("Email configuration is invalid or incomplete. Email sending will be disabled.")
+                # Don't fail the entire application for email config issues
+                if config.has_section('Email'):
+                    config.set('Email', 'enabled', 'false')
+                    logging.info("Email functionality has been automatically disabled due to configuration issues.")
+        except ImportError:
+            logging.warning("Email sender module not available. Email functionality will be disabled.")
+            if config.has_section('Email'):
+                config.set('Email', 'enabled', 'false')
+        except Exception as e:
+            logging.error(f"Error during email configuration validation: {e}")
+            if config.has_section('Email'):
+                config.set('Email', 'enabled', 'false')
+
+    # 4. Check External Dependencies (Basic Import Checks)
     try:
         import playwright.sync_api
     except ImportError:
