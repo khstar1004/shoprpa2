@@ -39,11 +39,55 @@ def format_upload_excel(file_path):
         # Format headers (first row)
         sheet.row_dimensions[1].height = 34.5  # Header height
         
+        # Dictionary to store header text lengths
+        header_lengths = {}
+        
+        # First pass: collect header text lengths
+        for col in range(1, max_col + 1):
+            cell = sheet.cell(row=1, column=col)
+            if cell.value:
+                header_lengths[col] = len(str(cell.value))
+            else:
+                header_lengths[col] = 0
+        
+        # Second pass: format headers and set column widths
         for col in range(1, max_col + 1):
             cell = sheet.cell(row=1, column=col)
             cell.fill = gray_fill
             cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
             cell.border = thin_border
+            
+            # Calculate column width - base width is 7, but adjust for longer headers
+            length = header_lengths[col]
+            # Calculate width to ensure headers show in about 2 lines
+            # For Korean text, each character needs more width
+            if length > 0:
+                # Check if header contains Korean characters
+                has_korean = any('\uAC00' <= char <= '\uD7A3' for char in str(cell.value))
+                
+                if has_korean:
+                    # Korean characters need more width
+                    if length <= 4:
+                        width = 7  # Default width for short headers
+                    elif length <= 8:
+                        width = 9  # Slightly wider for medium headers
+                    else:
+                        # For longer headers, calculate width to fit approximately 2 lines
+                        width = min(max(7, length * 0.9), 16)
+                else:
+                    # For non-Korean text
+                    if length <= 7:
+                        width = 7  # Default width for short headers
+                    elif length <= 14:
+                        width = 9  # Slightly wider for medium headers
+                    else:
+                        # For longer headers, calculate width to fit approximately 2 lines
+                        width = min(max(7, length * 0.6), 14)
+            else:
+                width = 7  # Default width
+                
+            # Set the column width
+            sheet.column_dimensions[get_column_letter(col)].width = width
         
         # 2) Set "fit to cell" for data rows
         for row in range(2, max_row + 1):
@@ -54,12 +98,6 @@ def format_upload_excel(file_path):
                 cell = sheet.cell(row=row, column=col)
                 cell.alignment = Alignment(wrap_text=True)
                 cell.border = thin_border
-        
-        # 3) Adjust column widths (width: 7)
-        for col in range(1, max_col + 1):
-            sheet.column_dimensions[get_column_letter(col)].width = 7
-            
-        # 4) Add borders (already added above)
         
         # Save the workbook
         wb.save(file_path)

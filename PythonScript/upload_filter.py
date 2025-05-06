@@ -7,6 +7,7 @@ import re
 import aiohttp
 import asyncio
 from urllib.parse import urljoin
+import datetime
 
 # Define expected column names from the final Excel output
 # Adjust these if the actual column names in the generated Excel differ
@@ -123,10 +124,11 @@ def _is_data_missing(series: pd.Series) -> pd.Series:
 
 def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filters DataFrame based on two criteria:
+    Filters DataFrame based on three criteria:
     1. Removes rows where both Koreagift and Naver data are missing
     2. Removes rows where price difference is >= -1 for either Koreagift or Naver
        (keeps only rows where price difference is < -1)
+    3. Removes rows with unreliable "front" URLs in the Naver image column
     """
     if df.empty:
         logging.warning("Input DataFrame for upload filtering is empty. Returning empty DataFrame.")
@@ -167,10 +169,26 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         # Keep rows where price difference is < -1 OR link is missing
         naver_keep_mask = (naver_price_diff < -1) | is_naver_missing
     
+    # --- 3. Filter out rows with "front" URLs in Naver image column ---
+    front_url_mask = pd.Series(False, index=df.index)  # Default: keep all rows
+    
+    # Check if the Naver image column exists
+    if '네이버쇼핑(이미지링크)' in df.columns:
+        # Create a mask for rows with "front" URLs
+        front_url_mask = df['네이버쇼핑(이미지링크)'].astype(str).str.contains('pstatic.net/front/', case=False, na=False)
+        
+        # Log rows with problematic URLs (for debugging)
+        front_url_count = front_url_mask.sum()
+        if front_url_count > 0:
+            logging.warning(f"Found {front_url_count} rows with unreliable 'front' URLs that will be filtered out")
+            for idx in df[front_url_mask].index:
+                logging.debug(f"Row {idx}: Filtering out due to 'front' URL: {df.at[idx, '네이버쇼핑(이미지링크)']}")
+    
     # Combined mask for rows to keep:
     # 1. Either don't have both links missing AND
-    # 2. Satisfy the price difference criteria for both Koreagift and Naver
-    rows_to_keep_mask = (~missing_links_mask) & kogift_keep_mask & naver_keep_mask
+    # 2. Satisfy the price difference criteria for both Koreagift and Naver AND
+    # 3. Don't have "front" URLs in the Naver image column
+    rows_to_keep_mask = (~missing_links_mask) & kogift_keep_mask & naver_keep_mask & (~front_url_mask)
 
     # Apply the filter to keep only the rows we want
     initial_rows = len(df)
@@ -183,13 +201,55 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         missing_links_count = missing_links_mask.sum()
         kogift_filtered = len(df) - kogift_keep_mask.sum()
         naver_filtered = len(df) - naver_keep_mask.sum()
+        front_url_filtered = front_url_mask.sum()
         logging.info(f"  - {missing_links_count} rows with both Koreagift and Naver links missing")
         logging.info(f"  - {kogift_filtered} rows with Koreagift price difference >= -1")
         logging.info(f"  - {naver_filtered} rows with Naver price difference >= -1")
+        logging.info(f"  - {front_url_filtered} rows with unreliable 'front' URLs in Naver image column")
     else:
         logging.info("Upload filter: No rows removed after applying all filtering criteria.")
 
     return filtered_df
+
+def filter_front_urls_from_upload_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Specifically filters out rows with unreliable "front" URLs in the Naver image column.
+    These URLs (like https://shopping-phinf.pstatic.net/front/...) often fail to load.
+    
+    Args:
+        df: DataFrame to filter
+        
+    Returns:
+        DataFrame with "front" URL rows removed or replaced
+    """
+    if df.empty:
+        logging.warning("Input DataFrame for front URL filtering is empty. Returning empty DataFrame.")
+        return df.copy()
+    
+    # Check if the Naver image column exists
+    naver_img_col = '네이버쇼핑(이미지링크)'
+    if naver_img_col not in df.columns:
+        logging.warning(f"Column '{naver_img_col}' not found in DataFrame. Cannot filter front URLs.")
+        return df.copy()
+    
+    # Create mask for rows with "front" URLs
+    front_url_mask = df[naver_img_col].astype(str).str.contains('pstatic.net/front/', case=False, na=False)
+    front_url_count = front_url_mask.sum()
+    
+    if front_url_count > 0:
+        logging.warning(f"Found {front_url_count} rows with unreliable 'front' URLs")
+        
+        # Create a copy of the DataFrame
+        result_df = df.copy()
+        
+        # Replace "front" URLs with empty strings
+        result_df.loc[front_url_mask, naver_img_col] = ''
+        
+        logging.info(f"Removed {front_url_count} 'front' URLs from the upload data")
+        return result_df
+    else:
+        logging.info("No 'front' URLs found in the upload data")
+        return df
 
 def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.ConfigParser) -> bool:
     """Reads the upload Excel, applies filtering, and saves it back, overwriting the original.
@@ -209,51 +269,37 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
         return False
 
     logging.info(f"Applying post-creation filter to upload file: {upload_file_path}")
+    
     try:
-        # Read the Excel file. Assumes data is in the first sheet.
-        # Ensure openpyxl is installed and used as the engine.
+        # Read the Excel file into a DataFrame
+        import pandas as pd
         df = pd.read_excel(upload_file_path, engine='openpyxl')
         
-        # Check for Haereum URLs that need fixing before filtering
-        if KOREAGIFT_LINK_COL in df.columns:
-            # Find rows with Korean text in Haereum URLs
-            korean_url_mask = df[KOREAGIFT_LINK_COL].astype(str).str.contains(
-                r'/upload/product/simg3/.*[가-힣].*\.gif', 
-                regex=True, 
-                na=False
-            )
-            
-            if korean_url_mask.any():
-                korean_urls = df.loc[korean_url_mask, KOREAGIFT_LINK_COL].tolist()
-                logging.info(f"Found {len(korean_urls)} Haereum URLs with Korean text that need fixing")
-                
-                # Define async function to process all URLs
-                async def process_urls():
-                    results = {}
-                    for i, url in enumerate(korean_urls):
-                        fixed_url = await convert_haereum_url(url)
-                        results[url] = fixed_url
-                    return results
-                
-                # Run async function to convert URLs
-                try:
-                    import asyncio
-                    fixed_urls = asyncio.run(process_urls())
-                    
-                    # Update the DataFrame with fixed URLs
-                    for old_url, new_url in fixed_urls.items():
-                        if old_url != new_url and new_url is not None:
-                            logging.info(f"Replacing URL: {old_url} → {new_url}")
-                            df[KOREAGIFT_LINK_COL] = df[KOREAGIFT_LINK_COL].replace(old_url, new_url)
-                except Exception as async_err:
-                    logging.error(f"Error during async URL conversion: {async_err}")
-
-        # Apply the filtering logic
-        filtered_df = filter_upload_data(df)
+        # Record original row count
+        original_rows = len(df)
+        
+        # Apply filtering based on criteria
+        df_filtered = filter_upload_data(df)
+        
+        # Also filter out "front" URLs
+        df_filtered = filter_front_urls_from_upload_data(df_filtered)
+        
+        # Calculate rows removed
+        rows_removed = original_rows - len(df_filtered)
+        
+        if rows_removed > 0:
+            logging.info(f"Upload filtering removed {rows_removed} rows in total.")
+        else:
+            logging.info("No rows were removed during upload filtering.")
+        
+        # Add comment about filtering process to the DataFrame
+        # (Not actually adding to the DataFrame, just logging)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logging.info(f"Upload file filtered at {timestamp}. Original rows: {original_rows}, Final rows: {len(df_filtered)}")
 
         # Save the filtered data back to the same file path, overwriting it.
         # Use 'openpyxl' engine to ensure compatibility with .xlsx format features.
-        filtered_df.to_excel(upload_file_path, index=False, engine='openpyxl')
+        df_filtered.to_excel(upload_file_path, index=False, engine='openpyxl')
 
         logging.info(f"Successfully filtered and overwrote upload file: {upload_file_path}")
         return True

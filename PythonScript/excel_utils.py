@@ -7,8 +7,6 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Side, Font, PatternFill, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
-import hashlib
-from urllib.parse import urlparse
 from PIL import Image
 import functools
 from functools import wraps
@@ -17,13 +15,10 @@ import time
 import re
 from pathlib import Path
 import traceback
-import uuid
-import tempfile
-import requests
-from typing import Optional
 import numpy as np
 import json
 from copy import copy
+from decimal import Decimal
 
 # Check Python/PIL version for proper resampling constant
 try:
@@ -46,7 +41,6 @@ KOGIFT_DIR_NAME = 'Kogift' # Changed from kogift_pre / Kogift
 NAVER_DIR_NAME = 'Naver'   # Changed to lowercase 'naver'
 OTHER_DIR_NAME = 'Other'
 
-
 # Initialize config parser
 CONFIG = configparser.ConfigParser()
 config_ini_path = Path(__file__).resolve().parent.parent / 'config.ini'
@@ -57,8 +51,8 @@ try:
     IMAGE_MAIN_DIR = Path(CONFIG.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'))
 except Exception as e:
     logger.error(f"Error loading config from {config_ini_path}: {e}, using default values")
-    # Default directory if config fails
-    IMAGE_MAIN_DIR = Path('C:\\RPA\\Image\\Main') 
+    # Use default directory if config fails
+    IMAGE_MAIN_DIR = Path('C:\\RPA\\Image\\Main')
 
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
@@ -396,6 +390,10 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     Args:
         worksheet: The worksheet to add images to
         df: DataFrame containing the data with image columns
+        
+    TODO: This function needs refactoring due to its length (500+ lines) and complexity.
+    Consider breaking it down into smaller, more focused functions for each image source type
+    (Haereum, Kogift, Naver) and separating the URL extraction logic from image embedding logic.
     """
     import openpyxl
     from openpyxl.drawing.image import Image
@@ -1646,10 +1644,12 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         id_match = re.search(r'naver_(.*?)_[a-f0-9]{8,}', path)
                                         if id_match:
                                             product_name = id_match.group(1)
-                                            # Generate a URL based on product name (less reliable)
-                                            extensions = ['.jpg', '.png', '.gif']
-                                            img_value['url'] = f"https://shopping-phinf.pstatic.net/front/{product_name}{extensions[0]}"
-                                            logger.debug(f"Generated fallback URL for Naver image: {img_value['url']}")
+                                            # Skip generating front URLs as they are unreliable
+                                            logger.warning(f"Skipping generation of unreliable 'front' URL for Naver image: {path}")
+                                            # If URL already exists and is a front URL, remove it
+                                            if 'url' in img_value and isinstance(img_value['url'], str) and "pstatic.net/front/" in img_value['url']:
+                                                logger.warning(f"Removing unreliable 'front' URL: {img_value['url']}")
+                                                img_value['url'] = ''
                                 
                             # Now check if we have a local path to add the image
                             if 'local_path' in img_value:
@@ -1796,10 +1796,14 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         try:
                             # FIX: Explicitly check dictionary structure and extract 'url' key if it's a web URL
                             if isinstance(value, dict):
-                                # Prioritize the 'url' key
-                                url_from_dict = value.get('url')
-                                if url_from_dict and isinstance(url_from_dict, str) and url_from_dict.startswith(('http://', 'https://')):
-                                    image_url = url_from_dict.strip()
+                                # Check for product_url first (for Naver) - NEW ADDITION
+                                if 'product_url' in value and isinstance(value['product_url'], str) and value['product_url'].startswith(('http://', 'https://')):
+                                    image_url = value['product_url'].strip()
+                                    url_source = "direct_from_product_url_key"
+                                    logger.debug(f"Found product URL in {img_col} at idx {idx} using 'product_url' key: {image_url[:50]}...")
+                                # Then check for regular 'url' key as fallback
+                                elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
+                                    image_url = value['url'].strip()
                                     url_source = "direct_from_url_key"
                                     logger.debug(f"Found web URL in {img_col} at idx {idx} using 'url' key: {image_url[:50]}...")
                                 else:
@@ -1852,6 +1856,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 
                     # Log summary for this column
                     logger.info(f"URL 추출 결과 ({upload_img_col}): 총 {urls_found}개 URL 추출 성공, {url_errors}개 오류")
+
+            # NEW: Special handling for Naver image column - replace with product links
+            df_with_image_urls = prepare_naver_image_urls_for_upload(df_with_image_urls)
 
             # Check if we extracted any image URLs
             for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']: # Use upload file column names
@@ -1999,14 +2006,14 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     """
-    (Revised) Creates a single final formatted Excel file.
-    This function now utilizes finalize_dataframe_for_excel and applies full formatting.
+    Create a combined Excel output file with images and various formatting.
+    Unlike create_split_excel_outputs, this creates a single Excel file with advanced formatting.
     It's kept for potential direct use but create_split_excel_outputs is preferred
-    if both result and upload files are needed.
+    for most use cases.
 
     Args:
-        df: DataFrame containing the data to save
-        output_path: Path where the Excel file will be saved
+        df: DataFrame with the data
+        output_path: Path where to save the Excel file
 
     Returns:
         bool: True if successful, False otherwise
@@ -2020,7 +2027,6 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-
     # 1. Finalize the DataFrame (Rename, Order, Clean)
     df_finalized = finalize_dataframe_for_excel(df) # Use the refactored function
 
@@ -2030,7 +2036,6 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     elif df_finalized.empty and df.empty:
         logger.warning("Input DataFrame was empty. Saving Excel file with only headers.")
         # Allow proceeding to create an empty file with headers
-
 
     # 2. Check if file is locked
     if os.path.exists(output_path):
@@ -2873,10 +2878,12 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         id_match = re.search(r'naver_(.*?)_[a-f0-9]{8,}', path)
                                         if id_match:
                                             product_name = id_match.group(1)
-                                            # Generate a URL based on product name (less reliable)
-                                            extensions = ['.jpg', '.png', '.gif']
-                                            img_value['url'] = f"https://shopping-phinf.pstatic.net/front/{product_name}{extensions[0]}"
-                                            logger.debug(f"Generated fallback URL for Naver image: {img_value['url']}")
+                                            # Skip generating front URLs as they are unreliable
+                                            logger.warning(f"Skipping generation of unreliable 'front' URL for Naver image: {path}")
+                                            # If URL already exists and is a front URL, remove it
+                                            if 'url' in img_value and isinstance(img_value['url'], str) and "pstatic.net/front/" in img_value['url']:
+                                                logger.warning(f"Removing unreliable 'front' URL: {img_value['url']}")
+                                                img_value['url'] = ''
                                 
                             # Now check if we have a local path to add the image
                             if 'local_path' in img_value:
@@ -3023,10 +3030,14 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         try:
                             # FIX: Explicitly check dictionary structure and extract 'url' key if it's a web URL
                             if isinstance(value, dict):
-                                # Prioritize the 'url' key
-                                url_from_dict = value.get('url')
-                                if url_from_dict and isinstance(url_from_dict, str) and url_from_dict.startswith(('http://', 'https://')):
-                                    image_url = url_from_dict.strip()
+                                # Check for product_url first (for Naver) - NEW ADDITION
+                                if 'product_url' in value and isinstance(value['product_url'], str) and value['product_url'].startswith(('http://', 'https://')):
+                                    image_url = value['product_url'].strip()
+                                    url_source = "direct_from_product_url_key"
+                                    logger.debug(f"Found product URL in {img_col} at idx {idx} using 'product_url' key: {image_url[:50]}...")
+                                # Then check for regular 'url' key as fallback
+                                elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
+                                    image_url = value['url'].strip()
                                     url_source = "direct_from_url_key"
                                     logger.debug(f"Found web URL in {img_col} at idx {idx} using 'url' key: {image_url[:50]}...")
                                 else:
@@ -3222,4 +3233,207 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         logger.error(f"Unexpected error in create_split_excel_outputs: {main_error}")
         logger.debug(traceback.format_exc())
         return False, False, None, None
+
+def extract_naver_image_urls(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    """
+    Extracts Naver image URLs from a DataFrame column and filters out unreliable 'front' URLs.
+    
+    Args:
+        df: DataFrame containing image data
+        column_name: Name of the column containing image data
+        
+    Returns:
+        DataFrame with processed image URLs
+    """
+    if column_name not in df.columns:
+        logger.warning(f"Column '{column_name}' not found in DataFrame")
+        return df
+    
+    result_df = df.copy()
+    front_url_count = 0
+    
+    for idx in df.index:
+        value = df.at[idx, column_name]
+        
+        # Skip non-dictionary values
+        if not isinstance(value, dict):
+            continue
+        
+        # Check if this is a Naver image dict with a URL
+        if 'source' in value and value['source'] == 'naver' and 'url' in value:
+            url = value['url']
+            
+            # Check if it's an unreliable front URL
+            if is_unreliable_naver_url(url):
+                front_url_count += 1
+                
+                # Either remove the URL or the entire image data
+                if 'local_path' in value and os.path.exists(value['local_path']):
+                    # Keep the local image but remove the URL
+                    value['url'] = ''
+                    logger.info(f"Row {idx}: Removed unreliable 'front' URL but kept local image")
+                    result_df.at[idx, column_name] = value
+                else:
+                    # Remove the entire image data
+                    result_df.at[idx, column_name] = '-'
+                    logger.info(f"Row {idx}: Removed unreliable 'front' URL image data entirely")
+    
+    if front_url_count > 0:
+        logger.warning(f"Removed or modified {front_url_count} unreliable 'front' URLs in '{column_name}' column")
+    
+    return result_df
+
+def use_naver_product_links_for_upload(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace Naver image URLs with the actual product website links for the upload file.
+    
+    Args:
+        df: DataFrame with image information
+        
+    Returns:
+        DataFrame with Naver image URLs replaced with product website links
+    """
+    # Create a copy to avoid modifying the original DataFrame
+    result_df = df.copy()
+    
+    # We need to find both the Naver image column and the Naver product link column
+    naver_img_col = '네이버 이미지'
+    naver_link_col = '네이버 쇼핑 링크'
+    
+    # Ensure both columns exist
+    if naver_img_col not in df.columns or naver_link_col not in df.columns:
+        logger.warning(f"Either the Naver image column '{naver_img_col}' or link column '{naver_link_col}' is missing. Cannot replace URLs.")
+        return df
+    
+    # Track processed items
+    replaced_count = 0
+    processed_count = 0
+    
+    # Process each row
+    for idx in df.index:
+        try:
+            # Get the image data
+            img_value = df.at[idx, naver_img_col]
+            # Get the product link value
+            product_link = df.at[idx, naver_link_col]
+            
+            processed_count += 1
+            
+            # Skip if no product link exists
+            if pd.isna(product_link) or product_link in ['', '-', 'None', None]:
+                continue
+            
+            # Handle dictionary format for image value
+            if isinstance(img_value, dict):
+                # Check if this is a Naver image dictionary
+                if 'source' in img_value and img_value['source'] == 'naver':
+                    # Create a copy of the image data
+                    new_img_value = img_value.copy()
+                    # Replace the URL with the product link
+                    if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                        new_img_value['url'] = product_link
+                        new_img_value['product_url'] = product_link  # Also store as product_url for clarity
+                        result_df.at[idx, naver_img_col] = new_img_value
+                        replaced_count += 1
+                        logger.debug(f"Row {idx}: Replaced Naver image URL with product link: {product_link[:50]}...")
+            # If the image value is a string URL
+            elif isinstance(img_value, str) and img_value.startswith(('http://', 'https://')):
+                # Only replace if we have a valid product link
+                if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                    result_df.at[idx, naver_img_col] = {
+                        'url': product_link,
+                        'source': 'naver',
+                        'product_url': product_link,
+                        'original_image_url': img_value  # Keep the original image URL for reference
+                    }
+                    replaced_count += 1
+                    logger.debug(f"Row {idx}: Replaced Naver image string URL with product link: {product_link[:50]}...")
+        except Exception as e:
+            logger.error(f"Error processing row {idx} in use_naver_product_links_for_upload: {e}")
+            
+    logger.info(f"Replaced {replaced_count}/{processed_count} Naver image URLs with product website links")
+    return result_df
+
+
+# Function to handle extraction and replacement of image URLs for upload file
+def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare Naver image URLs for the upload file by prioritizing product links over image URLs.
+    
+    Args:
+        df_with_image_urls: DataFrame with extracted image URLs
+        
+    Returns:
+        DataFrame with processed Naver image URLs
+    """
+    if df_with_image_urls.empty:
+        return df_with_image_urls
+        
+    # Naver image column in upload format
+    naver_img_col = '네이버쇼핑(이미지링크)'
+    # Naver link column in upload format 
+    naver_link_col = '네이버 링크'
+    
+    # Check if necessary columns exist
+    if naver_img_col not in df_with_image_urls.columns:
+        logger.warning(f"Naver image column '{naver_img_col}' not found in DataFrame. Skipping preparation.")
+        return df_with_image_urls
+    
+    if naver_link_col not in df_with_image_urls.columns:
+        logger.warning(f"Naver link column '{naver_link_col}' not found in DataFrame. Cannot replace with product links.")
+        return df_with_image_urls
+    
+    # Track processed items
+    replaced_count = 0
+    processed_count = 0
+    
+    # Create a copy of the DataFrame
+    result_df = df_with_image_urls.copy()
+    
+    # Process each row
+    for idx in df_with_image_urls.index:
+        try:
+            # Get the image URL value
+            img_url = df_with_image_urls.at[idx, naver_img_col]
+            # Get the product link value
+            product_link = df_with_image_urls.at[idx, naver_link_col]
+            
+            processed_count += 1
+            
+            # Skip if no product link exists or if image URL is already empty
+            if pd.isna(product_link) or product_link in ['', '-', 'None', None] or pd.isna(img_url) or img_url == '':
+                continue
+            
+            # Replace image URL with product link
+            if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                # Only replace if the current image URL is from pstatic.net
+                if isinstance(img_url, str) and ('pstatic.net' in img_url or not img_url.strip()):
+                    result_df.at[idx, naver_img_col] = product_link
+                    replaced_count += 1
+                    logger.debug(f"Row {idx}: Replaced Naver image URL with product link in upload file: {product_link[:50]}...")
+        except Exception as e:
+            logger.error(f"Error processing row {idx} in prepare_naver_image_urls_for_upload: {e}")
+    
+    logger.info(f"Prepared {replaced_count}/{processed_count} Naver image URLs for upload file")
+    return result_df
+
+def is_unreliable_naver_url(url: str) -> bool:
+    """
+    Checks if a URL is an unreliable Naver 'front' URL.
+    
+    Args:
+        url: The URL to check
+        
+    Returns:
+        True if it's an unreliable front URL, False otherwise
+    """
+    if not url or not isinstance(url, str):
+        return False
+    
+    # Check for the problematic pattern
+    if "pstatic.net/front/" in url:
+        logger.warning(f"Detected unreliable 'front' URL: {url}")
+        return True
+    
+    return False
 

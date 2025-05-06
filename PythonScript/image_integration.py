@@ -1135,6 +1135,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         # 이미지 메타데이터에서 URL 확인
                         web_url = naver_images.get(naver_path, {}).get('url')
                         
+                        # Reject "front" URLs which are unreliable
+                        if web_url and "pstatic.net/front/" in web_url:
+                            logging.warning(f"Row {idx}: Rejecting unreliable 'front' URL for Naver image: {web_url}")
+                            web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                        
                         # URL이 여전히 없으면 product_id에서 추출 시도
                         if not web_url and 'product_id' in naver_images.get(naver_path, {}):
                             product_id = naver_images[naver_path]['product_id']
@@ -1196,28 +1201,24 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                     catalog_id = catalog_match.group(1)
                                     img_url = f"https://shopping-phinf.pstatic.net/cat_{catalog_id}/{catalog_id}.jpg"
                             
+                            # DO NOT generate "front" URLs from product names
+                            # Instead, if no valid URL can be found, leave it blank
+                            
+                            # Create image data with the URL if found
                             if img_url:
-                                # Create minimal image data with URL only
-                                img_data = {
+                                image_data = {
                                     'source': 'naver',
                                     'url': img_url,
-                                    'score': 0.5,  # Default score for generated URL
-                                    'product_name': product_names[idx]
+                                    'score': 0.2,
+                                    'product_name': product_names[idx],
+                                    'fallback': True
                                 }
-                                result_df.at[idx, target_col_naver] = img_data
-                                logging.info(f"Row {idx}: Created Naver image data with generated URL")
+                                result_df.at[idx, target_col_naver] = image_data
+                                logging.info(f"Row {idx}: Generated image URL from Naver link: {img_url}")
                             else:
-                                # No image URL could be generated
-                                if target_col_naver in result_df.columns:
-                                    current_val = result_df.loc[idx, target_col_naver]
-                                    if not isinstance(current_val, dict):
-                                        result_df.loc[idx, target_col_naver] = '-'
+                                logging.warning(f"Row {idx}: Could not generate valid image URL from Naver link: {naver_url}")
                         else:
-                            # No Naver link to use
-                            if target_col_naver in result_df.columns:
-                                current_val = result_df.loc[idx, target_col_naver]
-                                if not isinstance(current_val, dict):
-                                    result_df.loc[idx, target_col_naver] = '-'
+                            logging.warning(f"Row {idx}: No valid Naver URL found in row data.")
             else:
                  if target_col_naver in result_df.columns:
                      # If no Naver product info or no match found, ensure Naver image is not included
@@ -1386,6 +1387,11 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 # Try to get a URL
                 web_url = naver_images.get(best_match, {}).get('url', '')
                 
+                # Reject "front" URLs which are unreliable
+                if web_url and "pstatic.net/front/" in web_url:
+                    logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
+                    web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                
                 image_data = {
                     'local_path': img_path,
                     'source': 'naver',
@@ -1405,6 +1411,11 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 if img_path_obj:
                     img_path = str(img_path_obj)
                     web_url = info.get('url', '')
+                    
+                    # Reject "front" URLs which are unreliable
+                    if web_url and "pstatic.net/front/" in web_url:
+                        logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
+                        web_url = ''  # Clear the URL to prevent using invalid "front" URLs
                     
                     image_data = {
                         'local_path': img_path,
