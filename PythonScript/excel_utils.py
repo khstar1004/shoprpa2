@@ -19,6 +19,7 @@ import numpy as np
 import json
 from copy import copy
 from decimal import Decimal
+from typing import Optional
 
 # Check Python/PIL version for proper resampling constant
 try:
