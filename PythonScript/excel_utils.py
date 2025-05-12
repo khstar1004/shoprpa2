@@ -214,4 +214,4 @@ class ExcelGenerator:
 excel_generator = ExcelGenerator()
 
 # Export public interface
-__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS'] 
+__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS', 'REQUIRED_INPUT_COLUMNS'] 

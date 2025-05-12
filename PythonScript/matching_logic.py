@@ -47,7 +47,7 @@ except Exception as e:
 
 # Import the enhanced image matcher if available
 try:
-    from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+    from .enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
     ENHANCED_MATCHER_AVAILABLE = True
     logging.info("Enhanced image matcher imported successfully")
 except ImportError:
