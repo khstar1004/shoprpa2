@@ -93,11 +93,17 @@ def highlight_negative_price_differences(excel_path, threshold=-1):
                         else:
                             numeric_value = float(cell_value)
                         
-                        # 음수(-1 미만) 확인 및 기록
-                        if numeric_value < threshold:
+                        # 퍼센트 컬럼과 일반 가격차이 컬럼 구분하여 처리
+                        is_percent = "%" in col_name
+                        
+                        # 음수 확인 및 기록 (퍼센트는 -1%, 일반 가격차이는 -1원 기준)
+                        threshold_to_check = threshold if is_percent else threshold * 10000  # 일반 가격차이는 원 단위
+                        
+                        if numeric_value < threshold_to_check:
                             highlight_row = True
-                            negative_values.append(f"{col_name} = {numeric_value}")
-                            logger.debug(f"행 {row_idx}: {col_name} = {numeric_value} < {threshold}, 하이라이팅 대상")
+                            value_str = f"{numeric_value}%" if is_percent else f"{numeric_value:,.0f}원"
+                            negative_values.append(f"{col_name} = {value_str}")
+                            logger.debug(f"행 {row_idx}: {col_name} = {value_str} < {threshold_to_check}, 하이라이팅 대상")
                     except (ValueError, TypeError) as e:
                         logger.debug(f"행 {row_idx}, 열 '{col_name}': 숫자 변환 실패 '{cell_value}': {e}")
                         errors += 1

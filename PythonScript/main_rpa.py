@@ -20,7 +20,7 @@ from email_sender import validate_email_config, send_excel_by_email
 from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
 from excel_utils import (
-    create_split_excel_outputs,
+    excel_generator,  # Changed: Now using singleton instance
     find_excel_file,
     finalize_dataframe_for_excel,
     IMAGE_COLUMNS
@@ -31,7 +31,6 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
-from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -792,8 +791,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if df_to_save is not None:
                             try:
                                 # Create Excel files (even if df_to_save is empty, to get headers)
-                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                logging.info(f"Proceeding to call create_excel_output. DataFrame shape: {df_to_save.shape}")
+                                result_success, upload_success, result_path, upload_path = create_excel_output(
+                                    df_processed=df_to_save,
+                                    output_dir=output_dir,
+                                    create_upload_file=True
+                                )
                                 
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
@@ -820,17 +823,23 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     # --- Apply Excel Formatting (NEW) ---
                                     try:
                                         logging.info("Applying final Excel formatting to result and upload files...")
-                                        format_success_count, total_format_files = apply_excel_formatting(
+                                        # Get threshold value from config, default to -1
+                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                        logging.info(f"Using price difference threshold: {threshold}")
+                                        
+                                        # Apply highlighting to both result and upload files
+                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
                                             result_path=result_path if result_success else None,
-                                            upload_path=upload_path if upload_success else None
+                                            upload_path=upload_path if upload_success else None,
+                                            threshold=threshold
                                         )
                                         
-                                        if format_success_count > 0:
-                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
+                                        if highlight_success_count > 0:
+                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
                                             if progress_queue:
-                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
+                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
                                         else:
-                                            logging.warning("Excel formatting could not be applied to any files")
+                                            logging.warning("Price highlighting could not be applied to any files")
                                     except Exception as format_err:
                                         logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
                                         # Don't treat formatting failure as a critical error, continue with the process
@@ -912,7 +921,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             logging.warning(f"Upload path is invalid or does not exist: {upload_path}")
                                             progress_queue.emit("final_path", "Error: Upload file not found")
                                 else:
-                                    logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
+                                    logging.error("엑셀 파일 생성 실패 (create_excel_output). 이전 로그를 확인하세요.")
                                     if progress_queue:
                                         progress_queue.emit("error", "Failed to create one or both Excel output files.")
                                     output_path = None

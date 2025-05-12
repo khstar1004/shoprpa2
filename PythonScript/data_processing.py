@@ -229,6 +229,12 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             df[col] = None
             logging.debug(f"Adding column for Naver data: {col}")
     
+    # NEW: Add column for promotional site indicator
+    for col in ['판촉물사이트여부', '수량별가격여부']:
+        if col not in df.columns:
+            df[col] = None
+            logging.debug(f"Adding column for promotional site data: {col}")
+    
     # Initialize the image columns with proper dictionary format where applicable
     for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
         if img_col in df.columns:
@@ -320,8 +326,60 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     
                     # 판매가 정보 업데이트
                     if '판매단가(V포함)(2)' in df.columns:
-                        # 부가세 포함 가격이 먼저 있는지 확인
-                        if 'price_with_vat' in item:
+                        # Check for quantity-specific prices first (new structure)
+                        if 'quantity_prices' in item and item['quantity_prices']:
+                            # Get the target quantity from 기본수량(1) or fallback to a default
+                            target_qty = None
+                            if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                                try:
+                                    target_qty = int(row['기본수량(1)'])
+                                except (ValueError, TypeError):
+                                    target_qty = None
+                            
+                            # Default to the first quantity if target not found
+                            if target_qty is None:
+                                target_qty = min(item['quantity_prices'].keys()) if item['quantity_prices'] else None
+                            
+                            # 수량-가격 테이블에서 적절한 가격 찾기
+                            if target_qty and item['quantity_prices']:
+                                # 테이블의 최소/최대 수량 확인
+                                quantities = sorted(item['quantity_prices'].keys())
+                                min_qty = min(quantities)
+                                
+                                # 1. 정확히 일치하는 수량이 있는 경우
+                                if target_qty in item['quantity_prices']:
+                                    price_info = item['quantity_prices'][target_qty]
+                                    df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                                    kogift_price_count += 1
+                                    logging.info(f"Kogift 정확한 수량({target_qty})에 대한 가격 데이터 사용: {price_info['price_with_vat']}")
+                                
+                                # 2. 최소 수량보다 작은 경우 -> 최소 수량의 가격 사용
+                                elif target_qty < min_qty:
+                                    price_info = item['quantity_prices'][min_qty]
+                                    df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                                    kogift_price_count += 1
+                                    logging.info(f"Kogift 최소 수량({min_qty}) 가격 적용 (요청 수량: {target_qty}): {price_info['price_with_vat']}")
+                                
+                                # 3. 구간 가격 찾기
+                                else:
+                                    # 주문 수량보다 작거나 같은 최대 수량 찾기
+                                    lower_quantities = [q for q in quantities if q <= target_qty]
+                                    if lower_quantities:
+                                        max_lower_qty = max(lower_quantities)
+                                        price_info = item['quantity_prices'][max_lower_qty]
+                                        df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                                        kogift_price_count += 1
+                                        logging.info(f"Kogift 구간 가격 적용 (구간: {max_lower_qty}, 요청 수량: {target_qty}): {price_info['price_with_vat']}")
+                                    else:
+                                        # 모든 수량보다 큰 경우 -> 가장 큰 수량의 가격 사용
+                                        max_qty = max(quantities)
+                                        price_info = item['quantity_prices'][max_qty]
+                                        df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                                        kogift_price_count += 1
+                                        logging.info(f"Kogift 최대 수량({max_qty}) 가격 적용 (요청 수량: {target_qty}): {price_info['price_with_vat']}")
+                        
+                        # 부가세 포함 가격이 먼저 있는지 확인 (기존 방식)
+                        elif 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
                             kogift_price_count += 1
                         # 없으면 일반 가격에 1.1 곱해서 부가세 계산
@@ -332,7 +390,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
                     if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns and pd.notna(df.at[idx, '판매단가(V포함)(2)']):
                         df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
-                        
+                    
                     # 이미지 URL 업데이트
                     # 이미지 URL 파악 (우선순위 순서대로 시도)
                     image_url = None
@@ -448,6 +506,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Add Naver data from crawl results if available
     if naver_results:
         naver_matched_count = 0
+        naver_promo_site_count = 0  # NEW: Count promotional sites
+        naver_qty_pricing_count = 0  # NEW: Count items with quantity pricing
+        
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
             
@@ -461,6 +522,29 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     if isinstance(item, dict):
                         naver_matched_count += 1
                         
+                        # NEW: Check if it's a promotional site
+                        is_promotional = False
+                        has_quantity_pricing = False
+                        
+                        # Check from newer structure
+                        if 'is_promotional_site' in item:
+                            is_promotional = item['is_promotional_site']
+                            if is_promotional:
+                                naver_promo_site_count += 1
+                        
+                        # Check quantity pricing flag
+                        if 'has_quantity_pricing' in item:
+                            has_quantity_pricing = item['has_quantity_pricing']
+                            if has_quantity_pricing:
+                                naver_qty_pricing_count += 1
+                        
+                        # Update promotional site indicator columns
+                        if '판촉물사이트여부' in df.columns:
+                            df.at[idx, '판촉물사이트여부'] = 'Y' if is_promotional else 'N'
+                        
+                        if '수량별가격여부' in df.columns:
+                            df.at[idx, '수량별가격여부'] = 'Y' if has_quantity_pricing else 'N'
+                        
                         # Update Naver related columns
                         # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
                         if '기본수량(3)' in df.columns:
@@ -471,8 +555,73 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 df.at[idx, '기본수량(3)'] = 1  # 기본값
                         
                         # 판매단가 정보 업데이트
-                        if '판매단가(V포함)(3)' in df.columns and 'price' in item:
-                            df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                        if '판매단가(V포함)(3)' in df.columns:
+                            # NEW: Check for quantity pricing first
+                            if has_quantity_pricing and 'quantity_prices' in item and item['quantity_prices']:
+                                # Get the target quantity from 기본수량(1) or fallback
+                                target_qty = None
+                                if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                                    try:
+                                        target_qty = int(row['기본수량(1)'])
+                                    except (ValueError, TypeError):
+                                        target_qty = None
+                                
+                                # Default if no target found
+                                if target_qty is None:
+                                    target_qty = 300  # Default quantity
+                                
+                                # Find the price for this quantity
+                                if str(target_qty) in item['quantity_prices']:  # Check string key
+                                    price_info = item['quantity_prices'][str(target_qty)]
+                                    df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                                    logging.info(f"Using quantity-based price for {product_name}: {price_info['price_with_vat']} (qty: {target_qty})")
+                                elif target_qty in item['quantity_prices']:  # Check int key
+                                    price_info = item['quantity_prices'][target_qty]
+                                    df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                                    logging.info(f"Using quantity-based price for {product_name}: {price_info['price_with_vat']} (qty: {target_qty})")
+                                else:
+                                    # Find closest match
+                                    available_qtys = []
+                                    for qty_key in item['quantity_prices'].keys():
+                                        try:
+                                            # Convert keys to int (they could be strings)
+                                            available_qtys.append(int(qty_key))
+                                        except (ValueError, TypeError):
+                                            pass
+                                    
+                                    if available_qtys:
+                                        # Find closest lower quantity
+                                        lower_qtys = [q for q in available_qtys if q <= target_qty]
+                                        if lower_qtys:
+                                            closest_qty = max(lower_qtys)
+                                            price_info = item['quantity_prices'].get(
+                                                closest_qty,
+                                                item['quantity_prices'].get(str(closest_qty))
+                                            )
+                                            if price_info:
+                                                df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                                                logging.info(f"Using closest quantity price for {product_name}: {price_info['price_with_vat']} (qty: {closest_qty}, target: {target_qty})")
+                                        else:
+                                            # Use minimum quantity price
+                                            min_qty = min(available_qtys)
+                                            price_info = item['quantity_prices'].get(
+                                                min_qty,
+                                                item['quantity_prices'].get(str(min_qty))
+                                            )
+                                            if price_info:
+                                                df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                                                logging.info(f"Using minimum quantity price for {product_name}: {price_info['price_with_vat']} (qty: {min_qty}, target: {target_qty})")
+                            # Check for price_with_vat
+                            elif 'price_with_vat' in item:
+                                df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
+                            # Check for regular price and apply VAT
+                            elif 'price' in item:
+                                # If it's a promotional site, add VAT if not already included
+                                if is_promotional and not item.get('vat_included', False):
+                                    df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
+                                    logging.info(f"Added VAT to price for promotional site {product_name}: {item['price']} -> {round(item['price'] * 1.1)}")
+                                else:
+                                    df.at[idx, '판매단가(V포함)(3)'] = item['price']
                         
                         # 링크 정보 업데이트
                         if '네이버 쇼핑 링크' in df.columns and 'link' in item:
@@ -522,6 +671,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                     }
         
         logging.info(f"Updated {naver_matched_count} rows with Naver data")
+        logging.info(f"Detected {naver_promo_site_count} promotional sites and {naver_qty_pricing_count} sites with quantity pricing")
     
     # --- Calculate additional fields ---
     # Calculate price differences if base price exists
@@ -588,8 +738,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     logging.debug(f"Columns in formatted data: {df.columns.tolist()}")
     
     # Verify price data is present in the output DataFrame
-    kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
-    logging.info(f"Kogift price data count: {kogift_price_count} rows have valid price values")
+    kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum() if '판매단가(V포함)(2)' in df.columns else 0
+    naver_price_count = df['판매단가(V포함)(3)'].notnull().sum() if '판매단가(V포함)(3)' in df.columns else 0
+    logging.info(f"Price data counts: Kogift: {kogift_price_count}, Naver: {naver_price_count} rows have valid price values")
     
     return df
 

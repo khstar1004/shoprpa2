@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 import aiohttp
 import aiofiles
 from PIL import Image
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 
 # Import based on how the file is run
 try:
@@ -618,10 +618,279 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         logger.error(f"Error downloading image {url}: {e}")
         return None
 
+async def extract_quantity_price_from_naver_link(page: Page, product_url: str, target_quantities: List[int] = None) -> Dict[str, Any]:
+    """
+    Extracts quantity-based pricing information from a Naver product page.
+    
+    Args:
+        page: Playwright Page object
+        product_url: URL of the product page
+        target_quantities: List of quantities to check for
+        
+    Returns:
+        Dictionary containing pricing information and whether it's a promotional site
+    """
+    if not target_quantities:
+        target_quantities = [300, 500, 1000, 2000]  # Default quantities to check
+        
+    result = {
+        "is_promotional_site": False,
+        "has_quantity_pricing": False,
+        "quantity_prices": {},
+        "vat_included": False,
+        "supplier_name": "",
+        "supplier_url": "",
+        "price_table": None
+    }
+    
+    try:
+        # Navigate to the product page
+        logger.info(f"Navigating to Naver product page: {product_url}")
+        await page.goto(product_url, wait_until='networkidle', timeout=30000)
+        
+        # Get supplier name
+        supplier_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
+        if await page.locator(supplier_selector).count() > 0:
+            result["supplier_name"] = await page.locator(supplier_selector).text_content()
+            
+            # Get supplier URL
+            supplier_url_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
+            if await page.locator(supplier_url_selector).count() > 0:
+                result["supplier_url"] = await page.locator(supplier_url_selector).get_attribute('href') or ""
+                if result["supplier_url"] and not result["supplier_url"].startswith('http'):
+                    result["supplier_url"] = f"https://shopping.naver.com{result['supplier_url']}"
+        
+        # Check if it's a promotional site based on supplier name
+        promo_keywords = ['온오프마켓', '답례품', '기프트', '판촉', '기념품', '인쇄', '각인', '제작', '미스터몽키', '홍보', '호갱탈출']
+        if result["supplier_name"]:
+            for keyword in promo_keywords:
+                if keyword in result["supplier_name"]:
+                    result["is_promotional_site"] = True
+                    logger.info(f"Detected promotional site: {result['supplier_name']} contains keyword '{keyword}'")
+                    break
+        
+        # Find the "Visit Store" button and get the seller's site URL
+        visit_store_selector = 'a.btn_link__dHQPb, a.go_mall, a.link_btn[href*="mall"]'
+        if await page.locator(visit_store_selector).count() > 0:
+            seller_site_url = await page.locator(visit_store_selector).get_attribute('href') or ""
+            logger.info(f"Found seller's site URL: {seller_site_url}")
+            
+            # Visit the seller's site to check for quantity-based pricing
+            if seller_site_url:
+                try:
+                    # Create a new context for visiting the seller's site
+                    browser = page.context.browser
+                    seller_context = await browser.new_context(
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+                        viewport={'width': 1920, 'height': 1080}
+                    )
+                    seller_page = await seller_context.new_page()
+                    
+                    # Navigate to the seller's site
+                    logger.info(f"Visiting seller's site: {seller_site_url}")
+                    await seller_page.goto(seller_site_url, wait_until='domcontentloaded', timeout=30000)
+                    
+                    # Check for quantity-based pricing tables
+                    # Look for table with keywords like "수량" and "단가"
+                    quantity_table_selectors = [
+                        'table:has(th:has-text("수량")):has(th:has-text("단가"))',
+                        'table:has(th:has-text("수량")):has(th:has-text("가격"))',
+                        'table.quantity_price__table',
+                        'div.price-box table',
+                        'div.quantity_discount table',
+                        'div.quantity_pricing table',
+                        'table.price_by_quantity'
+                    ]
+                    
+                    for selector in quantity_table_selectors:
+                        if await seller_page.locator(selector).count() > 0:
+                            logger.info(f"Found quantity-based pricing table with selector: {selector}")
+                            result["has_quantity_pricing"] = True
+                            result["is_promotional_site"] = True
+                            
+                            # Extract table HTML
+                            table_html = await seller_page.locator(selector).evaluate('el => el.outerHTML')
+                            
+                            # Use pandas to extract the table data
+                            try:
+                                tables = pd.read_html(table_html)
+                                if tables and len(tables) > 0:
+                                    df = tables[0]
+                                    
+                                    # Find quantity and price columns
+                                    qty_col = None
+                                    price_col = None
+                                    
+                                    for i, col in enumerate(df.columns):
+                                        col_str = str(col).lower()
+                                        if any(k in col_str for k in ['수량', 'qty', 'quantity']):
+                                            qty_col = i
+                                        elif any(k in col_str for k in ['단가', '가격', 'price']):
+                                            price_col = i
+                                    
+                                    if qty_col is not None and price_col is not None:
+                                        # Extract price table
+                                        price_table = []
+                                        for _, row in df.iterrows():
+                                            try:
+                                                qty = row.iloc[qty_col]
+                                                price = row.iloc[price_col]
+                                                
+                                                # Clean data
+                                                if isinstance(qty, str):
+                                                    qty = ''.join(filter(str.isdigit, qty.replace(',', '')))
+                                                    qty = int(qty) if qty else 0
+                                                
+                                                if isinstance(price, str):
+                                                    price = ''.join(filter(str.isdigit, price.replace(',', '')))
+                                                    price = int(price) if price else 0
+                                                
+                                                if qty and price:
+                                                    price_table.append({"quantity": int(qty), "price": int(price)})
+                                            except Exception as e:
+                                                logger.warning(f"Error extracting row from price table: {e}")
+                                                continue
+                                        
+                                        if price_table:
+                                            # Sort price table by quantity
+                                            price_table.sort(key=lambda x: x["quantity"])
+                                            result["price_table"] = price_table
+                                            
+                                            # Check for VAT info on the page
+                                            vat_text_selectors = [
+                                                'div:has-text("부가세")',
+                                                'div:has-text("VAT")',
+                                                'p:has-text("부가세")',
+                                                'p:has-text("VAT")'
+                                            ]
+                                            
+                                            for vat_selector in vat_text_selectors:
+                                                if await seller_page.locator(vat_selector).count() > 0:
+                                                    vat_text = await seller_page.locator(vat_selector).text_content()
+                                                    if '별도' in vat_text or '미포함' in vat_text:
+                                                        result["vat_included"] = False
+                                                        logger.info(f"VAT not included based on text: {vat_text}")
+                                                        break
+                                                    elif '포함' in vat_text:
+                                                        result["vat_included"] = True
+                                                        logger.info(f"VAT included based on text: {vat_text}")
+                                                        break
+                                            
+                                            # Fill quantity_prices for target quantities
+                                            available_quantities = [item["quantity"] for item in price_table]
+                                            for target_qty in target_quantities:
+                                                # Find the appropriate price for this quantity
+                                                if target_qty in available_quantities:
+                                                    # Exact match
+                                                    for item in price_table:
+                                                        if item["quantity"] == target_qty:
+                                                            price = item["price"]
+                                                            price_with_vat = price if result["vat_included"] else round(price * 1.1)
+                                                            result["quantity_prices"][target_qty] = {
+                                                                "price": price,
+                                                                "price_with_vat": price_with_vat,
+                                                                "exact_match": True
+                                                            }
+                                                            break
+                                                else:
+                                                    # Find closest lower quantity
+                                                    lower_quantities = [q for q in available_quantities if q <= target_qty]
+                                                    if lower_quantities:
+                                                        closest_qty = max(lower_quantities)
+                                                        for item in price_table:
+                                                            if item["quantity"] == closest_qty:
+                                                                price = item["price"]
+                                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
+                                                                result["quantity_prices"][target_qty] = {
+                                                                    "price": price,
+                                                                    "price_with_vat": price_with_vat,
+                                                                    "exact_match": False,
+                                                                    "closest_quantity": closest_qty
+                                                                }
+                                                                break
+                                                    else:
+                                                        # Use the smallest quantity price if target is smaller than all available
+                                                        min_qty = min(available_quantities)
+                                                        for item in price_table:
+                                                            if item["quantity"] == min_qty:
+                                                                price = item["price"]
+                                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
+                                                                result["quantity_prices"][target_qty] = {
+                                                                    "price": price,
+                                                                    "price_with_vat": price_with_vat,
+                                                                    "exact_match": False,
+                                                                    "closest_quantity": min_qty,
+                                                                    "note": "Using minimum available quantity"
+                                                                }
+                                                                break
+                                            
+                                            logger.info(f"Extracted quantity prices for {len(result['quantity_prices'])} quantities")
+                                            break
+                            except Exception as e:
+                                logger.warning(f"Error parsing quantity price table: {e}")
+                    
+                    # Fallback: If no table found, try input fields for quantity pricing
+                    if not result["has_quantity_pricing"]:
+                        # Try to find quantity input and price display
+                        qty_input_selector = 'input#qty, input.buynum, input[name="quantity"]'
+                        if await seller_page.locator(qty_input_selector).count() > 0:
+                            logger.info("Trying direct quantity input method for pricing")
+                            
+                            # Test different quantities
+                            quantity_prices = {}
+                            for qty in target_quantities:
+                                try:
+                                    # Input the quantity
+                                    await seller_page.locator(qty_input_selector).fill(str(qty))
+                                    await seller_page.locator(qty_input_selector).press('Enter')
+                                    await seller_page.wait_for_timeout(1000)  # Wait for price update
+                                    
+                                    # Try to find the price element
+                                    price_selectors = [
+                                        'span.price, div.price, strong.price, p.price',
+                                        'span.total-price, div.total-price',
+                                        'span#price, div#price',
+                                        'span.amount, div.amount'
+                                    ]
+                                    
+                                    for price_selector in price_selectors:
+                                        if await seller_page.locator(price_selector).count() > 0:
+                                            price_text = await seller_page.locator(price_selector).text_content()
+                                            # Extract numbers from price text
+                                            price_digits = ''.join(filter(str.isdigit, price_text.replace(',', '')))
+                                            if price_digits:
+                                                price = int(price_digits)
+                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
+                                                quantity_prices[qty] = {
+                                                    "price": price,
+                                                    "price_with_vat": price_with_vat,
+                                                    "exact_match": True
+                                                }
+                                                logger.info(f"Found price for quantity {qty}: {price}")
+                                                break
+                                except Exception as e:
+                                    logger.warning(f"Error testing quantity {qty}: {e}")
+                            
+                            if quantity_prices:
+                                result["has_quantity_pricing"] = True
+                                result["is_promotional_site"] = True
+                                result["quantity_prices"] = quantity_prices
+                    
+                    # Close the seller page context
+                    await seller_context.close()
+                    
+                except Exception as e:
+                    logger.error(f"Error visiting seller site: {e}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error extracting quantity pricing from {product_url}: {e}")
+        return result
+
 async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser) -> list:
     """
     Crawl product information from Naver Shopping using API asynchronously for multiple product rows,
-    including image downloading and optional background removal.
+    including image downloading, optional background removal, and quantity-based pricing.
 
     Args:
         product_rows (pd.DataFrame): DataFrame containing products to search for.
@@ -648,13 +917,41 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
-        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_dir}")
+        
+        # Get target quantities from config or use default
+        target_quantities_str = config.get('ScraperSettings', 'target_quantities', fallback='300,500,1000,2000')
+        target_quantities = [int(qty.strip()) for qty in target_quantities_str.split(',') if qty.strip().isdigit()]
+        if not target_quantities:
+            target_quantities = [300, 500, 1000, 2000]  # Default quantities
+            
+        # Check if we should visit seller sites
+        visit_seller_sites = config.getboolean('ScraperSettings', 'naver_visit_seller_sites', fallback=True)
+        
+        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, "
+                    f"BG Removal={use_bg_removal}, Image Dir={naver_image_dir}, "
+                    f"Target Quantities={target_quantities}, Visit Seller Sites={visit_seller_sites}")
     except Exception as e:
         logger.error(f"Error reading config: {e}")
         return []
 
     # Create semaphore for concurrent API requests
     api_semaphore = asyncio.Semaphore(max_concurrent_api)
+    
+    # Initialize Playwright browser if we're visiting seller sites
+    browser = None
+    playwright = None
+    if visit_seller_sites:
+        try:
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
+                headless=config.getboolean('Playwright', 'playwright_headless', fallback=True),
+                args=['--disable-gpu', '--disable-dev-shm-usage', '--no-sandbox'],
+                timeout=60000  # 1 minute timeout
+            )
+            logger.info("🟢 Successfully launched Playwright browser for seller site visits")
+        except Exception as e:
+            logger.error(f"Failed to initialize Playwright: {e}")
+            visit_seller_sites = False  # Disable seller site visits on failure
 
     # Create tasks for concurrent processing
     tasks = []
@@ -663,22 +960,31 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
             tasks.append(
                 _process_single_naver_row(
                     idx, row, config, client, api_semaphore, 
-                    naver_scrape_limit, naver_image_dir
+                    naver_scrape_limit, naver_image_dir, browser,
+                    target_quantities, visit_seller_sites
                 )
             )
         
         # Run tasks concurrently and collect results
         processed_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+    # Clean up Playwright if it was used
+    if browser:
+        await browser.close()
+    if playwright:
+        await playwright.stop()
+
     # Filter out exceptions and None results
     results = []
+    exception_count = 0
     for res in processed_results:
         if isinstance(res, Exception):
             logger.error(f"Error processing Naver row: {res}")
+            exception_count += 1
         elif res is not None:
             results.append(res)
 
-    logger.info(f"🟢 Naver crawl finished. Processed {len(results)} valid results out of {total_products} rows.")
+    logger.info(f"🟢 Naver crawl finished. Processed {len(results)} valid results out of {total_products} rows. Errors: {exception_count}")
     
     # FIXED: Add validation for results to ensure image paths are properly set
     validated_results = []
@@ -741,7 +1047,7 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
                             # If no extension alternatives found, try _nobg version
                             nobg_path = f"{base_path}_nobg.png"
                             if os.path.exists(nobg_path):
-                                logger.info(f"Found _nobg version of image: {nobg_path}")
+                                logger.info(f"Found _nobg image version: {nobg_path}")
                                 image_data['local_path'] = nobg_path
                 
                 # Update result with fixed image_data
@@ -754,8 +1060,8 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     logger.info(f"Validation complete. {len(validated_results)} valid results (removed {len(results) - len(validated_results)} invalid)")
     return validated_results
 
-# Helper function to process a single row for crawl_naver_products
-async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir):
+# Modify the helper function to process a single row for crawl_naver_products
+async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir, browser=None, target_quantities=None, visit_seller_sites=False):
     """Processes a single product row for Naver API search and image download."""
     product_name = row.get('상품명', '')
     if not product_name or pd.isna(product_name):
@@ -810,6 +1116,48 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'source': 'naver',  # 공급사 정보 명시 (Kogift 방식을 따라)
         'initial_similarity': similarity  # Keep track of similarity score
     }
+
+    # NEW: Visit seller site to check for quantity-based pricing if enabled
+    if visit_seller_sites and browser and first_item.get('link'):
+        try:
+            # Create a new page for each product to avoid state interference
+            page = await browser.new_page()
+            
+            # Extract quantity-based pricing
+            quantity_pricing = await extract_quantity_price_from_naver_link(
+                page, 
+                first_item.get('link'), 
+                target_quantities
+            )
+            
+            # Close the page to free resources
+            await page.close()
+            
+            # Add quantity pricing data to the result
+            result_data['is_promotional_site'] = quantity_pricing.get('is_promotional_site', False)
+            result_data['has_quantity_pricing'] = quantity_pricing.get('has_quantity_pricing', False)
+            result_data['quantity_prices'] = quantity_pricing.get('quantity_prices', {})
+            result_data['vat_included'] = quantity_pricing.get('vat_included', False)
+            
+            # Update supplier name if found in page visit
+            if quantity_pricing.get('supplier_name'):
+                result_data['seller_name'] = quantity_pricing.get('supplier_name')
+            
+            # Update supplier link if found in page visit
+            if quantity_pricing.get('supplier_url'):
+                result_data['seller_link'] = quantity_pricing.get('supplier_url')
+                
+            # If we found it's a promotional site, ensure the price has VAT added
+            if result_data['is_promotional_site'] and not result_data['vat_included']:
+                # Add VAT to the base price
+                result_data['price_with_vat'] = round(result_data['price'] * 1.1)
+                logger.info(f"Added VAT to price for promotional site product '{product_name}': {result_data['price']} -> {result_data['price_with_vat']}")
+            
+            logger.info(f"Seller site visit for '{product_name}': Is promotional: {result_data['is_promotional_site']}, "
+                        f"Has quantity pricing: {result_data['has_quantity_pricing']}, "
+                        f"Quantity prices found: {len(result_data.get('quantity_prices', {}))}")
+        except Exception as e:
+            logger.error(f"Error visiting seller site for '{product_name}': {e}")
 
     # Process image if available
     image_url = first_item.get('image_url')
