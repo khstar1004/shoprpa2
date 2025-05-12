@@ -14,7 +14,7 @@ from excel_constants import (
 )
 from excel_data_processing import (
     flatten_nested_image_dicts, prepare_naver_image_urls_for_upload,
-    _prepare_data_for_excel
+    _prepare_data_for_excel, finalize_dataframe_for_excel
 )
 from excel_formatting import (
     _apply_basic_excel_formatting, _apply_upload_file_formatting,
@@ -44,13 +44,13 @@ def safe_excel_operation(func):
 @safe_excel_operation
 def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str) -> Tuple[bool, bool, Optional[str], Optional[str]]:
     """
-    Create two Excel files:
-    1. Result file: With images, for viewing
-    2. Upload file: URL links only, for uploading to systems
+    작업메뉴얼에 따라 두 가지 Excel 파일을 생성합니다:
+    1. Result file (A): 이미지 포함, 조회용 (원본 컬럼 이름 유지)
+    2. Upload file (P): URL 링크만 포함, 업로드용 (컬럼 이름 변환)
 
     Args:
-        df_finalized: The finalized DataFrame with all data
-        output_path_base: The base path for output files
+        df_finalized: 최종 처리된 DataFrame
+        output_path_base: 출력 파일의 기본 경로
 
     Returns:
         tuple: (result_success, upload_success, result_path, upload_path)
@@ -65,7 +65,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     
     logger.info(f"Starting creation of split Excel outputs from finalized DataFrame (Shape: {df_finalized.shape})")
     
-    # Default return values (used in case of error)
+    # Default return values
     result_path = None
     result_success = False
     upload_path = None
@@ -73,58 +73,127 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 
     try:
         # -----------------------------------------
-        # 1. Create Result File (with images)
+        # 1. Create Result File (A) - with images
         # -----------------------------------------
         result_path = f"{output_path_base}_result.xlsx"
-        logger.info(f"Creating result file: {result_path} with {len(df_finalized)} rows.")
+        logger.info(f"Creating result file (A): {result_path} with {len(df_finalized)} rows.")
+        
+        # 골든 예시처럼 판매가(V포함)(2)와 판매단가(V포함)(2) 컬럼 모두 포함
+        if '판매가(V포함)(2)' in df_finalized.columns and '판매단가(V포함)(2)' not in df_finalized.columns:
+            df_finalized['판매단가(V포함)(2)'] = df_finalized['판매가(V포함)(2)']
         
         # Create a new workbook for result file
         workbook_result = openpyxl.Workbook()
         worksheet_result = workbook_result.active
         worksheet_result.title = "제품 가격 비교"
         
-        # Write data using the new helper function
+        # Write data using the helper function
         if not _write_data_to_worksheet(worksheet_result, df_finalized):
             logger.error("Failed to write data to result worksheet")
             return False, False, None, None
             
-        # Apply common formatting
+        # Apply formatting based on manual requirements
         _apply_basic_excel_formatting(worksheet_result, df_finalized.columns.tolist())
         _add_hyperlinks_to_worksheet(worksheet_result, df_finalized, hyperlinks_as_formulas=False)
         _add_header_footer(worksheet_result)
         
-        # Remove auto filter
+        # Remove auto filter as per manual
         if hasattr(worksheet_result, 'auto_filter') and worksheet_result.auto_filter:
             worksheet_result.auto_filter.ref = None
             logger.info("Removed filter from result Excel file")
         
-        # Save without images first
+        # Save result file
         workbook_result.save(result_path)
         result_success = True
         
         # -----------------------------------------
-        # 2. Create Upload File (without images)
+        # 2. Create Upload File (P) - without images, with column mapping
         # -----------------------------------------
         upload_path = f"{output_path_base}_upload.xlsx"
-        logger.info(f"Creating upload file: {upload_path}")
+        logger.info(f"Creating upload file (P): {upload_path}")
         
-        # Create upload version DataFrame (without image data)
+        # Create upload version DataFrame
         df_upload = df_finalized.copy()
+        
+        # Replace image data with web URLs only
         for col in IMAGE_COLUMNS:
             if col in df_upload.columns:
-                df_upload[col] = '-'
+                df_upload[col] = df_upload[col].apply(
+                    lambda x: x.get('url') if isinstance(x, dict) and 'url' in x 
+                    else (x if isinstance(x, str) and x.startswith(('http://', 'https://')) 
+                    else '')
+                )
+        
+        # Prepare Naver image URLs for upload
+        df_upload = prepare_naver_image_urls_for_upload(df_upload)
+        
+        # Apply column name mapping for upload file based on @엑셀골든_upload 예시
+        # 컬럼 이름을 upload 파일 형식에 맞게 변환
+        upload_columns_mapping = {
+            '구분': '구분(승인관리:A/가격관리:P)',
+            '업체명': '공급사명',
+            '업체코드': '공급처코드',
+            'Code': '상품코드',
+            '중분류카테고리': '카테고리(중분류)',
+            '기본수량(1)': '본사 기본수량',
+            '판매단가(V포함)': '판매단가1(VAT포함)',
+            '본사상품링크': '본사링크',
+            '기본수량(2)': '고려 기본수량',
+            '판매가(V포함)(2)': '판매단가2(VAT포함)',
+            '가격차이(2)': '고려 가격차이',
+            '가격차이(2)(%)': '고려 가격차이(%)',
+            '고려기프트 상품링크': '고려 링크',
+            '기본수량(3)': '네이버 기본수량',
+            '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
+            '가격차이(3)': '네이버 가격차이',
+            '가격차이(3)(%)': '네이버가격차이(%)',
+            '공급사명': '네이버 공급사명',
+            '네이버 쇼핑 링크': '네이버 링크',
+            '본사 이미지': '해오름(이미지링크)',
+            '고려기프트 이미지': '고려기프트(이미지링크)',
+            '네이버 이미지': '네이버쇼핑(이미지링크)'
+        }
+        
+        # 존재하는 컬럼만 매핑
+        upload_columns_mapping_filtered = {k: v for k, v in upload_columns_mapping.items() if k in df_upload.columns}
+        df_upload.rename(columns=upload_columns_mapping_filtered, inplace=True)
+        
+        # 매뉴얼에 따라 컬럼 순서 지정
+        upload_columns_order = [
+            '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', 
+            '카테고리(중분류)', '상품명', '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
+            '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
+            '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)',
+            '네이버 공급사명', '네이버 링크', '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+        ]
+        
+        # 존재하는 컬럼만 순서 지정
+        upload_columns_order_filtered = [col for col in upload_columns_order if col in df_upload.columns]
+        extra_columns = [col for col in df_upload.columns if col not in upload_columns_order_filtered]
+        df_upload = df_upload[upload_columns_order_filtered + extra_columns]
+        
+        # 엑셀골든_upload 예시처럼 마지막에 추가 행 삽입
+        # 1) 원래 데이터 길이 저장
+        original_length = len(df_upload)
+        
+        # 2) 추가 행 삽입 (빈 행 + '\' 포함 행)
+        df_upload.loc[original_length] = ''  # 빈 행 추가
+        
+        # 3) '\' 문자가 있는 행 추가 - 첫 번째 열에만 '\' 추가하고 나머지는 빈 값
+        backslash_row = ['\\'] + [''] * (len(df_upload.columns) - 1)
+        df_upload.loc[original_length + 1] = backslash_row
         
         # Create new workbook for upload file
         workbook_upload = openpyxl.Workbook()
         worksheet_upload = workbook_upload.active
         worksheet_upload.title = "제품 가격 비교"
         
-        # Write data using the new helper function
+        # Write data using the helper function
         if not _write_data_to_worksheet(worksheet_upload, df_upload):
             logger.error("Failed to write data to upload worksheet")
             return result_success, False, result_path, None
             
-        # Apply basic formatting
+        # Apply upload-specific formatting
         _apply_basic_excel_formatting(worksheet_upload, df_upload.columns.tolist())
         _add_hyperlinks_to_worksheet(worksheet_upload, df_upload, hyperlinks_as_formulas=True)
         _add_header_footer(worksheet_upload)
@@ -133,6 +202,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         workbook_upload.save(upload_path)
         upload_success = True
         
+        # Log success
+        logger.info(f"Successfully created both result (A) and upload (P) files")
+        logger.info(f"Result file: {result_path}")
+        logger.info(f"Upload file: {upload_path}")
+        
         return result_success, upload_success, result_path, upload_path
         
     except PermissionError as pe:
@@ -140,6 +214,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         return result_success, upload_success, result_path, upload_path
     except Exception as e:
         logger.error(f"Error creating Excel files: {e}")
+        logger.error(f"Error details: {traceback.format_exc()}")
         return result_success, upload_success, result_path, upload_path
 
 @safe_excel_operation
@@ -165,12 +240,14 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
         os.makedirs(output_dir, exist_ok=True)
     
     # Prepare the DataFrame (rename columns, order, clean)
-    from excel_data_processing import finalize_dataframe_for_excel
     df_finalized = finalize_dataframe_for_excel(df)
     
     if df_finalized.empty and not df.empty:
         logger.error("DataFrame became empty after finalization step. Cannot save Excel.")
         return False
+    
+    # Flatten any nested image dictionaries
+    df_finalized = flatten_nested_image_dicts(df_finalized)
     
     # Save finalized data to Excel using openpyxl engine
     try:
@@ -212,6 +289,15 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
 def _write_data_to_worksheet(worksheet, df_for_excel):
     """Write data to worksheet with proper handling of complex data types"""
     try:
+        # 골든 예시의 오류 메시지 목록
+        error_messages = {
+            "가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음",
+            "가격이 범위내에 없거나 검색된 상품이 없음",
+            "일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음",
+            "검색 결과 0",
+            "이미지를 찾을 수 없음"
+        }
+        
         # Write header
         for col_idx, col_name in enumerate(df_for_excel.columns, 1):
             worksheet.cell(row=1, column=col_idx, value=col_name)
@@ -223,35 +309,44 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
                     # Handle None/NaN values
                     if pd.isna(value):
                         cell_value = ""
+                    # Handle error messages
+                    elif isinstance(value, str) and value in error_messages:
+                        cell_value = value
                     # Handle strings
                     elif isinstance(value, str):
                         cell_value = value
                     # Handle numbers
                     elif isinstance(value, (int, float)):
                         cell_value = value
-                    # Handle dictionaries (should be already flattened, but just in case)
+                    # Handle dictionary (likely an image)
                     elif isinstance(value, dict):
+                        # Try to get URL string from the dictionary
                         if 'url' in value:
                             if isinstance(value['url'], dict) and 'url' in value['url']:
                                 cell_value = value['url']['url']
                             else:
-                                cell_value = value['url']
+                                cell_value = str(value['url'])
                         elif 'local_path' in value:
-                            cell_value = value['local_path']
+                            cell_value = str(value['local_path'])
                         else:
-                            cell_value = '-'
-                    # Handle other types
+                            # If can't extract URL, convert the entire dict to a string
+                            cell_value = str(value)
+                    # Handle any other types
                     else:
                         cell_value = str(value)
-                    
+                        
+                    # Set the cell value
                     worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
+                    
                 except Exception as e:
-                    logger.warning(f"Error writing cell at row {row_idx}, column {col_idx}: {e}")
-                    worksheet.cell(row=row_idx, column=col_idx, value="-")
+                    # Log the error but continue with other cells
+                    logger.error(f"Error writing cell at row {row_idx}, col {col_idx}: {str(e)}")
+                    # Put a placeholder in the cell to avoid further errors
+                    worksheet.cell(row=row_idx, column=col_idx, value="[데이터 변환 오류]")
         
         return True
     except Exception as e:
-        logger.error(f"Error writing data to worksheet: {e}")
+        logger.error(f"Error writing data to worksheet: {str(e)}")
         return False
 
 def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:

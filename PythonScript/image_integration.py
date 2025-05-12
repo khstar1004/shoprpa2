@@ -446,18 +446,16 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    # FIXED: Lowered thresholds to ensure more image matches
-    high_confidence_threshold = 0.40  # 높은 신뢰도 임계값 (0.60에서 0.40으로 낮춤)
-    min_confidence_threshold = 0.15   # 최소 신뢰도 임계값 (0.25에서 0.15로 낮춤)
+    
+    # 작업메뉴얼 요구사항에 맞춰 임계값 조정
+    high_confidence_threshold = 0.60  # 높은 신뢰도 임계값 (90% 이상 매칭 정확도 요구사항)
+    min_confidence_threshold = 0.25   # 최소 신뢰도 임계값
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
-    logging.debug(f"사용 가능한 대상 이미지: {len(target_images) - len(used_images)}개")
     
     # 매칭 결과를 추적하기 위한 리스트
     match_scores = []
-    
-    # FIXED: Add secondary verification for better matching
     secondary_matches = []  # Store multiple high-scoring matches for verification
     
     for img_path, info in target_images.items():
@@ -473,7 +471,7 @@ def find_best_match_with_enhanced_matcher(
             if similarity > 0:
                 match_scores.append((img_path, similarity, info['clean_name']))
                 
-                # FIXED: Store high-scoring candidates for verification
+                # Store high-scoring candidates for verification
                 if similarity >= min_confidence_threshold:
                     secondary_matches.append((img_path, similarity, info['clean_name']))
                 
@@ -485,57 +483,51 @@ def find_best_match_with_enhanced_matcher(
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
-        # Sort by score (descending)
         top_matches = sorted(match_scores, key=lambda x: x[1], reverse=True)
-        # Log top candidates (show clean_name and score)
         top_log = [(name, f"{score:.3f}") for path, score, name in top_matches[:3]]
         logging.debug(f"  Top 3 candidates: {top_log}")
     
-    # FIXED: Add additional verification for close matches
-    # If we have multiple high-scoring matches, verify they're consistent
+    # Add additional verification for close matches
     if len(secondary_matches) >= 2:
         secondary_matches.sort(key=lambda x: x[1], reverse=True)
-        # Check if second-best match has a similar score (within 80% of best)
-        if len(secondary_matches) >= 2:
-            best_score = secondary_matches[0][1]
-            second_best_score = secondary_matches[1][1]
-            score_ratio = second_best_score / best_score if best_score > 0 else 0
+        best_score = secondary_matches[0][1]
+        second_best_score = secondary_matches[1][1]
+        score_ratio = second_best_score / best_score if best_score > 0 else 0
+        
+        # If scores are too close, it might indicate ambiguity
+        if score_ratio > 0.95 and best_score < high_confidence_threshold:
+            logging.warning(f"Ambiguous image matching: Best={secondary_matches[0][2]} ({best_score:.3f}), Second={secondary_matches[1][2]} ({second_best_score:.3f})")
             
-            # If scores are too close, it might indicate ambiguity
-            if score_ratio > 0.9 and best_score < high_confidence_threshold:
-                logging.warning(f"Ambiguous image matching: Best={secondary_matches[0][2]} ({best_score:.3f}), Second={secondary_matches[1][2]} ({second_best_score:.3f})")
+            # Check if names are similar
+            from Levenshtein import ratio as text_similarity
+            name_sim = text_similarity(secondary_matches[0][2], secondary_matches[1][2])
+            
+            if name_sim < 0.4:  # Names are very different
+                logging.warning(f"Product names are very different between top matches (sim={name_sim:.2f})")
                 
-                # Check if names are similar - if they are completely different, be more cautious
-                from Levenshtein import ratio as text_similarity
-                name_sim = text_similarity(secondary_matches[0][2], secondary_matches[1][2])
-                
-                if name_sim < 0.4:  # Names are very different
-                    logging.warning(f"Product names are very different between top matches (sim={name_sim:.2f})")
-                    
-                    # Require a higher threshold for ambiguous matches with different names
-                    if best_score < high_confidence_threshold * 1.2:
-                        logging.warning(f"Rejecting ambiguous match due to insufficient confidence")
-                        return None
+                # Require a higher threshold for ambiguous matches with different names
+                if best_score < high_confidence_threshold * 1.2:
+                    logging.warning(f"Rejecting ambiguous match due to insufficient confidence")
+                    return None
     
     # 최종 매칭 결과 로깅
     if best_match:
         best_match_name = target_images[best_match]['clean_name']
         logging.info(f"  --> Best Match Selected: {best_match_name} (Score: {best_score:.3f})")
         
-        # FIXED: More lenient thresholds to avoid rejecting matches
+        # 작업요청서의 90% 매칭 정확도 요구사항 반영
         if best_score < min_confidence_threshold:
             logging.warning(f"매칭 점수가 최소 임계값({min_confidence_threshold})보다 낮아 매칭을 거부합니다: {best_match_name} (점수: {best_score:.3f})")
             return None
         elif best_score < high_confidence_threshold:
             logging.warning(f"낮은 신뢰도로 매칭되었습니다: {best_match_name} (점수: {best_score:.3f})")
             
-            # FIXED: More lenient checks for low confidence matches
             try:
                 from Levenshtein import ratio as text_similarity
                 source_name = os.path.basename(source_img_path).split('_', 1)[1] if '_' in os.path.basename(source_img_path) else ''
                 target_name = best_match_name
                 
-                # Clean up names for comparison (remove file extensions and common prefixes)
+                # Clean up names for comparison
                 source_name = re.sub(r'\.(jpg|png|jpeg)$', '', source_name)
                 source_name = re.sub(r'_[a-f0-9]{8,}$', '', source_name)  # Remove hash suffixes
                 
@@ -543,9 +535,9 @@ def find_best_match_with_enhanced_matcher(
                 name_sim = text_similarity(source_name, target_name)
                 logging.debug(f"Name similarity check: '{source_name}' vs '{target_name}' = {name_sim:.3f}")
                 
-                # FIXED: Made threshold much more lenient to return more matches
-                if best_score < high_confidence_threshold * 0.5 and name_sim < 0.2:
-                    logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 매우 낮아 매칭을 거부합니다")
+                # Stricter threshold for low confidence matches
+                if best_score < high_confidence_threshold * 0.8 and name_sim < 0.3:
+                    logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 낮아 매칭을 거부합니다")
                     return None
             except Exception as e:
                 logging.warning(f"이름 유사도 확인 중 오류 발생: {e}")
@@ -1675,8 +1667,12 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         for col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
             if col in result_df.columns:
                 result_df[col] = result_df[col].apply(lambda x: 
-                    x['url'] if isinstance(x, dict) and 'url' in x else 
-                    (x['local_path'] if isinstance(x, dict) and 'local_path' in x else x))
+                    # 중첩된 딕셔너리 구조 처리
+                    (x.get('url').get('url') if isinstance(x, dict) and isinstance(x.get('url'), dict) and 'url' in x.get('url') else
+                    # 일반적인 딕셔너리 구조 처리
+                    (x.get('url') if isinstance(x, dict) and 'url' in x else 
+                    # 이미 문자열인 경우
+                    (x if isinstance(x, str) else '-'))))
 
         return result_df
     

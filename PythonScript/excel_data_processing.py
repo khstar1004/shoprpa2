@@ -131,46 +131,78 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
     
     def extract_url_from_value(value):
         """Helper function to extract URL from various data structures"""
-        if pd.isna(value) or value == '-':
+        # 골든 예시의 오류 메시지 포맷
+        error_messages = {
+            "가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음",
+            "가격이 범위내에 없거나 검색된 상품이 없음",
+            "일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음",
+            "검색 결과 0",
+            "이미지를 찾을 수 없음"
+        }
+        
+        # 오류 메시지인 경우 그대로 반환
+        if isinstance(value, str) and value in error_messages:
+            return value
+        
+        if pd.isna(value) or value is None or value == '-' or value == '':
             return '-'
+        
+        # Handle string values directly
+        if isinstance(value, str):
+            # If it's already a URL, return it
+            if value.startswith(('http://', 'https://', 'file://')):
+                return value
+            return value
             
-        # Handle dictionary format
+        # Handle dictionary values
         if isinstance(value, dict):
-            # Try to extract URL from nested structures
+            # Try to extract URL in order of preference
+            
+            # 1. Check for nested URL structure
             if 'url' in value:
                 if isinstance(value['url'], dict) and 'url' in value['url']:
                     return value['url']['url']
                 elif isinstance(value['url'], str):
                     return value['url']
-            elif 'local_path' in value:
-                return value['local_path']
-            return '-'
-            
-        # Handle string format
-        if isinstance(value, str):
-            if value.startswith('{') and value.endswith('}'):
-                try:
-                    import json
-                    json_value = json.loads(value.replace("'", '"'))
-                    if isinstance(json_value, dict):
-                        if 'url' in json_value:
-                            if isinstance(json_value['url'], dict):
-                                return json_value['url'].get('url', '-')
-                            return json_value['url']
-                        elif 'local_path' in json_value:
-                            return json_value['local_path']
-                except json.JSONDecodeError:
-                    pass
-            if value.startswith(('http://', 'https://', 'file://')):
-                return value
-            return '-'
-            
-        # Handle other types
-        return '-'
+                    
+            # 2. Check for local path
+            if 'local_path' in value and value['local_path']:
+                return str(value['local_path'])
+                
+            # 3. Check for original path
+            if 'original_path' in value and value['original_path']:
+                return str(value['original_path'])
+                
+            # 4. Check for other common URL fields
+            for key in ['image_url', 'product_url', 'src', 'link', 'href']:
+                if key in value and value[key]:
+                    return str(value[key])
+                    
+            # 5. If no URL found but we have product info, create a descriptive string
+            if 'product_name' in value:
+                return f"[Product: {value['product_name']}]"
+                
+            # 6. If all else fails, convert the entire dict to string
+            return str(value)
+        
+        # Handle list/tuple values
+        if isinstance(value, (list, tuple)):
+            # Try to find first valid URL in the list
+            for item in value:
+                if isinstance(item, str) and item.startswith(('http://', 'https://', 'file://')):
+                    return item
+                elif isinstance(item, dict):
+                    url = extract_url_from_value(item)  # Recursive call for nested dicts
+                    if url and url != '-':
+                        return url
+        
+        # For any other type, convert to string
+        return str(value)
     
-    # Process each image column
+    # Apply the extraction to all image columns
     for col in image_cols:
-        df_result[col] = df_result[col].apply(extract_url_from_value)
+        if col in df_result.columns:
+            df_result[col] = df_result[col].apply(extract_url_from_value)
     
     return df_result
 
