@@ -46,6 +46,12 @@ IMAGE_DIRS = {
     'OTHER': 'Other'
 }
 
+# Directory name constants for direct import
+HAEREUM_DIR_NAME = IMAGE_DIRS['HAEREUM']
+KOGIFT_DIR_NAME = IMAGE_DIRS['KOGIFT']
+NAVER_DIR_NAME = IMAGE_DIRS['NAVER']
+OTHER_DIR_NAME = IMAGE_DIRS['OTHER']
+
 # --- Promotion Keywords ---
 PROMO_KEYWORDS: List[str] = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
@@ -204,11 +210,21 @@ IMAGE_SETTINGS = {
     'CELL_WIDTH': 60
 }
 
+# Image size constants for direct import
+IMAGE_MAX_SIZE = IMAGE_SETTINGS['MAX_SIZE']
+IMAGE_STANDARD_SIZE = IMAGE_SETTINGS['STANDARD_SIZE']
+
 # --- Export all constants ---
 __all__ = [
     'RESAMPLING_FILTER',
     'IMAGE_MAIN_DIR',
     'IMAGE_DIRS',
+    'HAEREUM_DIR_NAME',
+    'KOGIFT_DIR_NAME',
+    'NAVER_DIR_NAME',
+    'OTHER_DIR_NAME',
+    'IMAGE_MAX_SIZE',
+    'IMAGE_STANDARD_SIZE',
     'PROMO_KEYWORDS',
     'COLUMN_RENAME_MAP',
     'FINAL_COLUMN_ORDER',
