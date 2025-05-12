@@ -12,11 +12,17 @@ The combined approach provides better accuracy for product image matching.
 """
 
 import os
+# Add CUDA paths to environment
+cuda_bin_path = os.path.join(os.environ.get('CUDA_PATH', 'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8'), 'bin')
+if os.path.exists(cuda_bin_path):
+    os.environ['PATH'] = cuda_bin_path + os.pathsep + os.environ['PATH']
+
 # Set TensorFlow GPU memory growth before importing TensorFlow
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Enable async memory allocator
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'  # Enable GPU thread mode
 os.environ['TF_USE_CUDNN'] = '1'  # Enable cuDNN
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
 
 # Configure GPU settings based on config.ini before importing TensorFlow
 import configparser
@@ -63,6 +69,8 @@ from functools import partial
 import threading
 from queue import Queue, Empty
 import tensorflow as tf
+import xlsxwriter
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,21 +78,25 @@ logger = logging.getLogger(__name__)
 
 # Default Constants - Optimized for accuracy
 DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
-DEFAULT_FEATURE_MATCH_THRESHOLD = 15  # Increased from 10
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.70  # More strict (was 0.75)
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 40  # More strict (was 50)
-DEFAULT_COMBINED_THRESHOLD = 0.55  # Lower to allow more potential matches
-DEFAULT_WEIGHTS = {'sift': 0.25, 'akaze': 0.20, 'deep': 0.40, 'orb': 0.15}  # New weights with ORB
+DEFAULT_FEATURE_MATCH_THRESHOLD = 20  # Increased from 15
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.65  # More strict (was 0.70)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 35  # More strict (was 40)
+DEFAULT_COMBINED_THRESHOLD = 0.45  # Lower to allow more potential matches
+DEFAULT_WEIGHTS = {'sift': 0.30, 'akaze': 0.25, 'deep': 0.35, 'orb': 0.10}  # Adjusted weights
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 
 # Enhanced parameters
-DEFAULT_SIFT_FEATURES = 2000  # Increased number of SIFT features
-DEFAULT_AKAZE_FEATURES = 2000  # Increased number of AKAZE features
-DEFAULT_ORB_FEATURES = 2000    # Number of ORB features
+DEFAULT_SIFT_FEATURES = 2500  # Increased number of SIFT features
+DEFAULT_AKAZE_FEATURES = 2500  # Increased number of AKAZE features
+DEFAULT_ORB_FEATURES = 2500    # Number of ORB features
 
 # Add quality check parameters
-DEFAULT_MIN_MATCH_COUNT = 10   # Minimum number of matches for geometric verification
-DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
+DEFAULT_MIN_MATCH_COUNT = 8   # Reduced from 10
+DEFAULT_INLIER_THRESHOLD = 4.0  # Reduced from 5.0
+
+# Add minimum confidence threshold for ambiguous matches
+DEFAULT_MIN_CONFIDENCE_GAP = 0.05  # Minimum difference between best and second-best match
+DEFAULT_MIN_NAME_SIMILARITY = 0.3   # Minimum product name similarity for matches
 
 # GPU Configuration
 DEFAULT_GPU_MEMORY_FRACTION = 0.7  # Default GPU memory fraction to use
@@ -711,13 +723,22 @@ class EnhancedImageMatcher:
             akaze_sim = future_akaze.result()
             orb_sim = future_orb.result()
             
-            # Combine similarities
+            # Check if any similarity score is too low
+            if deep_sim < 0.2 or sift_sim < 0.2 or akaze_sim < 0.2:
+                logger.debug(f"Low individual similarity scores: deep={deep_sim:.3f}, sift={sift_sim:.3f}, akaze={akaze_sim:.3f}")
+                return 0.0
+            
+            # Combine similarities with weighted average
             combined_sim = (
                 weights['sift'] * sift_sim +
                 weights['akaze'] * akaze_sim +
                 weights['deep'] * deep_sim +
                 weights['orb'] * orb_sim
             )
+            
+            # Apply non-linear scaling to emphasize higher similarities
+            if combined_sim > 0.5:
+                combined_sim = 0.5 + (combined_sim - 0.5) * 1.5
             
             return min(combined_sim, 1.0)  # Ensure score doesn't exceed 1.0
             
@@ -760,13 +781,30 @@ class EnhancedImageMatcher:
             if not os.path.exists(img_path):
                 return None, f"Image file not found: {img_path}"
                 
-            # Read image
-            img = cv2.imread(img_path)
-            if img is None:
-                return None, f"Failed to read image: {img_path}"
-                
-            # Convert BGR to RGB
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            # Handle Korean paths by using PIL first
+            try:
+                with Image.open(img_path) as pil_img:
+                    # Convert PIL image to numpy array
+                    img = np.array(pil_img)
+                    if img is None:
+                        return None, f"Failed to convert PIL image: {img_path}"
+                        
+                    # Convert to RGB if needed
+                    if len(img.shape) == 2:  # Grayscale
+                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                    elif img.shape[2] == 4:  # RGBA
+                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+                    elif img.shape[2] == 3 and img.dtype == np.uint8:
+                        # Already RGB, no conversion needed
+                        pass
+                    else:
+                        return None, f"Unsupported image format: {img_path}"
+            except Exception as pil_error:
+                # Fallback to OpenCV if PIL fails
+                img = cv2.imread(img_path)
+                if img is None:
+                    return None, f"Failed to read image with both PIL and OpenCV: {img_path}, Error: {pil_error}"
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
             # Resize to model input size
             img = cv2.resize(img, DEFAULT_IMG_SIZE)
@@ -883,7 +921,7 @@ class EnhancedImageMatcher:
             sift_sim = self.calculate_sift_similarity(img_path1, img_path2)
             akaze_sim = self.calculate_akaze_similarity(img_path1, img_path2)
             deep_sim = self.calculate_deep_similarity(img_path1, img_path2)
-            orb_sim = self.calculate_orb_similarity(img_path1, img_path2) if hasattr(self, 'calculate_orb_similarity') else 0.0
+            orb_sim = self.calculate_orb_similarity(img_path1, img_path2)
             
             # Detailed scores
             scores = {
@@ -892,6 +930,19 @@ class EnhancedImageMatcher:
                 'deep': deep_sim,
                 'orb': orb_sim
             }
+            
+            # Check for minimum confidence gap
+            if similarity < threshold + DEFAULT_MIN_CONFIDENCE_GAP:
+                logger.debug(f"Similarity {similarity:.3f} below confidence threshold {threshold + DEFAULT_MIN_CONFIDENCE_GAP:.3f}")
+                return False, similarity, scores
+            
+            # Additional validation for borderline cases
+            if threshold <= similarity <= threshold + 0.1:
+                # Check if at least two methods agree on the match
+                methods_agree = sum(1 for score in scores.values() if score > threshold) >= 2
+                if not methods_agree:
+                    logger.debug("Insufficient agreement between matching methods")
+                    return False, similarity, scores
             
             # Determine if it's a match
             is_match = similarity >= threshold
@@ -1269,12 +1320,17 @@ def convert_complex_to_simple(data):
         A string representation that's compatible with Excel
     """
     if isinstance(data, dict):
+        # Handle image URL dictionaries
+        if 'url' in data:
+            if isinstance(data['url'], dict) and 'local_path' in data['url']:
+                return data['url']['local_path']
+            elif isinstance(data['url'], str):
+                return data['url']
         try:
             # Try to convert to JSON
             return json.dumps(data, ensure_ascii=False)
         except:
-            # If JSON conversion fails (e.g., due to non-serializable objects),
-            # use a simpler string representation
+            # If JSON conversion fails, use a simpler string representation
             return str(data)
     elif isinstance(data, list):
         try:
@@ -1284,6 +1340,127 @@ def convert_complex_to_simple(data):
     elif isinstance(data, (np.ndarray, np.generic)):
         # Handle NumPy types
         return str(data)
+    elif pd.isna(data) or data is None:
+        return ''
     else:
         # For other types, just convert to string
-        return str(data) 
+        return str(data)
+
+def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare DataFrame for Excel output by converting complex objects to strings"""
+    logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
+    
+    try:
+        # Create a copy to avoid modifying the original
+        df_excel = df.copy()
+        
+        # Convert complex objects to strings in all columns
+        for col in df_excel.columns:
+            if df_excel[col].dtype == 'object':
+                df_excel[col] = df_excel[col].apply(convert_complex_to_simple)
+        
+        # Handle image columns specifically
+        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', '해오름 이미지 URL']
+        for col in image_columns:
+            if col in df_excel.columns:
+                df_excel[col] = df_excel[col].apply(lambda x: convert_complex_to_simple(x))
+        
+        # Remove any problematic characters from strings
+        for col in df_excel.select_dtypes(include=['object']).columns:
+            df_excel[col] = df_excel[col].astype(str).apply(lambda x: x.replace('\x00', ''))
+        
+        logger.info(f"DataFrame finalized successfully. Output shape: {df_excel.shape}")
+        return df_excel
+        
+    except Exception as e:
+        logger.error(f"Error finalizing DataFrame for Excel: {e}")
+        raise
+
+def _write_data_to_worksheet(worksheet, df: pd.DataFrame, start_row: int = 0):
+    """Write data to Excel worksheet with proper formatting"""
+    try:
+        # First convert all data to Excel-friendly format
+        df_excel = finalize_dataframe_for_excel(df)
+        
+        # Write headers
+        for col_idx, col_name in enumerate(df_excel.columns):
+            worksheet.write(start_row, col_idx, col_name)
+        
+        # Write data
+        for row_idx, row in df_excel.iterrows():
+            for col_idx, value in enumerate(row):
+                try:
+                    # Convert the value to string and clean it
+                    clean_value = convert_complex_to_simple(value)
+                    worksheet.write(start_row + row_idx + 1, col_idx, clean_value)
+                except Exception as cell_error:
+                    logger.warning(f"Error writing cell [{row_idx}, {col_idx}]: {cell_error}")
+                    # Write an empty string as fallback
+                    worksheet.write(start_row + row_idx + 1, col_idx, '')
+        
+    except Exception as e:
+        logger.error(f"Error writing data to worksheet: {e}")
+        raise 
+
+def create_excel_output(df: pd.DataFrame, output_path: str, sheet_name: str = 'Sheet1') -> bool:
+    """Create Excel output file with proper formatting and data conversion"""
+    try:
+        logger.info(f"Creating Excel output at {output_path}")
+        logger.info(f"Input DataFrame shape: {df.shape}")
+        
+        # Create Excel workbook
+        workbook = xlsxwriter.Workbook(output_path)
+        worksheet = workbook.add_worksheet(sheet_name)
+        
+        # Set column widths
+        for col_idx in range(len(df.columns)):
+            worksheet.set_column(col_idx, col_idx, 15)  # Default width
+        
+        # Write data with proper conversion
+        _write_data_to_worksheet(worksheet, df)
+        
+        # Close workbook
+        workbook.close()
+        
+        # Verify file was created
+        if os.path.exists(output_path):
+            logger.info(f"Excel file created successfully at {output_path}")
+            return True
+        else:
+            logger.error("Excel file creation failed - file not found")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error creating Excel file: {e}")
+        if 'workbook' in locals():
+            try:
+                workbook.close()
+            except:
+                pass
+        return False
+
+def _create_result_file(df: pd.DataFrame, base_path: str, timestamp: str = None) -> Tuple[bool, str]:
+    """Create the result Excel file with proper data conversion"""
+    try:
+        # Generate output path
+        if timestamp is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        output_dir = os.path.join(base_path, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, f'result_{timestamp}.xlsx')
+        
+        # Create Excel file
+        success = create_excel_output(df, output_path)
+        
+        if success:
+            logger.info(f"Result file created successfully at {output_path}")
+            return True, output_path
+        else:
+            logger.error("Failed to create result file")
+            return False, ""
+            
+    except Exception as e:
+        logger.error(f"Error creating result file: {e}")
+        return False, "" 
