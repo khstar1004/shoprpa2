@@ -61,7 +61,7 @@ import pandas as pd
 import concurrent.futures
 from functools import partial
 import threading
-from queue import Queue
+from queue import Queue, Empty
 import tensorflow as tf
 
 # Configure logging
@@ -663,7 +663,7 @@ class EnhancedImageMatcher:
                             return
                         batch.append(image)
                         batch_keys.append(key)
-                    except Queue.Empty:
+                    except Empty:  # Changed from Queue.Empty to Empty
                         break
                 
                 if not batch:
