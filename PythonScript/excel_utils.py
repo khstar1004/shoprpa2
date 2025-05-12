@@ -15,7 +15,7 @@ from excel_constants import (
     FINAL_COLUMN_ORDER, COLUMN_RENAME_MAP, PRICE_COLUMNS, 
     QUANTITY_COLUMNS, PERCENTAGE_COLUMNS, IMAGE_COLUMNS,
     UPLOAD_COLUMN_ORDER, COLUMN_MAPPING_FINAL_TO_UPLOAD,
-    ERROR_MESSAGES, ERROR_MESSAGE_VALUES
+    ERROR_MESSAGES, ERROR_MESSAGE_VALUES, REQUIRED_INPUT_COLUMNS
 )
 
 # Import base classes
@@ -214,4 +214,4 @@ class ExcelGenerator:
 excel_generator = ExcelGenerator()
 
 # Export public interface
-__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS', 'REQUIRED_INPUT_COLUMNS'] 
+__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS', 'REQUIRED_INPUT_COLUMNS', 'FINAL_COLUMN_ORDER'] 
