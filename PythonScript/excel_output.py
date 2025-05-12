@@ -298,6 +298,61 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
             "이미지를 찾을 수 없음"
         }
         
+        def extract_url_from_complex_value(value):
+            """Helper function to safely extract URL from complex data structures"""
+            if pd.isna(value) or value is None:
+                return ""
+                
+            # Handle error messages
+            if isinstance(value, str) and value in error_messages:
+                return value
+                
+            # Handle simple string values
+            if isinstance(value, str):
+                if value == '-' or value == '':
+                    return '-'
+                return value
+                
+            # Handle numbers
+            if isinstance(value, (int, float)):
+                return value
+                
+            # Handle dictionary values
+            if isinstance(value, dict):
+                # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+                if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+                    return value['url']['url']
+                    
+                # Case 2: Direct URL {'url': 'actual_url'}
+                elif 'url' in value and isinstance(value['url'], str):
+                    return value['url']
+                    
+                # Case 3: Local path as fallback
+                elif 'local_path' in value and value['local_path']:
+                    return str(value['local_path'])
+                    
+                # Case 4: Original path as fallback
+                elif 'original_path' in value and value['original_path']:
+                    return str(value['original_path'])
+                    
+                # Case 5: Other URL fields
+                for key in ['image_url', 'product_url', 'src', 'link', 'href']:
+                    if key in value and value[key]:
+                        return str(value[key])
+                
+                # If no URL found, return empty string
+                return '-'
+                
+            # Handle list/tuple values
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    url = extract_url_from_complex_value(item)
+                    if url and url != '-':
+                        return url
+                        
+            # Default case
+            return '-'
+        
         # Write header
         for col_idx, col_name in enumerate(df_for_excel.columns, 1):
             worksheet.cell(row=1, column=col_idx, value=col_name)
@@ -306,35 +361,9 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
         for row_idx, row in enumerate(df_for_excel.itertuples(), 2):
             for col_idx, value in enumerate(row[1:], 1):  # Skip the index
                 try:
-                    # Handle None/NaN values
-                    if pd.isna(value):
-                        cell_value = ""
-                    # Handle error messages
-                    elif isinstance(value, str) and value in error_messages:
-                        cell_value = value
-                    # Handle strings
-                    elif isinstance(value, str):
-                        cell_value = value
-                    # Handle numbers
-                    elif isinstance(value, (int, float)):
-                        cell_value = value
-                    # Handle dictionary (likely an image)
-                    elif isinstance(value, dict):
-                        # Try to get URL string from the dictionary
-                        if 'url' in value:
-                            if isinstance(value['url'], dict) and 'url' in value['url']:
-                                cell_value = value['url']['url']
-                            else:
-                                cell_value = str(value['url'])
-                        elif 'local_path' in value:
-                            cell_value = str(value['local_path'])
-                        else:
-                            # If can't extract URL, convert the entire dict to a string
-                            cell_value = str(value)
-                    # Handle any other types
-                    else:
-                        cell_value = str(value)
-                        
+                    # Extract clean value for Excel
+                    cell_value = extract_url_from_complex_value(value)
+                    
                     # Set the cell value
                     worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
                     
@@ -342,11 +371,12 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
                     # Log the error but continue with other cells
                     logger.error(f"Error writing cell at row {row_idx}, col {col_idx}: {str(e)}")
                     # Put a placeholder in the cell to avoid further errors
-                    worksheet.cell(row=row_idx, column=col_idx, value="[데이터 변환 오류]")
+                    worksheet.cell(row=row_idx, column=col_idx, value="-")
         
         return True
     except Exception as e:
         logger.error(f"Error writing data to worksheet: {str(e)}")
+        logger.error(f"Error details: {traceback.format_exc()}")
         return False
 
 def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:

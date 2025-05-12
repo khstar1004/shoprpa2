@@ -140,64 +140,57 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
             "이미지를 찾을 수 없음"
         }
         
-        # 오류 메시지인 경우 그대로 반환
+        # Handle None/NaN/empty values
+        if pd.isna(value) or value is None:
+            return "-"
+            
+        # Handle error messages
         if isinstance(value, str) and value in error_messages:
             return value
-        
-        if pd.isna(value) or value is None or value == '-' or value == '':
-            return '-'
-        
-        # Handle string values directly
+            
+        # Handle simple string values
         if isinstance(value, str):
-            # If it's already a URL, return it
+            if value == '-' or value == '':
+                return '-'
             if value.startswith(('http://', 'https://', 'file://')):
                 return value
             return value
             
         # Handle dictionary values
         if isinstance(value, dict):
-            # Try to extract URL in order of preference
-            
-            # 1. Check for nested URL structure
-            if 'url' in value:
-                if isinstance(value['url'], dict) and 'url' in value['url']:
-                    return value['url']['url']
-                elif isinstance(value['url'], str):
-                    return value['url']
-                    
-            # 2. Check for local path
-            if 'local_path' in value and value['local_path']:
+            # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+            if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+                return value['url']['url']
+                
+            # Case 2: Direct URL {'url': 'actual_url'}
+            elif 'url' in value and isinstance(value['url'], str):
+                return value['url']
+                
+            # Case 3: Local path as fallback
+            elif 'local_path' in value and value['local_path']:
                 return str(value['local_path'])
                 
-            # 3. Check for original path
-            if 'original_path' in value and value['original_path']:
+            # Case 4: Original path as fallback
+            elif 'original_path' in value and value['original_path']:
                 return str(value['original_path'])
                 
-            # 4. Check for other common URL fields
+            # Case 5: Other URL fields
             for key in ['image_url', 'product_url', 'src', 'link', 'href']:
                 if key in value and value[key]:
                     return str(value[key])
-                    
-            # 5. If no URL found but we have product info, create a descriptive string
-            if 'product_name' in value:
-                return f"[Product: {value['product_name']}]"
-                
-            # 6. If all else fails, convert the entire dict to string
-            return str(value)
-        
+            
+            # If no URL found, return empty string
+            return '-'
+            
         # Handle list/tuple values
         if isinstance(value, (list, tuple)):
-            # Try to find first valid URL in the list
             for item in value:
-                if isinstance(item, str) and item.startswith(('http://', 'https://', 'file://')):
-                    return item
-                elif isinstance(item, dict):
-                    url = extract_url_from_value(item)  # Recursive call for nested dicts
-                    if url and url != '-':
-                        return url
-        
-        # For any other type, convert to string
-        return str(value)
+                url = extract_url_from_value(item)
+                if url and url != '-':
+                    return url
+                    
+        # Default case
+        return '-'
     
     # Apply the extraction to all image columns
     for col in image_cols:
