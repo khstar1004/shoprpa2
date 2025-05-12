@@ -51,12 +51,20 @@ def main():
         # Replace underscores with spaces
         product_name = product_name.replace('_', ' ')
         
+        # Create image data dictionary
+        image_data = {
+            'url': f"file://{str(img_path)}",
+            'local_path': str(img_path),
+            'source': 'haereum',
+            'product_name': product_name
+        }
+        
         # Create data row
         test_data.append({
             "번호": i+1,
             "상품명": product_name,
             "파일명": img_path.name,
-            "본사 이미지": str(img_path)  # 이미 문자열로 저장하고 있어서 문제 없음
+            "본사 이미지": image_data
         })
     
     # Create DataFrame

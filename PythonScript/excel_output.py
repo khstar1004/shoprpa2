@@ -219,20 +219,35 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
         # Write data
         for row_idx, row in enumerate(df_for_excel.itertuples(), 2):
             for col_idx, value in enumerate(row[1:], 1):  # Skip the index
-                # Handle None/NaN values
-                if pd.isna(value):
-                    cell_value = ""
-                # Handle strings
-                elif isinstance(value, str):
-                    cell_value = value
-                # Handle numbers
-                elif isinstance(value, (int, float)):
-                    cell_value = value
-                # Handle other types
-                else:
-                    cell_value = str(value)
-                
-                worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
+                try:
+                    # Handle None/NaN values
+                    if pd.isna(value):
+                        cell_value = ""
+                    # Handle strings
+                    elif isinstance(value, str):
+                        cell_value = value
+                    # Handle numbers
+                    elif isinstance(value, (int, float)):
+                        cell_value = value
+                    # Handle dictionaries (should be already flattened, but just in case)
+                    elif isinstance(value, dict):
+                        if 'url' in value:
+                            if isinstance(value['url'], dict) and 'url' in value['url']:
+                                cell_value = value['url']['url']
+                            else:
+                                cell_value = value['url']
+                        elif 'local_path' in value:
+                            cell_value = value['local_path']
+                        else:
+                            cell_value = '-'
+                    # Handle other types
+                    else:
+                        cell_value = str(value)
+                    
+                    worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
+                except Exception as e:
+                    logger.warning(f"Error writing cell at row {row_idx}, column {col_idx}: {e}")
+                    worksheet.cell(row=row_idx, column=col_idx, value="-")
         
         return True
     except Exception as e:

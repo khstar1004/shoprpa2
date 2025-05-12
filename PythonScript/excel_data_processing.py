@@ -129,59 +129,48 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
     if not image_cols:
         return df_result
     
+    def extract_url_from_value(value):
+        """Helper function to extract URL from various data structures"""
+        if pd.isna(value) or value == '-':
+            return '-'
+            
+        # Handle dictionary format
+        if isinstance(value, dict):
+            # Try to extract URL from nested structures
+            if 'url' in value:
+                if isinstance(value['url'], dict) and 'url' in value['url']:
+                    return value['url']['url']
+                elif isinstance(value['url'], str):
+                    return value['url']
+            elif 'local_path' in value:
+                return value['local_path']
+            return '-'
+            
+        # Handle string format
+        if isinstance(value, str):
+            if value.startswith('{') and value.endswith('}'):
+                try:
+                    import json
+                    json_value = json.loads(value.replace("'", '"'))
+                    if isinstance(json_value, dict):
+                        if 'url' in json_value:
+                            if isinstance(json_value['url'], dict):
+                                return json_value['url'].get('url', '-')
+                            return json_value['url']
+                        elif 'local_path' in json_value:
+                            return json_value['local_path']
+                except json.JSONDecodeError:
+                    pass
+            if value.startswith(('http://', 'https://', 'file://')):
+                return value
+            return '-'
+            
+        # Handle other types
+        return '-'
+    
+    # Process each image column
     for col in image_cols:
-        for idx in df_result.index:
-            try:
-                value = df_result.loc[idx, col]
-                
-                # Skip if value is already a string or None
-                if pd.isna(value) or value == '-':
-                    continue
-                    
-                # Handle dictionary format
-                if isinstance(value, dict):
-                    url = None
-                    # Try to extract URL from nested structures
-                    if 'url' in value:
-                        if isinstance(value['url'], dict) and 'url' in value['url']:
-                            url = value['url']['url']
-                        elif isinstance(value['url'], str):
-                            url = value['url']
-                    elif 'local_path' in value:
-                        url = value['local_path']
-                    
-                    # Set the flattened value
-                    df_result.at[idx, col] = url if url else '-'
-                    
-                # Handle string dictionary representation
-                elif isinstance(value, str):
-                    if value.startswith('{') and value.endswith('}'):
-                        try:
-                            import json
-                            json_value = json.loads(value.replace("'", '"'))
-                            if isinstance(json_value, dict):
-                                if 'url' in json_value:
-                                    if isinstance(json_value['url'], dict):
-                                        df_result.at[idx, col] = json_value['url'].get('url', '-')
-                                    else:
-                                        df_result.at[idx, col] = json_value['url']
-                                elif 'local_path' in json_value:
-                                    df_result.at[idx, col] = json_value['local_path']
-                                else:
-                                    df_result.at[idx, col] = '-'
-                        except json.JSONDecodeError:
-                            if not value.startswith(('http://', 'https://', 'file://')):
-                                df_result.at[idx, col] = '-'
-                    elif not value.startswith(('http://', 'https://', 'file://')):
-                        df_result.at[idx, col] = '-'
-                        
-                # Handle other types
-                else:
-                    df_result.at[idx, col] = '-'
-                        
-            except Exception as e:
-                logger.warning(f"Error processing image data in column {col}, row {idx}: {e}")
-                df_result.at[idx, col] = '-'
+        df_result[col] = df_result[col].apply(extract_url_from_value)
     
     return df_result
 

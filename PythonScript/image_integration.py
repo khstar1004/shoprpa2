@@ -1702,10 +1702,20 @@ def create_excel_with_images(df, output_path):
         output_dir = os.path.dirname(output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
+            
+        # Flatten image data before creating Excel
+        df_copy = df.copy()
+        image_cols = [col for col in df_copy.columns if any(img_type in col.lower() for img_type in ['이미지', 'image'])]
+        
+        for col in image_cols:
+            df_copy[col] = df_copy[col].apply(lambda x: 
+                x['url'] if isinstance(x, dict) and 'url' in x else 
+                (x['local_path'] if isinstance(x, dict) and 'local_path' in x else 
+                (x if isinstance(x, str) else '-')))
         
         # Use the excel generator to create the Excel file
         result_success, _, result_path, _ = excel_generator.create_excel_output(
-            df=df,
+            df=df_copy,
             output_path=output_path,
             create_upload_file=False
         )
