@@ -319,39 +319,62 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
                 
             # Handle dictionary values
             if isinstance(value, dict):
-                # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
-                if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
-                    return value['url']['url']
+                # Try to convert dictionary to a string representation for safe handling
+                try:
+                    # First look for URL in various formats
+                    # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+                    if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+                        return value['url']['url']
                     
-                # Case 2: Direct URL {'url': 'actual_url'}
-                elif 'url' in value and isinstance(value['url'], str):
-                    return value['url']
+                    # Case 2: Direct URL {'url': 'actual_url'}
+                    elif 'url' in value and isinstance(value['url'], str):
+                        return value['url']
                     
-                # Case 3: Local path as fallback
-                elif 'local_path' in value and value['local_path']:
-                    return str(value['local_path'])
+                    # Case 3: Look for other common URL fields
+                    for url_field in ['image_url', 'src', 'link', 'href', 'product_url']:
+                        if url_field in value and isinstance(value[url_field], str):
+                            return value[url_field]
                     
-                # Case 4: Original path as fallback
-                elif 'original_path' in value and value['original_path']:
-                    return str(value['original_path'])
+                    # Case 4: Look for local path as fallback
+                    for path_field in ['local_path', 'path', 'file_path', 'original_path']:
+                        if path_field in value and value[path_field]:
+                            return str(value[path_field])
                     
-                # Case 5: Other URL fields
-                for key in ['image_url', 'product_url', 'src', 'link', 'href']:
-                    if key in value and value[key]:
-                        return str(value[key])
-                
-                # If no URL found, return empty string
-                return '-'
+                    # Case 5: Product name as last resort
+                    if 'product_name' in value:
+                        return f"Product: {value['product_name']}"
+                    
+                    # If no useful field found, convert to simple string
+                    # But limit string length to avoid Excel cell size issues
+                    dict_str = str(value)
+                    if len(dict_str) > 255:  # Excel cell max~32,767 chars, but keep smaller
+                        return f"Complex data (Dict with {len(value)} keys)"
+                    return dict_str
+                    
+                except Exception as dict_err:
+                    logger.debug(f"Error extracting from dict: {dict_err}")
+                    return "Complex dictionary data"
                 
             # Handle list/tuple values
             if isinstance(value, (list, tuple)):
-                for item in value:
-                    url = extract_url_from_complex_value(item)
-                    if url and url != '-':
-                        return url
-                        
-            # Default case
-            return '-'
+                try:
+                    # Try to extract URL from first item
+                    if len(value) > 0:
+                        first_item = extract_url_from_complex_value(value[0])
+                        if first_item and first_item != '-':
+                            return first_item
+                    
+                    # If no URL in items, use a generic representation
+                    return f"List with {len(value)} items"
+                except Exception as list_err:
+                    logger.debug(f"Error processing list: {list_err}")
+                    return "Complex list data"
+            
+            # Default case - convert to string safely
+            try:
+                return str(value)
+            except:
+                return "Complex data (unconvertible)"
         
         # Write header
         for col_idx, col_name in enumerate(df_for_excel.columns, 1):

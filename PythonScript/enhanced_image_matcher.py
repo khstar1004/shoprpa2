@@ -18,6 +18,34 @@ os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Enable async memory allo
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'  # Enable GPU thread mode
 os.environ['TF_USE_CUDNN'] = '1'  # Enable cuDNN
 
+# Configure GPU settings based on config.ini before importing TensorFlow
+import configparser
+def _load_config():
+    """Load configuration from config.ini"""
+    config = configparser.ConfigParser()
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+        config.read(config_path, encoding='utf-8')
+        return config
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return None
+
+# Get GPU setting from config
+config = _load_config()
+use_gpu = False
+if config:
+    try:
+        use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
+    except:
+        pass
+
+# Set CUDA_VISIBLE_DEVICES based on use_gpu setting
+if not use_gpu:
+    print("Configuring TensorFlow to use CPU only (by configuration)")
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Disable GPU
+
+# Now import TensorFlow and other packages
 import cv2
 import numpy as np
 import logging
@@ -25,7 +53,6 @@ from typing import Tuple, Dict, List, Optional, Union
 import time
 from PIL import Image
 from urllib.parse import urlparse
-import configparser
 import json
 import pickle
 from pathlib import Path
@@ -62,18 +89,6 @@ DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
 # GPU Configuration
 DEFAULT_GPU_MEMORY_FRACTION = 0.7  # Default GPU memory fraction to use
 DEFAULT_BATCH_SIZE = 32  # Default batch size for GPU processing
-
-def _load_config() -> configparser.ConfigParser:
-    """Load configuration from config.ini"""
-    config = configparser.ConfigParser()
-    try:
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-        config.read(config_path, encoding='utf-8')
-        logger.info(f"Successfully loaded config from {config_path}")
-        return config
-    except Exception as e:
-        logger.error(f"Error loading config: {e}")
-        return None
 
 def _get_config_values(config: configparser.ConfigParser) -> Dict:
     """Get configuration values with fallbacks"""
@@ -255,7 +270,15 @@ def check_gpu_status():
         logger.info(f"TensorFlow CUDA build: {tf.test.is_built_with_cuda()}")
         logger.info(f"TensorFlow using GPU: {tf.test.is_built_with_gpu_support()}")
         
-        return _is_gpu_available()
+        # Determine GPU availability - we need both hardware support and proper configuration
+        gpu_available = len(gpus) > 0 and cuda_visible != '-1'
+        
+        # Add special note for when GPU is disabled by configuration
+        if len(gpus) == 0 and cuda_visible == '-1':
+            logger.info("NOTE: GPU hardware may be available but is currently disabled by configuration")
+            logger.info("Check the 'use_gpu' setting in config.ini to enable GPU support")
+            
+        return gpu_available
     except Exception as e:
         logger.error(f"Error during GPU status check: {e}")
         return False
@@ -516,6 +539,11 @@ class EnhancedImageMatcher:
         self.models = {}
         self._initialize_deep_models()
         
+        # For backwards compatibility with code expecting 'model' attribute
+        # reference the primary model from the models dictionary
+        if 'efficientnet' in self.models:
+            self.model = self.models['efficientnet']
+        
         # Initialize thread pool for parallel processing
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=4,  # Adjust based on your needs
@@ -763,6 +791,75 @@ class EnhancedImageMatcher:
                 
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
+
+    def clear_cache(self):
+        """Clear the feature cache"""
+        try:
+            if hasattr(self, 'cache'):
+                self.cache.memory_cache.clear()
+                self.cache.cache_info.clear()
+                logger.info("Image matcher cache cleared")
+            else:
+                logger.warning("Cache attribute not found, nothing to clear")
+        except Exception as e:
+            logger.error(f"Error clearing cache: {e}")
+
+    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict]:
+        """
+        Determine if two images match with combined similarity metrics
+        
+        Args:
+            img_path1: Path to first image
+            img_path2: Path to second image
+            threshold: Optional similarity threshold (default: from settings)
+            
+        Returns:
+            Tuple of (is_match, similarity_score, detailed_scores)
+        """
+        if threshold is None:
+            threshold = self.settings['COMBINED_THRESHOLD']
+            
+        try:
+            # Calculate similarity
+            similarity = self.calculate_similarity(img_path1, img_path2)
+            
+            # Get detailed scores for individual methods
+            sift_sim = self.calculate_sift_similarity(img_path1, img_path2)
+            akaze_sim = self.calculate_akaze_similarity(img_path1, img_path2)
+            deep_sim = self.calculate_deep_similarity(img_path1, img_path2)
+            orb_sim = self.calculate_orb_similarity(img_path1, img_path2) if hasattr(self, 'calculate_orb_similarity') else 0.0
+            
+            # Detailed scores
+            scores = {
+                'sift': sift_sim,
+                'akaze': akaze_sim,
+                'deep': deep_sim,
+                'orb': orb_sim
+            }
+            
+            # Determine if it's a match
+            is_match = similarity >= threshold
+            
+            return is_match, similarity, scores
+            
+        except Exception as e:
+            logger.error(f"Error determining if images match: {e}")
+            return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+
+    def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate SIFT-based similarity between two images"""
+        # Implement or use existing implementation
+        return 0.5  # Placeholder value for now
+        
+    def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate AKAZE-based similarity between two images"""
+        # Implement or use existing implementation
+        return 0.5  # Placeholder value for now
+        
+    def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate ORB-based similarity between two images"""
+        # Implement or use existing implementation
+        return 0.5  # Placeholder value for now
 
 
 # Helper function to get the common file extension

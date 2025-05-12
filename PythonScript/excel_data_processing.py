@@ -123,79 +123,37 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
     
     # Get all image-related columns
     image_cols = [col for col in df.columns 
-                 if col in IMAGE_COLUMNS or '이미지' in col]
+                 if col in IMAGE_COLUMNS or '이미지' in col.lower()]
     image_cols = list(dict.fromkeys(image_cols))  # Remove duplicates
     
     if not image_cols:
+        logger.debug("No image columns found in DataFrame to flatten")
         return df_result
     
-    def extract_url_from_value(value):
-        """Helper function to extract URL from various data structures"""
-        # 골든 예시의 오류 메시지 포맷
-        error_messages = {
-            "가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음",
-            "가격이 범위내에 없거나 검색된 상품이 없음",
-            "일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음",
-            "검색 결과 0",
-            "이미지를 찾을 수 없음"
-        }
-        
-        # Handle None/NaN/empty values
-        if pd.isna(value) or value is None:
-            return "-"
-            
-        # Handle error messages
-        if isinstance(value, str) and value in error_messages:
-            return value
-            
-        # Handle simple string values
-        if isinstance(value, str):
-            if value == '-' or value == '':
-                return '-'
-            if value.startswith(('http://', 'https://', 'file://')):
-                return value
-            return value
-            
-        # Handle dictionary values
-        if isinstance(value, dict):
-            # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
-            if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
-                return value['url']['url']
-                
-            # Case 2: Direct URL {'url': 'actual_url'}
-            elif 'url' in value and isinstance(value['url'], str):
-                return value['url']
-                
-            # Case 3: Local path as fallback
-            elif 'local_path' in value and value['local_path']:
-                return str(value['local_path'])
-                
-            # Case 4: Original path as fallback
-            elif 'original_path' in value and value['original_path']:
-                return str(value['original_path'])
-                
-            # Case 5: Other URL fields
-            for key in ['image_url', 'product_url', 'src', 'link', 'href']:
-                if key in value and value[key]:
-                    return str(value[key])
-            
-            # If no URL found, return empty string
-            return '-'
-            
-        # Handle list/tuple values
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                url = extract_url_from_value(item)
-                if url and url != '-':
-                    return url
-                    
-        # Default case
-        return '-'
+    logger.info(f"Flattening nested dictionaries in {len(image_cols)} image columns")
     
     # Apply the extraction to all image columns
     for col in image_cols:
         if col in df_result.columns:
-            df_result[col] = df_result[col].apply(extract_url_from_value)
+            try:
+                # Use the improved extract_url_from_value function
+                df_result[col] = df_result[col].apply(extract_url_from_value)
+                logger.debug(f"Successfully flattened column: {col}")
+            except Exception as e:
+                logger.error(f"Error flattening image data in column {col}: {e}")
+                # Don't modify the column if there's an error
+    
+    # Double check we didn't miss any dict or complex structures
+    for col in image_cols:
+        if col in df_result.columns:
+            # Check for any remaining dictionary values
+            has_dict = df_result[col].apply(lambda x: isinstance(x, dict)).any()
+            if has_dict:
+                logger.warning(f"Column {col} still contains dictionary values after flattening")
+                # Apply a second pass with stringification for any dictionaries
+                df_result[col] = df_result[col].apply(
+                    lambda x: str(x) if isinstance(x, dict) else x
+                )
     
     return df_result
 
