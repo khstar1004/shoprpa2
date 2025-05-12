@@ -729,6 +729,40 @@ class EnhancedImageMatcher:
             logger.error(f"Error calculating deep similarity: {e}")
             return 0.0
     
+    def _load_and_prepare_image(self, img_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
+        """Load and prepare an image for feature extraction
+        
+        Args:
+            img_path: Path to the image file
+            
+        Returns:
+            Tuple of (preprocessed_image, error_message)
+        """
+        try:
+            # Check if file exists
+            if not os.path.exists(img_path):
+                return None, f"Image file not found: {img_path}"
+                
+            # Read image
+            img = cv2.imread(img_path)
+            if img is None:
+                return None, f"Failed to read image: {img_path}"
+                
+            # Convert BGR to RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # Resize to model input size
+            img = cv2.resize(img, DEFAULT_IMG_SIZE)
+            
+            # Normalize pixel values
+            img = img.astype(np.float32) / 255.0
+            
+            return img, None
+            
+        except Exception as e:
+            logger.error(f"Error loading image {img_path}: {e}")
+            return None, str(e)
+
     def _extract_deep_features(self, img_path: str) -> Optional[np.ndarray]:
         """Extract deep features with GPU acceleration"""
         try:
@@ -738,7 +772,7 @@ class EnhancedImageMatcher:
                 return cached_features
             
             # Load and preprocess image
-            img = self._load_and_prepare_image(img_path)[0]
+            img, error = self._load_and_prepare_image(img_path)
             if img is None:
                 return None
             
