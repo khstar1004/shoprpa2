@@ -1322,13 +1322,28 @@ def convert_complex_to_simple(data):
     Returns:
         A string representation that's compatible with Excel
     """
+    if data is None or pd.isna(data):
+        return ''
+        
+    if isinstance(data, (int, float, str)):
+        return data
+        
     if isinstance(data, dict):
         # Handle image URL dictionaries
         if 'url' in data:
-            if isinstance(data['url'], dict) and 'local_path' in data['url']:
+            if isinstance(data['url'], dict) and 'url' in data['url']:
+                return data['url']['url']
+            elif isinstance(data['url'], dict) and 'local_path' in data['url']:
                 return data['url']['local_path']
             elif isinstance(data['url'], str):
                 return data['url']
+                
+        if 'local_path' in data:
+            return data['local_path']
+            
+        if 'product_name' in data:
+            return f"Product: {data['product_name']}"
+            
         try:
             # Try to convert to JSON
             return json.dumps(data, ensure_ascii=False)
@@ -1343,8 +1358,6 @@ def convert_complex_to_simple(data):
     elif isinstance(data, (np.ndarray, np.generic)):
         # Handle NumPy types
         return str(data)
-    elif pd.isna(data) or data is None:
-        return ''
     else:
         # For other types, just convert to string
         return str(data)

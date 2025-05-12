@@ -6,6 +6,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Tuple
+import json
 
 # Import from other modules
 from excel_constants import (
@@ -296,39 +297,24 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
 def _write_data_to_worksheet(worksheet, df_for_excel):
     """Write data to worksheet with proper handling of complex data types"""
     try:
-        # 골든 예시의 오류 메시지 목록
-        error_messages = {
-            "가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음",
-            "가격이 범위내에 없거나 검색된 상품이 없음",
-            "일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음",
-            "검색 결과 0",
-            "이미지를 찾을 수 없음"
-        }
-        
+        # Helper function to safely extract URL from complex data structures
         def extract_url_from_complex_value(value):
-            """Helper function to safely extract URL from complex data structures"""
+            """Extract URL from complex dictionary objects or return string representation"""
+            # Handle None/NaN values
             if pd.isna(value) or value is None:
                 return ""
-                
-            # Handle error messages
-            if isinstance(value, str) and value in error_messages:
-                return value
-                
-            # Handle simple string values
+
+            # Handle strings
             if isinstance(value, str):
-                if value == '-' or value == '':
-                    return '-'
                 return value
-                
+
             # Handle numbers
             if isinstance(value, (int, float)):
                 return value
                 
             # Handle dictionary values
             if isinstance(value, dict):
-                # Try to convert dictionary to a string representation for safe handling
                 try:
-                    # First look for URL in various formats
                     # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
                     if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
                         return value['url']['url']
@@ -336,52 +322,29 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
                     # Case 2: Direct URL {'url': 'actual_url'}
                     elif 'url' in value and isinstance(value['url'], str):
                         return value['url']
+                        
+                    # Case 3: Local path
+                    elif 'local_path' in value and value['local_path']:
+                        return value['local_path']
                     
-                    # Case 3: Look for other common URL fields
-                    for url_field in ['image_url', 'src', 'link', 'href', 'product_url']:
-                        if url_field in value and isinstance(value[url_field], str):
-                            return value[url_field]
-                    
-                    # Case 4: Look for local path as fallback
-                    for path_field in ['local_path', 'path', 'file_path', 'original_path']:
-                        if path_field in value and value[path_field]:
-                            return str(value[path_field])
-                    
-                    # Case 5: Product name as last resort
-                    if 'product_name' in value:
+                    # Case 4: Product name
+                    elif 'product_name' in value:
                         return f"Product: {value['product_name']}"
                     
-                    # If no useful field found, convert to simple string
-                    # But limit string length to avoid Excel cell size issues
-                    dict_str = str(value)
-                    if len(dict_str) > 255:  # Excel cell max~32,767 chars, but keep smaller
-                        return f"Complex data (Dict with {len(value)} keys)"
-                    return dict_str
+                    # Default: Convert to string
+                    return json.dumps(value, ensure_ascii=False)
+                except:
+                    return str(value)
                     
-                except Exception as dict_err:
-                    logger.debug(f"Error extracting from dict: {dict_err}")
-                    return "Complex dictionary data"
-                
-            # Handle list/tuple values
+            # Handle list/tuple
             if isinstance(value, (list, tuple)):
                 try:
-                    # Try to extract URL from first item
-                    if len(value) > 0:
-                        first_item = extract_url_from_complex_value(value[0])
-                        if first_item and first_item != '-':
-                            return first_item
+                    return json.dumps(value, ensure_ascii=False)
+                except:
+                    return str(value)
                     
-                    # If no URL in items, use a generic representation
-                    return f"List with {len(value)} items"
-                except Exception as list_err:
-                    logger.debug(f"Error processing list: {list_err}")
-                    return "Complex list data"
-            
-            # Default case - convert to string safely
-            try:
-                return str(value)
-            except:
-                return "Complex data (unconvertible)"
+            # Default case
+            return str(value)
         
         # Write header
         for col_idx, col_name in enumerate(df_for_excel.columns, 1):

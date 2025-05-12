@@ -2,6 +2,7 @@ import os
 import logging
 import pandas as pd
 import functools
+import json
 from typing import Optional, Tuple, List, Dict, Any, Union
 from pathlib import Path
 import openpyxl
@@ -193,9 +194,58 @@ class ExcelGenerator:
             return f"excel_output_{file_type}_{timestamp}.xlsx"
     
     @staticmethod
+    def _extract_url_from_complex_value(value):
+        """Extract URL from complex dictionary objects or return string representation"""
+        # Handle None/NaN values
+        if pd.isna(value) or value is None:
+            return ""
+
+        # Handle strings
+        if isinstance(value, str):
+            return value
+
+        # Handle numbers
+        if isinstance(value, (int, float)):
+            return value
+            
+        # Handle dictionary values
+        if isinstance(value, dict):
+            try:
+                # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+                if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+                    return value['url']['url']
+                
+                # Case 2: Direct URL {'url': 'actual_url'}
+                elif 'url' in value and isinstance(value['url'], str):
+                    return value['url']
+                    
+                # Case 3: Local path
+                elif 'local_path' in value and value['local_path']:
+                    return value['local_path']
+                
+                # Case 4: Product name
+                elif 'product_name' in value:
+                    return f"Product: {value['product_name']}"
+                
+                # Default: Convert to string
+                return json.dumps(value, ensure_ascii=False)
+            except:
+                return str(value)
+                
+        # Handle list/tuple
+        if isinstance(value, (list, tuple)):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except:
+                return str(value)
+                
+        # Default case
+        return str(value)
+    
+    @staticmethod
     def _write_data_to_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, 
                                df: pd.DataFrame) -> None:
-        """Write DataFrame to worksheet"""
+        """Write DataFrame to worksheet with proper handling of complex data types"""
         try:
             # Write header
             for col_idx, col_name in enumerate(df.columns, 1):
@@ -204,8 +254,14 @@ class ExcelGenerator:
             # Write data
             for row_idx, row in enumerate(df.itertuples(), 2):
                 for col_idx, value in enumerate(row[1:], 1):
-                    cell_value = "" if pd.isna(value) else value
-                    worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
+                    try:
+                        # Extract clean value for Excel, handling complex types
+                        cell_value = ExcelGenerator._extract_url_from_complex_value(value)
+                        worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
+                    except Exception as cell_err:
+                        logger.error(f"Error processing cell value at row {row_idx}, col {col_idx}: {cell_err}")
+                        # Use empty string as fallback for problematic cells
+                        worksheet.cell(row=row_idx, column=col_idx, value="")
         except Exception as e:
             logger.error(f"Error writing data to worksheet: {e}")
             raise
@@ -220,20 +276,45 @@ def sanitize_dataframe_for_excel(df):
     Returns:
         A new DataFrame with all complex types converted to strings
     """
-    from enhanced_image_matcher import convert_complex_to_simple
-    import pandas as pd
-    
+    if df is None or df.empty:
+        return df
+        
     # Create a copy to avoid modifying the original
     result_df = df.copy()
     
+    # Extract URL function (same logic as in ExcelGenerator._extract_url_from_complex_value)
+    def extract_url(value):
+        if pd.isna(value) or value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, dict):
+            try:
+                if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+                    return value['url']['url']
+                elif 'url' in value and isinstance(value['url'], str):
+                    return value['url']
+                elif 'local_path' in value and value['local_path']:
+                    return value['local_path']
+                elif 'product_name' in value:
+                    return f"Product: {value['product_name']}"
+                return json.dumps(value, ensure_ascii=False)
+            except:
+                return str(value)
+        if isinstance(value, (list, tuple)):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except:
+                return str(value)
+        return str(value)
+    
     # Process each column
     for col in result_df.columns:
-        # Check if the column contains complex types like dictionaries
-        if any(isinstance(val, (dict, list)) for val in result_df[col] if val is not None):
-            # Convert complex types to strings
-            result_df[col] = result_df[col].apply(
-                lambda x: convert_complex_to_simple(x) if x is not None else x
-            )
+        # Check if the column contains complex types
+        if result_df[col].dtype == 'object':
+            result_df[col] = result_df[col].apply(extract_url)
     
     return result_df
 

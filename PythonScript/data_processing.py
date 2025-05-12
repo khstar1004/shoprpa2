@@ -256,32 +256,53 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             if naver_results and row['Code'] in naver_results:
                 item = naver_results[row['Code']]
                 
-                # Copy base quantity to Naver quantity
-                if base_qty:
-                    df.at[idx, '기본수량(3)'] = base_qty
-                
-                # Update quantity-based prices using base quantity
-                if base_qty and 'quantity_prices' in item:
-                    if base_qty in item['quantity_prices']:
-                        # Exact quantity match
-                        price_info = item['quantity_prices'][base_qty]
-                        df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                # 기본수량(3)은 항상 기본수량(1)과 동일하게 설정
+                if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                    df.at[idx, '기본수량(3)'] = row['기본수량(1)']
+                    target_qty = int(row['기본수량(1)'])
+                    
+                    # 수량별 가격 정보가 있는 경우
+                    if 'quantity_prices' in item and item['quantity_prices']:
+                        try:
+                            # 문자열로 된 키도 처리할 수 있도록 개선
+                            qty_dict = {int(k) if isinstance(k, str) else k: v 
+                                       for k, v in item['quantity_prices'].items()}
+                            
+                            # 정확한 수량 매칭 시도
+                            if target_qty in qty_dict:
+                                price_info = qty_dict[target_qty]
+                                df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                                logging.info(f"정확한 수량({target_qty})에 대한 네이버 가격 매칭: {price_info['price_with_vat']}")
+                        except (ValueError, TypeError) as e:
+                            logging.warning(f"수량-가격 데이터 처리 중 오류: {e}")
                     else:
-                        # Find closest lower quantity
-                        available_qtys = sorted(item['quantity_prices'].keys())
-                        lower_qtys = [q for q in available_qtys if q <= base_qty]
-                        if lower_qtys:
-                            closest_qty = max(lower_qtys)
-                            price_info = item['quantity_prices'][closest_qty]
-                            df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                            logging.info(f"Using price for quantity {closest_qty} for desired quantity {base_qty}")
-                        else:
-                            # Use minimum quantity price
-                            min_qty = min(available_qtys)
-                            price_info = item['quantity_prices'][min_qty]
-                            df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                            logging.info(f"Using minimum quantity {min_qty} price for desired quantity {base_qty}")
+                        # 수량별 가격이 없는 경우 기본 가격 사용
+                        if 'price_with_vat' in item:
+                            df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
+                        elif 'price' in item:
+                            # VAT 추가
+                            df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
                 
+            # 판촉물 사이트 여부와 수량별 가격 여부를 더 명확하게 표시
+            if '판촉물사이트여부' in df.columns:
+                df.at[idx, '판촉물사이트여부'] = 'Y' if (
+                    item.get('is_promotional_site', False) or 
+                    bool(item.get('quantity_prices'))  # 수량별 가격이 있으면 판촉물 사이트로 간주
+                ) else 'N'
+
+            if '수량별가격여부' in df.columns:
+                df.at[idx, '수량별가격여부'] = 'Y' if bool(item.get('quantity_prices')) else 'N'
+
+            # 가격 정보 로깅 강화
+            if '판매단가(V포함)(3)' in df.columns:
+                price = df.at[idx, '판매단가(V포함)(3)']
+                if pd.notna(price):
+                    logging.info(f"상품: '{row.get('상품명')}' - "
+                                f"수량: {target_qty}, "
+                                f"가격(VAT포함): {price:,}원, "
+                                f"판촉물여부: {df.at[idx, '판촉물사이트여부']}, "
+                                f"수량별가격: {df.at[idx, '수량별가격여부']}")
+
         except Exception as e:
             logging.error(f"Error processing row {idx}: {e}")
             continue
@@ -645,47 +666,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 if target_qty is None:
                                     target_qty = 300  # Default quantity
                                 
-                                # Find the price for this quantity
-                                if str(target_qty) in item['quantity_prices']:  # Check string key
-                                    price_info = item['quantity_prices'][str(target_qty)]
-                                    df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                                    logging.info(f"Using quantity-based price for {product_name}: {price_info['price_with_vat']} (qty: {target_qty})")
-                                elif target_qty in item['quantity_prices']:  # Check int key
-                                    price_info = item['quantity_prices'][target_qty]
-                                    df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                                    logging.info(f"Using quantity-based price for {product_name}: {price_info['price_with_vat']} (qty: {target_qty})")
+                                # 자주 사용되는 수량에 대한 가격 캐시
+                                price_cache = {}
+                                cache_key = f"{row['Code']}_{target_qty}"
+                                if cache_key in price_cache:
+                                    df.at[idx, '판매단가(V포함)(3)'] = price_cache[cache_key]
                                 else:
-                                    # Find closest match
-                                    available_qtys = []
-                                    for qty_key in item['quantity_prices'].keys():
-                                        try:
-                                            # Convert keys to int (they could be strings)
-                                            available_qtys.append(int(qty_key))
-                                        except (ValueError, TypeError):
-                                            pass
-                                    
-                                    if available_qtys:
-                                        # Find closest lower quantity
-                                        lower_qtys = [q for q in available_qtys if q <= target_qty]
-                                        if lower_qtys:
-                                            closest_qty = max(lower_qtys)
-                                            price_info = item['quantity_prices'].get(
-                                                closest_qty,
-                                                item['quantity_prices'].get(str(closest_qty))
-                                            )
-                                            if price_info:
-                                                df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                                                logging.info(f"Using closest quantity price for {product_name}: {price_info['price_with_vat']} (qty: {closest_qty}, target: {target_qty})")
-                                        else:
-                                            # Use minimum quantity price
-                                            min_qty = min(available_qtys)
-                                            price_info = item['quantity_prices'].get(
-                                                min_qty,
-                                                item['quantity_prices'].get(str(min_qty))
-                                            )
-                                            if price_info:
-                                                df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
-                                                logging.info(f"Using minimum quantity price for {product_name}: {price_info['price_with_vat']} (qty: {min_qty}, target: {target_qty})")
+                                    # 가격 계산 후
+                                    price_cache[cache_key] = df.at[idx, '판매단가(V포함)(3)']
                             # Check for price_with_vat
                             elif 'price_with_vat' in item:
                                 df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
@@ -754,35 +742,15 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         # Kogift price difference
         if '판매단가(V포함)(2)' in df.columns:
             # FIXED: Ensure we convert to numeric before calculation
-            df['가격차이(2)'] = df.apply(
-                lambda x: pd.to_numeric(x['판매단가(V포함)(2)'], errors='coerce') - 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
-                if pd.notna(x['판매단가(V포함)(2)']) and pd.notna(x['판매단가(V포함)']) else None, 
-                axis=1
-            )
-            # Calculate percentage difference
-            df['가격차이(2)(%)'] = df.apply(
-                lambda x: int((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
-                if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
-                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+            df['가격차이(2)'], df['가격차이(2)(%)'] = df.apply(
+                lambda x: calculate_price_difference(x['판매단가(V포함)'], x['판매단가(V포함)(2)']), 
                 axis=1
             )
             
         # Naver price difference
         if '판매단가(V포함)(3)' in df.columns:
-            df['가격차이(3)'] = df.apply(
-                lambda x: pd.to_numeric(x['판매단가(V포함)(3)'], errors='coerce') - 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce') 
-                if pd.notna(x['판매단가(V포함)(3)']) and pd.notna(x['판매단가(V포함)']) else None, 
-                axis=1
-            )
-            # Calculate percentage difference
-            df['가격차이(3)(%)'] = df.apply(
-                lambda x: int((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
-                if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
-                   pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
+            df['가격차이(3)'], df['가격차이(3)(%)'] = df.apply(
+                lambda x: calculate_price_difference(x['판매단가(V포함)'], x['판매단가(V포함)(3)']), 
                 axis=1
             )
     
@@ -816,6 +784,23 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum() if '판매단가(V포함)(2)' in df.columns else 0
     naver_price_count = df['판매단가(V포함)(3)'].notnull().sum() if '판매단가(V포함)(3)' in df.columns else 0
     logging.info(f"Price data counts: Kogift: {kogift_price_count}, Naver: {naver_price_count} rows have valid price values")
+    
+    # 데이터 정합성 검증
+    def validate_price_data(row_data, base_qty, price):
+        warnings = []
+        if base_qty < 100:  # 일반적인 최소 주문 수량보다 작은 경우
+            warnings.append(f"주문 수량({base_qty})이 일반적인 최소 주문 수량보다 작습니다")
+        if price <= 0:
+            warnings.append("가격이 0 이하입니다")
+        if price > 1000000:  # 비정상적으로 높은 가격
+            warnings.append(f"비정상적으로 높은 가격({price:,}원)입니다")
+        return warnings
+
+    # 검증 실행
+    warnings = validate_price_data(row, target_qty, df.at[idx, '판매단가(V포함)(3)'])
+    if warnings:
+        for warning in warnings:
+            logging.warning(f"상품 '{row.get('상품명')}': {warning}")
     
     return df
 
@@ -868,3 +853,15 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
     except Exception as e:
         logging.error(f"Error in process_input_data: {e}", exc_info=True)
         return df 
+
+def calculate_price_difference(base_price, compare_price):
+    try:
+        base = pd.to_numeric(base_price, errors='coerce')
+        comp = pd.to_numeric(compare_price, errors='coerce')
+        if pd.notna(base) and pd.notna(comp) and base != 0:
+            diff = comp - base
+            diff_percent = (diff / base) * 100
+            return diff, round(diff_percent, 1)
+    except Exception as e:
+        logging.warning(f"가격 차이 계산 중 오류: {e}")
+    return None, None 
