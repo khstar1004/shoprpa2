@@ -216,35 +216,21 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
         for col_idx, col_name in enumerate(df_for_excel.columns, 1):
             worksheet.cell(row=1, column=col_idx, value=col_name)
         
-        # Write data with proper type conversion
+        # Write data
         for row_idx, row in enumerate(df_for_excel.itertuples(), 2):
             for col_idx, value in enumerate(row[1:], 1):  # Skip the index
+                # Handle None/NaN values
                 if pd.isna(value):
                     cell_value = ""
-                elif isinstance(value, dict):
-                    # Extract URL from dictionary structure
-                    if 'url' in value:
-                        if isinstance(value['url'], dict) and 'url' in value['url']:
-                            cell_value = value['url']['url']
-                        else:
-                            cell_value = value['url']
-                    else:
-                        cell_value = str(value)
-                elif isinstance(value, pd.Series):
-                    # Handle Series objects
-                    cell_value = "-"
-                    for item in value:
-                        if pd.notna(item) and item not in ['-', '']:
-                            if isinstance(item, dict) and 'url' in item:
-                                if isinstance(item['url'], dict) and 'url' in item['url']:
-                                    cell_value = item['url']['url']
-                                else:
-                                    cell_value = item['url']
-                            else:
-                                cell_value = str(item)
-                            break
-                else:
+                # Handle strings
+                elif isinstance(value, str):
                     cell_value = value
+                # Handle numbers
+                elif isinstance(value, (int, float)):
+                    cell_value = value
+                # Handle other types
+                else:
+                    cell_value = str(value)
                 
                 worksheet.cell(row=row_idx, column=col_idx, value=cell_value)
         
