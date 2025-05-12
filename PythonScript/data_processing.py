@@ -207,8 +207,84 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                              haereum_image_url_map: Dict[str, str] = None) -> pd.DataFrame:
     """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
-    # Create a copy to avoid modifying the input
+    # Create a copy of input DataFrame to avoid modifying original
     df = input_df.copy()
+    
+    # Store base quantities from input for later use
+    base_quantities = {}
+    if '기본수량(1)' in df.columns:
+        for idx, row in df.iterrows():
+            if pd.notna(row['기본수량(1)']):
+                try:
+                    base_quantities[idx] = int(row['기본수량(1)'])
+                except (ValueError, TypeError):
+                    logging.warning(f"Invalid base quantity for row {idx}: {row['기본수량(1)']}")
+    
+    # Process each row
+    for idx, row in df.iterrows():
+        try:
+            # Get the base quantity for this row
+            base_qty = base_quantities.get(idx)
+            
+            # Process Kogift results
+            if kogift_results and row['Code'] in kogift_results:
+                item = kogift_results[row['Code']]
+                
+                # Update quantity-based prices using base quantity
+                if base_qty and 'quantity_prices' in item:
+                    if base_qty in item['quantity_prices']:
+                        # Exact quantity match
+                        price_info = item['quantity_prices'][base_qty]
+                        df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                    else:
+                        # Find closest lower quantity
+                        available_qtys = sorted(item['quantity_prices'].keys())
+                        lower_qtys = [q for q in available_qtys if q <= base_qty]
+                        if lower_qtys:
+                            closest_qty = max(lower_qtys)
+                            price_info = item['quantity_prices'][closest_qty]
+                            df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                            logging.info(f"Using price for quantity {closest_qty} for desired quantity {base_qty}")
+                        else:
+                            # Use minimum quantity price
+                            min_qty = min(available_qtys)
+                            price_info = item['quantity_prices'][min_qty]
+                            df.at[idx, '판매단가(V포함)(2)'] = price_info['price_with_vat']
+                            logging.info(f"Using minimum quantity {min_qty} price for desired quantity {base_qty}")
+            
+            # Process Naver results
+            if naver_results and row['Code'] in naver_results:
+                item = naver_results[row['Code']]
+                
+                # Copy base quantity to Naver quantity
+                if base_qty:
+                    df.at[idx, '기본수량(3)'] = base_qty
+                
+                # Update quantity-based prices using base quantity
+                if base_qty and 'quantity_prices' in item:
+                    if base_qty in item['quantity_prices']:
+                        # Exact quantity match
+                        price_info = item['quantity_prices'][base_qty]
+                        df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                    else:
+                        # Find closest lower quantity
+                        available_qtys = sorted(item['quantity_prices'].keys())
+                        lower_qtys = [q for q in available_qtys if q <= base_qty]
+                        if lower_qtys:
+                            closest_qty = max(lower_qtys)
+                            price_info = item['quantity_prices'][closest_qty]
+                            df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                            logging.info(f"Using price for quantity {closest_qty} for desired quantity {base_qty}")
+                        else:
+                            # Use minimum quantity price
+                            min_qty = min(available_qtys)
+                            price_info = item['quantity_prices'][min_qty]
+                            df.at[idx, '판매단가(V포함)(3)'] = price_info['price_with_vat']
+                            logging.info(f"Using minimum quantity {min_qty} price for desired quantity {base_qty}")
+                
+        except Exception as e:
+            logging.error(f"Error processing row {idx}: {e}")
+            continue
     
     # Ensure required columns exist
     for col in ['상품명', '판매단가(V포함)']:
@@ -381,7 +457,6 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         # 부가세 포함 가격이 먼저 있는지 확인 (기존 방식)
                         elif 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
-                            kogift_price_count += 1
                         # 없으면 일반 가격에 1.1 곱해서 부가세 계산
                         elif 'price' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = round(item['price'] * 1.1)

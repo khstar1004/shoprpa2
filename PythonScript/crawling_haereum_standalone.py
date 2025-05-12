@@ -363,43 +363,33 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         # If found, use these preferred URLs
                         if primary_matches:
                             logger.info(f"Found {len(primary_matches)} product images in preferred format")
-                            # Extract just the URL part
-                            extracted_urls = []
-                            for match in primary_matches:
-                                # Extract URL from src="URL" format
-                                url = re.sub(r'src=[\"\']([^\"\']*)[\"\']', r'\1', match)
-                                extracted_urls.append(url)
-                                
-                            # Try downloading these URLs
-                            for url in extracted_urls[:5]:  # Try up to 5 images
-                                full_url = urljoin(haereum_main_url, url)
-                                logger.info(f"Trying preferred format URL: {full_url}")
-                                local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
-                                if local_path:
-                                    logger.info(f"Successfully downloaded preferred format image: {full_url}")
-                                    await context.close()
-                                    return {"url": full_url, "local_path": local_path, "source": "haereum"}
+                            # Extract just the URL part from the first match only
+                            match = primary_matches[0]  # Take only the first match
+                            url = re.sub(r'src=[\"\']([^\"\']*)[\"\']', r'\1', match)
                             
-                            # If we get here, try fallback pattern
+                            # Try downloading the URL
+                            full_url = urljoin(haereum_main_url, url)
+                            logger.info(f"Trying preferred format URL: {full_url}")
+                            local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
+                            if local_path:
+                                logger.info(f"Successfully downloaded preferred format image: {full_url}")
+                                await context.close()
+                                return {"url": full_url, "local_path": local_path, "source": "haereum"}
+                            
+                            # If preferred format failed, try fallback pattern
                             fallback_matches = re.findall(haereum_fallback_pattern, html_content, re.IGNORECASE)
                             if fallback_matches:
-                                logger.info(f"Found {len(fallback_matches)} product images in fallback format")
-                                # Extract just the URL part
-                                extracted_urls = []
-                                for match in fallback_matches:
-                                    # Extract URL from src="URL" format
-                                    url = re.sub(r'src=[\"\']([^\"\']*)[\"\']', r'\1', match)
-                                    extracted_urls.append(url)
-                                    
-                                # Try downloading these URLs
-                                for url in extracted_urls[:5]:  # Try up to 5 images
-                                    full_url = urljoin(haereum_main_url, url)
-                                    logger.info(f"Trying fallback format URL: {full_url}")
-                                    local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
-                                    if local_path:
-                                        logger.info(f"Successfully downloaded fallback format image: {full_url}")
-                                        await context.close()
-                                        return {"url": full_url, "local_path": local_path, "source": "haereum"}
+                                # Take only the first match
+                                match = fallback_matches[0]
+                                url = re.sub(r'src=[\"\']([^\"\']*)[\"\']', r'\1', match)
+                                
+                                full_url = urljoin(haereum_main_url, url)
+                                logger.info(f"Trying fallback format URL: {full_url}")
+                                local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
+                                if local_path:
+                                    logger.info(f"Successfully downloaded fallback format image: {full_url}")
+                                    await context.close()
+                                    return {"url": full_url, "local_path": local_path, "source": "haereum"}
                         
                         # If we get here, continue with original selectors as a last resort
                         combined_selector = ', '.join([
@@ -422,7 +412,6 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             'wish.gif'
                         ]
 
-                        product_images = []
                         try:
                             # Wait for the first matching image element to appear
                             await page.wait_for_selector(combined_selector, state="visible", timeout=IMAGE_SEARCH_TIMEOUT)
@@ -430,238 +419,44 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             # Query all matching images
                             images = await page.query_selector_all(combined_selector)
                             
-                            # Filter out non-product images
+                            # Find first valid product image
                             for img in images:
                                 src = await img.get_attribute('src')
                                 if src and not any(pattern in src for pattern in exclude_patterns):
-                                    product_images.append(img)
-                            
-                            if product_images:
-                                logger.info(f"📸 Found {len(product_images)} valid product images using combined selector.")
-                                
-                                # Get the first product image URL with better error handling
-                                first_image = product_images[0]
-                                img_src = await first_image.get_attribute('src')
-
-                                if not img_src:
-                                    logger.warning("⚠️ Could not get image source attribute")
-                                    # Try alternative attributes
-                                    for attr in ['data-src', 'data-original', 'srcset']:
-                                        img_src = await first_image.get_attribute(attr)
-                                        if img_src:
-                                            logger.info(f"Found image URL in alternative attribute: {attr}")
-                                            break
-
-                                if img_src:
-                                    # Try to get a larger version of the image by removing the 's' suffix
-                                    # which typically indicates a thumbnail in Haereum
-                                    orig_img_src = img_src
-                                    
-                                    # Check if it's a thumbnail (s.jpg, s.png, etc.)
-                                    if 's.' in img_src.lower() or 's(' in img_src.lower():
-                                        # Try both with and without the 's' to handle different naming patterns
-                                        img_pattern = img_src.lower()
-                                        # Try to keep the original for backup
-                                        larger_versions = []
-                                        
-                                        # Try 1: Simply replace s. with . (most common pattern)
-                                        larger_versions.append(img_src.replace('s.', '.'))
-                                        
-                                        # Try 2: Replace 's(' with '(' (for versioned images)
-                                        larger_versions.append(img_src.replace('s(', '('))
-                                        
-                                        # Try 3: Remove 's' before file extension (other pattern)
-                                        parts = img_src.rsplit('s.', 1)
-                                        if len(parts) == 2:
-                                            larger_versions.append(f"{parts[0]}.{parts[1]}")
-                                        
-                                        # Try these versions and use the first one that works
-                                        logger.info(f"Generated {len(larger_versions)} potential larger versions of thumbnail")
-                                        
-                                        # Keep the original as a fallback if larger versions fail
-                                        # We'll test them during download
-                                        img_src_variants = [img_src] + larger_versions
-                                    else:
-                                        img_src_variants = [img_src]
-                                    
-                                    # Construct full URL if needed - prepare all variants
-                                    found_image_urls = []
-                                    for variant in img_src_variants:
-                                        if not variant.startswith(('http://', 'https://')):
-                                            # Make sure image_src starts with / for proper joining
-                                            if not variant.startswith('/'):
-                                                variant = '/' + variant
-                                            full_url = urljoin(haereum_main_url, variant)
-                                            found_image_urls.append(full_url)
-                                            logger.info(f"✅ Converted relative URL '{variant}' to absolute URL: {full_url}")
+                                    img_src = src
+                                    if img_src:
+                                        # Try to get a larger version of the image
+                                        if 's.' in img_src.lower() or 's(' in img_src.lower():
+                                            larger_version = img_src.replace('s.', '.')
+                                            img_src_variants = [larger_version, img_src]  # Try larger version first
                                         else:
-                                            found_image_urls.append(variant)
-                                            logger.info(f"✅ Using absolute image URL: {variant}")
-                                    
-                                    # Try downloading each variant until one succeeds
-                                    local_path = None
-                                    for url in found_image_urls:
-                                        logger.info(f"Attempting to download image: {url}")
-                                        local_path = await download_image_to_main(url, keyword, config, max_retries=2)
-                                        if local_path:
-                                            logger.info(f"Successfully downloaded variant: {url}")
-                                            break
-                                    
-                                    # Close context before returning result
-                                    await context.close()
-
-                                    # Return the best result we could find
-                                    found_url = found_image_urls[0] if found_image_urls else None
-                                    if local_path:
-                                        return {"url": found_url, "local_path": local_path, "source": "haereum"}
-                            else:
-                                logger.warning("⚠️ No valid product images found after filtering.")
-                                
-                            # If we get here, either no product images were found or download failed
-                            # Try secondary method - direct HTML search
-                            html_content = await page.content()
-                            # Improved regex to match more image types and patterns
-                            img_pattern = r'<img[^>]+src=["\']([^"\']*upload\/product[^"\']*\.(jpe?g|png|gif|webp))["\']'
-                            all_matches = re.findall(img_pattern, html_content)
-                            if all_matches:
-                                logger.info(f"Found {len(all_matches)} potential images via HTML search")
-                                
-                                # Process extracted URLs
-                                html_extracted_urls = []
-                                for match in all_matches:
-                                    if isinstance(match, tuple) and len(match) > 0:
-                                        img_url = match[0]  # Get full URL (first capture group)
-                                    else:
-                                        img_url = match
+                                            img_src_variants = [img_src]
                                         
-                                    if not any(p in img_url for p in exclude_patterns):
-                                        html_extracted_urls.append(img_url)
-                                
-                                if html_extracted_urls:
-                                    logger.info(f"Found {len(html_extracted_urls)} valid images via HTML search")
-                                    # Try downloading the first one
-                                    for url in html_extracted_urls[:3]:  # Try top 3 images
-                                        full_url = urljoin(haereum_main_url, url)
-                                        logger.info(f"Trying HTML extracted URL: {full_url}")
-                                        local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
-                                        if local_path:
-                                            logger.info(f"Successfully downloaded HTML extracted image: {full_url}")
-                                            await context.close()
-                                            return {"url": full_url, "local_path": local_path, "source": "haereum"}
-                            
-                            # If we still couldn't find or download any image, try the direct product code fallback
-                            fallback_result = await try_direct_product_code_fallback(page, keyword, config, haereum_main_url)
-                            if fallback_result:
-                                logger.info(f"✅ Last resort fallback method successfully found image for '{keyword}'")
-                                await context.close()
-                                return fallback_result
-                                    
-                            # If all methods failed, return None
-                            await context.close()
-                            return None
-
-                        except PlaywrightError as pe:
-                            # Handle timeout or other selector errors
-                            if "Timeout" in str(pe):
-                                logger.warning(f"⚠️ No product images found within {IMAGE_SEARCH_TIMEOUT / 1000} seconds using combined selector.")
-                                
-                                # Try the specialized fallback method that extracts product codes
-                                fallback_result = await try_direct_product_code_fallback(page, keyword, config, haereum_main_url)
-                                if fallback_result:
-                                    logger.info(f"✅ Fallback method successfully found image for '{keyword}'")
-                                    await context.close()
-                                    return fallback_result
-                                
-                                # If fallback method also failed, proceed with existing fallback logic
-                                try:
-                                    # Get all product codes on the page
-                                    product_codes = await page.query_selector_all('.pro_code b')
-                                    if product_codes:
-                                        first_code = await product_codes[0].inner_text()
-                                        first_code = first_code.strip()
-                                        logger.info(f"Found product code: {first_code}")
-                                        
-                                        # Try to construct image URL from product code
-                                        # Common patterns in Haereum site
-                                        possible_image_codes = []
-                                        
-                                        # Get product names to help generate possible image codes
-                                        product_names = await page.query_selector_all('td[align="center"] a.hit_pro')
-                                        product_name_text = ""
-                                        if product_names:
-                                            product_name_text = await product_names[0].inner_text()
-                                            product_name_text = product_name_text.strip()
-                                            logger.info(f"Found product name: {product_name_text}")
-                                        
-                                        # Try standard catalog number pattern
-                                        if len(first_code) > 3:
-                                            # Use the product code directly
-                                            possible_image_codes.append(f"{'BBCA'}{first_code.zfill(7)}")
-                                            
-                                            # Try with different catalog prefixes
-                                            for prefix in ["BBCA", "GGBJ", "AAZZ", "CCAA"]:
-                                                possible_image_codes.append(f"{prefix}{first_code.zfill(7)}")
-                                        
-                                        # Try each possible image code
-                                        for code in possible_image_codes:
-                                            # Priority to the exact format the user mentioned
-                                            # Primary format: /upload/product/simg3/DDACxxxxxxs.jpg
-                                            for brand_code in ["DDAC", "BBCA", "GGBJ", "AAZZ", "CCAA", "EEBB", "BBCB", "EEAV"]:
-                                                # Try both with and without the 's' suffix
-                                                for size_suffix in ['s', '']:
-                                                    # Try with different version numbers
-                                                    for version in ['', '_1', '_2', '_3']:
-                                                        # Try different file extensions
-                                                        for img_ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                                            test_img_url = f"/upload/product/simg3/{brand_code}{code.zfill(7)}{size_suffix}{version}{img_ext}"
-                                                            logger.info(f"Trying exact format URL: {test_img_url}")
-                                                            
-                                                            # Construct the final URL
-                                                            full_url = urljoin(haereum_main_url, test_img_url)
-                                                            
-                                                            # Download the image and check if it exists
-                                                            local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
-                                                            
-                                                            if local_path:
-                                                                await context.close()
-                                                                return {"url": full_url, "local_path": local_path, "source": "haereum"}
-                                            
-                                            # If exact format didn't work, try original fallback paths
-                                            test_img_url = f"/upload/product/simg3/{code}s.jpg"
-                                            logger.info(f"Trying fallback image URL: {test_img_url}")
-                                            
-                                            # Set this as our image source and proceed with the normal flow
-                                            img_src = test_img_url
-                                            
-                                            # Try to get a larger version
-                                            larger_img_src = img_src.replace('s.jpg', '.jpg')
-                                            logger.info(f"Attempting to use larger version: {larger_img_src}")
-                                            
-                                            # Construct the final URL
-                                            if not larger_img_src.startswith(('http://', 'https://')):
-                                                if not larger_img_src.startswith('/'):
-                                                    larger_img_src = '/' + larger_img_src
-                                                found_image_url = urljoin(haereum_main_url, larger_img_src)
+                                        # Try each variant
+                                        for variant in img_src_variants:
+                                            if not variant.startswith(('http://', 'https://')):
+                                                if not variant.startswith('/'):
+                                                    variant = '/' + variant
+                                                full_url = urljoin(haereum_main_url, variant)
                                             else:
-                                                found_image_url = larger_img_src
+                                                full_url = variant
                                                 
-                                            logger.info(f"✅ Using fallback image URL: {found_image_url}")
-                                            
-                                            # Download the image and check if it exists
-                                            local_path = await download_image_to_main(found_image_url, keyword, config, max_retries=3)
-                                            
+                                            logger.info(f"Trying image URL: {full_url}")
+                                            local_path = await download_image_to_main(full_url, keyword, config, max_retries=2)
                                             if local_path:
+                                                logger.info(f"Successfully downloaded image: {full_url}")
                                                 await context.close()
-                                                return {"url": found_image_url, "local_path": local_path, "source": "haereum"}
-                                            
-                                            # If we get here, the fallback URL didn't work, try the next one
+                                                return {"url": full_url, "local_path": local_path, "source": "haereum"}
                                     
-                                except Exception as fallback_err:
-                                    logger.error(f"Error in fallback image detection: {fallback_err}")
-                            else:
-                                logger.warning(f"⚠️ Error waiting for image selector: {str(pe)}")
-                            # No need to continue if no images found or error occurred
-                            await context.close() # Close context before returning
+                                    break  # Stop after first valid image
+                        except Exception as e:
+                            logger.error(f"Error during image URL extraction: {e}", exc_info=True)
+                            # Ensure context is closed in case of error
+                            try:
+                                if 'context' in locals() and not context.is_closed():
+                                    await context.close()
+                            except Exception as ce:
+                                 logger.warning(f"⚠️ Error closing context during exception handling: {ce}")
                             return None
 
                     except Exception as e:

@@ -34,6 +34,9 @@ from pathlib import Path
 from PIL import Image
 import shutil
 import hashlib
+import json
+
+# --- 해오름 기프트 입력 데이터에서 수량 추출 함수 ---
 
 # 고려기프트 이미지 경로 중요 정보:
 # /ez/ 경로가 이미지 URL에 반드시 포함되어야 합니다.
@@ -44,6 +47,58 @@ import hashlib
 # 로거 설정 (basicConfig는 메인에서 한 번만 호출하는 것이 좋음)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__) # Get logger instance
+
+def get_kogift_urls(config: configparser.ConfigParser) -> List[str]:
+    """
+    Get list of Kogift URLs from config file.
+    
+    Args:
+        config: ConfigParser object containing configuration
+        
+    Returns:
+        List[str]: List of Kogift URLs to scrape
+    """
+    urls = []
+    try:
+        if config.has_section('ScraperSettings'):
+            # Get URLs from config
+            if config.has_option('ScraperSettings', 'kogift_urls'):
+                urls_str = config.get('ScraperSettings', 'kogift_urls')
+                urls = [url.strip() for url in urls_str.split(',') if url.strip()]
+            
+            # If no URLs in config, use defaults
+            if not urls:
+                urls = [
+                    'https://koreagift.com/ez/index.php',
+                    'https://adpanchok.co.kr/ez/index.php'
+                ]
+    except Exception as e:
+        logger.error(f"Error getting Kogift URLs from config: {e}")
+        # Fallback to default URLs
+        urls = [
+            'https://koreagift.com/ez/index.php',
+            'https://adpanchok.co.kr/ez/index.php'
+        ]
+    
+    return urls
+
+def get_max_items_per_variation(config: configparser.ConfigParser) -> int:
+    """
+    Get maximum number of items to scrape per keyword variation from config.
+    
+    Args:
+        config: ConfigParser object containing configuration
+        
+    Returns:
+        int: Maximum number of items to scrape per variation
+    """
+    try:
+        if config.has_section('ScraperSettings'):
+            return config.getint('ScraperSettings', 'kogift_max_items', fallback=100)
+    except Exception as e:
+        logger.error(f"Error getting max items per variation from config: {e}")
+    
+    return 100  # Default value from config.ini
 
 # Constants removed, now loaded from config
 # KOGIFT_URLS = [...]
@@ -1011,18 +1066,44 @@ async def get_price_for_specific_quantity(page, product_url, target_quantity, ti
 # --- Main scraping function에 상세 페이지 크롤링 로직 추가 --- 
 async def scrape_data(browser: Browser, original_keyword1: str, original_keyword2: Optional[str] = None, config: configparser.ConfigParser = None, fetch_price_tables: bool = False, custom_quantities: List[int] = None):
     """Scrape data from Kogift website."""
+    
+    # Initialize variables
+    results = []
+    kogift_urls = get_kogift_urls(config)
+    max_items_per_variation = get_max_items_per_variation(config)
+    
+    # Generate keyword variations
+    keyword_variations = generate_keyword_variations(original_keyword1, original_keyword2)
+    logger.info(f"Generated {len(keyword_variations)} keyword variations for search: {keyword_variations}")
+    logger.info(f"Will scrape up to {max_items_per_variation} items per keyword variation")
+    
+    # Check if we need to recreate the browser
+    need_new_browser = not browser or not browser.is_connected()
+    
+    # Get quantities to check - use input quantities or fallback to defaults
+    if custom_quantities is None or len(custom_quantities) == 0:
+        # Try to get quantities from input Excel if config is provided
+        if config and config.has_section('Input'):
+            try:
+                input_file = config.get('Input', 'input_file')
+                df = pd.read_excel(input_file)
+                if '기본수량(1)' in df.columns:
+                    custom_quantities = df['기본수량(1)'].dropna().unique().tolist()
+                    custom_quantities = [int(qty) for qty in custom_quantities if str(qty).isdigit()]
+                    logger.info(f"Using quantities from input Excel: {custom_quantities}")
+            except Exception as e:
+                logger.warning(f"Could not get quantities from input Excel: {e}")
+                
+        # If still no quantities, use defaults
+        if not custom_quantities:
+            custom_quantities = [300, 800, 1100, 2000]
+            logger.info("Using default quantities")
+    
+    logger.info(f"Will check prices for quantities: {custom_quantities}")
+    
+    # Continue with the rest of the original function implementation
     if config is None:
         logger.error("Configuration object is required")
-        return pd.DataFrame()
-
-    # Get URLs from config
-    try:
-        kogift_urls = config.get('ScraperSettings', 'kogift_urls', fallback='https://koreagift.com/ez/index.php,https://adpanchok.co.kr/ez/index.php').split(',')
-        if not kogift_urls:
-            logger.error("No valid Kogift URLs found in config")
-            return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Error getting Kogift URLs from config: {e}")
         return pd.DataFrame()
 
     # Get image directory from config
@@ -1034,28 +1115,9 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     except Exception as e:
         logger.error(f"Error getting image directory from config: {e}")
         return pd.DataFrame()
-
-    # Generate keyword variations using the imported utility function
-    keyword_variations = generate_keyword_variations(original_keyword1, max_variations=3)
-    logger.info(f"Generated {len(keyword_variations)} keyword variations for search: {keyword_variations}")
     
     all_results = []
     seen_product_urls = set()  # Track product URLs to avoid duplicates
-
-    # Get maximum items to scrape per keyword
-    max_items_per_keyword = config.getint('ScraperSettings', 'kogift_max_items', fallback=10)
-    # Reduce max items per variation to avoid excessive scraping
-    max_items_per_variation = max(5, max_items_per_keyword // len(keyword_variations)) if keyword_variations else max_items_per_keyword
-    logger.info(f"Will scrape up to {max_items_per_variation} items per keyword variation")
-    
-    # Check if we need to recreate the browser
-    need_new_browser = not browser or not browser.is_connected()
-    
-    # Default quantities if none provided
-    if custom_quantities is None or len(custom_quantities) == 0:
-        custom_quantities = [300, 800, 1100, 2000]  # Default quantities to check
-    
-    logger.info(f"Will check prices for quantities: {custom_quantities}")
     
     # Try each URL in sequence
     for base_url in kogift_urls:
@@ -1069,7 +1131,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                 # If the caller provided a disconnected browser, we'll try to create a new one
                 if need_new_browser:
                     from playwright.async_api import async_playwright
-                    playwright = await async_playwright().start()
+                    p = await async_playwright().start()
                     
                     # Get browser launch arguments from config
                     browser_args = []
@@ -1084,7 +1146,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                     # Launch a new browser
                     try:
                         headless = config.getboolean('Playwright', 'playwright_headless', fallback=True)
-                        browser = await playwright.chromium.launch(
+                        browser = await p.chromium.launch(
                             headless=headless,
                             args=browser_args,
                             timeout=60000  # 1 minute timeout for browser launch
@@ -1737,113 +1799,119 @@ def test_kogift_scraper():
         
         for keyword in test_keywords:
             logger.info(f"\n--- Searching for '{keyword}' ---")
-            # Pass the custom quantities to scrape_data
-            df = await scrape_data(browser, keyword, config=config, 
-                                   custom_quantities=args.quantity, 
-                                   fetch_price_tables=True)  # 테이블 데이터도 가져오기
-            
-            if df.empty:
-                print(f"No products found for '{keyword}'")
+            try:
+                # Pass the custom quantities to scrape_data
+                df = await scrape_data(browser, keyword, config=config, 
+                                 custom_quantities=args.quantity, 
+                                 fetch_price_tables=True)  # 테이블 데이터도 가져오기
+                
+                if df.empty:
+                    print(f"No products found for '{keyword}'")
+                    continue
+                    
+                print(f"Found {len(df)} products for '{keyword}'")
+                
+                # Display image URLs and prices for each product
+                for idx, row in df.iterrows():
+                    print(f"\n{'=' * 70}")
+                    print(f"Product {idx+1}: {row.get('name', 'Unknown Name')}")
+                    print(f"  URL: {row.get('href', 'N/A')}")
+                    print(f"  Supplier: {row.get('supplier', 'Unknown')}")
+                    
+                    # 이미지 정보 출력 및 테스트 다운로드
+                    img_url = row.get('image_url')
+                    if img_url:
+                        norm_url, valid = normalize_kogift_image_url(img_url)
+                        print(f"  Image URL: {img_url}")
+                        print(f"  Normalized URL: {norm_url}")
+                        print(f"  Image URL valid: {'Yes' if valid else 'No'}")
+                        
+                        # 이미지 다운로드 테스트
+                        if valid:
+                            print("  Testing image download...")
+                            product_name_hash = hashlib.md5(row.get('name', '').encode()).hexdigest()[:8]
+                            img_filename = f"test_{idx}_{product_name_hash}.jpg"
+                            
+                            download_path = download_image(norm_url, test_image_dir, img_filename)
+                            if download_path:
+                                img_size = os.path.getsize(download_path) if os.path.exists(download_path) else 0
+                                print(f"  ✅ Image downloaded: {os.path.basename(download_path)} ({img_size/1024:.1f} KB)")
+                            else:
+                                print(f"  ❌ Failed to download image")
+                    else:
+                        print(f"  ❌ No image URL available")
+                    
+                    print(f"\n  Price Information:")
+                    print(f"  Basic Price (excl. VAT): {row.get('price', 'N/A')} KRW")
+                    print(f"  Basic Price (incl. VAT): {row.get('price_with_vat', 'N/A')} KRW")
+                    
+                    # 수량별 가격 정보 상세 분석 및 표시
+                    if 'quantity_prices' in row and row['quantity_prices']:
+                        print("\n  Quantity-based prices:")
+                        print("  " + "-" * 68)
+                        print("  | {:^8} | {:^12} | {:^12} | {:^28} |".format("수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
+                        print("  " + "-" * 68)
+                        
+                        # 수량 순서대로 정렬하여 표시
+                        sorted_quantities = sorted(row['quantity_prices'].keys())
+                        
+                        for qty in sorted_quantities:
+                            price_info = row['quantity_prices'][qty]
+                            price = price_info['price']
+                            price_with_vat = price_info['price_with_vat']
+                            
+                            # 비고 정보 구성
+                            if price_info.get('exact_match', False):
+                                note = "정확한 수량 일치"
+                            elif 'note' in price_info:
+                                note = price_info['note']
+                            elif 'actual_quantity' in price_info:
+                                note = f"근사값 (실제 수량: {price_info['actual_quantity']}개)"
+                            else:
+                                note = "-"
+                                
+                            print("  | {:>8,d} | {:>12,d} | {:>12,d} | {:<28} |".format(
+                                qty, price, price_with_vat, note))
+                        
+                        print("  " + "-" * 68)
+                        
+                        # 수량별 가격 변화 추이 분석
+                        if len(sorted_quantities) > 1:
+                            min_qty = min(sorted_quantities)
+                            max_qty = max(sorted_quantities)
+                            min_price = row['quantity_prices'][min_qty]['price']
+                            max_price = row['quantity_prices'][max_qty]['price']
+                            
+                            if min_price > max_price:
+                                price_trend = f"수량이 증가할수록 단가 감소 ({min_price}원 → {max_price}원), 할인율: {(1 - max_price/min_price)*100:.1f}%"
+                            elif min_price < max_price:
+                                price_trend = f"수량이 증가할수록 단가 증가 ({min_price}원 → {max_price}원), 상승률: {(max_price/min_price - 1)*100:.1f}%"
+                            else:
+                                price_trend = "수량에 관계없이 단가 일정"
+                                
+                            print(f"\n  가격 추이 분석: {price_trend}")
+                    else:
+                        print("\n  ❌ No quantity-based price information available")
+                    
+                    # 수량과 가격 조합이 적절한지 검증
+                    if 'price' in row and 'quantity_prices' in row and row['quantity_prices']:
+                        min_qty_price = min([info['price'] for info in row['quantity_prices'].values()])
+                        base_price = row.get('price', 0)
+                        
+                        if abs(min_qty_price - base_price) > base_price * 0.1:  # 10% 이상 차이
+                            print(f"\n  ⚠️ Warning: Base price ({base_price}원) differs significantly from minimum quantity price ({min_qty_price}원)")
+                    
+                    print(f"{'=' * 70}")
+                    
+                    # Limit display to first 3 products per keyword to avoid too much output
+                    if idx >= 2:
+                        print(f"... and {len(df) - 3} more products")
+                        break
+            except Exception as e:
+                print(f"Error searching for '{keyword}': {e}")
+                logger.error(f"Error during test_product_info for keyword '{keyword}': {e}", exc_info=True)
+                print(f"Skipping to next keyword...")
                 continue
-                
-            print(f"Found {len(df)} products for '{keyword}'")
-            
-            # Display image URLs and prices for each product
-            for idx, row in df.iterrows():
-                print(f"\n{'=' * 70}")
-                print(f"Product {idx+1}: {row.get('name', 'Unknown Name')}")
-                print(f"  URL: {row.get('href', 'N/A')}")
-                print(f"  Supplier: {row.get('supplier', 'Unknown')}")
-                
-                # 이미지 정보 출력 및 테스트 다운로드
-                img_url = row.get('image_url')
-                if img_url:
-                    norm_url, valid = normalize_kogift_image_url(img_url)
-                    print(f"  Image URL: {img_url}")
-                    print(f"  Normalized URL: {norm_url}")
-                    print(f"  Image URL valid: {'Yes' if valid else 'No'}")
-                    
-                    # 이미지 다운로드 테스트
-                    if valid:
-                        print("  Testing image download...")
-                        product_name_hash = hashlib.md5(row.get('name', '').encode()).hexdigest()[:8]
-                        img_filename = f"test_{idx}_{product_name_hash}.jpg"
-                        
-                        download_path = download_image(norm_url, test_image_dir, img_filename)
-                        if download_path:
-                            img_size = os.path.getsize(download_path) if os.path.exists(download_path) else 0
-                            print(f"  ✅ Image downloaded: {os.path.basename(download_path)} ({img_size/1024:.1f} KB)")
-                        else:
-                            print(f"  ❌ Failed to download image")
-                else:
-                    print(f"  ❌ No image URL available")
-                
-                print(f"\n  Price Information:")
-                print(f"  Basic Price (excl. VAT): {row.get('price', 'N/A')} KRW")
-                print(f"  Basic Price (incl. VAT): {row.get('price_with_vat', 'N/A')} KRW")
-                
-                # 수량별 가격 정보 상세 분석 및 표시
-                if 'quantity_prices' in row and row['quantity_prices']:
-                    print("\n  Quantity-based prices:")
-                    print("  " + "-" * 68)
-                    print("  | {:^8} | {:^12} | {:^12} | {:^28} |".format("수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
-                    print("  " + "-" * 68)
-                    
-                    # 수량 순서대로 정렬하여 표시
-                    sorted_quantities = sorted(row['quantity_prices'].keys())
-                    
-                    for qty in sorted_quantities:
-                        price_info = row['quantity_prices'][qty]
-                        price = price_info['price']
-                        price_with_vat = price_info['price_with_vat']
-                        
-                        # 비고 정보 구성
-                        if price_info.get('exact_match', False):
-                            note = "정확한 수량 일치"
-                        elif 'note' in price_info:
-                            note = price_info['note']
-                        elif 'actual_quantity' in price_info:
-                            note = f"근사값 (실제 수량: {price_info['actual_quantity']}개)"
-                        else:
-                            note = "-"
-                            
-                        print("  | {:>8,d} | {:>12,d} | {:>12,d} | {:<28} |".format(
-                            qty, price, price_with_vat, note))
-                    
-                    print("  " + "-" * 68)
-                    
-                    # 수량별 가격 변화 추이 분석
-                    if len(sorted_quantities) > 1:
-                        min_qty = min(sorted_quantities)
-                        max_qty = max(sorted_quantities)
-                        min_price = row['quantity_prices'][min_qty]['price']
-                        max_price = row['quantity_prices'][max_qty]['price']
-                        
-                        if min_price > max_price:
-                            price_trend = f"수량이 증가할수록 단가 감소 ({min_price}원 → {max_price}원), 할인율: {(1 - max_price/min_price)*100:.1f}%"
-                        elif min_price < max_price:
-                            price_trend = f"수량이 증가할수록 단가 증가 ({min_price}원 → {max_price}원), 상승률: {(max_price/min_price - 1)*100:.1f}%"
-                        else:
-                            price_trend = "수량에 관계없이 단가 일정"
-                            
-                        print(f"\n  가격 추이 분석: {price_trend}")
-                else:
-                    print("\n  ❌ No quantity-based price information available")
-                
-                # 수량과 가격 조합이 적절한지 검증
-                if 'price' in row and 'quantity_prices' in row and row['quantity_prices']:
-                    min_qty_price = min([info['price'] for info in row['quantity_prices'].values()])
-                    base_price = row.get('price', 0)
-                    
-                    if abs(min_qty_price - base_price) > base_price * 0.1:  # 10% 이상 차이
-                        print(f"\n  ⚠️ Warning: Base price ({base_price}원) differs significantly from minimum quantity price ({min_qty_price}원)")
-                
-                print(f"{'=' * 70}")
-                
-                # Limit display to first 3 products per keyword to avoid too much output
-                if idx >= 2:
-                    print(f"... and {len(df) - 3} more products")
-                    break
 
     # 3) Custom quantities pricing test (requires browser)
     async def test_custom_quantities(browser):
@@ -1853,209 +1921,160 @@ def test_kogift_scraper():
         keyword = args.search_terms[0]
         logger.info(f"Testing quantities for '{keyword}'...")
         
-        # Create a new context for price testing
-        context = await browser.new_context(
-            user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
-            viewport={'width': 1920, 'height': 1080},
-        )
-        page = await context.new_page()
-        
-        # Test direct product search first to get product URL
-        print(f"\n{'=' * 70}")
-        print(f"검색어: '{keyword}'에 대한 상품 검색 중...")
-        df = await scrape_data(browser, keyword, config=config, custom_quantities=args.quantity)
-        
-        if df.empty:
-            print(f"❌ 검색어 '{keyword}'에 대한 상품을 찾을 수 없습니다.")
-            await context.close()
-            return
+        try:
+            # Check if browser is connected
+            if not browser or not browser.is_connected():
+                logger.warning("Browser is not connected. Attempting to create a new browser...")
+                from playwright.async_api import async_playwright
+                p = await async_playwright().start()
+                browser = await p.chromium.launch(
+                    headless=config.getboolean('Playwright', 'playwright_headless', fallback=True),
+                    args=json.loads(config.get('Playwright', 'playwright_browser_args', fallback='["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]')),
+                    timeout=60000
+                )
+                logger.info("Successfully created new browser instance")
+
+            # Create a new context for price testing
+            context = await browser.new_context(
+                user_agent=config.get('Network', 'user_agent', fallback='Mozilla/5.0 ...'),
+                viewport={'width': 1920, 'height': 1080},
+            )
+            page = await context.new_page()
             
-        print(f"✅ {len(df)}개 상품을 찾았습니다.")
-        
-        # 테스트할 상품 선택 (최대 2개)
-        test_products = min(2, len(df))
-        for product_idx in range(test_products):
-            # Get product info
-            product = df.iloc[product_idx]
-            product_url = product.get('href', None)
-            product_name = product.get('name', 'Unknown Product')
-            
-            if not product_url:
-                print(f"❌ 상품 URL을 찾을 수 없습니다.")
-                continue
-                
+            # Test direct product search first to get product URL
             print(f"\n{'=' * 70}")
-            print(f"👉 상품 테스트 #{product_idx+1}: {product_name}")
-            print(f"   URL: {product_url}")
+            print(f"검색어: '{keyword}'에 대한 상품 검색 중...")
+            df = await scrape_data(browser, keyword, config=config, custom_quantities=args.quantity)
             
-            # 1. 직접 수량 입력 방식 테스트
-            print(f"\n[1] 직접 수량 입력 방식 테스트")
-            print(f"{'-' * 50}")
+            if df.empty:
+                print(f"❌ 검색어 '{keyword}'에 대한 상품을 찾을 수 없습니다.")
+                await context.close()
+                return
+                
+            print(f"✅ {len(df)}개 상품을 찾았습니다.")
             
-            # 수량별 결과 저장
-            qty_results = []
-            
-            for qty in sorted(args.quantity):
-                # Test pricing for the specific quantity
-                price_result = await get_price_for_specific_quantity(page, product_url, qty)
+            # 테스트할 상품 선택 (최대 2개)
+            test_products = min(2, len(df))
+            for product_idx in range(test_products):
+                # Get product info
+                product = df.iloc[product_idx]
+                product_url = product.get('href', None)
+                product_name = product.get('name', 'Unknown Product')
                 
-                result_info = {
-                    'quantity': qty,
-                    'price': price_result['price'],
-                    'price_with_vat': price_result['price_with_vat'],
-                    'success': price_result['success'],
-                    'min_quantity_error': price_result.get('min_quantity_error', False),
-                    'min_quantity': price_result.get('min_quantity', None)
-                }
+                if not product_url:
+                    print(f"❌ 상품 URL을 찾을 수 없습니다.")
+                    continue
+                    
+                print(f"\n{'=' * 70}")
+                print(f"👉 상품 테스트 #{product_idx+1}: {product_name}")
+                print(f"   URL: {product_url}")
                 
-                qty_results.append(result_info)
+                # 1. 직접 수량 입력 방식 테스트
+                print(f"\n[1] 직접 수량 입력 방식 테스트")
+                print(f"{'-' * 50}")
                 
-                # 결과 출력
-                status = "✅" if price_result['success'] else "❌"
-                print(f"{status} 수량: {qty}개")
-                
-                if price_result['min_quantity_error']:
-                    print(f"   ⚠️ 최소 주문 수량 오류 (최소 수량: {price_result['min_quantity']}개)")
-                
-                if price_result['success']:
-                    print(f"   단가(VAT제외): {price_result['price']:,} 원")
-                    print(f"   단가(VAT포함): {price_result['price_with_vat']:,} 원")
-                else:
-                    print(f"   가격 조회 실패")
-            
-            # 2. 수량-가격 테이블 테스트
-            print(f"\n[2] 수량-가격 테이블 테스트")
-            print(f"{'-' * 50}")
-            
-            price_table = await extract_price_table(page, product_url)
-            if price_table is not None and not price_table.empty:
-                print(f"✅ 가격 테이블 발견 ({len(price_table)}개 구간)")
-                
-                # 테이블 데이터 출력
-                print("\n📊 가격 테이블:")
-                print("-" * 30)
-                print("| {:^10} | {:^12} |".format("수량", "단가(원)"))
-                print("-" * 30)
-                
-                for _, row in price_table.iterrows():
-                    print("| {:>10,d} | {:>12,d} |".format(int(row['수량']), int(row['단가'])))
-                
-                print("-" * 30)
-                
-                # 최소/최대 수량 및 가격 분석
-                min_qty = price_table['수량'].min()
-                max_qty = price_table['수량'].max()
-                min_price = price_table.loc[price_table['수량'] == min_qty, '단가'].values[0]
-                max_price = price_table.loc[price_table['수량'] == max_qty, '단가'].values[0]
-                
-                print(f"\n📈 테이블 분석:")
-                print(f"   최소 수량: {min_qty:,}개, 단가: {min_price:,}원")
-                print(f"   최대 수량: {max_qty:,}개, 단가: {max_price:,}원")
-                
-                if min_price > max_price:
-                    discount_rate = (1 - max_price/min_price) * 100
-                    print(f"   수량 증가에 따른 할인율: {discount_rate:.1f}%")
-                
-                # 각 요청 수량에 대한 테이블 기반 가격 매칭
-                print(f"\n🔍 요청 수량별 테이블 매칭 결과:")
-                print("-" * 60)
-                print("| {:^8} | {:^10} | {:^12} | {:^20} |".format("요청수량", "매칭수량", "단가", "비고"))
-                print("-" * 60)
+                # 수량별 결과 저장
+                qty_results = []
                 
                 for qty in sorted(args.quantity):
-                    # 정확히 일치하는지 확인
-                    exact_match = price_table[price_table['수량'] == qty]
+                    try:
+                        result = await get_price_for_specific_quantity(page, product_url, qty, timeout=20000)
+                        qty_results.append({
+                            'quantity': qty,
+                            'success': result['success'],
+                            'price': result.get('price', 0),
+                            'price_with_vat': result.get('price_with_vat', 0),
+                            'min_quantity_error': result.get('min_quantity_error', False),
+                            'min_quantity': result.get('min_quantity', None)
+                        })
+                        
+                        if result['success']:
+                            print(f"✅ 수량 {qty:,d}개: {result['price']:,d}원 (VAT포함: {result['price_with_vat']:,d}원)")
+                        else:
+                            if result.get('min_quantity_error'):
+                                print(f"⚠️ 수량 {qty:,d}개: 최소 주문 수량은 {result['min_quantity']:,d}개 입니다.")
+                            else:
+                                print(f"❌ 수량 {qty:,d}개: 가격 조회 실패")
+                            
+                    except Exception as e:
+                        logger.error(f"Error getting price for quantity {qty}: {e}")
+                        print(f"❌ 수량 {qty:,d}개: 오류 발생 - {str(e)}")
+                        
+                # 2. 가격 테이블 테스트
+                print(f"\n[2] 가격 테이블 테스트")
+                print(f"{'-' * 50}")
+                
+                try:
+                    price_table = await extract_price_table(page, product_url)
                     
-                    if not exact_match.empty:
-                        # 정확히 일치하는 경우
-                        matched_qty = qty
-                        matched_price = exact_match['단가'].values[0]
-                        note = "정확히 일치"
+                    if price_table is not None and not price_table.empty:
+                        print("✅ 가격 테이블 발견!")
+                        print("\n📊 가격 테이블 내용:")
+                        print("-" * 50)
+                        print("| {:^8} | {:^12} | {:^12} | {:^15} |".format(
+                            "수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
+                        print("-" * 50)
+                        
+                        for _, row in price_table.iterrows():
+                            qty = row['수량']
+                            price = row['단가']
+                            price_with_vat = round(price * 1.1)
+                            note = row.get('비고', '')
+                            
+                            print("| {:>8,d} | {:>12,d} | {:>12,d} | {:<15} |".format(
+                                qty, price, price_with_vat, note))
+                        
+                        print("-" * 50)
+                        
+                        # 가격 추이 분석
+                        if len(price_table) > 1:
+                            min_price = price_table['단가'].min()
+                            max_price = price_table['단가'].max()
+                            price_diff = max_price - min_price
+                            if price_diff > 0:
+                                discount_rate = (price_diff / max_price) * 100
+                                print(f"\n가격 추이 분석: 수량이 증가할수록 단가 감소 ({max_price:,d}원 → {min_price:,d}원), 할인율: {discount_rate:.1f}%")
                     else:
-                        # 구간 가격 찾기
-                        if qty < min_qty:
-                            # 최소 수량보다 작은 경우
-                            matched_qty = min_qty
-                            matched_price = min_price
-                            note = f"최소 수량 적용"
-                        else:
-                            # 해당 구간 찾기
-                            lower_rows = price_table[price_table['수량'] <= qty]
-                            if not lower_rows.empty:
-                                max_lower_qty = lower_rows['수량'].max()
-                                matched_qty = max_lower_qty
-                                matched_price = price_table.loc[price_table['수량'] == max_lower_qty, '단가'].values[0]
-                                note = f"구간 가격 적용"
-                            else:
-                                # 이런 경우는 없어야 하는데, 방어 코드
-                                matched_qty = max_qty
-                                matched_price = max_price
-                                note = f"최대 수량 적용(예외)"
-                    
-                    print("| {:>8,d} | {:>10,d} | {:>12,d} | {:<20} |".format(
-                        qty, matched_qty, matched_price, note))
-                
-                print("-" * 60)
-                
-                # 3. 직접 수량 입력 방식과 테이블 방식 비교
-                if qty_results:
-                    print(f"\n[3] 두 방식의 가격 비교")
-                    print(f"{'-' * 50}")
-                    print("| {:^8} | {:^12} | {:^12} | {:^10} |".format(
-                        "수량", "직접입력가격", "테이블가격", "차이(%)"))
-                    print("-" * 50)
-                    
-                    for result in qty_results:
-                        qty = result['quantity']
-                        direct_price = result['price']
+                        print(f"❌ 가격 테이블을 찾을 수 없습니다.")
                         
-                        # 테이블에서 해당 수량의 가격 찾기
-                        if qty < min_qty:
-                            table_price = min_price
-                        else:
-                            lower_rows = price_table[price_table['수량'] <= qty]
-                            if not lower_rows.empty:
-                                max_lower_qty = lower_rows['수량'].max()
-                                table_price = price_table.loc[price_table['수량'] == max_lower_qty, '단가'].values[0]
-                            else:
-                                table_price = max_price
+                        # 직접 입력 방식 결과만 요약 표시
+                        if qty_results:
+                            print(f"\n📊 직접 수량 입력 결과 요약:")
+                            print("-" * 50)
+                            print("| {:^8} | {:^12} | {:^12} | {:^15} |".format(
+                                "수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
+                            print("-" * 50)
+                            
+                            for result in qty_results:
+                                note = ""
+                                if result['min_quantity_error']:
+                                    note = f"최소수량({result['min_quantity']})"
+                                elif not result['success']:
+                                    note = "조회실패"
+                                    
+                                print("| {:>8,d} | {:>12,d} | {:>12,d} | {:<15} |".format(
+                                    result['quantity'], result['price'], result['price_with_vat'], note))
+                            
+                            print("-" * 50)
                         
-                        # 가격 차이 계산
-                        if direct_price > 0 and table_price > 0:
-                            diff_percent = abs(direct_price - table_price) / direct_price * 100
-                            diff_str = f"{diff_percent:.1f}%"
-                        else:
-                            diff_str = "N/A"
-                            
-                        print("| {:>8,d} | {:>12,d} | {:>12,d} | {:>10} |".format(
-                            qty, direct_price, table_price, diff_str))
-                    
-                    print("-" * 50)
-            else:
-                print(f"❌ 가격 테이블을 찾을 수 없습니다.")
-                
-                # 직접 입력 방식 결과만 요약 표시
-                if qty_results:
-                    print(f"\n📊 직접 수량 입력 결과 요약:")
-                    print("-" * 50)
-                    print("| {:^8} | {:^12} | {:^12} | {:^15} |".format(
-                        "수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
-                    print("-" * 50)
-                    
-                    for result in qty_results:
-                        note = ""
-                        if result['min_quantity_error']:
-                            note = f"최소수량({result['min_quantity']})"
-                        elif not result['success']:
-                            note = "조회실패"
-                            
-                        print("| {:>8,d} | {:>12,d} | {:>12,d} | {:<15} |".format(
-                            result['quantity'], result['price'], result['price_with_vat'], note))
-                    
-                    print("-" * 50)
-        
-        await page.close()
-        await context.close()
+                except Exception as e:
+                    logger.error(f"Error extracting price table: {e}")
+                    print(f"❌ 가격 테이블 추출 중 오류 발생: {str(e)}")
+            
+            await page.close()
+            await context.close()
+            
+        except Exception as e:
+            logger.error(f"Error in test_custom_quantities: {e}")
+            print(f"❌ 수량별 가격 테스트 중 오류 발생: {str(e)}")
+            # Try to clean up resources even if there was an error
+            try:
+                if 'page' in locals():
+                    await page.close()
+                if 'context' in locals():
+                    await context.close()
+            except Exception as cleanup_error:
+                logger.error(f"Error during cleanup: {cleanup_error}")
 
     # 4) Standard test dispatcher
     async def run_standard_tests():
@@ -2242,3 +2261,4 @@ def extract_products_from_input(input_data: str) -> List[Dict[str, Any]]:
             raw_p=''.join(filter(str.isdigit,cols[idx_prc])); item['price']=int(raw_p) if raw_p else None
         products.append(item)
     return products
+

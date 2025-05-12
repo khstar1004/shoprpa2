@@ -56,7 +56,7 @@ def main():
             "번호": i+1,
             "상품명": product_name,
             "파일명": img_path.name,
-            "본사 이미지": str(img_path)  # Changed to "본사 이미지" to match excel_utils.py IMAGE_COLUMNS
+            "본사 이미지": str(img_path)  # 이미 문자열로 저장하고 있어서 문제 없음
         })
     
     # Create DataFrame

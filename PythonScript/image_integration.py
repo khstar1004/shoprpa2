@@ -1670,6 +1670,14 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                     naver_count += 1
         
         logging.info(f"통합: 이미지 현황 (필터링 후) - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
+
+        # 이미지 데이터를 처리하기 전에 문자열로 변환
+        for col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+            if col in result_df.columns:
+                result_df[col] = result_df[col].apply(lambda x: 
+                    x['url'] if isinstance(x, dict) and 'url' in x else 
+                    (x['local_path'] if isinstance(x, dict) and 'local_path' in x else x))
+
         return result_df
     
     except Exception as e:
