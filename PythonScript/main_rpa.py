@@ -19,10 +19,9 @@ from email_sender import validate_email_config, send_excel_by_email
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
+from excel_data_processing import find_excel_file, finalize_dataframe_for_excel
 from excel_utils import (
     excel_generator,  # Changed: Now using singleton instance
-    find_excel_file,
-    finalize_dataframe_for_excel,
     IMAGE_COLUMNS
 )
 from crawling_logic import crawl_all_sources
@@ -792,9 +791,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             try:
                                 # Create Excel files (even if df_to_save is empty, to get headers)
                                 logging.info(f"Proceeding to call create_excel_output. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = create_excel_output(
-                                    df_processed=df_to_save,
-                                    output_dir=output_dir,
+                                result_success, upload_success, result_path, upload_path = excel_generator.create_excel_output(
+                                    df=df_to_save,
+                                    output_path=os.path.join(output_dir, f"{input_filename_base}_{timestamp}"),
                                     create_upload_file=True
                                 )
                                 

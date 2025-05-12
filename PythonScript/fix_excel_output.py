@@ -19,8 +19,8 @@ except ImportError:
 
 # Import needed modules after patch is applied
 from PythonScript.excel_utils import (
-    FINAL_COLUMN_ORDER, IMAGE_COLUMNS, LINK_COLUMNS_FOR_HYPERLINK,
-    create_split_excel_outputs, finalize_dataframe_for_excel
+    excel_generator, FINAL_COLUMN_ORDER, IMAGE_COLUMNS, LINK_COLUMNS_FOR_HYPERLINK,
+    finalize_dataframe_for_excel
 )
 from PythonScript.utils import setup_logging
 
@@ -85,8 +85,11 @@ def fix_excel_output(input_file, output_dir=None):
     logger.info(f"Creating Excel output files in directory: {output_dir}")
     # Set a custom source_name in the environment variable for excel_utils to use
     os.environ['EXCEL_SOURCE_NAME'] = source_name
-    result_success, upload_success, result_path, upload_path = create_split_excel_outputs(
-        df_finalized, output_dir)
+    result_success, upload_success, result_path, upload_path = excel_generator.create_excel_output(
+        df=df_finalized, 
+        output_path=os.path.join(output_dir, source_name),
+        create_upload_file=True
+    )
     
     # Log the results
     if result_success and upload_success:

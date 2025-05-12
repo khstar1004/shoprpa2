@@ -21,7 +21,7 @@ from excel_constants import (
 # Import base classes
 from excel_formatting import ExcelFormatter
 from excel_image_utils import ImageProcessor
-from excel_data_processing import finalize_dataframe_for_excel
+from excel_data_processing import finalize_dataframe_for_excel, find_excel_file
 
 def safe_excel_operation(func):
     """
@@ -56,7 +56,7 @@ class ExcelGenerator:
     def create_excel_output(self, 
                           df: pd.DataFrame, 
                           output_path: str, 
-                          create_upload_file: bool = True) -> Union[bool, Tuple[bool, bool, str, str]]:
+                          create_upload_file: bool = True) -> Tuple[bool, bool, Optional[str], Optional[str]]:
         """
         Create Excel output file(s)
         
@@ -66,12 +66,12 @@ class ExcelGenerator:
             create_upload_file: Whether to create upload file
             
         Returns:
-            Success status and file paths
+            Tuple of (result_success, upload_success, result_path, upload_path)
         """
         try:
             if df is None or df.empty:
                 logger.error("Cannot create Excel file: Input DataFrame is empty or None.")
-                return (False, False, None, None) if create_upload_file else False
+                return (False, False, None, None)
             
             # Finalize the DataFrame
             df_finalized = finalize_dataframe_for_excel(df)
@@ -79,10 +79,11 @@ class ExcelGenerator:
             if create_upload_file:
                 return self._create_split_outputs(df_finalized, output_path)
             else:
-                return self._create_single_output(df_finalized, output_path)
+                result_success, result_path = self._create_single_output(df_finalized, output_path)
+                return (result_success, False, result_path, None)
         except Exception as e:
             logger.error(f"Error in create_excel_output: {e}")
-            return (False, False, None, None) if create_upload_file else False
+            return (False, False, None, None)
     
     def _create_split_outputs(self, 
                             df: pd.DataFrame, 
@@ -101,10 +102,10 @@ class ExcelGenerator:
     
     def _create_single_output(self, 
                             df: pd.DataFrame, 
-                            output_path: str) -> bool:
+                            output_path: str) -> Tuple[bool, str]:
         """Create single output file with images"""
-        result_success, _ = self._create_result_file(df, output_path)
-        return result_success
+        result_success, result_path = self._create_result_file(df, output_path)
+        return result_success, result_path
     
     def _create_result_file(self, 
                           df: pd.DataFrame, 
@@ -213,4 +214,4 @@ class ExcelGenerator:
 excel_generator = ExcelGenerator()
 
 # Export public interface
-__all__ = ['excel_generator'] 
+__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS'] 

@@ -13,6 +13,14 @@ import re
 import hashlib
 from datetime import datetime
 import glob
+import json
+import asyncio
+import time
+import traceback
+import tempfile
+import numpy as np
+from PIL import Image
+import cv2
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -31,6 +39,9 @@ except ImportError:
     except ImportError:
         ENHANCED_MATCHER_AVAILABLE = False
         logging.warning("Enhanced image matcher is not available, falling back to text-based matching")
+
+# Import for using the singleton excel generator
+from excel_utils import excel_generator
 
 def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
@@ -1666,147 +1677,40 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         # 오류 발생 시 원본 DataFrame 반환
         return df
 
-def create_excel_with_images(df, output_file):
-    """이미지가 포함된 엑셀 파일 생성"""
+def create_excel_with_images(df, output_path):
+    """
+    Creates an Excel file with embedded images using excel_generator singleton
+    
+    Args:
+        df: DataFrame with the data
+        output_path: Path where to save the Excel file
+        
+    Returns:
+        Path to the created Excel file
+    """
+    logger.info(f"Creating Excel file with images at: {output_path}")
     try:
-        # '번호' 컬럼이 없으면 추가
-        if '번호' not in df.columns:
-            df['번호'] = range(1, len(df) + 1)
+        # Create parent directory if it doesn't exist
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         
-        # 임시 디렉토리 생성
-        temp_dir = Path("temp_images")
-        temp_dir.mkdir(exist_ok=True)
+        # Use the excel generator to create the Excel file
+        result_success, _, result_path, _ = excel_generator.create_excel_output(
+            df=df,
+            output_path=output_path,
+            create_upload_file=False
+        )
         
-        # 워크북 생성
-        wb = Workbook()
-        ws = wb.active
-        
-        # 사용 가능한 컬럼 확인
-        available_columns = df.columns.tolist()
-        logging.info(f"엑셀 생성: 사용 가능한 컬럼: {available_columns}")
-        
-        # 기본 헤더 및 데이터 컬럼 정의 (Use new column names)
-        base_headers = ['번호', '상품명']
-        optional_headers = ['파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
-        
-        # 실제 사용할 헤더 목록 생성
-        headers = base_headers + [h for h in optional_headers if h in available_columns]
-        
-        # 헤더 작성
-        for col, header in enumerate(headers, 1):
-            ws.cell(row=1, column=col, value=header)
-        
-        # 행 높이 설정
-        ws.row_dimensions[1].height = 30  # 헤더 행 높이
-        for row in range(2, len(df) + 2):
-            ws.row_dimensions[row].height = 200  # 데이터 행 높이 (doubled from 100)
-        
-        # 열 너비 설정
-        column_widths = {}
-        for i, header in enumerate(headers):
-            col_letter = get_column_letter(i+1)
-            if header == '번호':
-                column_widths[col_letter] = 5
-            elif header == '상품명':
-                column_widths[col_letter] = 30
-            elif header == '파일명':
-                column_widths[col_letter] = 30
-            else:
-                column_widths[col_letter] = 30  # Image columns width doubled from 15
-        
-        for col, width in column_widths.items():
-            ws.column_dimensions[col].width = width
-        
-        # 데이터 및 이미지 추가
-        for row_idx, (_, row) in enumerate(df.iterrows(), 2):
-            # 기본 데이터 추가
-            col_idx = 1
-            
-            # 번호 추가
-            ws.cell(row=row_idx, column=col_idx, value=row['번호'])
-            col_idx += 1
-            
-            # 상품명 추가
-            ws.cell(row=row_idx, column=col_idx, value=row['상품명'])
-            col_idx += 1
-            
-            # 파일명 추가 (있을 경우)
-            if '파일명' in available_columns:
-                ws.cell(row=row_idx, column=col_idx, value=row['파일명'])
-                col_idx += 1
-            
-            # 이미지 데이터 처리
-            image_columns = {}
-            # Use new image column names
-            for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
-                if col_name in available_columns:
-                    image_columns[col_name] = row.get(col_name)
-            
-            # 이미지 추가
-            for col_name, img_data in image_columns.items():
-                if pd.isna(img_data) or img_data is None:
-                    ws.cell(row=row_idx, column=col_idx, value="")
-                    col_idx += 1
-                    continue
-                
-                try:
-                    # 이미지 경로 추출
-                    img_path = None
-                    if isinstance(img_data, dict):
-                        # excel_utils.py 형식의 딕셔너리 처리
-                        img_path = img_data.get('local_path')
-                        if not img_path and 'url' in img_data:
-                            # URL만 있는 경우 셀에 URL 표시
-                            ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
-                            col_idx += 1
-                            continue
-                    elif isinstance(img_data, str):
-                        # 문자열 경로 처리
-                        img_path = img_data
-                    
-                    if img_path and os.path.exists(img_path):
-                        try:
-                            # 이미지 파일 복사
-                            img = Image(img_path)
-                            # 이미지 크기 조정 (최대 200x200, doubled from 100x100)
-                            img.width = 200
-                            img.height = 200
-                            # 이미지 추가
-                            ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
-                            ws.cell(row=row_idx, column=col_idx, value="")  # 이미지가 있으면 셀 값 비움
-                        except Exception as e:
-                            logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
-                            # 이미지 추가 실패 시 경로나 URL 표시
-                            if isinstance(img_data, dict):
-                                ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', str(img_path)))
-                            else:
-                                ws.cell(row=row_idx, column=col_idx, value=str(img_path))
-                    else:
-                        # 이미지 파일이 없는 경우 URL이나 경로 표시
-                        if isinstance(img_data, dict):
-                            ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', ''))
-                        else:
-                            ws.cell(row=row_idx, column=col_idx, value=str(img_data))
-                except Exception as e:
-                    logging.error(f"이미지 처리 중 오류 발생 ({col_name}): {e}")
-                    ws.cell(row=row_idx, column=col_idx, value="이미지 처리 오류")
-                
-                col_idx += 1
-            
-            # 이미지 유사도 추가 (있을 경우)
-            if '이미지_유사도' in available_columns:
-                ws.cell(row=row_idx, column=col_idx, value=row['이미지_유사도'])
-                col_idx += 1
-        
-        # 엑셀 파일 저장
-        wb.save(output_file)
-        logging.info(f"이미지가 포함된 엑셀 파일이 저장되었습니다: {output_file}")
-        
-        # 임시 디렉토리 정리
-        shutil.rmtree(temp_dir)
-        
+        if result_success:
+            logger.info(f"Successfully created Excel file with images: {result_path}")
+            return result_path
+        else:
+            logger.error("Failed to create Excel file with images")
+            return None
     except Exception as e:
-        logging.error(f"엑셀 파일 생성 중 오류 발생: {e}", exc_info=True)
+        logger.error(f"Error creating Excel file with images: {e}")
+        return None
 
 def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
     """
