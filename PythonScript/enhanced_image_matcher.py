@@ -639,8 +639,11 @@ class EnhancedImageMatcher:
             return []
             
         try:
-            # Convert batch to tensor
+            # Convert batch to tensor and ensure correct shape
             batch_tensor = tf.convert_to_tensor(batch_images)
+            # Remove extra dimension if present (1, 1, 299, 299, 3) -> (1, 299, 299, 3)
+            if len(batch_tensor.shape) == 5:
+                batch_tensor = tf.squeeze(batch_tensor, axis=1)
             
             # Process with primary model
             features_primary = self.models['efficientnet'](batch_tensor)
