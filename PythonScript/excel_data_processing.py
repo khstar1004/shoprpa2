@@ -157,6 +157,86 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
     
     return df_result
 
+def extract_url_from_value(value) -> str:
+    """
+    Extract URL or meaningful string representation from complex data structures.
+    
+    This function handles various nested dictionary formats that contain image URLs.
+    
+    Args:
+        value: The value to extract URL from (dict, str, list, etc.)
+        
+    Returns:
+        str: Extracted URL or meaningful string representation
+    """
+    # Handle None/NaN values
+    if pd.isna(value) or value is None:
+        return ""
+    
+    # Handle strings
+    if isinstance(value, str):
+        # Check if it's an error message we want to preserve
+        if any(error_msg in value for error_msg in ERROR_MESSAGE_VALUES):
+            return value
+        
+        # Handle simple strings
+        if value.startswith(('http://', 'https://', 'file://')):
+            return value
+        elif value.strip() == "" or value == "-":
+            return "-"
+        return value
+    
+    # Handle numbers
+    if isinstance(value, (int, float)):
+        return str(value)
+    
+    # Handle dictionary values - most common case for image data
+    if isinstance(value, dict):
+        # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+        if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
+            return value['url']['url']
+        
+        # Case 2: Direct URL {'url': 'actual_url'}
+        elif 'url' in value and isinstance(value['url'], str):
+            return value['url']
+        
+        # Case 3: Look for local path
+        for path_field in ['local_path', 'path', 'file_path']:
+            if path_field in value and value[path_field]:
+                return str(value[path_field])
+        
+        # Case 4: Look for other common URL fields
+        for url_field in ['image_url', 'product_url', 'src', 'link', 'href']:
+            if url_field in value and isinstance(value[url_field], str):
+                return value[url_field]
+        
+        # Case 5: Product name as fallback
+        if 'product_name' in value:
+            return f"Product: {value['product_name']}"
+        
+        # If no useful field found, convert to simple string with length limit
+        dict_str = str(value)
+        if len(dict_str) > 255:  # Excel cell has size limitations
+            return f"Complex data (Dict with {len(value)} keys)"
+        return dict_str
+    
+    # Handle list/tuple values
+    if isinstance(value, (list, tuple)):
+        # Try to extract URL from first item
+        if len(value) > 0:
+            first_item = extract_url_from_value(value[0])
+            if first_item and first_item != '-':
+                return first_item
+        
+        # If no URL in items, use a generic representation
+        return f"List with {len(value)} items"
+    
+    # Default case - convert to string safely
+    try:
+        return str(value)
+    except:
+        return "Complex data (unconvertible)"
+
 def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.DataFrame:
     """
     Prepare Naver image URLs for the upload file by prioritizing product links over image URLs.

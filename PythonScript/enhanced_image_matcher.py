@@ -506,6 +506,9 @@ class EnhancedImageMatcher:
         if use_gpu is not None:
             self.settings['USE_GPU'] = use_gpu
             
+        # Add use_gpu attribute to fix the missing attribute error
+        self.use_gpu = self.settings['USE_GPU']
+            
         # Initialize GPU settings
         if self.settings['USE_GPU']:
             try:
@@ -524,9 +527,11 @@ class EnhancedImageMatcher:
                 else:
                     logger.warning("GPU requested but not available, falling back to CPU")
                     self.settings['USE_GPU'] = False
+                    self.use_gpu = False
             except Exception as e:
                 logger.error(f"Error configuring GPU: {e}")
                 self.settings['USE_GPU'] = False
+                self.use_gpu = False
         
         # Initialize feature cache
         self.cache = FeatureCache(
