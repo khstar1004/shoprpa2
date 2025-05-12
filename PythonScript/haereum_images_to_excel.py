@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 # Import our Excel utilities
-from excel_utils import create_final_output_excel
+from excel_utils import excel_generator
 
 def main():
     """Script to put all Haereum gift images into an Excel file"""
@@ -70,7 +70,7 @@ def main():
     
     # Create Excel file with images
     logging.info(f"Creating Excel file with {len(haereum_images)} Haereum images: {output_file}")
-    success = create_final_output_excel(df, str(output_file))
+    success = excel_generator.create_excel_output(df, str(output_file))[0]
     
     if success:
         logging.info(f"Successfully created Excel file with Haereum images at: {output_file}")

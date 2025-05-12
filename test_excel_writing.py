@@ -9,7 +9,9 @@ from PythonScript.excel_utils import (
     create_final_output_excel, 
     _add_hyperlinks_to_worksheet as add_hyperlinks,
     _process_image_columns as process_image_cells,
-    LINK_COLUMNS_FOR_HYPERLINK as LINK_COLUMN_MAP
+    LINK_COLUMNS_FOR_HYPERLINK as LINK_COLUMN_MAP,
+    excel_generator,
+    FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
 )
 
 # Configure logging
@@ -73,10 +75,7 @@ def test_excel_basic_writing():
     # Call the Excel writing function
     try:
         output_file = os.path.join(output_dir, "excel_test_basic.xlsx")
-        success = create_final_output_excel(
-            df, 
-            output_file
-        )
+        success = excel_generator.create_excel_output(df, output_file)[0]
     
         if success and os.path.exists(output_file):
             print(f"Excel file successfully created: {output_file}")

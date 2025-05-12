@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 import configparser
-from excel_utils import create_final_output_excel, FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
+from excel_utils import excel_generator, FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
 import re
 import time
 from typing import Optional, Tuple, Dict, List, Any
