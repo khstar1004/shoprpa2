@@ -210,6 +210,33 @@ class ExcelGenerator:
             logger.error(f"Error writing data to worksheet: {e}")
             raise
 
+def sanitize_dataframe_for_excel(df):
+    """
+    Convert all complex data types in a DataFrame to simple types that Excel can handle.
+    
+    Args:
+        df: DataFrame to sanitize
+        
+    Returns:
+        A new DataFrame with all complex types converted to strings
+    """
+    from enhanced_image_matcher import convert_complex_to_simple
+    import pandas as pd
+    
+    # Create a copy to avoid modifying the original
+    result_df = df.copy()
+    
+    # Process each column
+    for col in result_df.columns:
+        # Check if the column contains complex types like dictionaries
+        if any(isinstance(val, (dict, list)) for val in result_df[col] if val is not None):
+            # Convert complex types to strings
+            result_df[col] = result_df[col].apply(
+                lambda x: convert_complex_to_simple(x) if x is not None else x
+            )
+    
+    return result_df
+
 # Create singleton instance
 excel_generator = ExcelGenerator()
 

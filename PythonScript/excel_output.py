@@ -23,6 +23,7 @@ from excel_formatting import (
     _adjust_image_cell_dimensions
 )
 from excel_image_utils import _process_image_columns
+from excel_utils import sanitize_dataframe_for_excel
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -62,6 +63,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 
     # Flatten any nested image dictionaries to prevent Excel conversion errors
     df_finalized = flatten_nested_image_dicts(df_finalized)
+    
+    # Sanitize DataFrame to make sure all values are Excel-compatible
+    df_finalized = sanitize_dataframe_for_excel(df_finalized)
     
     logger.info(f"Starting creation of split Excel outputs from finalized DataFrame (Shape: {df_finalized.shape})")
     
@@ -248,6 +252,9 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     
     # Flatten any nested image dictionaries
     df_finalized = flatten_nested_image_dicts(df_finalized)
+    
+    # Sanitize DataFrame to make sure all values are Excel-compatible
+    df_finalized = sanitize_dataframe_for_excel(df_finalized)
     
     # Save finalized data to Excel using openpyxl engine
     try:

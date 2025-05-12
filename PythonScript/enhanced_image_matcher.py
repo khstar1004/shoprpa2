@@ -386,8 +386,22 @@ try:
     if len(gpus) > 0 and use_gpu:
         for gpu in gpus:
             try:
+                # Set memory growth for GPU
                 tf.config.experimental.set_memory_growth(gpu, True)
                 logger.info(f"Set memory growth for GPU: {gpu}")
+                
+                # Set memory limits only if specified in config
+                memory_fraction = SETTINGS.get('GPU_MEMORY_FRACTION', DEFAULT_GPU_MEMORY_FRACTION)
+                if memory_fraction < 1.0:
+                    try:
+                        tf.config.experimental.set_virtual_device_configuration(
+                            gpu,
+                            [tf.config.experimental.VirtualDeviceConfiguration(
+                                memory_limit=int(memory_fraction * 1024))]
+                        )
+                        logger.info(f"Set memory limit ({memory_fraction * 100}%) for GPU: {gpu}")
+                    except Exception as mem_limit_err:
+                        logger.warning(f"Could not set memory limits: {mem_limit_err}")
             except Exception as e:
                 logger.warning(f"Could not set memory growth for GPU: {e}")
     
@@ -509,20 +523,23 @@ class EnhancedImageMatcher:
         # Add use_gpu attribute to fix the missing attribute error
         self.use_gpu = self.settings['USE_GPU']
             
-        # Initialize GPU settings
+        # Initialize GPU settings - Skip applying memory limits if they've already been set
         if self.settings['USE_GPU']:
             try:
-                # Configure TensorFlow for GPU
+                # Check if GPUs are available without modifying them
                 gpus = tf.config.list_physical_devices('GPU')
                 if gpus:
-                    # Set memory growth and memory limit
-                    for gpu in gpus:
-                        tf.config.experimental.set_memory_growth(gpu, True)
-                        tf.config.experimental.set_virtual_device_configuration(
-                            gpu,
-                            [tf.config.experimental.VirtualDeviceConfiguration(
-                                memory_limit=int(self.settings['GPU_MEMORY_FRACTION'] * 1024))]
-                        )
+                    # Check if memory growth is already set
+                    try:
+                        gpu_already_configured = True
+                        for gpu in gpus:
+                            # Simply check if the GPU is available, don't try to modify it
+                            # This prevents the "Virtual devices cannot be modified after being initialized" error
+                            gpu_details = tf.config.experimental.get_device_details(gpu)
+                            logger.info(f"GPU already configured: {gpu_details}")
+                    except Exception as e:
+                        logger.warning(f"Error checking GPU configuration: {e}")
+                        
                     logger.info(f"GPU enabled with memory fraction: {self.settings['GPU_MEMORY_FRACTION']}")
                 else:
                     logger.warning("GPU requested but not available, falling back to CPU")
@@ -1238,4 +1255,35 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+# Add a new function for converting complex objects to Excel-friendly format
+def convert_complex_to_simple(data):
+    """
+    Convert complex nested dictionaries and objects to simple strings for Excel compatibility
+    
+    Args:
+        data: The data to convert (dict, list, or other object)
+        
+    Returns:
+        A string representation that's compatible with Excel
+    """
+    if isinstance(data, dict):
+        try:
+            # Try to convert to JSON
+            return json.dumps(data, ensure_ascii=False)
+        except:
+            # If JSON conversion fails (e.g., due to non-serializable objects),
+            # use a simpler string representation
+            return str(data)
+    elif isinstance(data, list):
+        try:
+            return json.dumps(data, ensure_ascii=False)
+        except:
+            return str(data)
+    elif isinstance(data, (np.ndarray, np.generic)):
+        # Handle NumPy types
+        return str(data)
+    else:
+        # For other types, just convert to string
+        return str(data) 
