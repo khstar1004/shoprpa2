@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Tuple
 import json
+from PIL import Image
+import shutil
 
 # Import from other modules
 from excel_constants import (
@@ -75,6 +77,23 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     result_success = False
     upload_path = None
     upload_success = False
+
+    # Add directory permission check
+    output_dir = os.path.dirname(output_path_base)
+    if not os.access(output_dir, os.W_OK):
+        logging.error(f"No write permission for output directory: {output_dir}")
+        return False, False, None, None
+        
+    # Add try-except for file permission
+    try:
+        # Test file write permission
+        test_file = f"{output_path_base}_test.tmp"
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except (PermissionError, OSError) as e:
+        logging.error(f"Cannot write to output location: {e}")
+        return False, False, None, None
 
     try:
         # -----------------------------------------
@@ -243,6 +262,19 @@ def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    
+    # Add backup creation
+    if os.path.exists(output_path):
+        backup_path = f"{output_path}.bak"
+        try:
+            shutil.copy2(output_path, backup_path)
+        except Exception as e:
+            logging.warning(f"Failed to create backup: {e}")
+            
+    # Add size estimation
+    estimated_size = len(df) * len(df.columns) * 100  # Rough estimate
+    if estimated_size > 100 * 1024 * 1024:  # 100MB warning
+        logging.warning(f"Large file size estimated ({estimated_size/1024/1024:.1f}MB)")
     
     # Prepare the DataFrame (rename columns, order, clean)
     df_finalized = finalize_dataframe_for_excel(df)
@@ -460,3 +492,74 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
                 df.at[idx, col] = '-'
     
     return df 
+
+def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame) -> int:
+    # Add image validation
+    def validate_image(img_path):
+        try:
+            if not os.path.exists(img_path):
+                return False
+            if os.path.getsize(img_path) > 10 * 1024 * 1024:  # 10MB limit
+                logging.warning(f"Image too large: {img_path}")
+                return False
+            with Image.open(img_path) as img:
+                img.verify()
+            return True
+        except Exception as e:
+            logging.error(f"Invalid image {img_path}: {e}")
+            return False 
+
+def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    # Add column name validation
+    def sanitize_column_name(name: str) -> str:
+        # Remove invalid Excel characters
+        invalid_chars = ['[', ']', ':', '*', '?', '/', '\\']
+        for char in invalid_chars:
+            name = name.replace(char, '_')
+        # Limit length to Excel's maximum
+        if len(name) > 255:
+            name = name[:252] + '...'
+        return name
+        
+    # Handle duplicate columns
+    seen_columns = set()
+    new_columns = []
+    for col in df.columns:
+        sanitized = sanitize_column_name(col)
+        if sanitized in seen_columns:
+            counter = 1
+            while f"{sanitized}_{counter}" in seen_columns:
+                counter += 1
+            sanitized = f"{sanitized}_{counter}"
+        seen_columns.add(sanitized)
+        new_columns.append(sanitized)
+    
+    df.columns = new_columns 
+
+def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    # Add error handling for style application
+    def safe_apply_style(cell, style_func):
+        try:
+            style_func(cell)
+        except Exception as e:
+            logging.warning(f"Failed to apply style to cell {cell.coordinate}: {e}")
+            
+    # Add value type validation
+    def validate_cell_value(value):
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        return str(value)  # Convert other types to string 
+
+def sanitize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    # Add nested data handling
+    def flatten_value(value):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+        
+    # Add numeric precision handling
+    def validate_numeric(value):
+        if isinstance(value, float):
+            if abs(value) > 1e15:  # Excel's limit
+                return str(value)
+        return value 
