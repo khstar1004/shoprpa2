@@ -534,89 +534,60 @@ def _apply_upload_file_formatting(worksheet, column_list):
         logger.debug(traceback.format_exc()) 
 
 class ExcelFormatter:
-    """Class to handle all Excel formatting operations"""
+    """Excel 파일의 서식을 관리하는 클래스"""
     
-    def format_result_file(self, worksheet: openpyxl.worksheet.worksheet.Worksheet, 
-                          df: pd.DataFrame) -> None:
-        """Format the result Excel file"""
+    def __init__(self):
+        self.header_font = Font(bold=True, size=11)
+        self.header_fill = PatternFill(start_color='FFD3D3D3', end_color='FFD3D3D3', fill_type='solid')
+        self.header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        self.cell_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+    
+    def format_worksheet(self, worksheet, columns):
+        """워크시트에 기본 서식을 적용합니다."""
         try:
-            logger.info("Applying result file formatting...")
-            
-            self._apply_column_widths(worksheet, df)
-            self._apply_cell_styles_and_alignment(worksheet, df)
-            self._add_header_footer(worksheet)
-            self._setup_page_layout(worksheet)
-            self._apply_conditional_formatting(worksheet, df)
-            
+            # Format header row
+            for col_idx, col_name in enumerate(columns, 1):
+                cell = worksheet.cell(row=1, column=col_idx)
+                cell.font = self.header_font
+                cell.fill = self.header_fill
+                cell.alignment = self.header_alignment
+                cell.border = self.cell_border
+                
+            # Set column widths
+            for col_idx, col_name in enumerate(columns, 1):
+                col_letter = get_column_letter(col_idx)
+                if '이미지' in col_name:
+                    worksheet.column_dimensions[col_letter].width = 22
+                else:
+                    worksheet.column_dimensions[col_letter].width = 15
+                    
+            # Format data cells
+            for row in worksheet.iter_rows(min_row=2):
+                for cell in row:
+                    cell.border = self.cell_border
+                    cell.alignment = Alignment(vertical='center')
+                    
             # Remove auto filter
             if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
                 worksheet.auto_filter.ref = None
                 
-            logger.info("Successfully applied result file formatting")
-            
         except Exception as e:
-            logger.error(f"Error in format_result_file: {e}")
+            logger.error(f"Error formatting worksheet: {e}")
             raise
-    
-    def format_upload_file(self, worksheet: openpyxl.worksheet.worksheet.Worksheet, 
-                          df: pd.DataFrame) -> None:
-        """Format the upload Excel file"""
+            
+    def add_header_footer(self, worksheet):
+        """워크시트에 머리글과 바닥글을 추가합니다."""
         try:
-            logger.info("Applying upload file formatting...")
-            
-            # Set basic dimensions
-            self._set_upload_dimensions(worksheet, df)
-            
-            # Apply header formatting
-            self._apply_upload_header_formatting(worksheet)
-            
-            # Apply data formatting
-            self._apply_upload_data_formatting(worksheet, df)
-            
-            # Remove auto filter
-            if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
-                worksheet.auto_filter.ref = None
-                
-            logger.info("Successfully applied upload file formatting")
-            
+            worksheet.oddHeader.center.text = "제품 가격 비교"
+            worksheet.oddFooter.right.text = "Page &P of &N"
         except Exception as e:
-            logger.error(f"Error in format_upload_file: {e}")
-            raise
-    
-    def _set_upload_dimensions(self, worksheet, df: pd.DataFrame) -> None:
-        """Set dimensions for upload file"""
-        try:
-            # Set standard column width
-            for col_idx in range(1, len(df.columns) + 1):
-                column_letter = get_column_letter(col_idx)
-                worksheet.column_dimensions[column_letter].width = 7
-            
-            # Set special column widths
-            special_widths = {
-                '상품명': 35,
-                '상품코드': 12,
-                '카테고리(중분류)': 15,
-                '해오름(이미지링크)': 40,
-                '고려기프트(이미지링크)': 40,
-                '네이버쇼핑(이미지링크)': 40,
-                '본사링크': 30,
-                '고려 링크': 30,
-                '네이버 링크': 30
-            }
-            
-            for idx, col_name in enumerate(df.columns, 1):
-                for special_name, width in special_widths.items():
-                    if special_name in col_name:
-                        worksheet.column_dimensions[get_column_letter(idx)].width = width
-                        break
-            
-            # Set row heights
-            worksheet.row_dimensions[1].height = UPLOAD_HEADER_HEIGHT
-            for row_idx in range(2, worksheet.max_row + 1):
-                worksheet.row_dimensions[row_idx].height = UPLOAD_DATA_ROW_HEIGHT
-                
-        except Exception as e:
-            logger.error(f"Error setting upload dimensions: {e}")
+            logger.error(f"Error adding header/footer: {e}")
             raise
 
-    # ... [Rest of the existing methods with added error handling] ... 
+# Export the class
+__all__ = ['ExcelFormatter'] 

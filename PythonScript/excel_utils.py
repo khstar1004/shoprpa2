@@ -7,6 +7,8 @@ from typing import Optional, Tuple, List, Dict, Any, Union
 from pathlib import Path
 import openpyxl
 from datetime import datetime
+import traceback
+import psutil
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -15,8 +17,9 @@ logger = logging.getLogger(__name__)
 from excel_constants import (
     FINAL_COLUMN_ORDER, COLUMN_RENAME_MAP, PRICE_COLUMNS, 
     QUANTITY_COLUMNS, PERCENTAGE_COLUMNS, IMAGE_COLUMNS,
-    UPLOAD_COLUMN_ORDER, COLUMN_MAPPING_FINAL_TO_UPLOAD,
-    ERROR_MESSAGES, ERROR_MESSAGE_VALUES, REQUIRED_INPUT_COLUMNS
+    UPLOAD_COLUMN_ORDER,
+    ERROR_MESSAGES, ERROR_MESSAGE_VALUES, REQUIRED_INPUT_COLUMNS,
+    UPLOAD_COLUMN_MAPPING
 )
 
 # Import base classes
@@ -38,75 +41,147 @@ def safe_excel_operation(func):
     return wrapper
 
 class ExcelGenerator:
-    """Main class for Excel file generation"""
+    """Main class for Excel file generation with improved error handling and memory management"""
     _instance = None
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ExcelGenerator, cls).__new__(cls)
-            cls._instance._initialized = False
         return cls._instance
-    
+        
     def __init__(self):
-        if not self._initialized:
-            self.formatter = ExcelFormatter()
-            self.image_processor = ImageProcessor()
+        if not hasattr(self, '_initialized'):
             self._initialized = True
-    
+            self.logger = logging.getLogger(__name__)
+            
     @safe_excel_operation
     def create_excel_output(self, 
                           df: pd.DataFrame, 
                           output_path: str, 
                           create_upload_file: bool = True) -> Tuple[bool, bool, Optional[str], Optional[str]]:
         """
-        Create Excel output file(s)
+        Create Excel output file(s) with improved error handling and memory management.
         
         Args:
             df: Input DataFrame
-            output_path: Output file path
-            create_upload_file: Whether to create upload file
+            output_path: Base path for output files
+            create_upload_file: Whether to create upload version
             
         Returns:
             Tuple of (result_success, upload_success, result_path, upload_path)
         """
         try:
+            # Input validation
             if df is None or df.empty:
-                logger.error("Cannot create Excel file: Input DataFrame is empty or None.")
-                return (False, False, None, None)
+                self.logger.error("Cannot create Excel output: Input DataFrame is empty")
+                return False, False, None, None
+                
+            # Verify memory availability
+            available_memory = psutil.virtual_memory().available
+            estimated_memory = len(df) * len(df.columns) * 100  # Rough estimate
             
-            # Finalize the DataFrame
-            df_finalized = finalize_dataframe_for_excel(df)
-            
-            if create_upload_file:
-                return self._create_split_outputs(df_finalized, output_path)
+            if estimated_memory > available_memory * 0.5:  # Use max 50% of available memory
+                self.logger.error(f"Insufficient memory. Need ~{estimated_memory/1024/1024:.1f}MB, "
+                               f"have {available_memory/1024/1024:.1f}MB available")
+                return False, False, None, None
+                
+            # Create output directory if needed
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except Exception as e:
+                    self.logger.error(f"Failed to create output directory: {e}")
+                    return False, False, None, None
+                    
+            # Check write permissions
+            if not os.access(output_dir, os.W_OK):
+                self.logger.error(f"No write permission for output directory: {output_dir}")
+                return False, False, None, None
+                
+            # Process in chunks if necessary
+            chunk_size = 1000
+            if len(df) > chunk_size:
+                self.logger.info(f"Processing large DataFrame in chunks of {chunk_size} rows")
+                result_success = False
+                upload_success = False
+                result_path = None
+                upload_path = None
+                
+                for i in range(0, len(df), chunk_size):
+                    chunk = df.iloc[i:i+chunk_size].copy()
+                    
+                    # Process chunk
+                    if i == 0:  # First chunk
+                        result_success, upload_success, result_path, upload_path = self._create_split_outputs(
+                            chunk, output_path
+                        )
+                    else:  # Append to existing files
+                        self._append_to_existing_files(chunk, result_path, upload_path)
+                        
+                return result_success, upload_success, result_path, upload_path
             else:
-                result_success, result_path = self._create_single_output(df_finalized, output_path)
-                return (result_success, False, result_path, None)
+                # Process entire DataFrame at once
+                return self._create_split_outputs(df, output_path)
+                
         except Exception as e:
-            logger.error(f"Error in create_excel_output: {e}")
-            return (False, False, None, None)
-    
+            self.logger.error(f"Error in create_excel_output: {e}")
+            self.logger.debug(traceback.format_exc())
+            return False, False, None, None
+            
+    def _append_to_existing_files(self, df: pd.DataFrame, result_path: str, upload_path: str):
+        """Append data to existing Excel files."""
+        try:
+            if result_path and os.path.exists(result_path):
+                with pd.ExcelWriter(result_path, mode='a', engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, startrow=writer.sheets['Sheet1'].max_row, header=False)
+                    
+            if upload_path and os.path.exists(upload_path):
+                with pd.ExcelWriter(upload_path, mode='a', engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, startrow=writer.sheets['Sheet1'].max_row, header=False)
+                    
+        except Exception as e:
+            self.logger.error(f"Error appending to Excel files: {e}")
+            self.logger.debug(traceback.format_exc())
+            
     def _create_split_outputs(self, 
                             df: pd.DataFrame, 
                             output_path: str) -> Tuple[bool, bool, str, str]:
-        """Create both result and upload files"""
+        """Create separate result and upload Excel files."""
         try:
+            # Create result file
             result_success, result_path = self._create_result_file(df, output_path)
-            if not result_success:
-                return False, False, None, None
+            
+            # Create upload file if requested
+            upload_success = False
+            upload_path = None
+            
+            if result_success:
+                upload_success, upload_path = self._create_upload_file(df, output_path)
                 
-            upload_success, upload_path = self._create_upload_file(df, output_path)
             return result_success, upload_success, result_path, upload_path
+            
         except Exception as e:
-            logger.error(f"Error in _create_split_outputs: {e}")
+            self.logger.error(f"Error creating split outputs: {e}")
+            self.logger.debug(traceback.format_exc())
             return False, False, None, None
-    
-    def _create_single_output(self, 
-                            df: pd.DataFrame, 
-                            output_path: str) -> Tuple[bool, str]:
-        """Create single output file with images"""
-        result_success, result_path = self._create_result_file(df, output_path)
-        return result_success, result_path
+            
+    @staticmethod
+    def _generate_file_path(base_path: str, file_type: str) -> str:
+        """Generate appropriate file path based on type."""
+        dir_path = os.path.dirname(base_path)
+        file_name = os.path.basename(base_path)
+        name, ext = os.path.splitext(file_name)
+        
+        if not ext:
+            ext = '.xlsx'
+            
+        if file_type == 'result':
+            return os.path.join(dir_path, f"{name}_result{ext}")
+        elif file_type == 'upload':
+            return os.path.join(dir_path, f"{name}_upload{ext}")
+        else:
+            return base_path
     
     def _create_result_file(self, 
                           df: pd.DataFrame, 
@@ -175,23 +250,6 @@ class ExcelGenerator:
         except Exception as e:
             logger.error(f"Error creating upload file: {e}")
             return False, ""
-    
-    @staticmethod
-    def _generate_file_path(base_path: str, file_type: str) -> str:
-        """Generate appropriate file path"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            if base_path.lower().endswith('.xlsx'):
-                base_dir = os.path.dirname(base_path)
-                base_name = os.path.splitext(os.path.basename(base_path))[0]
-            else:
-                base_dir = base_path
-                base_name = "excel_output"
-                
-            return os.path.join(base_dir, f"{base_name}_{file_type}_{timestamp}.xlsx")
-        except Exception as e:
-            logger.error(f"Error generating file path: {e}")
-            return f"excel_output_{file_type}_{timestamp}.xlsx"
     
     @staticmethod
     def _extract_url_from_complex_value(value):

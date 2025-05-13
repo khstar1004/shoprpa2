@@ -7,12 +7,15 @@ import functools
 import json
 from typing import Optional, Dict, Any, List, Union, Tuple
 from pathlib import Path
+import traceback
 
 from excel_constants import (
     COLUMN_RENAME_MAP, FINAL_COLUMN_ORDER, 
     PRICE_COLUMNS, QUANTITY_COLUMNS, PERCENTAGE_COLUMNS,
     IMAGE_COLUMNS, ERROR_MESSAGE_VALUES, ERROR_MESSAGES,
-    IMAGE_DIRS
+    IMAGE_DIRS, REQUIRED_INPUT_COLUMNS,
+    UPLOAD_COLUMN_MAPPING,
+    UPLOAD_COLUMN_ORDER
 )
 
 # Initialize logger
@@ -429,86 +432,62 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
         # Create a copy to avoid modifying the original
         df = df.copy()
         
-        # Remove any internal processing columns that might have slipped through
-        for col in INTERNAL_PROCESSING_COLUMNS:
+        # Verify required columns exist
+        missing_cols = [col for col in REQUIRED_INPUT_COLUMNS if col not in df.columns]
+        if missing_cols:
+            logging.error(f"Missing required columns: {missing_cols}")
+            raise ValueError(f"Missing required columns: {missing_cols}")
+
+        # Handle NaN values
+        df = df.fillna('')
+        
+        # Convert numeric columns to appropriate types
+        numeric_columns = df.select_dtypes(include=['float64', 'int64']).columns
+        for col in numeric_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = df[col].fillna(0)
+            
+            # Format percentage columns
+            if '%' in col:
+                df[col] = df[col].apply(lambda x: f"{x:.1f}%" if x != 0 else '')
+            else:
+                df[col] = df[col].apply(lambda x: f"{int(x):,}" if x != 0 else '')
+        
+        # Process image columns
+        for col in IMAGE_COLUMNS:
             if col in df.columns:
-                df = df.drop(columns=[col])
-                
-        # Ensure only expected columns are present and in the correct order
-        df = df[FINAL_COLUMN_ORDER]
+                df[col] = df[col].apply(lambda x: {} if pd.isna(x) or x == '' else x)
         
-        logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
+        return df
         
-        try:
-            # Remove duplicate columns
-            duplicate_cols = df.columns[df.columns.duplicated()].tolist()
-            if duplicate_cols:
-                logger.warning(f"Removing {len(duplicate_cols)} duplicate columns: {duplicate_cols}")
-                df = df.loc[:, ~df.columns.duplicated()]
-            
-            # Create working copy
-            output_df = df.copy()
-            
-            # Rename columns
-            output_df.rename(columns=COLUMN_RENAME_MAP, inplace=True, errors='ignore')
-            
-            # Ensure all required columns exist
-            for col in FINAL_COLUMN_ORDER:
-                if col not in output_df.columns:
-                    output_df[col] = None
-                    logger.debug(f"Added missing column: {col}")
-            
-            # Add promotional site columns if they exist in the original
-            for col in PROMOTIONAL_SITE_COLUMNS:
-                if col in df.columns and col not in output_df.columns:
-                    output_df[col] = df[col]
-                    logger.debug(f"Preserved promotional site column: {col}")
-            
-            # Format numeric columns
-            numeric_cols = set(PRICE_COLUMNS + QUANTITY_COLUMNS + PERCENTAGE_COLUMNS)
-            for col in numeric_cols:
-                if col in output_df.columns:
-                    try:
-                        output_df[col] = pd.to_numeric(output_df[col], errors='coerce')
-                    except Exception as e:
-                        logger.warning(f"Error converting column {col} to numeric: {e}")
-            
-            # Replace NaN/None values
-            output_df = output_df.replace({pd.NA: None, np.nan: None})
-            
-            # Set default values for empty cells
-            non_image_cols = [col for col in output_df.columns if col not in IMAGE_COLUMNS]
-            for col in non_image_cols:
-                output_df[col] = output_df[col].apply(
-                    lambda x: '-' if pd.isna(x) or x == '' else x
-                )
-            
-            # Format promotional site indicator columns (Y/N format)
-            for col in PROMOTIONAL_SITE_COLUMNS:
-                if col in output_df.columns:
-                    output_df[col] = output_df[col].apply(
-                        lambda x: 'Y' if isinstance(x, str) and x.upper() in ['Y', 'YES', 'TRUE', '1'] 
-                        else ('N' if isinstance(x, str) and x.upper() in ['N', 'NO', 'FALSE', '0'] 
-                        else ('Y' if x == True else ('N' if x == False else x)))
-                        )
-            
-            # Reorder columns, keeping promotional site columns
-            standard_cols = [col for col in FINAL_COLUMN_ORDER if col in output_df.columns]
-            promo_cols = [col for col in PROMOTIONAL_SITE_COLUMNS if col in output_df.columns]
-            extra_cols = [col for col in output_df.columns if col not in standard_cols and col not in promo_cols]
-            
-            # Order: standard columns, then promotional columns, then any other columns
-            final_column_order = standard_cols + promo_cols + extra_cols
-            output_df = output_df[final_column_order]
-            
-            logger.info(f"DataFrame finalized successfully. Output shape: {output_df.shape}")
-            return output_df
-        
-        except Exception as e:
-            logger.error(f"Error finalizing DataFrame: {e}")
-            # Return original DataFrame if processing fails
-            return df 
     except Exception as e:
-        logger.error(f"Error finalizing DataFrame: {e}")
-        # Return original DataFrame if processing fails
-        return df 
+        logger.error(f"Error in finalize_dataframe_for_excel: {e}")
+        logger.debug(traceback.format_exc())
+        raise
+
+def prepare_upload_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare DataFrame for upload file format.
+    """
+    try:
+        # Create a copy to avoid modifying the original
+        df = df.copy()
+        
+        # Rename columns according to upload format
+        df = df.rename(columns=UPLOAD_COLUMN_MAPPING)
+        
+        # Reorder columns according to upload format
+        existing_columns = [col for col in UPLOAD_COLUMN_ORDER if col in df.columns]
+        extra_columns = [col for col in df.columns if col not in UPLOAD_COLUMN_ORDER]
+        df = df[existing_columns + extra_columns]
+        
+        # Add empty rows at the end as per example
+        df.loc[len(df)] = ''  # Add empty row
+        df.loc[len(df)] = ['\\'] + [''] * (len(df.columns) - 1)  # Add row with backslash
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error in prepare_upload_dataframe: {e}")
+        logger.debug(traceback.format_exc())
+        raise 

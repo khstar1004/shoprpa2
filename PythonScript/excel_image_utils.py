@@ -25,228 +25,58 @@ from excel_style_constants import (
 logger = logging.getLogger(__name__)
 
 class ImageProcessor:
-    """Class to handle all image-related operations"""
+    """이미지 처리 및 Excel 파일 내 이미지 관리를 위한 클래스"""
     
-    @staticmethod
-    def verify_image_data(img_value: Any, img_col_name: str) -> Dict[str, Any]:
-        """Verify and format image data"""
-        if ImageProcessor._is_empty_value(img_value):
-            return '-'
-            
-        if isinstance(img_value, str):
-            return ImageProcessor._process_string_value(img_value, img_col_name)
-            
-        if isinstance(img_value, dict):
-            return ImageProcessor._process_dict_value(img_value, img_col_name)
-            
-        return '-'
+    def __init__(self):
+        self.max_image_size = (160, 160)  # 최대 이미지 크기 (width, height)
     
-    @staticmethod
-    def _is_empty_value(value: Any) -> bool:
-        """Check if value is empty"""
-        return (
-            value is None or
-            pd.isna(value) or
-            (isinstance(value, str) and value.strip() in ['', '-'])
-        )
-    
-    @staticmethod
-    def _process_string_value(value: str, col_name: str) -> Dict[str, Any]:
-        """Process string type image value"""
-        value = value.strip()
-        
-        # Handle JSON-like strings
-        if value.startswith('{') and value.endswith('}'):
-            try:
-                import ast
-                img_dict = ast.literal_eval(value)
-                if isinstance(img_dict, dict):
-                    return ImageProcessor._process_dict_value(img_dict, col_name)
-            except (SyntaxError, ValueError):
-                pass
-        
-        # Handle URLs
-        if value.startswith(('http://', 'https://')):
-            return {
-                'url': value,
-                'source': ImageProcessor._determine_source(col_name)
-            }
-            
-        # Handle file paths
-        return ImageProcessor._process_file_path(value, col_name)
-    
-    @staticmethod
-    def _process_dict_value(value: Dict[str, Any], col_name: str) -> Dict[str, Any]:
-        """Process dictionary type image value"""
-        # Handle nested URL
-        if 'url' in value and isinstance(value['url'], dict):
-            value['original_nested_url'] = value['url']
-            value['url'] = value['url'].get('url', '')
-            
-        # Verify local path
-        if 'local_path' in value and value['local_path']:
-            if os.path.exists(value['local_path']):
-                return value
-                
-        # Keep URL only if valid
-        if 'url' in value and value['url']:
-            if isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
-                return value
-                
-        return '-'
-    
-    @staticmethod
-    def _determine_source(col_name: str) -> str:
-        """Determine image source from column name"""
-        source_map = {
-            '본사': 'haereum',
-            '고려': 'kogift',
-            '네이버': 'naver'
-        }
-        
-        for key, value in source_map.items():
-            if key in col_name:
-                return value
-        return 'other'
-    
-    @staticmethod
-    def _process_file_path(path: str, col_name: str) -> Dict[str, Any]:
-        """Process file path and return appropriate image data"""
-        # Normalize path
-        path = path.replace('\\', '/')
-        
-        # Handle absolute paths
-        if os.path.isabs(path) and os.path.exists(path):
-            return {
-                'url': f"file:///{path}",
-                'local_path': path,
-                'original_path': path,
-                'source': ImageProcessor._determine_source(col_name)
-            }
-            
-        # Handle relative paths
-        source = ImageProcessor._determine_source(col_name)
-        base_paths = ImageProcessor._get_base_paths(source)
-        
-        for base_path in base_paths:
-            try:
-                abs_path = (base_path / path).resolve()
-                if abs_path.exists():
-                    return {
-                        'url': f"file:///{str(abs_path)}",
-                        'local_path': str(abs_path),
-                        'original_path': str(abs_path),
-                        'source': source
-                    }
-            except Exception:
-                continue
-                
-        return {'original_path': path, 'source': source}
-    
-    @staticmethod
-    def _get_base_paths(source: str) -> List[Path]:
-        """Get list of base paths for image source"""
-        base_paths = []
-        if source == 'haereum':
-            base_paths = [
-                IMAGE_MAIN_DIR / HAEREUM_DIR_NAME,
-                IMAGE_MAIN_DIR / 'Target' / HAEREUM_DIR_NAME,
-                IMAGE_MAIN_DIR
-            ]
-        elif source == 'kogift':
-            base_paths = [
-                IMAGE_MAIN_DIR / KOGIFT_DIR_NAME,
-                IMAGE_MAIN_DIR / 'Target' / KOGIFT_DIR_NAME,
-                IMAGE_MAIN_DIR
-            ]
-        elif source == 'naver':
-            base_paths = [
-                IMAGE_MAIN_DIR / NAVER_DIR_NAME,
-                IMAGE_MAIN_DIR / 'Target' / NAVER_DIR_NAME,
-                IMAGE_MAIN_DIR
-            ]
-        else:
-            base_paths = [
-                IMAGE_MAIN_DIR / OTHER_DIR_NAME,
-                IMAGE_MAIN_DIR / 'Target' / OTHER_DIR_NAME,
-                IMAGE_MAIN_DIR
-            ]
-        return base_paths
-
-    def process_image_columns(self, worksheet: openpyxl.worksheet.worksheet.Worksheet, 
-                            df: pd.DataFrame) -> int:
-        """Process image columns in the worksheet"""
+    def process_image_for_excel(self, image_path: str) -> Optional[Dict[str, Any]]:
+        """Excel에 삽입할 이미지를 처리합니다."""
         try:
-            successful_embeddings = 0
-            columns_to_process = [col for col in IMAGE_COLUMNS if col in df.columns]
-            
-            if not columns_to_process:
-                logger.debug("No image columns found in DataFrame")
-                return 0
+            if not os.path.exists(image_path):
+                logger.warning(f"Image file not found: {image_path}")
+                return None
                 
-            for col_idx, column in enumerate(columns_to_process):
-                excel_col = get_column_letter(df.columns.get_loc(column) + 1)
+            # 이미지 크기 및 형식 검증
+            with PILImage.open(image_path) as img:
+                # 이미지 크기 조정
+                img.thumbnail(self.max_image_size)
                 
-                for row_idx, cell_value in enumerate(df[column], 2):
-                    try:
-                        if self._is_empty_value(cell_value):
-                            continue
-                            
-                        img_data = self.verify_image_data(cell_value, column)
-                        if img_data == '-' or not isinstance(img_data, dict):
-                            continue
-                            
-                        if 'local_path' not in img_data or not img_data['local_path']:
-                            continue
-                            
-                        img_path = img_data['local_path']
-                        if not os.path.exists(img_path) or os.path.getsize(img_path) == 0:
-                            continue
-                            
-                        # Add image to worksheet
-                        if self._add_image_to_worksheet(worksheet, img_path, excel_col, row_idx, img_data):
-                            successful_embeddings += 1
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing image at row {row_idx}, column {column}: {e}")
-                        continue
-                        
-            # Adjust dimensions after adding images
-            self._adjust_dimensions_for_images(worksheet, df)
-            
-            return successful_embeddings
-            
+                # 이미지 정보 반환
+                return {
+                    'path': image_path,
+                    'size': img.size,
+                    'format': img.format
+                }
+                
         except Exception as e:
-            logger.error(f"Error in process_image_columns: {e}")
-            return 0
+            logger.error(f"Error processing image {image_path}: {e}")
+            return None
     
-    def _add_image_to_worksheet(self, worksheet, img_path: str, excel_col: str, 
-                              row_idx: int, img_data: Dict[str, Any]) -> bool:
-        """Add single image to worksheet"""
+    def add_image_to_worksheet(self, 
+                             worksheet: openpyxl.worksheet.worksheet.Worksheet,
+                             image_path: str,
+                             row: int,
+                             col: int) -> bool:
+        """워크시트에 이미지를 추가합니다."""
         try:
-            # Resize image if needed
-            resized_path = safe_load_image(img_path, 
-                                         max_height=RESULT_IMAGE_HEIGHT,
-                                         max_width=RESULT_IMAGE_WIDTH)
-            if not resized_path:
+            if not os.path.exists(image_path):
+                logger.warning(f"Image file not found: {image_path}")
                 return False
                 
-            # Create and add image
-            img = Image(resized_path)
-            img.width = RESULT_IMAGE_WIDTH
-            img.height = RESULT_IMAGE_HEIGHT
-            img.anchor = f"{excel_col}{row_idx}"
+            # 이미지 객체 생성
+            img = Image(image_path)
+            img.width, img.height = self.max_image_size
             
+            # 이미지 위치 설정
+            col_letter = get_column_letter(col)
+            img.anchor = f"{col_letter}{row}"
+            
+            # 워크시트에 이미지 추가
             worksheet.add_image(img)
             
-            # Clear cell content
-            cell = worksheet.cell(row=row_idx, column=get_column_letter(excel_col))
-            cell.value = ""
-            
-            # Add hyperlink if URL exists
-            if 'url' in img_data and isinstance(img_data['url'], str):
-                cell.hyperlink = img_data['url']
-                cell.font = Font(color="0563C1", underline="single")
+            # 행 높이 조정
+            worksheet.row_dimensions[row].height = 120
             
             return True
             
@@ -254,21 +84,17 @@ class ImageProcessor:
             logger.error(f"Error adding image to worksheet: {e}")
             return False
     
-    def _adjust_dimensions_for_images(self, worksheet, df: pd.DataFrame) -> None:
-        """Adjust worksheet dimensions for images"""
+    def extract_image_url(self, image_data: Dict[str, Any]) -> str:
+        """이미지 데이터에서 URL을 추출합니다."""
         try:
-            # Adjust column widths
-            image_cols = [col for col in df.columns if col in IMAGE_COLUMNS]
-            for col in image_cols:
-                col_letter = get_column_letter(df.columns.get_loc(col) + 1)
-                worksheet.column_dimensions[col_letter].width = 85
-            
-            # Adjust row heights
-            for row_idx in range(2, worksheet.max_row + 1):
-                worksheet.row_dimensions[row_idx].height = 400
-                
+            if isinstance(image_data, dict):
+                return image_data.get('url', '')
+            elif isinstance(image_data, str) and image_data.startswith(('http://', 'https://')):
+                return image_data
+            return ''
         except Exception as e:
-            logger.error(f"Error adjusting dimensions: {e}")
+            logger.error(f"Error extracting image URL: {e}")
+            return ''
 
 def safe_load_image(path, max_height=150, max_width=150):
     """Safely load and resize an image for Excel."""
@@ -295,194 +121,137 @@ def safe_load_image(path, max_height=150, max_width=150):
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame) -> int:
     """
-    Process image columns in the DataFrame and add images to the worksheet.
+    Process and add images to Excel worksheet.
     
     Args:
         worksheet: The worksheet to add images to
-        df: DataFrame containing the data with image columns
+        df: DataFrame containing image data
         
     Returns:
-        int: Number of successfully embedded images
+        int: Number of images successfully added
     """
-    # Initialize tracking variables
-    successful_embeddings = 0
-    attempted_embeddings = 0
-    kogift_successful = 0
-    kogift_attempted = 0
-    naver_successful = 0
-    naver_attempted = 0
-    
-    # Only handle image-specific columns
-    columns_to_process = [col for col in IMAGE_COLUMNS if col in df.columns]
-    
-    if not columns_to_process:
-        logger.debug("No image columns found in DataFrame")
-        return 0
-    
-    # Track the count of images per column
-    img_counts = {col: 0 for col in columns_to_process}
-    err_counts = {col: 0 for col in columns_to_process}
-    
-    logger.debug(f"Processing {len(columns_to_process)} image columns")
-    
-    # For each image column in the DataFrame
-    for col_idx, column in enumerate(columns_to_process):
-        is_kogift_image = 'kogift' in column.lower() or '고려기프트' in column
-        is_naver_image = 'naver' in column.lower() or '네이버' in column
-        
-        # Excel column letter for this column (e.g., 'A', 'B', ...)
-        excel_col = get_column_letter(df.columns.get_loc(column) + 1)
-        
-        # For each row in the DataFrame
-        for row_idx, cell_value in enumerate(df[column]):
-            img_path = None  # Initialize image path
-            
-            # Skip empty cells (None, NaN, empty strings)
-            if pd.isna(cell_value) or cell_value == "":
-                continue
-                
-            # Skip cells with placeholder dash
-            if cell_value == "-":
-                continue
-            
-            # Handle dictionary format (most complete info)
-            if isinstance(cell_value, dict):
-                # Try local path first, then URL
-                if 'local_path' in cell_value and cell_value['local_path']:
-                    img_path = cell_value['local_path']
-                    
-                    # Special handling for Naver images
-                    if is_naver_image:
-                        logger.debug(f"Found Naver local_path: {img_path}")
-                        
-                        # Verify the path exists and is absolute
-                        if not os.path.isabs(img_path):
-                            abs_path = os.path.abspath(img_path)
-                            logger.debug(f"Converting relative Naver path to absolute: {img_path} -> {abs_path}")
-                            img_path = abs_path
-                        
-                        # Verify the file exists
-                        if not os.path.exists(img_path):
-                            logger.warning(f"Naver image path doesn't exist: {img_path}")
-                            
-                            # Try alternative extensions
-                            base_path = os.path.splitext(img_path)[0]
-                            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                alt_path = f"{base_path}{ext}"
-                                if os.path.exists(alt_path):
-                                    logger.info(f"Found alternative Naver image path: {alt_path}")
-                                    img_path = alt_path
-                                    break
-                            else:
-                                # If no alternative found, try looking for _nobg version
-                                nobg_path = f"{base_path}_nobg.png"
-                                if os.path.exists(nobg_path):
-                                    logger.info(f"Found _nobg version of Naver image: {nobg_path}")
-                                    img_path = nobg_path
-                    elif is_kogift_image:
-                        logger.debug(f"Found Kogift local_path: {img_path}")
-            
-            # Handle string path
-            elif isinstance(cell_value, str) and cell_value not in ['-', '']:
-                if cell_value.startswith(('http://', 'https://')):
-                    # Web URL - we would need a downloaded version
-                    logger.debug(f"Found web URL, but need local version to embed: {cell_value[:50]}...")
-                    continue
-                elif cell_value.startswith('file:///'):
-                    # Local file URL
-                    img_path = cell_value.replace('file:///', '').replace('/', os.sep)
-                elif os.path.exists(cell_value):
-                    # Direct file path
-                    img_path = cell_value
-                else:
-                    # Path-like string but file doesn't exist
-                    logger.debug(f"Path-like string but file not found: {cell_value[:50]}...")
-                    continue
-            
-            # Skip if no valid path was found
-            if not img_path:
-                continue
-            
-            # Add image to worksheet if file exists and has content
+    try:
+        # Image validation function
+        def validate_image(img_path: str) -> bool:
             try:
-                attempted_embeddings += 1
-                if is_kogift_image:
-                    kogift_attempted += 1
-                if is_naver_image:
-                    naver_attempted += 1
-                
-                # Verify file exists and is not empty
                 if not os.path.exists(img_path):
-                    logger.warning(f"Image file not found: {img_path}")
-                    continue
-                
-                if os.path.getsize(img_path) == 0:
-                    logger.warning(f"Image file is empty: {img_path}")
-                    continue
-                
-                # Create and resize the image
-                try:
-                    img = Image(img_path)
+                    logging.warning(f"Image file not found: {img_path}")
+                    return False
                     
-                    # Set larger image size for better visibility
-                    img.width = RESULT_IMAGE_WIDTH  # pixels - increased from 240
-                    img.height = RESULT_IMAGE_HEIGHT  # pixels - increased from 240
+                # Check file size (10MB limit)
+                file_size = os.path.getsize(img_path)
+                if file_size > 10 * 1024 * 1024:
+                    logging.warning(f"Image too large ({file_size/1024/1024:.1f}MB): {img_path}")
+                    return False
                     
-                    # Position image in the cell
-                    img.anchor = f"{excel_col}{row_idx + 2}"  # +2 because DataFrame is 0-indexed but Excel rows start at 1, and row 1 is the header
+                # Verify image can be opened and is valid
+                with Image.open(img_path) as img:
+                    img.verify()
                     
-                    # Add image to worksheet
-                    worksheet.add_image(img)
-                    
-                    # Clear text in cell to avoid showing both image and text
-                    cell = worksheet.cell(row=row_idx + 2, column=df.columns.get_loc(column) + 1)
-                    cell.value = ""
-                    
-                    successful_embeddings += 1
-                    if is_kogift_image:
-                        kogift_successful += 1
-                    if is_naver_image:
-                        naver_successful += 1
-                    
-                except Exception as img_err:
-                    logger.warning(f"Failed to add image at row {row_idx + 2}, column {column}: {img_err}")
-                    # If image fails, try to add the URL as a clickable link
-                    if isinstance(cell_value, dict) and 'url' in cell_value and isinstance(cell_value['url'], str):
-                        cell = worksheet.cell(row=row_idx + 2, column=df.columns.get_loc(column) + 1)
-                        url = cell_value['url']
-                        if url.startswith(('http://', 'https://')):
-                            cell.value = url
-                            cell.hyperlink = url
-                            cell.font = Font(color="0563C1", underline="single")
-                            logger.debug(f"Added URL as fallback for failed image: {url[:50]}...")
-                    
+                    # Check dimensions
+                    if img.size[0] < 100 or img.size[1] < 100:
+                        logging.warning(f"Image too small ({img.size}): {img_path}")
+                        return False
+                        
+                    # Check format
+                    if img.format.lower() not in ['jpeg', 'jpg', 'png', 'gif']:
+                        logging.warning(f"Unsupported image format {img.format}: {img_path}")
+                        return False
+                        
+                return True
             except Exception as e:
-                logger.warning(f"Error processing image at row {row_idx + 2}, column {column}: {e}")
-                # Keep cell value as is for reference
-    
-    logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
-    if kogift_attempted > 0:
-        logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
-    if naver_attempted > 0:
-        logger.info(f"Naver image processing: {naver_successful}/{naver_attempted} images embedded successfully.")
-    
-    # Track image columns for dimension adjustment
-    image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
-    
-    # Adjust row heights where images are embedded
-    for row_idx in range(2, worksheet.max_row + 1):
-        has_image = False
-        for col_idx, _ in image_cols:
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            if cell.value == "":  # Cell was cleared for image
-                has_image = True
-                break
+                logging.error(f"Invalid image {img_path}: {e}")
+                return False
+                
+        # Track progress
+        images_added = 0
+        errors = 0
         
-        if has_image:
-            # Set taller row height to accommodate larger images
-            worksheet.row_dimensions[row_idx].height = 380  # Increased height for image rows
-    
-    return successful_embeddings
+        # Get image columns
+        image_cols = [col for col in df.columns if col in IMAGE_COLUMNS]
+        if not image_cols:
+            logging.info("No image columns found in DataFrame")
+            return 0
+            
+        # Process each row
+        for row_idx, row in df.iterrows():
+            for col in image_cols:
+                try:
+                    img_data = row[col]
+                    if pd.isna(img_data) or img_data == '' or img_data == '-':
+                        continue
+                        
+                    # Extract image path
+                    img_path = None
+                    if isinstance(img_data, dict):
+                        img_path = img_data.get('local_path')
+                    elif isinstance(img_data, str):
+                        if os.path.exists(img_data):
+                            img_path = img_data
+                            
+                    if not img_path:
+                        continue
+                        
+                    # Validate image
+                    if not validate_image(img_path):
+                        errors += 1
+                        continue
+                        
+                    # Add image to worksheet
+                    try:
+                        # Calculate cell position
+                        col_letter = get_column_letter(df.columns.get_loc(col) + 1)
+                        cell_pos = f"{col_letter}{row_idx + 2}"  # +2 because Excel is 1-based and we have header
+                        
+                        # Load and resize image
+                        img = Image.open(img_path)
+                        max_height = 150
+                        max_width = 150
+                        
+                        # Calculate aspect ratio
+                        width, height = img.size
+                        aspect = width / height
+                        
+                        if width > max_width or height > max_height:
+                            if aspect > 1:
+                                new_width = max_width
+                                new_height = int(max_width / aspect)
+                            else:
+                                new_height = max_height
+                                new_width = int(max_height * aspect)
+                            img = img.resize((new_width, new_height), Image.LANCZOS)
+                            
+                        # Add image to worksheet
+                        img_path_temp = f"temp_{os.path.basename(img_path)}"
+                        img.save(img_path_temp)
+                        
+                        img = openpyxl.drawing.image.Image(img_path_temp)
+                        img.anchor = cell_pos
+                        worksheet.add_image(img)
+                        
+                        # Clean up temp file
+                        try:
+                            os.remove(img_path_temp)
+                        except:
+                            pass
+                            
+                        images_added += 1
+                        
+                    except Exception as e:
+                        logging.error(f"Error adding image to cell {cell_pos}: {e}")
+                        errors += 1
+                        
+                except Exception as e:
+                    logging.error(f"Error processing image in row {row_idx}, column {col}: {e}")
+                    errors += 1
+                    
+        logging.info(f"Added {images_added} images to worksheet (errors: {errors})")
+        return images_added
+        
+    except Exception as e:
+        logging.error(f"Error in _process_image_columns: {e}")
+        logging.debug(traceback.format_exc())
+        return 0
 
 def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Adjusts row heights and column widths for cells containing images."""
@@ -567,4 +336,11 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
         except Exception as e:
             logger.error(f"Error adjusting row height for row {row_idx}: {e}")
     
-    logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images") 
+    logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images")
+
+__all__ = [
+    'ImageProcessor',
+    'safe_load_image',
+    '_process_image_columns',
+    '_adjust_image_cell_dimensions'
+] 

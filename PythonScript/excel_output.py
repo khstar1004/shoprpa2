@@ -9,11 +9,14 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 import json
 from PIL import Image
 import shutil
+from openpyxl.utils import get_column_letter
 
 # Import from other modules
 from excel_constants import (
-    FINAL_COLUMN_ORDER, COLUMN_MAPPING_FINAL_TO_UPLOAD,
-    UPLOAD_COLUMN_ORDER, IMAGE_COLUMNS
+    FINAL_COLUMN_ORDER,
+    UPLOAD_COLUMN_ORDER, IMAGE_COLUMNS,
+    REQUIRED_INPUT_COLUMNS,
+    UPLOAD_COLUMN_MAPPING
 )
 from excel_data_processing import (
     flatten_nested_image_dicts, prepare_naver_image_urls_for_upload,
@@ -22,10 +25,12 @@ from excel_data_processing import (
 from excel_formatting import (
     _apply_basic_excel_formatting, _apply_upload_file_formatting,
     _add_hyperlinks_to_worksheet, _add_header_footer,
-    _apply_conditional_formatting, _process_image_columns,
+    _apply_conditional_formatting, ExcelFormatter
+)
+from excel_image_utils import (
+    _process_image_columns, ImageProcessor,
     _adjust_image_cell_dimensions
 )
-from excel_image_utils import _process_image_columns
 from excel_utils import sanitize_dataframe_for_excel
 
 # Initialize logger
@@ -78,23 +83,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     upload_path = None
     upload_success = False
 
-    # Add directory permission check
-    output_dir = os.path.dirname(output_path_base)
-    if not os.access(output_dir, os.W_OK):
-        logging.error(f"No write permission for output directory: {output_dir}")
-        return False, False, None, None
-        
-    # Add try-except for file permission
-    try:
-        # Test file write permission
-        test_file = f"{output_path_base}_test.tmp"
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-    except (PermissionError, OSError) as e:
-        logging.error(f"Cannot write to output location: {e}")
-        return False, False, None, None
-
     try:
         # -----------------------------------------
         # 1. Create Result File (A) - with images
@@ -102,9 +90,8 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         result_path = f"{output_path_base}_result.xlsx"
         logger.info(f"Creating result file (A): {result_path} with {len(df_finalized)} rows.")
         
-        # 골든 예시처럼 판매가(V포함)(2)와 판매단가(V포함)(2) 컬럼 모두 포함
-        if '판매가(V포함)(2)' in df_finalized.columns and '판매단가(V포함)(2)' not in df_finalized.columns:
-            df_finalized['판매단가(V포함)(2)'] = df_finalized['판매가(V포함)(2)']
+        # Create result DataFrame with images
+        df_result = df_finalized.copy()
         
         # Create a new workbook for result file
         workbook_result = openpyxl.Workbook()
@@ -112,19 +99,35 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         worksheet_result.title = "제품 가격 비교"
         
         # Write data using the helper function
-        if not _write_data_to_worksheet(worksheet_result, df_finalized):
+        if not _write_data_to_worksheet(worksheet_result, df_result):
             logger.error("Failed to write data to result worksheet")
             return False, False, None, None
             
         # Apply formatting based on manual requirements
-        _apply_basic_excel_formatting(worksheet_result, df_finalized.columns.tolist())
-        _add_hyperlinks_to_worksheet(worksheet_result, df_finalized, hyperlinks_as_formulas=False)
+        _apply_basic_excel_formatting(worksheet_result, df_result.columns.tolist())
+        _add_hyperlinks_to_worksheet(worksheet_result, df_result, hyperlinks_as_formulas=False)
         _add_header_footer(worksheet_result)
         
-        # Remove auto filter as per manual
-        if hasattr(worksheet_result, 'auto_filter') and worksheet_result.auto_filter:
-            worksheet_result.auto_filter.ref = None
-            logger.info("Removed filter from result Excel file")
+        # Process and add images
+        image_cols = [col for col in df_result.columns if col in IMAGE_COLUMNS]
+        for col in image_cols:
+            col_idx = df_result.columns.get_loc(col) + 1
+            col_letter = get_column_letter(col_idx)
+            worksheet_result.column_dimensions[col_letter].width = 22
+            
+            for row_idx, value in enumerate(df_result[col], 2):
+                if isinstance(value, dict) and 'path' in value:
+                    img_path = value['path']
+                    if os.path.exists(img_path):
+                        try:
+                            img = openpyxl.drawing.image.Image(img_path)
+                            img.width = 160
+                            img.height = 160
+                            img.anchor = f"{col_letter}{row_idx}"
+                            worksheet_result.add_image(img)
+                            worksheet_result.row_dimensions[row_idx].height = 120
+                        except Exception as img_err:
+                            logger.warning(f"Failed to add image at {img_path}: {img_err}")
         
         # Save result file
         workbook_result.save(result_path)
@@ -136,78 +139,18 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         upload_path = f"{output_path_base}_upload.xlsx"
         logger.info(f"Creating upload file (P): {upload_path}")
         
-        # Create upload version DataFrame
+        # Create upload version DataFrame with only URLs
         df_upload = df_finalized.copy()
         
         # Replace image data with web URLs only
         for col in IMAGE_COLUMNS:
             if col in df_upload.columns:
                 df_upload[col] = df_upload[col].apply(
-                    lambda x: x.get('url') if isinstance(x, dict) and 'url' in x 
-                    else (x if isinstance(x, str) and x.startswith(('http://', 'https://')) 
-                    else '')
+                    lambda x: x.get('url', '') if isinstance(x, dict) else 
+                    (x if isinstance(x, str) and x.startswith(('http://', 'https://')) else '')
                 )
         
-        # Prepare Naver image URLs for upload
-        df_upload = prepare_naver_image_urls_for_upload(df_upload)
-        
-        # Apply column name mapping for upload file based on @엑셀골든_upload 예시
-        # 컬럼 이름을 upload 파일 형식에 맞게 변환
-        upload_columns_mapping = {
-            '구분': '구분(승인관리:A/가격관리:P)',
-            '업체명': '공급사명',
-            '업체코드': '공급처코드',
-            'Code': '상품코드',
-            '중분류카테고리': '카테고리(중분류)',
-            '기본수량(1)': '본사 기본수량',
-            '판매단가(V포함)': '판매단가1(VAT포함)',
-            '본사상품링크': '본사링크',
-            '기본수량(2)': '고려 기본수량',
-            '판매가(V포함)(2)': '판매단가2(VAT포함)',
-            '가격차이(2)': '고려 가격차이',
-            '가격차이(2)(%)': '고려 가격차이(%)',
-            '고려기프트 상품링크': '고려 링크',
-            '기본수량(3)': '네이버 기본수량',
-            '판매단가(V포함)(3)': '판매단가3 (VAT포함)',
-            '가격차이(3)': '네이버 가격차이',
-            '가격차이(3)(%)': '네이버가격차이(%)',
-            '공급사명': '네이버 공급사명',
-            '네이버 쇼핑 링크': '네이버 링크',
-            '본사 이미지': '해오름(이미지링크)',
-            '고려기프트 이미지': '고려기프트(이미지링크)',
-            '네이버 이미지': '네이버쇼핑(이미지링크)'
-        }
-        
-        # 존재하는 컬럼만 매핑
-        upload_columns_mapping_filtered = {k: v for k, v in upload_columns_mapping.items() if k in df_upload.columns}
-        df_upload.rename(columns=upload_columns_mapping_filtered, inplace=True)
-        
-        # 매뉴얼에 따라 컬럼 순서 지정
-        upload_columns_order = [
-            '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', 
-            '카테고리(중분류)', '상품명', '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
-            '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
-            '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)',
-            '네이버 공급사명', '네이버 링크', '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
-        ]
-        
-        # 존재하는 컬럼만 순서 지정
-        upload_columns_order_filtered = [col for col in upload_columns_order if col in df_upload.columns]
-        extra_columns = [col for col in df_upload.columns if col not in upload_columns_order_filtered]
-        df_upload = df_upload[upload_columns_order_filtered + extra_columns]
-        
-        # 엑셀골든_upload 예시처럼 마지막에 추가 행 삽입
-        # 1) 원래 데이터 길이 저장
-        original_length = len(df_upload)
-        
-        # 2) 추가 행 삽입 (빈 행 + '\' 포함 행)
-        df_upload.loc[original_length] = ''  # 빈 행 추가
-        
-        # 3) '\' 문자가 있는 행 추가 - 첫 번째 열에만 '\' 추가하고 나머지는 빈 값
-        backslash_row = ['\\'] + [''] * (len(df_upload.columns) - 1)
-        df_upload.loc[original_length + 1] = backslash_row
-        
-        # Create new workbook for upload file
+        # Create upload workbook
         workbook_upload = openpyxl.Workbook()
         worksheet_upload = workbook_upload.active
         worksheet_upload.title = "제품 가격 비교"
@@ -226,104 +169,125 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         workbook_upload.save(upload_path)
         upload_success = True
         
-        # Log success
-        logger.info(f"Successfully created both result (A) and upload (P) files")
-        logger.info(f"Result file: {result_path}")
-        logger.info(f"Upload file: {upload_path}")
-        
         return result_success, upload_success, result_path, upload_path
         
-    except PermissionError as pe:
-        logger.error(f"Permission denied writing Excel file. Is it open? Error: {pe}")
-        return result_success, upload_success, result_path, upload_path
     except Exception as e:
-        logger.error(f"Error creating Excel files: {e}")
-        logger.error(f"Error details: {traceback.format_exc()}")
+        logger.error(f"Error in create_split_excel_outputs: {e}")
+        logger.debug(traceback.format_exc())
         return result_success, upload_success, result_path, upload_path
 
 @safe_excel_operation
 def create_final_output_excel(df: pd.DataFrame, output_path: str) -> bool:
     """
-    Create a combined Excel output file with images and various formatting.
-    Unlike create_split_excel_outputs, this creates a single Excel file with advanced formatting.
+    Creates the final Excel output file with all formatting and data.
     
     Args:
-        df: DataFrame with the data
-        output_path: Path where to save the Excel file
+        df: DataFrame containing the data to write
+        output_path: Path where the Excel file should be saved
         
     Returns:
         bool: True if successful, False otherwise
     """
-    if df is None:
-        logger.error("Cannot create Excel file: Input DataFrame is None.")
-        return False
-
-    logger.info(f"Starting creation of single final Excel output: {output_path}")
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    
-    # Add backup creation
-    if os.path.exists(output_path):
-        backup_path = f"{output_path}.bak"
-        try:
-            shutil.copy2(output_path, backup_path)
-        except Exception as e:
-            logging.warning(f"Failed to create backup: {e}")
-            
-    # Add size estimation
-    estimated_size = len(df) * len(df.columns) * 100  # Rough estimate
-    if estimated_size > 100 * 1024 * 1024:  # 100MB warning
-        logging.warning(f"Large file size estimated ({estimated_size/1024/1024:.1f}MB)")
-    
-    # Prepare the DataFrame (rename columns, order, clean)
-    df_finalized = finalize_dataframe_for_excel(df)
-    
-    if df_finalized.empty and not df.empty:
-        logger.error("DataFrame became empty after finalization step. Cannot save Excel.")
-        return False
-    
-    # Flatten any nested image dictionaries
-    df_finalized = flatten_nested_image_dicts(df_finalized)
-    
-    # Sanitize DataFrame to make sure all values are Excel-compatible
-    df_finalized = sanitize_dataframe_for_excel(df_finalized)
-    
-    # Save finalized data to Excel using openpyxl engine
     try:
-        logger.info(f"Writing final Excel: {output_path} with {len(df_finalized)} rows.")
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df_finalized.to_excel(writer, index=False, sheet_name='Results', na_rep='')
-            worksheet = writer.sheets['Results']
+        # Input validation
+        if df is None or df.empty:
+            logging.error("Cannot create Excel file: Input DataFrame is empty or None")
+            return False
             
-            # Apply Full Formatting
-            from excel_formatting import (
-                _apply_column_widths,
-                _apply_cell_styles_and_alignment,
-                _apply_conditional_formatting,
-                _setup_page_layout,
-                _add_header_footer,
-                _add_hyperlinks_to_worksheet
-            )
+        # Check output directory permissions and space
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+            except Exception as e:
+                logging.error(f"Failed to create output directory {output_dir}: {e}")
+                return False
+                
+        if not os.access(output_dir, os.W_OK):
+            logging.error(f"No write permission for output directory: {output_dir}")
+            return False
             
-            _apply_column_widths(worksheet, df_finalized)
-            _apply_cell_styles_and_alignment(worksheet, df_finalized)
-            if not df_finalized.empty:
-                _process_image_columns(worksheet, df_finalized)
-                _adjust_image_cell_dimensions(worksheet, df_finalized)
-            _add_hyperlinks_to_worksheet(worksheet, df_finalized)
-            _apply_conditional_formatting(worksheet, df_finalized)
-            _setup_page_layout(worksheet)
-            _add_header_footer(worksheet)
+        # Check disk space (require at least 100MB free)
+        try:
+            import shutil
+            free_space = shutil.disk_usage(output_dir).free
+            if free_space < 100 * 1024 * 1024:  # 100MB
+                logging.error(f"Insufficient disk space. Only {free_space/1024/1024:.1f}MB available")
+                return False
+        except Exception as e:
+            logging.warning(f"Could not check disk space: {e}")
+            
+        # Create backup if file exists
+        if os.path.exists(output_path):
+            try:
+                backup_path = f"{output_path}.bak"
+                shutil.copy2(output_path, backup_path)
+                logging.info(f"Created backup at: {backup_path}")
+            except Exception as e:
+                logging.warning(f"Failed to create backup: {e}")
         
-        logger.info(f"Successfully created and formatted final Excel file: {output_path}")
+        # Check if file is locked
+        try:
+            if os.path.exists(output_path):
+                with open(output_path, 'a') as f:
+                    pass
+        except PermissionError:
+            logging.error(f"File is locked or in use: {output_path}")
+            return False
+            
+        # Estimate memory requirements
+        estimated_size = len(df) * len(df.columns) * 100  # Rough estimate
+        if estimated_size > 100 * 1024 * 1024:  # 100MB warning threshold
+            logging.warning(f"Large file size estimated ({estimated_size/1024/1024:.1f}MB)")
+            
+        # Process data in chunks if necessary
+        chunk_size = 1000
+        processed_df = pd.DataFrame()
+        
+        for i in range(0, len(df), chunk_size):
+            chunk = df.iloc[i:i+chunk_size].copy()
+            # Process chunk
+            chunk = finalize_dataframe_for_excel(chunk)
+            processed_df = pd.concat([processed_df, chunk])
+            
+        # Create Excel writer
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # Write data
+            processed_df.to_excel(writer, index=False, sheet_name='Sheet1')
+            
+            # Get the worksheet
+            worksheet = writer.sheets['Sheet1']
+            
+            # Apply formatting
+            formatter = ExcelFormatter()
+            formatter.format_result_file(worksheet, processed_df)
+            
+            # Process images if present
+            image_processor = ImageProcessor()
+            images_added = image_processor.process_image_columns(worksheet, processed_df)
+            
+            if images_added > 0:
+                logging.info(f"Added {images_added} images to Excel file")
+            
+            # Adjust dimensions for images
+            image_processor._adjust_dimensions_for_images(worksheet, processed_df)
+            
+        logging.info(f"Successfully created Excel file at: {output_path}")
         return True
         
-    except PermissionError as pe:
-        logger.error(f"Permission denied writing Excel file '{output_path}'. Is it open? Error: {pe}")
-        return False
     except Exception as e:
-        logger.error(f"Error creating Excel file '{output_path}': {e}")
+        logging.error(f"Error creating Excel file: {e}")
+        logging.debug(traceback.format_exc())
+        
+        # Try to restore from backup if available
+        backup_path = f"{output_path}.bak"
+        if os.path.exists(backup_path):
+            try:
+                shutil.copy2(backup_path, output_path)
+                logging.info("Restored from backup after error")
+            except Exception as restore_error:
+                logging.error(f"Failed to restore from backup: {restore_error}")
+        
         return False
 
 def _write_data_to_worksheet(worksheet, df_for_excel):
