@@ -596,7 +596,6 @@ class EnhancedImageMatcher:
         try:
             import tensorflow as tf
             from tensorflow import keras
-            from tensorflow.keras.applications import EfficientNetB0, ResNet50V2
             
             # Configure mixed precision for better GPU performance
             if self.settings['USE_GPU']:
@@ -607,32 +606,27 @@ class EnhancedImageMatcher:
             # Load models with proper GPU configuration
             with tf.device('/GPU:0' if self.settings['USE_GPU'] else '/CPU:0'):
                 # Primary model (EfficientNetB0)
-                self.models['efficientnet'] = EfficientNetB0(
+                self.models['efficientnet'] = keras.applications.EfficientNetB0(
                     weights='imagenet',
                     include_top=False,
                     pooling='avg'
                 )
                 
-                # Additional model for ensemble (if enabled)
-                if self.settings['USE_MULTIPLE_MODELS']:
-                    self.models['resnet'] = ResNet50V2(
-                        weights='imagenet',
-                        include_top=False,
-                        pooling='avg'
-                    )
+                # Secondary model (ResNet50V2)
+                self.models['resnet'] = keras.applications.ResNet50V2(
+                    weights='imagenet',
+                    include_top=False,
+                    pooling='avg'
+                )
                 
-            logger.info(f"Deep learning models initialized on {'GPU' if self.settings['USE_GPU'] else 'CPU'}")
-            
-            # Warm up the models
-            if self.settings['USE_GPU']:
-                dummy_input = tf.random.normal([1, 224, 224, 3])
-                for model_name, model in self.models.items():
-                    _ = model(dummy_input)
-                logger.info("Models warmed up on GPU")
+                logger.info("Successfully loaded deep learning models")
                 
+        except ImportError as e:
+            logger.error(f"Failed to import TensorFlow: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error initializing deep learning models: {e}")
-            self.models = {}
+            raise
     
     def _process_batch(self, batch_images: List[np.ndarray]) -> List[np.ndarray]:
         """Process a batch of images using GPU acceleration"""
