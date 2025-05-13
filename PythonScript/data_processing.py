@@ -200,6 +200,21 @@ def verify_image_data(img_value, img_col_name):
         logging.warning(f"Error verifying image data '{str(img_value)[:100]}...' for column {img_col_name}: {e}")
         return '-'  # Return placeholder on error
 
+def calculate_price_difference(base_price, compare_price):
+    """Calculate price difference and percentage difference between two prices.
+    Returns tuple of (difference, percentage) or (None, None) if calculation fails."""
+    try:
+        base = pd.to_numeric(base_price, errors='coerce')
+        comp = pd.to_numeric(compare_price, errors='coerce')
+        if pd.notna(base) and pd.notna(comp) and base != 0:
+            diff = comp - base
+            diff_percent = (diff / base) * 100
+            return pd.Series([diff, round(diff_percent, 1)])
+        return pd.Series([None, None])
+    except Exception as e:
+        logging.warning(f"가격 차이 계산 중 오류: {e}")
+        return pd.Series([None, None])
+
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
                              naver_results: Dict[str, List[Dict]] = None,
@@ -741,18 +756,23 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     if '판매단가(V포함)' in df.columns:
         # Kogift price difference
         if '판매단가(V포함)(2)' in df.columns:
-            # FIXED: Ensure we convert to numeric before calculation
-            df['가격차이(2)'], df['가격차이(2)(%)'] = df.apply(
+            # Calculate both difference and percentage at once
+            diff_cols = df.apply(
                 lambda x: calculate_price_difference(x['판매단가(V포함)'], x['판매단가(V포함)(2)']), 
                 axis=1
             )
+            df['가격차이(2)'] = diff_cols[0]
+            df['가격차이(2)(%)'] = diff_cols[1]
             
         # Naver price difference
         if '판매단가(V포함)(3)' in df.columns:
-            df['가격차이(3)'], df['가격차이(3)(%)'] = df.apply(
+            # Calculate both difference and percentage at once
+            diff_cols = df.apply(
                 lambda x: calculate_price_difference(x['판매단가(V포함)'], x['판매단가(V포함)(3)']), 
                 axis=1
             )
+            df['가격차이(3)'] = diff_cols[0]
+            df['가격차이(3)(%)'] = diff_cols[1]
     
     # Ensure all image columns have proper dictionary format
     for img_col in ['네이버 이미지', '고려기프트 이미지', '본사 이미지']:
@@ -853,15 +873,3 @@ def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigPar
     except Exception as e:
         logging.error(f"Error in process_input_data: {e}", exc_info=True)
         return df 
-
-def calculate_price_difference(base_price, compare_price):
-    try:
-        base = pd.to_numeric(base_price, errors='coerce')
-        comp = pd.to_numeric(compare_price, errors='coerce')
-        if pd.notna(base) and pd.notna(comp) and base != 0:
-            diff = comp - base
-            diff_percent = (diff / base) * 100
-            return diff, round(diff_percent, 1)
-    except Exception as e:
-        logging.warning(f"가격 차이 계산 중 오류: {e}")
-    return None, None 

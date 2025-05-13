@@ -1039,8 +1039,21 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'link': first_item.get('link'),
         'seller_link': first_item.get('mallProductUrl'),
         'source': 'naver',
-        'initial_similarity': similarity
+        'initial_similarity': similarity,
+        'is_naver_site': False
     }
+    
+    # 네이버 사이트인지 체크 (판촉물 사이트는 항상 외부 사이트임)
+    product_url = result_data['link']
+    if product_url:
+        is_naver_domain = "naver.com" in product_url or "shopping.naver.com" in product_url
+        result_data['is_naver_site'] = is_naver_domain
+        
+        # 네이버 사이트면 판촉물 사이트가 아님
+        if is_naver_domain:
+            logger.info(f"Direct Naver shopping mall (not promotional site): {product_url}")
+            result_data['is_promotional_site'] = False
+            return result_data
 
     # 판촉물 사이트 감지 키워드 확장
     promo_keywords = [
@@ -1050,7 +1063,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         '로고인쇄', '로고각인', '주문제작', '제품홍보', '기업홍보', '단체구매'
     ]
 
-    # 판촉물 사이트 감지 로직 강화
+    # 판촉물 사이트 감지 로직 강화 - 외부 사이트만 체크
     is_promotional = False
     matching_keywords = []
 
@@ -1073,39 +1086,61 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
 
     # Visit seller site to check for quantity-based pricing
     if visit_seller_sites and browser and first_item.get('link'):
-        try:
-            page = await browser.new_page()
-            await page.set_viewport_size({"width": 1366, "height": 768})
-            
+        # 네이버 직접 사이트인 경우는 방문하지 않음 (이미 판촉물 사이트가 아니라고 확인됨)
+        if result_data.get('is_naver_site', False):
+            logger.info(f"Skipping seller site visit for Naver direct site: {first_item.get('link')}")
+            result_data.update({
+                'has_quantity_pricing': False,
+                'quantity_prices': {},
+                'vat_included': False
+            })
+        else:
+            page = None
             try:
+                page = await browser.new_page()
+                await page.set_viewport_size({"width": 1366, "height": 768})
+                
                 if not first_item.get('link'):
                     logger.warning(f"Missing product link for '{product_name}', cannot extract quantity prices")
                 else:
                     logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {first_item.get('link')}")
                     print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
-                    quantity_pricing = await extract_quantity_prices(page, first_item.get('link'))
-                    await asyncio.sleep(5)
-                    print(f"Completed quantity price check for '{product_name}'")
+                    
+                    try:
+                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'))
+                        await asyncio.sleep(5)
+                        print(f"Completed quantity price check for '{product_name}'")
 
-                    # 수량별 가격이 있으면 판촉물 사이트로 간주
-                    if quantity_pricing.get('has_quantity_pricing'):
-                        is_promotional = True
-                        result_data['is_promotional_site'] = True
-                        logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
+                        # 캡차가 감지된 경우
+                        if quantity_pricing.get('has_captcha', False):
+                            logger.info(f"CAPTCHA detected, skipping promotional site check for '{product_name}'")
+                            result_data['is_promotional_site'] = False
+                        # 네이버 사이트인 경우
+                        elif quantity_pricing.get('is_naver_site', False):
+                            logger.info(f"Direct Naver shopping mall, not a promotional site for '{product_name}'")
+                            result_data['is_promotional_site'] = False
+                        # 수량별 가격이 있으면 판촉물 사이트로 간주
+                        elif quantity_pricing.get('has_quantity_pricing'):
+                            result_data['is_promotional_site'] = True
+                            logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
 
-                    result_data.update({
-                        'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
-                        'quantity_prices': quantity_pricing.get('quantity_prices', {}),
-                        'vat_included': quantity_pricing.get('vat_included', False)
-                    })
-
+                        result_data.update({
+                            'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
+                            'quantity_prices': quantity_pricing.get('quantity_prices', {}),
+                            'vat_included': quantity_pricing.get('vat_included', False),
+                            'is_naver_site': quantity_pricing.get('is_naver_site', False),
+                            'has_captcha': quantity_pricing.get('has_captcha', False)
+                        })
+                    except Exception as e:
+                        logger.error(f"Error extracting quantity prices for '{product_name}': {e}")
             except Exception as e:
-                logger.error(f"Error calling extract_quantity_prices: {e}")
+                logger.error(f"Error visiting seller site for '{product_name}': {e}")
             finally:
-                await page.close()
-
-        except Exception as e:
-            logger.error(f"Error visiting seller site for '{product_name}': {e}")
+                if page:
+                    try:
+                        await page.close()
+                    except Exception as e:
+                        logger.error(f"Error closing page: {e}")
 
     # Process image if available
     image_url = first_item.get('image_url')

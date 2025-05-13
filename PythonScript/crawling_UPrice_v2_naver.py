@@ -341,7 +341,9 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
         "price_table": None,
         "vat_included": False,
         "supplier_name": "",
-        "error": None
+        "error": None,
+        "is_naver_site": False,
+        "has_captcha": False
     }
     
     if not page or not url:
@@ -355,11 +357,41 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
             # 페이지 로딩 및 기본 정보 수집
             await page.goto(url, wait_until='networkidle', timeout=30000)
             await page.wait_for_load_state('domcontentloaded')
+            
+            # 현재 URL 확인 (리다이렉트 후)
+            current_url = page.url
+            
+            # 네이버 도메인 체크
+            is_naver_domain = "naver.com" in current_url or "shopping.naver.com" in current_url
+            result["is_naver_site"] = is_naver_domain
+            
+            # 캡차 체크
+            captcha_selectors = [
+                'form#captcha_form', 
+                'img[alt*="captcha"]', 
+                'div.captcha_wrap',
+                'input[name="captchaBotKey"]',
+                'div[class*="captcha"]'
+            ]
+            
+            for selector in captcha_selectors:
+                if await page.query_selector(selector):
+                    logger.info(f"CAPTCHA detected on page: {current_url}")
+                    result["has_captcha"] = True
+                    break
+            
+            # 네이버 직접 연결된 사이트인 경우 판촉물 사이트 아님
+            if result["is_naver_site"] or result["has_captcha"]:
+                logger.info(f"Direct Naver shopping mall (not promotional site): {current_url}")
+                result["is_promotional_site"] = False
+                await page.wait_for_timeout(1000)
+                return result
+                
             await page.wait_for_timeout(3000)  # 동적 콘텐츠 로딩을 위한 대기 시간 증가
             
             # 페이지 제목과 URL 로깅
             page_title = await page.title()
-            logger.info(f"Page title: {page_title}, URL: {url}")
+            logger.info(f"Page title: {page_title}, URL: {current_url}")
             
             # 판촉물 사이트 감지를 위한 키워드 확장
             promo_keywords = [
@@ -371,7 +403,8 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
             page_text = await page.evaluate('() => document.body.innerText')
             has_promo_keyword = any(keyword in page_text.lower() for keyword in promo_keywords)
             
-            if has_promo_keyword:
+            # 외부 사이트 연결인 경우만 판촉물 사이트 감지
+            if has_promo_keyword and not is_naver_domain:
                 logger.info(f"Promotional site detected based on content keywords")
                 result["is_promotional_site"] = True
             
