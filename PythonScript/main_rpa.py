@@ -655,10 +655,57 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Generate output filename
-                input_filename_base = input_filename.rsplit('.', 1)[0]
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
-                
+                try:
+                    # Get company name and management type
+                    company_name = "Unknown"
+                    mgmt_type = "승인관리"  # Default
+                    
+                    # Try to get company name from DataFrame
+                    if '업체명' in formatted_df.columns and not formatted_df.empty:
+                        company_names = formatted_df['업체명'].unique()
+                        if len(company_names) == 1:
+                            company_name = company_names[0]
+                        else:
+                            # If multiple companies, use the most frequent one
+                            company_name = formatted_df['업체명'].mode().iloc[0]
+                    
+                    # Get management type from '구분' column
+                    if '구분' in formatted_df.columns and not formatted_df.empty:
+                        mgmt_val = formatted_df['구분'].iloc[0]
+                        if mgmt_val == 'A':
+                            mgmt_type = "승인관리"
+                        elif mgmt_val == 'P':
+                            mgmt_type = "가격관리"
+                    
+                    # Get row count
+                    row_count = len(formatted_df)
+                    
+                    # Generate timestamp
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    date_part = datetime.datetime.now().strftime("%Y%m%d")
+                    
+                    # Create base filename
+                    base_filename = f"{company_name}({row_count}개)-{mgmt_type}-{date_part}"
+                    
+                    # Generate result and upload filenames
+                    result_filename = f"{base_filename}_result_{timestamp}.xlsx"
+                    upload_filename = f"{base_filename}_upload_{timestamp}.xlsx"
+                    
+                    # Set output paths
+                    result_path = os.path.join(output_dir, result_filename)
+                    upload_path = os.path.join(output_dir, upload_filename)
+                    
+                    logging.info(f"Generated filenames:")
+                    logging.info(f"Result file: {result_filename}")
+                    logging.info(f"Upload file: {upload_filename}")
+                    
+                except Exception as e:
+                    logging.error(f"Error generating filenames: {e}", exc_info=True)
+                    # Fallback to simple timestamp-based names if error occurs
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    result_path = os.path.join(output_dir, f"result_{timestamp}.xlsx")
+                    upload_path = os.path.join(output_dir, f"upload_{timestamp}.xlsx")
+
                 # --- Moved Image Integration Here ---
                 try:
                     logging.info("Integrating and filtering images immediately before Excel generation...")

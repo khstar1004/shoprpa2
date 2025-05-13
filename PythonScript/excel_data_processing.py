@@ -423,112 +423,54 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
         logger.error(f"Error preparing DataFrame for Excel: {e}")
         return pd.DataFrame()
 
-def finalize_dataframe_for_excel(df: pd.DataFrame, is_upload_file: bool = False) -> pd.DataFrame:
+def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Finalize DataFrame structure based on example files.
-    
-    Args:
-        df: Input DataFrame
-        is_upload_file: Whether to use upload file format (True) or result file format (False)
-        
-    Returns:
-        DataFrame with correct structure
+    Perform final cleanup and formatting of DataFrame before Excel output.
+    Ensures all required columns are present in the correct order.
     """
     try:
         # Create a copy to avoid modifying the original
         df = df.copy()
         
-        # Define fixed column structures from example files
-        RESULT_COLUMNS = [
-            '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
-            '기본수량(1)', '판매단가(V포함)', '본사상품링크',
-            '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
-            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
-            '본사 이미지', '고려기프트 이미지', '네이버 이미지'
-        ]
-        
-        UPLOAD_COLUMNS = [
-            '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
-            '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
-            '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
-            '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', '네이버 링크',
-            '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
-        ]
-        
-        # Choose target columns based on file type
-        target_columns = UPLOAD_COLUMNS if is_upload_file else RESULT_COLUMNS
-        
-        # Create new DataFrame with target structure
-        new_df = pd.DataFrame(columns=target_columns)
-        
-        # Map input data to appropriate columns
-        column_mapping = {
-            # Common mappings
-            '구분': '구분(승인관리:A/가격관리:P)' if is_upload_file else '구분',
-            '담당자': '담당자',
-            '업체명': '공급사명' if is_upload_file else '업체명',
-            '업체코드': '공급처코드' if is_upload_file else '업체코드',
-            'Code': '상품코드' if is_upload_file else 'Code',
-            '중분류카테고리': '카테고리(중분류)' if is_upload_file else '중분류카테고리',
-            '상품명': '상품명',
-            
-            # Base product info
-            '기본수량(1)': '본사 기본수량' if is_upload_file else '기본수량(1)',
-            '판매단가(V포함)': '판매단가1(VAT포함)' if is_upload_file else '판매단가(V포함)',
-            '본사상품링크': '본사링크' if is_upload_file else '본사상품링크',
-            
-            # Kogift info
-            '기본수량(2)': '고려 기본수량' if is_upload_file else '기본수량(2)',
-            '판매가(V포함)(2)': '판매단가2(VAT포함)' if is_upload_file else '판매가(V포함)(2)',
-            '가격차이(2)': '고려 가격차이' if is_upload_file else '가격차이(2)',
-            '가격차이(2)(%)': '고려 가격차이(%)' if is_upload_file else '가격차이(2)(%)',
-            '고려기프트 상품링크': '고려 링크' if is_upload_file else '고려기프트 상품링크',
-            
-            # Naver info
-            '기본수량(3)': '네이버 기본수량' if is_upload_file else '기본수량(3)',
-            '판매단가(V포함)(3)': '판매단가3 (VAT포함)' if is_upload_file else '판매단가(V포함)(3)',
-            '가격차이(3)': '네이버 가격차이' if is_upload_file else '가격차이(3)',
-            '가격차이(3)(%)': '네이버가격차이(%)' if is_upload_file else '가격차이(3)(%)',
-            '공급사명': '네이버 공급사명' if is_upload_file else '공급사명',
-            '네이버 쇼핑 링크': '네이버 링크' if is_upload_file else '네이버 쇼핑 링크',
-            
-            # Image columns
-            '본사 이미지': '해오름(이미지링크)' if is_upload_file else '본사 이미지',
-            '고려기프트 이미지': '고려기프트(이미지링크)' if is_upload_file else '고려기프트 이미지',
-            '네이버 이미지': '네이버쇼핑(이미지링크)' if is_upload_file else '네이버 이미지'
-        }
-        
-        # Copy data using the mapping
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns:
-                new_df[new_col] = df[old_col]
-                
-        # Fill empty cells with appropriate values
-        new_df = new_df.fillna({
-            col: '-' if any(term in col for term in ['가격차이', '공급사명', '링크']) else ''
-            for col in new_df.columns
-        })
-        
-        # Format numeric columns
-        numeric_cols = [col for col in new_df.columns if any(term in col for term in ['수량', '단가', '가격'])]
-        for col in numeric_cols:
-            try:
-                new_df[col] = pd.to_numeric(new_df[col].astype(str).str.replace(',', ''), errors='coerce')
-                new_df[col] = new_df[col].fillna(0)
-                
-                # Format percentage columns
-                if '%' in col:
-                    new_df[col] = new_df[col].apply(lambda x: f"{x:.1f}%" if x != 0 else '')
+        # Add missing required columns with default values
+        missing_cols = [col for col in REQUIRED_INPUT_COLUMNS if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Adding missing required columns with default values: {missing_cols}")
+            for col in missing_cols:
+                if col == '구분':
+                    df[col] = 'A'  # Default to 승인관리
+                elif col in ['업체명', '업체코드', 'Code', '중분류카테고리']:
+                    df[col] = '-'  # Default placeholder for text columns
+                elif col in ['기본수량(1)']:
+                    df[col] = 1    # Default quantity
+                elif col in ['판매단가(V포함)']:
+                    df[col] = 0    # Default price
+                elif col in ['본사상품링크']:
+                    df[col] = ''   # Empty string for links
                 else:
-                    new_df[col] = new_df[col].apply(lambda x: f"{int(x):,}" if x != 0 else '')
-            except Exception as e:
-                logger.warning(f"Error formatting numeric column {col}: {e}")
+                    df[col] = ''   # Empty string for other columns
+
+        # Handle NaN values
+        df = df.fillna('')
         
-        # Add backslash row for upload file
-        if is_upload_file:
-            new_df.loc[len(new_df)] = ['\\'] + [''] * (len(new_df.columns) - 1)
+        # Convert numeric columns to appropriate types
+        numeric_columns = df.select_dtypes(include=['float64', 'int64']).columns
+        for col in numeric_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = df[col].fillna(0)
+            
+            # Format percentage columns
+            if '%' in col:
+                df[col] = df[col].apply(lambda x: f"{x:.1f}%" if x != 0 else '')
+            else:
+                df[col] = df[col].apply(lambda x: f"{int(x):,}" if x != 0 else '')
         
-        return new_df
+        # Process image columns
+        for col in IMAGE_COLUMNS:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: {} if pd.isna(x) or x == '' else x)
+        
+        return df
         
     except Exception as e:
         logger.error(f"Error in finalize_dataframe_for_excel: {e}")
