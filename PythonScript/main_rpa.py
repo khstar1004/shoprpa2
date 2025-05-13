@@ -30,6 +30,7 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
+from fix_naver_images import fix_naver_images  # Add this import
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -893,6 +894,25 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
                                         # Don't treat formatting failure as a critical error, continue with the process
                                     # --- End Excel Formatting ---
+
+                                    # --- NEW: Validate and Fix Naver Images ---
+                                    try:
+                                        logging.info("Validating Naver image placements...")
+                                        if result_path and os.path.exists(result_path):
+                                            # Run Naver image validation on result file
+                                            naver_validation_success = fix_naver_images(result_path)
+                                            if naver_validation_success:
+                                                logging.info("Naver image validation completed successfully")
+                                                if progress_queue:
+                                                    progress_queue.emit("status", "Naver images validated and fixed if needed")
+                                            else:
+                                                logging.warning("Naver image validation completed with issues")
+                                                if progress_queue:
+                                                    progress_queue.emit("status", "Issues found with Naver images - check report")
+                                    except Exception as naver_err:
+                                        logging.error(f"Error during Naver image validation: {naver_err}", exc_info=True)
+                                        # Don't treat validation failure as a critical error
+                                    # --- End Naver Image Validation ---
 
                                     # --- Apply Price Highlighting to Excel files ---
                                     try:
