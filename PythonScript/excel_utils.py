@@ -75,6 +75,9 @@ class ExcelGenerator:
         if not hasattr(self, '_initialized'):
             self._initialized = True
             self.logger = logging.getLogger(__name__)
+            # Initialize formatter and image processor
+            self.formatter = ExcelFormatter()
+            self.image_processor = ImageProcessor()
             
     @safe_excel_operation
     def create_excel_output(self, 
