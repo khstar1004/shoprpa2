@@ -800,10 +800,17 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     success = create_final_output_excel(formatted_df, str(output_path))
                     if success:
                         logging.info(f"Successfully created Excel file at: {output_path}")
+                        # Set the output path for the UI
+                        if progress_queue:
+                            progress_queue.emit("final_path", str(output_path))
                     else:
                         logging.error("Failed to create Excel file.")
+                        if progress_queue:
+                            progress_queue.emit("error", "Failed to create Excel file")
                 except Exception as e:
                     logging.error(f"Error creating Excel file: {e}", exc_info=True)
+                    if progress_queue:
+                        progress_queue.emit("error", f"Error creating Excel file: {str(e)}")
                     output_path = None
             except Exception as e:
                 error_msg = f"Error during output file saving: {str(e)}"

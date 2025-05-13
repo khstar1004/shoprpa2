@@ -728,14 +728,21 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         haoreum_scraped_image_url = haoreum_row_dict.get('본사이미지URL')
         # Add logging to check the fetched URL
         logging.debug(f"Index {i}: Fetched Haereum scraped URL: {haoreum_scraped_image_url}") 
-        if not haoreum_scraped_image_url or not isinstance(haoreum_scraped_image_url, str) or not haoreum_scraped_image_url.startswith(('http://', 'https://')):
+        if not haoreum_scraped_image_url or not isinstance(haoreum_scraped_image_url, str):
             logging.warning(f"Row {i} ('{product_name}'): Invalid or missing scraped Haereum image URL: '{haoreum_scraped_image_url}'. Attempting fallback or proceeding without URL.")
             haoreum_scraped_image_url = None # Set URL to None if invalid
+        elif not haoreum_scraped_image_url.startswith(('http://', 'https://')):
+            # Try to construct valid URL if it's a relative path
+            if haoreum_scraped_image_url.startswith('/'):
+                haoreum_scraped_image_url = f"https://www.jclgift.com{haoreum_scraped_image_url}"
+            else:
+                haoreum_scraped_image_url = f"https://www.jclgift.com/{haoreum_scraped_image_url}"
+            logging.info(f"Constructed absolute URL for relative path: {haoreum_scraped_image_url}")
 
         # Prepare Haoreum product data structure for matching logic
         haoreum_product_for_match = {
             'name': product_name,
-            'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)'), errors='coerce'),
+            'price': pd.to_numeric(haoreum_row_dict.get('판매단가(V포함)', 0), errors='coerce'),
             'image_path': haoreum_img_path, # This is the LOCAL path passed in
             'code': haoreum_row_dict.get('Code'),
             '카테고리(중분류)': haoreum_row_dict.get('카테고리(중분류)')
