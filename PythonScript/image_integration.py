@@ -1559,7 +1559,8 @@ def create_excel_with_images(df, output_path):
             
         # Fix nested dictionary structures in image columns
         df_copy = df.copy()
-        image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+        image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', 
+                     '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
         
         for col in image_cols:
             if col in df_copy.columns:
@@ -1582,6 +1583,13 @@ def create_excel_with_images(df, output_path):
                 df_copy[col] = None
         
         df_copy = df_copy[FINAL_COLUMN_ORDER]
+        
+        # Generate output filename if not provided
+        if not output_path:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            company_info = df_copy['공급사명'].iloc[0] if '공급사명' in df_copy.columns and len(df_copy) > 0 else "Unknown"
+            row_count = len(df_copy)
+            output_path = f"{company_info}({row_count}개)_image_integration_{timestamp}.xlsx"
         
         # Use the excel generator to create the Excel file
         result_success, _, result_path, _ = excel_generator.create_excel_output(
@@ -1938,7 +1946,7 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
-                            save_excel_output=False) -> pd.DataFrame:
+                            save_excel_output=False, output_path=None) -> pd.DataFrame:
     """
     Integrates and filters images from all sources, applying all necessary processing.
     
@@ -1946,6 +1954,7 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
         df: DataFrame with product data
         config: Configuration settings
         save_excel_output: Whether to save an Excel output file with images
+        output_path: Optional path for the output Excel file
         
     Returns:
         DataFrame with integrated and filtered images
@@ -1973,11 +1982,13 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     cols_to_rename = {col: reverse_mapping[col] for col in df_improved.columns if col in reverse_mapping}
     
     # Ensure image columns have the correct names
-    for old_name, new_name in [
-        ('본사 이미지', '해오름(이미지링크)'),
-        ('고려기프트 이미지', '고려기프트(이미지링크)'),
-        ('네이버 이미지', '네이버쇼핑(이미지링크)')
-    ]:
+    image_column_mapping = {
+        '본사 이미지': '해오름(이미지링크)',
+        '고려기프트 이미지': '고려기프트(이미지링크)',
+        '네이버 이미지': '네이버쇼핑(이미지링크)'
+    }
+    
+    for old_name, new_name in image_column_mapping.items():
         if old_name in df_improved.columns:
             cols_to_rename[old_name] = new_name
     
@@ -1987,17 +1998,28 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     # Step 5: Save Excel output if requested
     if save_excel_output:
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # Use company name instead of "0개" in filename
-            company_info = df_final['공급사명'].iloc[0] if '공급사명' in df_final.columns and len(df_final) > 0 else ""
-            row_count = len(df_final)
-            excel_output = f"{company_info}({row_count}개)_image_integration_{timestamp}.xlsx"
+            # If no output path provided, generate one
+            if not output_path:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                company_info = df_final['공급사명'].iloc[0] if '공급사명' in df_final.columns and len(df_final) > 0 else "Unknown"
+                row_count = len(df_final)
+                output_path = f"{company_info}({row_count}개)_image_integration_{timestamp}.xlsx"
             
             # Create the Excel file with images
-            create_excel_with_images(df_final, excel_output)
-            logger.info(f"Created Excel output file with images: {excel_output}")
+            excel_path = create_excel_with_images(df_final, output_path)
+            if excel_path:
+                logger.info(f"Created Excel output file with images: {excel_path}")
+            else:
+                logger.error("Failed to create Excel output file")
         except Exception as e:
             logger.error(f"Error creating Excel output: {e}")
+    
+    # Log final image counts
+    image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+    for col in image_columns:
+        if col in df_final.columns:
+            valid_images = df_final[col].apply(lambda x: isinstance(x, (dict, str)) and x not in ['-', '', None]).sum()
+            logger.info(f"{col} count after processing: {valid_images}")
     
     return df_final
 
