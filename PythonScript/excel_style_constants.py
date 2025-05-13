@@ -24,6 +24,7 @@ NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill
 RESULT_HEADER_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # Light green
 RESULT_HEADER_HEIGHT = 30
 RESULT_DATA_ROW_HEIGHT = 400  # Increased from 380 for better image display
+RESULT_ROW_HEIGHT = 400  # Same as RESULT_DATA_ROW_HEIGHT for consistency
 RESULT_IMAGE_CELL_WIDTH = 85   # Increased from 80
 RESULT_IMAGE_WIDTH = 160       # Increased from 80
 RESULT_IMAGE_HEIGHT = 160      # Increased from 80
@@ -96,4 +97,24 @@ UPLOAD_FILE_STYLES = {
         'border': DEFAULT_BORDER,
         'alignment': Alignment(vertical='center', wrap_text=True)
     }
+}
+
+# Image cell specific styling
+IMAGE_CELL_HEIGHT = 420  # Increased from 360 for larger images
+IMAGE_CELL_WIDTH = 60   # Increased from 44 for wider image cells
+
+# Error Messages Constants
+ERROR_MESSAGES = {
+    'no_match': '가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음',
+    'no_price_match': '가격이 범위내에 없거나 검색된 상품이 없음',
+    'low_similarity': '일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음',
+    'no_results': '검색 결과 0',
+    'no_image': '이미지를 찾을 수 없음',
+    'file_not_found': '-이미지 없음-',
+    'invalid_image': '유효하지 않은 이미지 형식',
+    'processing_error': '-처리 오류-',
+    'too_small': '이미지 크기가 너무 작음 (저해상도)',
+    'format_error': '지원하지 않는 이미지 형식',
+    'download_failed': '이미지 다운로드 실패',
+    'excel_limit': '이미지 크기가 Excel 제한을 초과함'
 } 
