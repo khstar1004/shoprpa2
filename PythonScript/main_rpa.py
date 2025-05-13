@@ -671,9 +671,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if not formatted_df.empty:
                         logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
 
-                    # First, validate and fix Naver image placement
+                    # First, validate and fix Naver image placement and URLs
                     if '네이버 이미지' in formatted_df.columns:
-                        from fix_naver_images import validate_and_fix_naver_image_placement, ensure_naver_local_images
+                        from fix_naver_images import validate_and_fix_naver_image_placement, ensure_naver_local_images, prepare_naver_columns_for_excel_output
                         
                         # Fix Naver image placement first
                         formatted_df = validate_and_fix_naver_image_placement(formatted_df)
@@ -684,21 +684,27 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         formatted_df = ensure_naver_local_images(formatted_df, naver_image_dir)
                         logging.info(f"Ensured local image paths for Naver images (dir: {naver_image_dir})")
                         
+                        # Explicitly prepare Naver columns with proper URLs (improved function)
+                        formatted_df = prepare_naver_columns_for_excel_output(formatted_df, is_upload_file=False)
+                        logging.info("Applied improved Naver URL handling for result file")
+                        
                         # Log sample of fixed images
                         fixed_count = 0
                         for idx, row in formatted_df.head(5).iterrows():
                             if '네이버 이미지' in row and isinstance(row['네이버 이미지'], dict):
                                 img_data = row['네이버 이미지']
-                                if 'local_path' in img_data and img_data['local_path'] and os.path.exists(img_data['local_path']):
-                                    fixed_count += 1
-                                    logging.info(f"Sample fixed Naver image #{fixed_count}: {img_data['local_path']}")
+                                # Log URL and local path
+                                url = img_data.get('url', 'None')
+                                path = img_data.get('local_path', 'None')
+                                fixed_count += 1
+                                logging.info(f"Sample Naver image #{fixed_count}: URL={url[:60]}..., Path={path}")
                         
                         if fixed_count > 0:
-                            logging.info(f"Found {fixed_count} valid local Naver images in sample")
+                            logging.info(f"Found {fixed_count} Naver images with URL/path in sample")
                         else:
-                            logging.warning("No valid local Naver images found in sample after fixing")
+                            logging.warning("No valid Naver images found in sample after fixing")
 
-                    # Perform image integration
+                    # Perform image integration with improved matching and filtering
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     logging.info("Image integration and filtering complete.")
 
@@ -819,7 +825,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if df_to_save is not None:
                             try:
                                 # Import the transformation function for Naver columns
-                                from fix_naver_images import transform_between_file_types
+                                from fix_naver_images import transform_between_file_types, prepare_naver_columns_for_excel_output
                                 
                                 # Create DataFrames for both result and upload files
                                 result_df = df_to_save.copy()
@@ -827,8 +833,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 
                                 # Transform DataFrames to have correct Naver image columns
                                 logging.info("Preparing Naver image columns for result and upload files...")
-                                result_df = transform_between_file_types(result_df, file_type='result')
-                                upload_df = transform_between_file_types(upload_df, file_type='upload')
+                                result_df = prepare_naver_columns_for_excel_output(result_df, is_upload_file=False)
+                                upload_df = prepare_naver_columns_for_excel_output(upload_df, is_upload_file=True)
                                 
                                 # Base output path
                                 output_base_path = output_path.replace('.xlsx', '')
@@ -849,6 +855,26 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 logging.info(f"Result file columns: {result_df.columns.tolist()}")
                                 logging.info(f"Upload file columns: {upload_df.columns.tolist()}")
                                 
+                                # Count valid Naver image URLs in each file
+                                result_naver_count = 0
+                                upload_naver_count = 0
+
+                                naver_col_result = '네이버 이미지'
+                                naver_col_upload = '네이버쇼핑(이미지링크)'
+
+                                if naver_col_result in result_df.columns:
+                                    for idx, row in result_df.iterrows():
+                                        if isinstance(row[naver_col_result], dict) and 'url' in row[naver_col_result] and row[naver_col_result]['url'].startswith(('http://', 'https://')):
+                                            result_naver_count += 1
+
+                                if naver_col_upload in upload_df.columns:
+                                    for idx, row in upload_df.iterrows():
+                                        if isinstance(row[naver_col_upload], str) and row[naver_col_upload].startswith(('http://', 'https://')):
+                                            upload_naver_count += 1
+
+                                logging.info(f"Result file contains {result_naver_count} valid Naver image URLs")
+                                logging.info(f"Upload file contains {upload_naver_count} valid Naver image URLs")
+
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
                                     logging.info("Successfully created both Excel files:")

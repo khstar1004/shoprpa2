@@ -1350,37 +1350,73 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 # New helper function to find a fallback Naver image when matching fails
 def find_best_fallback_naver_image(product_name, naver_images, row_data):
     """
-    상품 정보가 있지만 매칭된 이미지가 없는 경우, Naver 이미지 폴더에서 최선의 대체 이미지를 찾습니다.
+    When product info exists but no matched image is found, find the best fallback Naver image.
     
     Args:
-        product_name: 상품명
-        naver_images: 네이버 이미지 정보 딕셔너리
-        row_data: 현재 행의 데이터
+        product_name: Product name
+        naver_images: Naver image info dictionary
+        row_data: Current row data
         
     Returns:
-        찾은 이미지 정보 딕셔너리 또는 None
+        Found image info dictionary or None
     """
     try:
         if not naver_images:
             return None
             
-        # 1. Try to find any image with the same product name tokens
+        # 1. First attempt: Try to extract image URL directly from row data
+        naver_url = None
+        naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
+        
+        for link_col in naver_link_cols:
+            if link_col in row_data and isinstance(row_data[link_col], str) and row_data[link_col].strip() not in ['', '-', 'None', None]:
+                naver_url = row_data[link_col].strip()
+                break
+                
+        # If we have a URL, try to extract image URL patterns from it
+        if naver_url and naver_url.startswith(('http://', 'https://')):
+            # Extract potential image URL based on common Naver patterns
+            img_url = None
+            
+            # Pattern 1: main_{id}/{id} (most common)
+            product_id_match = re.search(r'(?:main|cat)_(\d+)', naver_url)
+            if product_id_match:
+                product_id = product_id_match.group(1)
+                img_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                
+                # Create image data with proper URL
+                image_data = {
+                    'source': 'naver',
+                    'url': img_url,
+                    'score': 0.8,  # High confidence since derived from actual product URL
+                    'product_name': product_name,
+                    'extract_method': 'url_pattern_match'
+                }
+                return image_data
+                
+        # 2. Try to find any image with high token similarity to product name
         product_tokens = tokenize_product_name(product_name)
         best_match = None
-        best_score = 0
+        best_score = 0.4  # Higher threshold for fallback matching
         
         for img_path, info in naver_images.items():
             img_tokens = info.get('tokens', [])
+            if not img_tokens:
+                continue
+                
             common_tokens = set(product_tokens) & set(img_tokens)
             
             if common_tokens:
-                similarity = len(common_tokens) / max(len(product_tokens), 1)
+                # Weight longer tokens more heavily
+                token_weight = sum(len(token) for token in common_tokens) / sum(len(token) for token in product_tokens) 
+                similarity = (len(common_tokens) / len(product_tokens)) * token_weight
+                
                 if similarity > best_score:
                     best_score = similarity
                     best_match = img_path
         
-        # If found a reasonable match
-        if best_match and best_score > 0.1:
+        # If found a good match with high similarity
+        if best_match and best_score >= 0.4:
             img_path_obj = naver_images.get(best_match, {}).get('path')
             if img_path_obj:
                 img_path = str(img_path_obj)
@@ -1388,282 +1424,276 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 # Verify the file exists 
                 if not os.path.exists(img_path):
                     logging.warning(f"Fallback Naver image path doesn't exist: {img_path}")
-                    # Try to find the file with different extensions
-                    base_path = os.path.splitext(img_path)[0]
-                    for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                        alt_path = f"{base_path}{ext}"
-                        if os.path.exists(alt_path):
-                            logging.info(f"Found alternative path for fallback Naver image: {alt_path}")
-                            img_path = alt_path
-                            break
-                    else:
-                        # If still not found, try _nobg version
-                        nobg_path = f"{base_path}_nobg.png"
-                        if os.path.exists(nobg_path):
-                            logging.info(f"Found _nobg version of fallback Naver image: {nobg_path}")
-                            img_path = nobg_path
+                    return None
                 
                 # Use absolute path to ensure Excel can find it
                 img_path = os.path.abspath(img_path)
                 
-                # Try to get a URL
+                # Try to get a URL - prioritize actual URL over local path
                 web_url = naver_images.get(best_match, {}).get('url', '')
                 
                 # Reject "front" URLs which are unreliable
                 if web_url and "pstatic.net/front/" in web_url:
-                    logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
-                    web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                    web_url = None
+                
+                # If we don't have a valid URL but have a local path, try to reconstruct a probable URL
+                if not web_url and img_path:
+                    file_name = os.path.basename(img_path)
+                    # Look for patterns like naver_{hash}.jpg or hash identifiers
+                    hash_match = re.search(r'([a-f0-9]{8,12})(?:\.jpg|\.png|_nobg\.png)?$', file_name)
+                    if hash_match:
+                        hash_val = hash_match.group(1)
+                        # Try to find the URL from existing images with this hash
+                        for other_path, other_info in naver_images.items():
+                            if hash_val in str(other_path) and 'url' in other_info and other_info['url']:
+                                web_url = other_info['url']
+                                break
                 
                 image_data = {
                     'local_path': img_path,
                     'source': 'naver',
-                    'url': web_url,
-                    'original_path': img_path,
+                    'url': web_url if web_url else '',
+                    'original_path': str(img_path),
                     'score': best_score,
                     'product_name': product_name,
-                    'fallback': True  # Mark as fallback
+                    'match_method': 'token_similarity'
                 }
                 
-                # Final verification - does the file actually exist and have size > 0?
+                # Final verification
                 if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                    logging.info(f"Verified fallback Naver image exists: {img_path} ({os.path.getsize(img_path)} bytes)")
+                    logging.info(f"Found high-quality fallback Naver image with score {best_score:.2f}: {img_path}")
                     return image_data
-                else:
-                    logging.warning(f"Fallback Naver image verification failed - file missing or empty: {img_path}")
                 
-        # 2. If no matching image found, try to get any available Naver image as fallback
-        if not best_match:
-            # Just use the first available image
-            for img_path, info in naver_images.items():
-                img_path_obj = info.get('path')
-                if img_path_obj:
-                    img_path = str(img_path_obj)
-                    
-                    # Verify file exists and use absolute path
-                    if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                        img_path = os.path.abspath(img_path)
-                        web_url = info.get('url', '')
-                        
-                        # Reject "front" URLs which are unreliable
-                        if web_url and "pstatic.net/front/" in web_url:
-                            logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
-                            web_url = ''  # Clear the URL to prevent using invalid "front" URLs
-                        
-                        image_data = {
-                            'local_path': img_path,
-                            'source': 'naver',
-                            'url': web_url,
-                            'original_path': img_path,
-                            'score': 0.1,  # Very low score since it's just a random image
-                            'product_name': product_name,
-                            'fallback': True  # Mark as fallback
-                        }
-                        logging.info(f"Using random fallback Naver image: {img_path}")
-                        return image_data
-        
-        # 3. If all else fails, look in the Naver directory for any image
-        try:
-            # Get the Naver directory path
-            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-            naver_dir = os.path.join(base_img_dir, 'Main', 'Naver')
-            
-            if os.path.exists(naver_dir):
-                # List all image files
-                image_files = []
-                for ext in ['*.jpg', '*.jpeg', '*.png', '*.gif']:
-                    image_files.extend(glob.glob(os.path.join(naver_dir, ext)))
-                
-                if image_files:
-                    # Use the first image file
-                    img_path = image_files[0]
-                    logging.info(f"Using first available Naver image as last resort: {img_path}")
-                    
-                    return {
-                        'local_path': img_path,
-                        'source': 'naver',
-                        'url': '',
-                        'original_path': img_path,
-                        'score': 0.05,  # Very low score
-                        'product_name': product_name,
-                        'fallback': True,
-                        'last_resort': True
-                    }
-        except Exception as e:
-            logging.error(f"Error looking for last resort Naver image: {e}")
-        
+        # 3. No suitable matches found - return None
+        logging.info(f"No suitable fallback Naver image found for '{product_name}'")
         return None
+        
     except Exception as e:
-        logging.error(f"대체 네이버 이미지 검색 중 오류 발생: {e}")
+        logging.error(f"Error finding fallback Naver image: {e}")
         return None
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
-    이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
-    임계값보다 낮은 유사도를 가진 이미지는 표시하지 않습니다.
-    해오름(본사) 이미지는 유사도에 관계없이 항상 유지합니다.
+    Filter Kogift and Naver images based on similarity.
+    Images with similarity below threshold won't be displayed.
+    Haoreum (company) images are always kept regardless of similarity.
     
     Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
+        df: DataFrame to process
+        config: Configuration file
     
     Returns:
-        필터링된 DataFrame
+        Filtered DataFrame
     """
     try:
-        # DataFrame 복사본 생성
+        # Create copy of DataFrame
         result_df = df.copy()
         
-        # 임계값 설정 - 설정 파일에서 가져오거나 기본값 사용
+        # Set threshold from config or use default
         try:
-            # FIXED: 이미지 표시 임계값을 더 낮게 설정 - 0.05에서 0.01로 대폭 인하하여 거의 모든 매칭 유지
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
-            # 필터링이 사실상 비활성화되어 있음을 표시
-            logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (매우 낮은 임계값으로 대부분의 매칭을 유지)")
+            # Use a more reasonable threshold to ensure quality images
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.3)
+            logging.info(f"Image similarity threshold: {similarity_threshold}")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.01을 사용합니다.")
-            similarity_threshold = 0.01
+            logging.warning(f"Error reading threshold: {e}. Using default 0.3")
+            similarity_threshold = 0.3
         
-        # -------------------------------------------------------------
-        # 이미지 유사도 필터링
-        # -------------------------------------------------------------
-        # 필터링 기준:
-        #   • '이미지_유사도' 컬럼이 존재하고 수치형 값 < similarity_threshold
-        #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
-        #   • 유사도 정보가 없거나 파싱 실패 → 그대로 둠 (보수적)
-        #   • 이미지 데이터가 딕셔너리 형태인 경우, 'score' 키의 값 < similarity_threshold
-        #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
-
-        # 필터링 임계값을 매우 낮게 설정하여 대부분의 매칭을 유지
-        # Remove the redundant filtering block based on the old '이미지_유사도' column.
-        # The filtering is now done based on the 'score' key in the image dictionary below.
-        logging.debug("Skipping obsolete filtering based on '이미지_유사도' column.")
-
-        # 너무 낮은 점수에만 필터링 적용 (대부분 유지)
-        filtered_count = 0
-        rows_affected = set() # Track unique rows affected
-        # Define Haereum column name
-        haoreum_col_name = '본사 이미지'
-        kogift_col_name = '고려기프트 이미지'
-
-        # Double check Koreagift product info and image pairing
-        kogift_mismatch_count = 0
-        for idx, row in result_df.iterrows():
-            # Ensure Koreagift product info and image are paired correctly
-            # First, check if Koreagift product info exists
-            has_kogift_info = False
-            
-            # Check for Koreagift link
-            kogift_link_col = '고려기프트 상품링크'
-            if kogift_link_col in row and row[kogift_link_col]:
-                if isinstance(row[kogift_link_col], str) and row[kogift_link_col].strip() not in ['', '-', 'None', None]:
-                    has_kogift_info = True
-            
-            # Check for Koreagift price
-            if not has_kogift_info:
-                kogift_price_col = '판매가(V포함)(2)'
-                if kogift_price_col in row and pd.notna(row[kogift_price_col]) and row[kogift_price_col] not in [0, '-', '', None]:
-                    has_kogift_info = True
+        # Verify Naver image structure and URLs
+        naver_col_name = '네이버 이미지'
+        fixed_count = 0
+        added_urls = 0
+        
+        if naver_col_name in result_df.columns:
+            for idx in range(len(result_df)):
+                if idx >= len(result_df):
+                    continue
                     
-            # Check for alternative price column
-            if not has_kogift_info:
-                alt_kogift_price_col = '판매단가(V포함)(2)'
-                if alt_kogift_price_col in row and pd.notna(row[alt_kogift_price_col]) and row[alt_kogift_price_col] not in [0, '-', '', None]:
-                    has_kogift_info = True
-            
-            # Check if Koreagift image exists
-            has_kogift_image = isinstance(row[kogift_col_name], dict) if kogift_col_name in row else False
-            
-            # If mismatch found, fix it by removing the image if no product info exists
-            if has_kogift_image and not has_kogift_info:
-                logging.warning(f"Row {idx}: Found Koreagift image without product info during filtering. Removing image.")
-                result_df.at[idx, kogift_col_name] = '-'
-                kogift_mismatch_count += 1
-                rows_affected.add(idx)
-                filtered_count += 1
-
-        # Now apply similarity filtering on remaining images
-        for idx, row in result_df.iterrows():
-            # Check Naver product info existence first
+                # Get Naver image data
+                img_data = result_df.at[idx, naver_col_name]
+                
+                # Skip non-dictionary or empty data
+                if not isinstance(img_data, dict):
+                    continue
+                    
+                # Ensure URL exists and is valid
+                if 'url' not in img_data or not img_data['url'] or 'pstatic.net/front/' in img_data['url']:
+                    # Try to extract URL from row for Naver
+                    naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
+                    naver_url = None
+                    
+                    for link_col in naver_link_cols:
+                        if link_col in result_df.columns and pd.notna(result_df.at[idx, link_col]):
+                            url_val = result_df.at[idx, link_col]
+                            if isinstance(url_val, str) and url_val.strip() not in ['', '-', 'None'] and url_val.startswith(('http://', 'https://')):
+                                naver_url = url_val.strip()
+                                break
+                    
+                    if naver_url:
+                        # Try to extract image URL pattern
+                        product_id_match = re.search(r'(?:main|cat)_(\d+)', naver_url)
+                        if product_id_match:
+                            product_id = product_id_match.group(1)
+                            img_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                            img_data['url'] = img_url
+                            result_df.at[idx, naver_col_name] = img_data
+                            added_urls += 1
+                            logging.info(f"Row {idx}: Added missing Naver image URL: {img_url}")
+                        else:
+                            # If pattern not found, use product URL directly
+                            img_data['url'] = naver_url
+                            result_df.at[idx, naver_col_name] = img_data
+                            added_urls += 1
+                            logging.info(f"Row {idx}: Using product URL as image URL: {naver_url}")
+        
+        # Pre-compute Naver product info existence
+        naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
+        naver_price_cols = ['판매단가(V포함)(3)', '네이버 판매단가', '판매단가3 (VAT포함)', '네이버 기본수량']
+        
+        naver_product_info_exists = []
+        for idx in range(len(result_df)):
+            if idx >= len(result_df):
+                naver_product_info_exists.append(False)
+                continue
+                
+            row_data = result_df.iloc[idx]
             has_naver_info = False
             
-            # Check all possible Naver info columns
-            naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
+            # Check for Naver link
             for link_col in naver_link_cols:
-                if link_col in row and row[link_col]:
-                    if isinstance(row[link_col], str) and row[link_col].strip() not in ['', '-', 'None', None]:
+                if link_col in row_data and row_data[link_col]:
+                    if isinstance(row_data[link_col], str) and row_data[link_col].strip() not in ['', '-', 'None', None]:
                         has_naver_info = True
                         break
             
-            # Check Naver price columns
-            naver_price_cols = ['판매단가(V포함)(3)', '네이버 판매단가', '판매단가3 (VAT포함)']
-            for price_col in naver_price_cols:
-                if not has_naver_info and price_col in row and pd.notna(row[price_col]) and row[price_col] not in [0, '-', '', None]:
-                    has_naver_info = True
-                    break
+            # Check for Naver price
+            if not has_naver_info:
+                for price_col in naver_price_cols:
+                    if price_col in row_data and pd.notna(row_data[price_col]) and row_data[price_col] not in [0, '-', '', None]:
+                        has_naver_info = True
+                        break
+            
+            naver_product_info_exists.append(has_naver_info)
+        
+        # Apply filtering based on similarity
+        filtered_count = 0
+        rows_affected = set()
+        
+        # Filter Kogift and Naver images, keep Haoreum images
+        for idx in range(len(result_df)):
+            if idx >= len(result_df):
+                continue
+                
+            # Filter Naver images by quality and product info
+            if naver_col_name in result_df.columns:
+                img_data = result_df.at[idx, naver_col_name]
+                has_naver_info = naver_product_info_exists[idx]
+                
+                if isinstance(img_data, dict):
+                    # If has Naver product info but no URL, try to add one
+                    if has_naver_info and ('url' not in img_data or not img_data['url']):
+                        for link_col in naver_link_cols:
+                            if link_col in result_df.columns and pd.notna(result_df.at[idx, link_col]):
+                                url_val = result_df.at[idx, link_col]
+                                if isinstance(url_val, str) and url_val.strip() not in ['', '-', 'None']:
+                                    img_data['url'] = url_val.strip()
+                                    result_df.at[idx, naver_col_name] = img_data
+                                    added_urls += 1
+                                    break
                     
-            # Iterate only through Kogift and Naver columns for filtering
-            for col_name in ['고려기프트 이미지', '네이버 이미지']:
-                if col_name not in result_df.columns:
-                    continue
+                    # Apply filtering based on score and product info
+                    if 'score' in img_data:
+                        try:
+                            score = float(img_data['score'])
+                            # Filter out low-score images when no Naver product info exists
+                            if score < similarity_threshold and not has_naver_info:
+                                result_df.at[idx, naver_col_name] = '-'
+                                filtered_count += 1
+                                rows_affected.add(idx)
+                                continue
+                            # If score is very low even with product info, clear the image
+                            elif score < 0.1 and has_naver_info:
+                                # Create a minimal image data with just the URL from product link
+                                for link_col in naver_link_cols:
+                                    if link_col in result_df.columns and pd.notna(result_df.at[idx, link_col]):
+                                        url_val = result_df.at[idx, link_col]
+                                        if isinstance(url_val, str) and url_val.strip() not in ['', '-', 'None']:
+                                            # Replace with minimal data
+                                            result_df.at[idx, naver_col_name] = {
+                                                'source': 'naver',
+                                                'url': url_val.strip(),
+                                                'score': 0.2,
+                                                'product_name': img_data.get('product_name', 'Unknown')
+                                            }
+                                            fixed_count += 1
+                                            break
+                        except (ValueError, TypeError):
+                            logging.warning(f"Invalid score value '{img_data.get('score')}' at index {idx}")
                 
-                # Skip Naver filtering if there's Naver product info
-                if col_name == '네이버 이미지' and has_naver_info:
-                    logging.debug(f"Row {idx}: Skipping Naver image filtering because Naver product info exists")
-                    continue
+                # Handle case where Naver product info exists but no image
+                elif has_naver_info and (img_data == '-' or img_data is None or pd.isna(img_data)):
+                    # Try to create minimal image data with URL
+                    for link_col in naver_link_cols:
+                        if link_col in result_df.columns and pd.notna(result_df.at[idx, link_col]):
+                            url_val = result_df.at[idx, link_col]
+                            if isinstance(url_val, str) and url_val.strip() not in ['', '-', 'None']:
+                                # Create minimal data
+                                result_df.at[idx, naver_col_name] = {
+                                    'source': 'naver',
+                                    'url': url_val.strip(),
+                                    'score': 0.2,
+                                    'product_name': result_df.at[idx, '상품명'] if '상품명' in result_df.columns else 'Unknown'
+                                }
+                                fixed_count += 1
+                                break
+        
+        # After filtering, do a final check to ensure all required images have at least URLs
+        for idx in range(len(result_df)):
+            if idx >= len(result_df):
+                continue
                 
-                # Explicitly skip Haereum column if it somehow gets included here (redundant safety check)
-                if col_name == haoreum_col_name:
-                    logging.debug(f"Skipping Haereum column '{haoreum_col_name}' in similarity filtering loop at index {idx}")
-                    continue
-
-                img_data = row[col_name]
+            # Make sure all Naver products with info have at least a URL
+            if naver_product_info_exists[idx] and naver_col_name in result_df.columns:
+                img_data = result_df.at[idx, naver_col_name]
                 
-                # Check if it's a dictionary and contains a score
-                if isinstance(img_data, dict) and 'score' in img_data:
-                    try:
-                        score = float(img_data['score'])
-                        # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
-                        if score < similarity_threshold:
-                            result_df.at[idx, col_name] = '-' # Filter out very low-score image
-                            filtered_count += 1
-                            rows_affected.add(idx)
-                    except (ValueError, TypeError):
-                        # If score is not a valid number, keep the image data (conservative approach)
-                        logging.warning(f"Invalid score value '{img_data.get('score')}' found in {col_name} at index {idx}. Skipping filtering for this cell.")
-                # If not a dict with score, or already filtered ('-'), leave it as is
-
-        # Log count based on unique rows affected
+                # If data was removed or never existed, but product info exists
+                if img_data == '-' or img_data is None or pd.isna(img_data):
+                    # Try to add minimal data with URL
+                    for link_col in naver_link_cols:
+                        if link_col in result_df.columns and pd.notna(result_df.at[idx, link_col]):
+                            url_val = result_df.at[idx, link_col]
+                            if isinstance(url_val, str) and url_val.strip() not in ['', '-', 'None']:
+                                # Create minimal data with just URL
+                                result_df.at[idx, naver_col_name] = {
+                                    'source': 'naver',
+                                    'url': url_val.strip(),
+                                    'score': 0.2,
+                                    'product_name': result_df.at[idx, '상품명'] if '상품명' in result_df.columns else 'Unknown'
+                                }
+                                fixed_count += 1
+                                break
+        
+        # Log filtering results
         final_filtered_count = len(rows_affected)
-        logging.info(f"통합: 이미지 점수 기준으로 고려/네이버 이미지를 필터링 ({filtered_count}개 셀 수정됨, {final_filtered_count}개 행 영향 받음, 임계값 < {similarity_threshold})")
-        if kogift_mismatch_count > 0:
-            logging.info(f"통합: {kogift_mismatch_count}개의 고려기프트 이미지/상품정보 불일치 수정됨")
-        logging.info(f"통합: 해오름 이미지는 점수와 관계없이 유지됩니다.")
+        logging.info(f"Image filtering: {filtered_count} cells modified, {final_filtered_count} rows affected, threshold < {similarity_threshold}")
+        if fixed_count > 0:
+            logging.info(f"Fixed {fixed_count} Naver image entries that had issues")
+        if added_urls > 0:
+            logging.info(f"Added {added_urls} missing URLs to Naver images")
         
-        # 이미지 존재 여부 확인 로깅
-        haereum_count = 0
-        kogift_count = 0
-        naver_count = 0
+        # Log image counts
+        haereum_count = sum(1 for i in range(len(result_df)) if '본사 이미지' in result_df.columns and 
+                        isinstance(result_df.iloc[i]['본사 이미지'], dict))
+        kogift_count = sum(1 for i in range(len(result_df)) if '고려기프트 이미지' in result_df.columns and 
+                       isinstance(result_df.iloc[i]['고려기프트 이미지'], dict))
+        naver_count = sum(1 for i in range(len(result_df)) if naver_col_name in result_df.columns and 
+                      isinstance(result_df.iloc[i][naver_col_name], dict))
         
-        for i in range(len(result_df)):
-            # 이미지 열별 존재 카운트
-            if '본사 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['본사 이미지']) and result_df.iloc[i]['본사 이미지'] not in [None, '-', '']:
-                    haereum_count += 1
-                    
-            if '고려기프트 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['고려기프트 이미지']) and result_df.iloc[i]['고려기프트 이미지'] not in [None, '-', '']:
-                    kogift_count += 1
-                    
-            if '네이버 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['네이버 이미지']) and result_df.iloc[i]['네이버 이미지'] not in [None, '-', '']:
-                    naver_count += 1
-        
-        logging.info(f"통합: 이미지 현황 (필터링 후) - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
+        logging.info(f"Image counts after filtering: Haoreum: {haereum_count}, Kogift: {kogift_count}, Naver: {naver_count}")
         return result_df
     
     except Exception as e:
-        logging.error(f"통합: 이미지 유사도 필터링 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
+        logging.error(f"Error during image similarity filtering: {e}", exc_info=True)
+        # Return original DataFrame on error
         return df
 
 def create_excel_with_images(df, output_file):

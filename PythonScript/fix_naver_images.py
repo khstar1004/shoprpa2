@@ -615,19 +615,63 @@ def prepare_naver_columns_for_excel_output(df: pd.DataFrame, is_upload_file: boo
         # For upload file: Create column with only URLs
         urls = []
         for idx, row in result_df.iterrows():
-            if pd.isna(row[result_col_name]) or row[result_col_name] == '-':
-                urls.append('-')
-                continue
-                
-            url = None
-            # Extract URL from dictionary structure
-            if isinstance(row[result_col_name], dict):
-                url = row[result_col_name].get('url', None)
-            # Handle string URLs
-            elif isinstance(row[result_col_name], str) and row[result_col_name].startswith(('http://', 'https://')):
-                url = row[result_col_name]
+            url = '-'  # Default value if no valid URL is found
             
-            urls.append(url if url else '-')
+            if pd.notna(row[result_col_name]) and row[result_col_name] != '-':
+                # Extract URL from dictionary structure
+                if isinstance(row[result_col_name], dict):
+                    # Prioritize URL key
+                    if 'url' in row[result_col_name] and isinstance(row[result_col_name]['url'], str) and row[result_col_name]['url'].strip():
+                        url = row[result_col_name]['url'].strip()
+                    # Also check product_url if present
+                    elif 'product_url' in row[result_col_name] and isinstance(row[result_col_name]['product_url'], str) and row[result_col_name]['product_url'].strip():
+                        url = row[result_col_name]['product_url'].strip()
+                    # Fall back to local_path if no URL is found
+                    elif 'local_path' in row[result_col_name] and row[result_col_name]['local_path'] and not url.startswith(('http://', 'https://')):
+                        # Try to extract a URL from the local path
+                        local_path = row[result_col_name]['local_path']
+                        # Check if we can derive a URL from a pattern in the filename
+                        try:
+                            file_name = os.path.basename(local_path)
+                            # Look for patterns like naver_{hash}.jpg or hash identifiers
+                            if 'naver_' in file_name:
+                                # Check for product ID patterns in other columns
+                                for link_col in ['네이버 쇼핑 링크', '네이버 링크']:
+                                    if link_col in row and isinstance(row[link_col], str) and row[link_col].startswith(('http://', 'https://')):
+                                        product_url = row[link_col]
+                                        product_id_match = re.search(r'(?:main|cat)_(\d+)', product_url)
+                                        if product_id_match:
+                                            product_id = product_id_match.group(1)
+                                            url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                            break
+                        except Exception as e:
+                            logger.warning(f"Failed to extract URL from local path: {e}")
+                # Handle string URLs
+                elif isinstance(row[result_col_name], str) and row[result_col_name].startswith(('http://', 'https://')):
+                    url = row[result_col_name]
+                
+                # Check if URL is valid, if not, try to find one in other columns
+                if url == '-' or not url.startswith(('http://', 'https://')):
+                    # Try to find URL in Naver product link columns
+                    for link_col in ['네이버 쇼핑 링크', '네이버 링크']:
+                        if link_col in row and isinstance(row[link_col], str) and row[link_col].startswith(('http://', 'https://')):
+                            product_url = row[link_col]
+                            # Try to extract image URL pattern
+                            product_id_match = re.search(r'(?:main|cat)_(\d+)', product_url)
+                            if product_id_match:
+                                product_id = product_id_match.group(1)
+                                url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                break
+                            else:
+                                # If no pattern found, use product URL as fallback
+                                url = product_url
+                                break
+            
+            # Verify URL is in correct format
+            if not url.startswith(('http://', 'https://')) and url != '-':
+                url = '-'  # Reset to default if not valid
+                
+            urls.append(url)
         
         # Add upload column
         result_df[upload_col_name] = urls
@@ -636,12 +680,49 @@ def prepare_naver_columns_for_excel_output(df: pd.DataFrame, is_upload_file: boo
         if result_col_name in result_df.columns:
             result_df = result_df.drop(columns=[result_col_name])
             
-        logger.info(f"Created '{upload_col_name}' column for upload file with URLs only")
+        logger.info(f"Created '{upload_col_name}' column for upload file with URLs only: {len([u for u in urls if u != '-'])} valid URLs")
         
     else:
         # For result file: Ensure correct format with both local paths and URLs
-        # This is already handled by validate_and_fix_naver_image_placement and ensure_naver_local_images
-        logger.info(f"Maintained '{result_col_name}' column for result file with both paths and URLs")
+        fixed_count = 0
+        for idx, row in result_df.iterrows():
+            if pd.isna(row[result_col_name]) or row[result_col_name] == '-':
+                continue
+                
+            img_data = row[result_col_name]
+            
+            if isinstance(img_data, dict):
+                # Check if URL exists and is valid
+                if 'url' not in img_data or not img_data['url'] or not img_data['url'].startswith(('http://', 'https://')):
+                    # Try to find URL from product link
+                    for link_col in ['네이버 쇼핑 링크', '네이버 링크']:
+                        if link_col in row and isinstance(row[link_col], str) and row[link_col].startswith(('http://', 'https://')):
+                            product_url = row[link_col]
+                            # Try to extract image URL pattern
+                            product_id_match = re.search(r'(?:main|cat)_(\d+)', product_url)
+                            if product_id_match:
+                                product_id = product_id_match.group(1)
+                                img_data['url'] = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                result_df.at[idx, result_col_name] = img_data
+                                fixed_count += 1
+                                break
+                            else:
+                                # If no pattern found, use product URL
+                                img_data['url'] = product_url
+                                result_df.at[idx, result_col_name] = img_data
+                                fixed_count += 1
+                                break
+            elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
+                # Convert string URL to dictionary format
+                result_df.at[idx, result_col_name] = {
+                    'url': img_data,
+                    'local_path': '',
+                    'source': 'naver'
+                }
+                fixed_count += 1
+        
+        if fixed_count > 0:
+            logger.info(f"Fixed {fixed_count} Naver image entries in result file to ensure proper URL format")
     
     return result_df
 
