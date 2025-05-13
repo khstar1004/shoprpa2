@@ -27,6 +27,8 @@ from datetime import datetime
 import asyncio
 import aiohttp
 import ast
+import random
+from playwright.async_api import Page
 
 # Import the new NaverImageHandler
 try:
@@ -274,9 +276,16 @@ def fix_excel_file(input_file, output_file=None):
         if not output_file:
             base_name = os.path.basename(input_file)
             file_name, ext = os.path.splitext(base_name)
-            output_file = os.path.join(os.path.dirname(input_file), f"{file_name}_naver_fixed{ext}")
+            output_dir = os.path.join('C:', 'RPA', 'Output')
+            os.makedirs(output_dir, exist_ok=True)
+            output_file = os.path.join(output_dir, f"{file_name}_naver_fixed{ext}")
+        
+        # Ensure output directory exists
+        output_dir = os.path.dirname(os.path.abspath(output_file))
+        os.makedirs(output_dir, exist_ok=True)
         
         logger.info(f"Processing Excel file: {input_file}")
+        logger.info(f"Output will be saved to: {output_file}")
         
         # Read Excel file
         df = pd.read_excel(input_file)
@@ -288,6 +297,11 @@ def fix_excel_file(input_file, output_file=None):
         fixed_df.to_excel(output_file, index=False)
         logger.info(f"Saved fixed Excel file to: {output_file}")
         
+        # Verify file was created
+        if not os.path.exists(output_file):
+            logger.error(f"Failed to create output file: {output_file}")
+            return None
+            
         return output_file
         
     except Exception as e:
@@ -496,10 +510,18 @@ def main():
         filename, ext = os.path.splitext(input_basename)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.output = os.path.join(output_dir, f"{filename}_fixed_{timestamp}{ext}")
+    else:
+        # If output path is specified but directory doesn't exist, create it
+        output_parent_dir = os.path.dirname(args.output)
+        if output_parent_dir:
+            os.makedirs(output_parent_dir, exist_ok=True)
+    
+    # Ensure the output directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     
     result = fix_excel_file(args.input, args.output)
     
-    if result:
+    if result and os.path.exists(result):
         print(f"✅ Successfully fixed Naver images.")
         print(f"✅ Output saved to: {result}")
         return 0
@@ -643,23 +665,28 @@ async def ensure_naver_local_images_async(df: pd.DataFrame, naver_image_dir: str
                         
                     img_data = row['네이버 이미지']
                     url = None
+                    local_path = None
                     
-                    # Get URL from dictionary or string
-                    if isinstance(img_data, dict) and 'url' in img_data:
-                        url = img_data['url']
+                    # Get URL and local path from dictionary or string
+                    if isinstance(img_data, dict):
+                        url = img_data.get('url')
+                        local_path = img_data.get('local_path')
                     elif isinstance(img_data, str) and img_data.startswith('http'):
                         url = img_data
+                    
+                    # Skip if we already have a valid local path
+                    if local_path and os.path.exists(local_path) and os.path.getsize(local_path) > 1000:
+                        logging.debug(f"Image already exists at {local_path}, skipping download")
+                        continue
                     
                     if url and 'shopping-phinf.pstatic.net' in url:
                         # Create filename from URL
                         filename = f"naver_{hashlib.md5(url.encode()).hexdigest()[:10]}.jpg"
                         filepath = os.path.join(naver_image_dir, filename)
                         
-                        if not os.path.exists(filepath):
-                            task = asyncio.create_task(download_image(session, url, filepath))
-                            tasks.append((idx, url, filepath, task))
-                        else:
-                            logging.info(f"Image already exists: {filepath}")
+                        # Skip if file already exists and is valid
+                        if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:
+                            logging.debug(f"Image already exists at {filepath}, skipping download")
                             # Update DataFrame with existing file
                             if isinstance(img_data, dict):
                                 img_data['local_path'] = filepath
@@ -670,6 +697,10 @@ async def ensure_naver_local_images_async(df: pd.DataFrame, naver_image_dir: str
                                     'local_path': filepath,
                                     'source': 'naver'
                                 }
+                            continue
+                            
+                        task = asyncio.create_task(download_image(session, url, filepath))
+                        tasks.append((idx, url, filepath, task))
                 except Exception as e:
                     logging.error(f"Error processing row {idx}: {e}")
                     continue
@@ -738,6 +769,58 @@ def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str) -> pd.Data
     except Exception as e:
         logging.error(f"Error in ensure_naver_local_images: {e}")
         return df
+
+async def handle_captcha(page: Page) -> bool:
+    """캡차 처리 함수"""
+    try:
+        captcha_selectors = [
+            'form#captcha_form', 
+            'img[alt*="captcha"]', 
+            'div.captcha_wrap',
+            'input[name="captchaBotKey"]',
+            'div[class*="captcha"]'
+        ]
+        
+        for selector in captcha_selectors:
+            if await page.query_selector(selector):
+                logger.info("CAPTCHA detected, waiting and retrying...")
+                
+                # 브라우저 재시작
+                context = page.context
+                browser = context.browser
+                
+                # 새 컨텍스트 생성
+                new_context = await browser.new_context(
+                    viewport={"width": 1366, "height": 768},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    java_script_enabled=True
+                )
+                
+                # 랜덤 대기
+                await asyncio.sleep(random.uniform(3.0, 5.0))
+                
+                # 새 페이지로 다시 시도
+                new_page = await new_context.new_page()
+                await new_page.goto(page.url, wait_until='networkidle')
+                
+                # 캡차가 여전히 있는지 확인
+                still_has_captcha = False
+                for selector in captcha_selectors:
+                    if await new_page.query_selector(selector):
+                        still_has_captcha = True
+                        break
+                
+                if not still_has_captcha:
+                    return True
+                
+                # 이전 컨텍스트 정리
+                await context.close()
+                return False
+                
+        return True
+    except Exception as e:
+        logger.error(f"Error handling CAPTCHA: {e}")
+        return False
 
 if __name__ == "__main__":
     sys.exit(main()) 
