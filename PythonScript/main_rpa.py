@@ -639,6 +639,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         output_path = None
         if input_filename:
             try:
+                # Get base name without extension for output file naming
+                input_filename_base = os.path.splitext(input_filename)[0]
+                
                 # First ensure that all image URLs are properly included
                 logging.info("Formatting product data with image URLs for output...")
                 
