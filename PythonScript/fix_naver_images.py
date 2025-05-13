@@ -478,116 +478,6 @@ def validate_and_fix_naver_image_placement(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"Naver image validation complete: {fixed_count} fixed, {removed_count} removed")
     return result_df
 
-# Add a new helper function to ensure local image paths for Naver images
-async def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str) -> pd.DataFrame:
-    """Download Naver images from API URLs."""
-    import aiohttp
-    import asyncio
-    import os
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(naver_image_dir, exist_ok=True)
-    logging.info(f"Saving images to: {naver_image_dir}")
-    
-    async def download_image(session, url, filepath):
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    with open(filepath, 'wb') as f:
-                        f.write(content)
-                    logging.info(f"Successfully downloaded: {url}")
-                    return True
-                else:
-                    logging.warning(f"Failed to download {url}, status: {response.status}")
-                    return False
-        except Exception as e:
-            logging.error(f"Error downloading {url}: {e}")
-            return False
-
-    async def process_images():
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for idx, row in df.iterrows():
-                try:
-                    if '네이버 이미지' not in row or pd.isna(row['네이버 이미지']):
-                        continue
-                        
-                    img_data = row['네이버 이미지']
-                    url = None
-                    
-                    # Get URL from dictionary or string
-                    if isinstance(img_data, dict) and 'url' in img_data:
-                        url = img_data['url']
-                    elif isinstance(img_data, str) and img_data.startswith('http'):
-                        url = img_data
-                    
-                    if url and 'shopping-phinf.pstatic.net' in url:
-                        # Create filename from URL
-                        filename = f"naver_{hashlib.md5(url.encode()).hexdigest()[:10]}.jpg"
-                        filepath = os.path.join(naver_image_dir, filename)
-                        
-                        if not os.path.exists(filepath):
-                            task = asyncio.create_task(download_image(session, url, filepath))
-                            tasks.append((idx, url, filepath, task))
-                        else:
-                            logging.info(f"Image already exists: {filepath}")
-                            # Update DataFrame with existing file
-                            if isinstance(img_data, dict):
-                                img_data['local_path'] = filepath
-                                df.at[idx, '네이버 이미지'] = img_data
-                            else:
-                                df.at[idx, '네이버 이미지'] = {
-                                    'url': url,
-                                    'local_path': filepath,
-                                    'source': 'naver'
-                                }
-                except Exception as e:
-                    logging.error(f"Error processing row {idx}: {e}")
-                    continue
-            
-            if tasks:
-                results = await asyncio.gather(*(t[3] for t in tasks), return_exceptions=True)
-                for (idx, url, filepath, _), success in zip(tasks, results):
-                    if success:
-                        current_data = df.at[idx, '네이버 이미지']
-                        if isinstance(current_data, dict):
-                            current_data['local_path'] = filepath
-                            df.at[idx, '네이버 이미지'] = current_data
-                        else:
-                            df.at[idx, '네이버 이미지'] = {
-                                'url': url,
-                                'local_path': filepath,
-                                'source': 'naver'
-                            }
-    
-    try:
-        # Get or create event loop
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Run downloads
-        loop.run_until_complete(process_images())
-        
-        # Count successful downloads
-        downloaded = sum(1 for _, row in df.iterrows() 
-                        if isinstance(row.get('네이버 이미지'), dict) 
-                        and row['네이버 이미지'].get('local_path')
-                        and os.path.exists(row['네이버 이미지']['local_path']))
-        
-        logging.info(f"Successfully downloaded {downloaded} Naver images")
-        
-    except Exception as e:
-        logging.error(f"Error in image download process: {e}")
-    
-    return df
-
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='Fix Naver images in Excel files')
@@ -595,6 +485,17 @@ def main():
     parser.add_argument('--output', '-o', help='Output Excel file path (optional)')
     
     args = parser.parse_args()
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.join('C:', 'RPA', 'Output')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # If no output path specified, create one based on input filename
+    if not args.output:
+        input_basename = os.path.basename(args.input)
+        filename, ext = os.path.splitext(input_basename)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output = os.path.join(output_dir, f"{filename}_fixed_{timestamp}{ext}")
     
     result = fix_excel_file(args.input, args.output)
     
@@ -705,6 +606,111 @@ def transform_between_file_types(df: pd.DataFrame, file_type: str) -> pd.DataFra
             logger.info(f"Created '{result_col_name}' column from '{upload_col_name}' column")
         
         return df 
+
+async def download_image(session, url, filepath):
+    """Download an image from a URL and save it to filepath."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                content = await response.read()
+                with open(filepath, 'wb') as f:
+                    f.write(content)
+                logging.info(f"Successfully downloaded: {url}")
+                return True
+            else:
+                logging.warning(f"Failed to download {url}, status: {response.status}")
+                return False
+    except Exception as e:
+        logging.error(f"Error downloading {url}: {e}")
+        return False
+
+async def ensure_naver_local_images_async(df: pd.DataFrame, naver_image_dir: str) -> pd.DataFrame:
+    """Async version of ensure_naver_local_images"""
+    try:
+        # Create output directory if it doesn't exist
+        os.makedirs(naver_image_dir, exist_ok=True)
+        logging.info(f"Saving images to: {naver_image_dir}")
+        
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for idx, row in df.iterrows():
+                try:
+                    if '네이버 이미지' not in row or pd.isna(row['네이버 이미지']):
+                        continue
+                        
+                    img_data = row['네이버 이미지']
+                    url = None
+                    
+                    # Get URL from dictionary or string
+                    if isinstance(img_data, dict) and 'url' in img_data:
+                        url = img_data['url']
+                    elif isinstance(img_data, str) and img_data.startswith('http'):
+                        url = img_data
+                    
+                    if url and 'shopping-phinf.pstatic.net' in url:
+                        # Create filename from URL
+                        filename = f"naver_{hashlib.md5(url.encode()).hexdigest()[:10]}.jpg"
+                        filepath = os.path.join(naver_image_dir, filename)
+                        
+                        if not os.path.exists(filepath):
+                            task = asyncio.create_task(download_image(session, url, filepath))
+                            tasks.append((idx, url, filepath, task))
+                        else:
+                            logging.info(f"Image already exists: {filepath}")
+                            # Update DataFrame with existing file
+                            if isinstance(img_data, dict):
+                                img_data['local_path'] = filepath
+                                df.at[idx, '네이버 이미지'] = img_data
+                            else:
+                                df.at[idx, '네이버 이미지'] = {
+                                    'url': url,
+                                    'local_path': filepath,
+                                    'source': 'naver'
+                                }
+                except Exception as e:
+                    logging.error(f"Error processing row {idx}: {e}")
+                    continue
+            
+            if tasks:
+                results = await asyncio.gather(*(t[3] for t in tasks), return_exceptions=True)
+                for (idx, url, filepath, _), success in zip(tasks, results):
+                    if success:
+                        current_data = df.at[idx, '네이버 이미지']
+                        if isinstance(current_data, dict):
+                            current_data['local_path'] = filepath
+                            df.at[idx, '네이버 이미지'] = current_data
+                        else:
+                            df.at[idx, '네이버 이미지'] = {
+                                'url': url,
+                                'local_path': filepath,
+                                'source': 'naver'
+                            }
+        
+        # Count successful downloads
+        downloaded = sum(1 for _, row in df.iterrows() 
+                        if isinstance(row.get('네이버 이미지'), dict) 
+                        and row['네이버 이미지'].get('local_path')
+                        and os.path.exists(row['네이버 이미지']['local_path']))
+        
+        logging.info(f"Successfully downloaded {downloaded} Naver images")
+        
+    except Exception as e:
+        logging.error(f"Error in image download process: {e}")
+    
+    return df
+
+def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str) -> pd.DataFrame:
+    """Wrapper function to run async code"""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
 
 if __name__ == "__main__":
     sys.exit(main()) 
