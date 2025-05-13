@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 # Import our Excel utilities
-from excel_utils import create_final_output_excel
+from excel_utils import create_final_output_excel, finalize_dataframe_for_excel
 
 def main():
     """Script to put all Haereum gift images into an Excel file"""
