@@ -512,6 +512,11 @@ def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str = None) -> 
         DataFrame with validated local image paths
     """
     try:
+        # Ensure output directory exists
+        output_dir = os.path.join('C:', 'RPA', 'Output')
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Ensured output directory exists: {output_dir}")
+        
         # Check if we're in an existing event loop
         try:
             loop = asyncio.get_event_loop()
@@ -521,8 +526,8 @@ def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str = None) -> 
                 logger.info("Using existing running event loop")
                 # Create a future to get the result
                 future = asyncio.run_coroutine_threadsafe(ensure_naver_local_images_async(df, naver_image_dir), loop)
-                # Wait for the result with a timeout
-                return future.result(timeout=120)  # 2 minute timeout
+                # Wait for the result with a longer timeout
+                return future.result(timeout=300)  # 5 minute timeout
             else:
                 # We have a loop but it's not running
                 return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
@@ -534,9 +539,11 @@ def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str = None) -> 
             asyncio.set_event_loop(loop)
             return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
             
+    except asyncio.TimeoutError as e:
+        logger.error(f"Timeout error in ensure_naver_local_images: {e}")
+        return df
     except Exception as e:
         logger.error(f"Error in ensure_naver_local_images: {e}")
-        # Return original DataFrame as fallback
         return df
 
 def main():

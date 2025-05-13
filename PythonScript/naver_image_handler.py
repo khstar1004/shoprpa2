@@ -43,12 +43,13 @@ class NaverImageHandler:
             config: Configuration object (configparser.ConfigParser instance)
         """
         self.config = config
+        self._ensure_base_directories()
         self.image_dir = self._get_image_directory()
         self._ensure_image_directory()
         
-        # Configurable settings
-        self.max_retries = self._get_config_int('Network', 'max_retries', 3)
-        self.timeout = self._get_config_int('Network', 'timeout', 30)
+        # Configurable settings with increased values
+        self.max_retries = self._get_config_int('Network', 'max_retries', 5)  # Increased from 3 to 5
+        self.timeout = self._get_config_int('Network', 'timeout', 60)  # Increased from 30 to 60
         self.min_image_size = self._get_config_int('ImageMatching', 'min_image_size', 1000)
         self.verify_images = self._get_config_bool('Matching', 'verify_image_urls', True)
         
@@ -57,6 +58,31 @@ class NaverImageHandler:
         
         # Track processed images for deduplication
         self.processed_images = {}
+        
+    def _ensure_base_directories(self):
+        """Create all necessary base directories."""
+        try:
+            # Create RPA base directory
+            rpa_base = os.path.join('C:', 'RPA')
+            os.makedirs(rpa_base, exist_ok=True)
+            
+            # Create Output directory
+            output_dir = os.path.join(rpa_base, 'Output')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create Image directory
+            image_dir = os.path.join(rpa_base, 'Image')
+            os.makedirs(image_dir, exist_ok=True)
+            
+            # Create Main directory
+            main_dir = os.path.join(image_dir, 'Main')
+            os.makedirs(main_dir, exist_ok=True)
+            
+            # Log directory creation
+            logger.info(f"Created/verified base directories: {rpa_base}, {output_dir}, {image_dir}, {main_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create base directories: {e}")
+            raise
         
     def _get_image_directory(self) -> Path:
         """Get the Naver image directory from config."""
