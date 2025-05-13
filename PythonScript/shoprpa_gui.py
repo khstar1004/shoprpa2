@@ -18,11 +18,11 @@ import traceback
 import asyncio
 
 # Import your existing modules
-from excel_utils import create_final_output_excel
-from matching_logic import process_matching
-from data_processing import process_input_data, process_input_file
-from utils import setup_logging, load_config
-from main_rpa import main, initialize_environment
+from PythonScript.excel_utils import create_final_output_excel
+from PythonScript.matching_logic import process_matching
+from PythonScript.data_processing import process_input_data, process_input_file
+from PythonScript.utils import setup_logging, load_config
+from PythonScript.main_rpa import main, initialize_environment
 
 class WorkerThread(QThread):
     progress = pyqtSignal(str, str)  # (type, message)
