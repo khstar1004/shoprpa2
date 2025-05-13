@@ -3,8 +3,7 @@ import logging
 import pandas as pd
 from excel_utils import (
     find_excel_file, validate_excel_file, create_final_output_excel,
-    preprocess_product_name, excel_generator,
-    FINAL_COLUMN_ORDER, REQUIRED_INPUT_COLUMNS
+    preprocess_product_name
 )
 
 # 로깅 설정
@@ -58,7 +57,7 @@ def convert_xlsx():
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         output_path = os.path.join(OUTPUT_DIR, f"{os.path.splitext(excel_file)[0]}.xlsx")
         
-        if excel_generator.create_excel_output(df, output_path)[0]:
+        if create_final_output_excel(df, output_path):
             logging.info(f"Successfully converted to .xlsx: {output_path}")
             return True
         else:

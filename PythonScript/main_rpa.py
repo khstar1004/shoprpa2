@@ -19,9 +19,10 @@ from email_sender import validate_email_config, send_excel_by_email
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
 from data_processing import process_input_file, filter_results, format_product_data_for_output
-from excel_data_processing import find_excel_file, finalize_dataframe_for_excel
 from excel_utils import (
-    excel_generator,  # Changed: Now using singleton instance
+    create_split_excel_outputs,
+    find_excel_file,
+    finalize_dataframe_for_excel,
     IMAGE_COLUMNS
 )
 from crawling_logic import crawl_all_sources
@@ -30,7 +31,7 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
-from fix_naver_images import fix_naver_images  # Add this import
+from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -640,9 +641,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         output_path = None
         if input_filename:
             try:
-                # Get base name without extension for output file naming
-                input_filename_base = os.path.splitext(input_filename)[0]
-                
                 # First ensure that all image URLs are properly included
                 logging.info("Formatting product data with image URLs for output...")
                 
@@ -659,57 +657,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Generate output filename
-                try:
-                    # Get company name and management type
-                    company_name = "Unknown"
-                    mgmt_type = "승인관리"  # Default
-                    
-                    # Try to get company name from DataFrame
-                    if '업체명' in formatted_df.columns and not formatted_df.empty:
-                        company_names = formatted_df['업체명'].unique()
-                        if len(company_names) == 1:
-                            company_name = company_names[0]
-                        else:
-                            # If multiple companies, use the most frequent one
-                            company_name = formatted_df['업체명'].mode().iloc[0]
-                    
-                    # Get management type from '구분' column
-                    if '구분' in formatted_df.columns and not formatted_df.empty:
-                        mgmt_val = formatted_df['구분'].iloc[0]
-                        if mgmt_val == 'A':
-                            mgmt_type = "승인관리"
-                        elif mgmt_val == 'P':
-                            mgmt_type = "가격관리"
-                    
-                    # Get row count
-                    row_count = len(formatted_df)
-                    
-                    # Generate timestamp
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    date_part = datetime.datetime.now().strftime("%Y%m%d")
-                    
-                    # Create base filename
-                    base_filename = f"{company_name}({row_count}개)-{mgmt_type}-{date_part}"
-                    
-                    # Generate result and upload filenames
-                    result_filename = f"{base_filename}_result_{timestamp}.xlsx"
-                    upload_filename = f"{base_filename}_upload_{timestamp}.xlsx"
-                    
-                    # Set output paths
-                    result_path = os.path.join(output_dir, result_filename)
-                    upload_path = os.path.join(output_dir, upload_filename)
-                    
-                    logging.info(f"Generated filenames:")
-                    logging.info(f"Result file: {result_filename}")
-                    logging.info(f"Upload file: {upload_filename}")
-                    
-                except Exception as e:
-                    logging.error(f"Error generating filenames: {e}", exc_info=True)
-                    # Fallback to simple timestamp-based names if error occurs
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    result_path = os.path.join(output_dir, f"result_{timestamp}.xlsx")
-                    upload_path = os.path.join(output_dir, f"upload_{timestamp}.xlsx")
-
+                input_filename_base = input_filename.rsplit('.', 1)[0]
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
+                
                 # --- Moved Image Integration Here ---
                 try:
                     logging.info("Integrating and filtering images immediately before Excel generation...")
@@ -841,12 +792,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if df_to_save is not None:
                             try:
                                 # Create Excel files (even if df_to_save is empty, to get headers)
-                                logging.info(f"Proceeding to call create_excel_output. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = excel_generator.create_excel_output(
-                                    df=df_to_save,
-                                    output_path=os.path.join(output_dir, f"{input_filename_base}_{timestamp}"),
-                                    create_upload_file=True
-                                )
+                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
+                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
                                 
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
@@ -873,46 +820,21 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     # --- Apply Excel Formatting (NEW) ---
                                     try:
                                         logging.info("Applying final Excel formatting to result and upload files...")
-                                        # Get threshold value from config, default to -1
-                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
-                                        logging.info(f"Using price difference threshold: {threshold}")
-                                        
-                                        # Apply highlighting to both result and upload files
-                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
+                                        format_success_count, total_format_files = apply_excel_formatting(
                                             result_path=result_path if result_success else None,
-                                            upload_path=upload_path if upload_success else None,
-                                            threshold=threshold
+                                            upload_path=upload_path if upload_success else None
                                         )
                                         
-                                        if highlight_success_count > 0:
-                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
+                                        if format_success_count > 0:
+                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
                                             if progress_queue:
-                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
+                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
                                         else:
-                                            logging.warning("Price highlighting could not be applied to any files")
+                                            logging.warning("Excel formatting could not be applied to any files")
                                     except Exception as format_err:
                                         logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
                                         # Don't treat formatting failure as a critical error, continue with the process
                                     # --- End Excel Formatting ---
-
-                                    # --- NEW: Validate and Fix Naver Images ---
-                                    try:
-                                        logging.info("Validating Naver image placements...")
-                                        if result_path and os.path.exists(result_path):
-                                            # Run Naver image validation on result file
-                                            naver_validation_success = fix_naver_images(result_path)
-                                            if naver_validation_success:
-                                                logging.info("Naver image validation completed successfully")
-                                                if progress_queue:
-                                                    progress_queue.emit("status", "Naver images validated and fixed if needed")
-                                            else:
-                                                logging.warning("Naver image validation completed with issues")
-                                                if progress_queue:
-                                                    progress_queue.emit("status", "Issues found with Naver images - check report")
-                                    except Exception as naver_err:
-                                        logging.error(f"Error during Naver image validation: {naver_err}", exc_info=True)
-                                        # Don't treat validation failure as a critical error
-                                    # --- End Naver Image Validation ---
 
                                     # --- Apply Price Highlighting to Excel files ---
                                     try:
@@ -990,7 +912,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             logging.warning(f"Upload path is invalid or does not exist: {upload_path}")
                                             progress_queue.emit("final_path", "Error: Upload file not found")
                                 else:
-                                    logging.error("엑셀 파일 생성 실패 (create_excel_output). 이전 로그를 확인하세요.")
+                                    logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
                                     if progress_queue:
                                         progress_queue.emit("error", "Failed to create one or both Excel output files.")
                                     output_path = None

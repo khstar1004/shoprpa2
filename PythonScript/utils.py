@@ -577,10 +577,12 @@ def generate_keyword_variations(product_name: str, max_variations: int = 4) -> L
     """
     고도화된 키워드 변형 생성 기능:
     1. 원본 키워드 유지
-    2. 핵심 단어 추출 (첫 단어 + 마지막 단어)
-    3. 브랜드명 + 핵심 제품명
-    4. 특수 기호 제거
-    5. 한글/영문 분리
+    2. 모델명/제품코드 제거
+    3. 브랜드명 + 핵심 제품명 추출
+    4. 숫자 제거 변형
+    5. 한글/영문 조합 분리
+    6. 특수 기호 처리
+    7. 브랜드명 특수처리 (예: 777은 쓰리쎄븐으로도 검색)
     
     Args:
         product_name: 원본 제품명
@@ -594,53 +596,86 @@ def generate_keyword_variations(product_name: str, max_variations: int = 4) -> L
 
     variations = [product_name.strip()]  # 원본 유지
     
-    # 1. 특수 기호 제거
-    special_chars_name = re.sub(r'[-_+.,#]', ' ', product_name)
-    special_chars_name = ' '.join(special_chars_name.split()).strip()
-    if special_chars_name and special_chars_name != product_name:
-        variations.append(special_chars_name)
+    # 특수 브랜드명 매핑 (필요시 확장)
+    brand_mapping = {
+        "777": "쓰리쎄븐",
+        "쓰리쎄븐": "777",
+    }
     
-    # 2. 핵심 단어 추출
-    parts = product_name.split()
-    if len(parts) >= 2:
-        # 첫 단어 + 마지막 단어
-        core_name = f"{parts[0]} {parts[-1]}"
-        if core_name not in variations:
-            variations.append(core_name)
-        
-        # 브랜드명 + 핵심 제품명 (첫 단어 + 마지막 2단어)
-        if len(parts) >= 3:
-            brand_core = f"{parts[0]} {' '.join(parts[-2:])}"
-            if brand_core not in variations:
-                variations.append(brand_core)
+    # 브랜드명 처리를 위한 브랜드 패턴 (필요시 확장)
+    brand_patterns = [
+        (r'\b777\b', '쓰리쎄븐'),  # 777 -> 쓰리쎄븐
+        (r'\b쓰리쎄븐\b', '777'),  # 쓰리쎄븐 -> 777
+    ]
     
-    # 3. 한글/영문 분리
-    if re.search(r'[가-힣]', product_name) and re.search(r'[a-zA-Z]', product_name):
-        # 한글만 추출
-        hangul_only = ' '.join(re.findall(r'[가-힣]+', product_name))
-        if len(hangul_only) > 3 and hangul_only not in variations:
-            variations.append(hangul_only)
-        
-        # 영문만 추출
-        eng_only = ' '.join(re.findall(r'[a-zA-Z]+', product_name))
-        if len(eng_only) > 3 and eng_only not in variations:
-            variations.append(eng_only)
+    cleaned_name = product_name.strip()
     
-    # 4. 모델명/제품코드 제거
+    # 1. 모델명/제품코드 제거 (더 정교한 패턴)
+    # 알파벳 + 숫자 조합의 패턴 (TS-16000VG, 399VC 등)
     code_patterns = [
-        r'\b([A-Z]{1,5}[-]?\d+[-]?[A-Za-z0-9]*)\b',  # 일반적인 모델코드
-        r'\b(\d+[A-Z]{1,5})\b',                       # 숫자+알파벳 코드
+        r'\b([A-Z]{1,5}[-]?\d+[-]?[A-Za-z0-9]*)\b',  # 일반적인 모델코드 (TS-16000VG)
+        r'\b(\d+[A-Z]{1,5})\b',                       # 숫자+알파벳 코드 (399VC)
         r'\b([A-Z]{1,5}[-]?\d+[-]?[A-Za-z0-9]*[-][A-Za-z0-9]*)\b'  # 복합 코드
     ]
     
-    code_free_name = product_name
+    # 코드 패턴 제거
+    code_free_name = cleaned_name
     for pattern in code_patterns:
         code_free_name = re.sub(pattern, '', code_free_name, flags=re.IGNORECASE)
+    
+    # 공백 정리
     code_free_name = ' '.join(code_free_name.split()).strip()
     
+    # 코드가 제거된 버전 추가
     if code_free_name and code_free_name != product_name and len(code_free_name) > 3:
         if code_free_name not in variations:
             variations.append(code_free_name)
+    
+    # 2. 브랜드+핵심 제품명 추출
+    parts = code_free_name.split()
+    if len(parts) >= 3:
+        # 첫 단어(브랜드) + 마지막 단어들(핵심 제품명)
+        # 긴 이름은 브랜드 + 마지막 2~3 단어만 사용
+        if len(parts) >= 5:
+            simplified = f"{parts[0]} {' '.join(parts[-2:])}"
+        else:
+            simplified = f"{parts[0]} {parts[-1]}"
+            
+        if simplified and simplified not in variations and len(simplified) > 3:
+            variations.append(simplified)
+    
+    # 3. 브랜드명 변형 처리 (777 <-> 쓰리쎄븐)
+    for original, mapped in brand_patterns:
+        brand_variant = re.sub(original, mapped, product_name)
+        if brand_variant != product_name and brand_variant not in variations:
+            variations.append(brand_variant)
+            
+        # 코드 없는 버전에도 브랜드 변형 적용
+        if code_free_name:
+            brand_code_free = re.sub(original, mapped, code_free_name)
+            if brand_code_free != code_free_name and brand_code_free not in variations:
+                variations.append(brand_code_free)
+    
+    # 4. 특수기호 대체/제거
+    special_chars_name = re.sub(r'[-_+.,#]', ' ', product_name)
+    special_chars_name = ' '.join(special_chars_name.split()).strip()
+    
+    if special_chars_name and special_chars_name != product_name and special_chars_name not in variations:
+        variations.append(special_chars_name)
+    
+    # 5. 한글/영문 분리 (영문 또는 한글만 있는 버전 생성)
+    if re.search(r'[가-힣]', product_name) and re.search(r'[a-zA-Z]', product_name):
+        # 한글만 추출
+        hangul_only = ''.join(re.findall(r'[가-힣]+', product_name))
+        if len(hangul_only) > 3 and hangul_only not in variations:
+            hangul_only = ' '.join(re.findall(r'[가-힣]+', product_name))
+            variations.append(hangul_only)
+            
+        # 영문만 추출
+        eng_only = ''.join(re.findall(r'[a-zA-Z]+', product_name))
+        if len(eng_only) > 3 and eng_only not in variations:
+            eng_only = ' '.join(re.findall(r'[a-zA-Z]+', product_name))
+            variations.append(eng_only)
     
     # 중복 제거 및 최대 개수 제한
     unique_variations = []

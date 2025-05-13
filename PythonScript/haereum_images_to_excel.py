@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 # Import our Excel utilities
-from excel_utils import excel_generator
+from excel_utils import create_final_output_excel
 
 def main():
     """Script to put all Haereum gift images into an Excel file"""
@@ -51,20 +51,12 @@ def main():
         # Replace underscores with spaces
         product_name = product_name.replace('_', ' ')
         
-        # Create image data dictionary
-        image_data = {
-            'url': f"file://{str(img_path)}",
-            'local_path': str(img_path),
-            'source': 'haereum',
-            'product_name': product_name
-        }
-        
         # Create data row
         test_data.append({
             "번호": i+1,
             "상품명": product_name,
             "파일명": img_path.name,
-            "본사 이미지": image_data
+            "본사 이미지": str(img_path)  # Changed to "본사 이미지" to match excel_utils.py IMAGE_COLUMNS
         })
     
     # Create DataFrame
@@ -78,7 +70,7 @@ def main():
     
     # Create Excel file with images
     logging.info(f"Creating Excel file with {len(haereum_images)} Haereum images: {output_file}")
-    success = excel_generator.create_excel_output(df, str(output_file))[0]
+    success = create_final_output_excel(df, str(output_file))
     
     if success:
         logging.info(f"Successfully created Excel file with Haereum images at: {output_file}")

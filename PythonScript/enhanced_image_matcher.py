@@ -12,46 +12,9 @@ The combined approach provides better accuracy for product image matching.
 """
 
 import os
-# Add CUDA paths to environment
-cuda_bin_path = os.path.join(os.environ.get('CUDA_PATH', 'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v11.8'), 'bin')
-if os.path.exists(cuda_bin_path):
-    os.environ['PATH'] = cuda_bin_path + os.pathsep + os.environ['PATH']
-
 # Set TensorFlow GPU memory growth before importing TensorFlow
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'  # Enable async memory allocator
-os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'  # Enable GPU thread mode
-os.environ['TF_USE_CUDNN'] = '1'  # Enable cuDNN
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
 
-# Configure GPU settings based on config.ini before importing TensorFlow
-import configparser
-def _load_config():
-    """Load configuration from config.ini"""
-    config = configparser.ConfigParser()
-    try:
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-        config.read(config_path, encoding='utf-8')
-        return config
-    except Exception as e:
-        print(f"Error loading config: {e}")
-        return None
-
-# Get GPU setting from config
-config = _load_config()
-use_gpu = False
-if config:
-    try:
-        use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
-    except:
-        pass
-
-# Set CUDA_VISIBLE_DEVICES based on use_gpu setting
-if not use_gpu:
-    print("Configuring TensorFlow to use CPU only (by configuration)")
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Disable GPU
-
-# Now import TensorFlow and other packages
 import cv2
 import numpy as np
 import logging
@@ -59,18 +22,12 @@ from typing import Tuple, Dict, List, Optional, Union
 import time
 from PIL import Image
 from urllib.parse import urlparse
+import configparser
 import json
 import pickle
 from pathlib import Path
 import hashlib
 import pandas as pd
-import concurrent.futures
-from functools import partial
-import threading
-from queue import Queue, Empty
-import tensorflow as tf
-import xlsxwriter
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -78,29 +35,33 @@ logger = logging.getLogger(__name__)
 
 # Default Constants - Optimized for accuracy
 DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
-DEFAULT_FEATURE_MATCH_THRESHOLD = 20  # Increased from 15
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.65  # More strict (was 0.70)
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 35  # More strict (was 40)
-DEFAULT_COMBINED_THRESHOLD = 0.45  # Lower to allow more potential matches
-DEFAULT_WEIGHTS = {'sift': 0.30, 'akaze': 0.25, 'deep': 0.35, 'orb': 0.10}  # Adjusted weights
+DEFAULT_FEATURE_MATCH_THRESHOLD = 15  # Increased from 10
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.70  # More strict (was 0.75)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 40  # More strict (was 50)
+DEFAULT_COMBINED_THRESHOLD = 0.55  # Lower to allow more potential matches
+DEFAULT_WEIGHTS = {'sift': 0.25, 'akaze': 0.20, 'deep': 0.40, 'orb': 0.15}  # New weights with ORB
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 
 # Enhanced parameters
-DEFAULT_SIFT_FEATURES = 2500  # Increased number of SIFT features
-DEFAULT_AKAZE_FEATURES = 2500  # Increased number of AKAZE features
-DEFAULT_ORB_FEATURES = 2500    # Number of ORB features
+DEFAULT_SIFT_FEATURES = 2000  # Increased number of SIFT features
+DEFAULT_AKAZE_FEATURES = 2000  # Increased number of AKAZE features
+DEFAULT_ORB_FEATURES = 2000    # Number of ORB features
 
 # Add quality check parameters
-DEFAULT_MIN_MATCH_COUNT = 8   # Reduced from 10
-DEFAULT_INLIER_THRESHOLD = 4.0  # Reduced from 5.0
+DEFAULT_MIN_MATCH_COUNT = 10   # Minimum number of matches for geometric verification
+DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
 
-# Add minimum confidence threshold for ambiguous matches
-DEFAULT_MIN_CONFIDENCE_GAP = 0.05  # Minimum difference between best and second-best match
-DEFAULT_MIN_NAME_SIMILARITY = 0.3   # Minimum product name similarity for matches
-
-# GPU Configuration
-DEFAULT_GPU_MEMORY_FRACTION = 0.7  # Default GPU memory fraction to use
-DEFAULT_BATCH_SIZE = 32  # Default batch size for GPU processing
+def _load_config() -> configparser.ConfigParser:
+    """Load configuration from config.ini"""
+    config = configparser.ConfigParser()
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+        config.read(config_path, encoding='utf-8')
+        logger.info(f"Successfully loaded config from {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Error loading config: {e}")
+        return None
 
 def _get_config_values(config: configparser.ConfigParser) -> Dict:
     """Get configuration values with fallbacks"""
@@ -108,20 +69,9 @@ def _get_config_values(config: configparser.ConfigParser) -> Dict:
         return None
 
     try:
-        # Get use_gpu from Matching section with improved detection
-        use_gpu = config.getboolean('Matching', 'use_gpu', fallback=None)
-        if use_gpu is None:
-            # If not explicitly set, try to detect GPU
-            use_gpu = _is_gpu_available()
-            logger.info(f"GPU auto-detection result: {use_gpu}")
-        else:
-            logger.info(f"GPU usage setting from config: {use_gpu}")
-
-        # Get GPU specific settings
-        gpu_memory_fraction = config.getfloat('Matching', 'gpu_memory_fraction', 
-                                            fallback=DEFAULT_GPU_MEMORY_FRACTION)
-        batch_size = config.getint('Matching', 'gpu_batch_size', 
-                                 fallback=DEFAULT_BATCH_SIZE)
+        # Get use_gpu from Matching section
+        use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
+        logger.info(f"GPU usage setting from config: {use_gpu}")
 
         return {
             'FEATURE_MATCH_THRESHOLD': config.getint('ImageMatching', 'feature_match_threshold', 
@@ -164,9 +114,7 @@ def _get_config_values(config: configparser.ConfigParser) -> Dict:
                                           fallback=True),
             'USE_MULTIPLE_MODELS': config.getboolean('ImageMatching', 'use_multiple_models',
                                                   fallback=True),
-            'USE_GPU': use_gpu,
-            'GPU_MEMORY_FRACTION': gpu_memory_fraction,
-            'BATCH_SIZE': batch_size
+            'USE_GPU': use_gpu
         }
     except Exception as e:
         logger.error(f"Error getting config values: {e}")
@@ -191,28 +139,13 @@ SETTINGS = _get_config_values(CONFIG) or {
     'INLIER_THRESHOLD': DEFAULT_INLIER_THRESHOLD,
     'APPLY_CLAHE': True,
     'USE_MULTIPLE_MODELS': True,
-    'USE_GPU': False,  # Default to False if not specified
-    'GPU_MEMORY_FRACTION': DEFAULT_GPU_MEMORY_FRACTION,
-    'BATCH_SIZE': DEFAULT_BATCH_SIZE
+    'USE_GPU': False  # Default to False if not specified
 }
 
 def _is_gpu_available():
     """Check if GPU is truly available for TensorFlow to use"""
     try:
-        # First try TensorFlow's built-in GPU detection
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            logger.info(f"TensorFlow detected {len(gpus)} GPU(s)")
-            # Configure TensorFlow to use memory growth
-            for gpu in gpus:
-                try:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                    logger.info(f"Enabled memory growth for GPU: {gpu}")
-                except RuntimeError as e:
-                    logger.warning(f"Memory growth setting failed for GPU {gpu}: {e}")
-            return True
-
-        # Check using nvidia-smi as backup
+        # Check using nvidia-smi first
         import subprocess
         try:
             nvidia_smi = subprocess.run(["nvidia-smi"], capture_output=True, text=True, check=False)
@@ -247,10 +180,6 @@ def check_gpu_status():
     try:
         logger.info("=== GPU Status Check ===")
         
-        # Check TensorFlow GPU devices
-        gpus = tf.config.list_physical_devices('GPU')
-        logger.info(f"TensorFlow GPU devices: {gpus}")
-        
         # Check environment variables
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         logger.info(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
@@ -269,30 +198,15 @@ def check_gpu_status():
                 logger.warning("nvidia-smi command failed")
         except Exception as e:
             logger.warning(f"Error running nvidia-smi: {e}")
-            
-        # Check CUDA runtime
-        try:
-            from ctypes import cdll
-            cdll.LoadLibrary("nvcuda.dll")
-            logger.info("CUDA runtime is accessible")
-        except Exception as e:
-            logger.warning(f"CUDA runtime check failed: {e}")
-            
-        # Check TensorFlow CUDA build
-        logger.info(f"TensorFlow CUDA build: {tf.test.is_built_with_cuda()}")
-        logger.info(f"TensorFlow using GPU: {tf.test.is_built_with_gpu_support()}")
         
-        # Determine GPU availability - we need both hardware support and proper configuration
-        gpu_available = len(gpus) > 0 and cuda_visible != '-1'
+        # Check CUDA_PATH
+        cuda_path = os.environ.get("CUDA_PATH", "Not set")
+        logger.info(f"CUDA_PATH: {cuda_path}")
         
-        # Add special note for when GPU is disabled by configuration
-        if len(gpus) == 0 and cuda_visible == '-1':
-            logger.info("NOTE: GPU hardware may be available but is currently disabled by configuration")
-            logger.info("Check the 'use_gpu' setting in config.ini to enable GPU support")
-            
-        return gpu_available
+        logger.info("=== End GPU Status Check ===")
+        return True
     except Exception as e:
-        logger.error(f"Error during GPU status check: {e}")
+        logger.error(f"Error checking GPU status: {e}")
         return False
 
 # Run a GPU status check before configuring TensorFlow
@@ -398,22 +312,8 @@ try:
     if len(gpus) > 0 and use_gpu:
         for gpu in gpus:
             try:
-                # Set memory growth for GPU
                 tf.config.experimental.set_memory_growth(gpu, True)
                 logger.info(f"Set memory growth for GPU: {gpu}")
-                
-                # Set memory limits only if specified in config
-                memory_fraction = SETTINGS.get('GPU_MEMORY_FRACTION', DEFAULT_GPU_MEMORY_FRACTION)
-                if memory_fraction < 1.0:
-                    try:
-                        tf.config.experimental.set_virtual_device_configuration(
-                            gpu,
-                            [tf.config.experimental.VirtualDeviceConfiguration(
-                                memory_limit=int(memory_fraction * 1024))]
-                        )
-                        logger.info(f"Set memory limit ({memory_fraction * 100}%) for GPU: {gpu}")
-                    except Exception as mem_limit_err:
-                        logger.warning(f"Could not set memory limits: {mem_limit_err}")
             except Exception as e:
                 logger.warning(f"Could not set memory growth for GPU: {e}")
     
@@ -521,450 +421,694 @@ class FeatureCache:
 
 
 class EnhancedImageMatcher:
-    """Enhanced image matcher that combines multiple matching techniques"""
+    """
+    Class that combines multiple image matching techniques for better accuracy
+    """
     
     def __init__(self, config: Optional[configparser.ConfigParser] = None, use_gpu: bool = None):
-        """Initialize the matcher with optional config"""
-        self.config = config
-        self.settings = _get_config_values(config) if config else SETTINGS
+        """
+        Initialize the matcher with necessary models and parameters.
         
-        # Override GPU setting if explicitly provided
-        if use_gpu is not None:
-            self.settings['USE_GPU'] = use_gpu
+        Args:
+            config: ConfigParser instance with settings (optional)
+            use_gpu: Whether to use GPU for TensorFlow operations (if None, use config setting)
+        """
+        self.config = config
+        
+        # Load configuration values
+        if config:
+            global SETTINGS
+            new_settings = _get_config_values(config)
+            if new_settings:
+                SETTINGS = new_settings
+                logger.debug("Updated settings from config")
+                
+        # Set up properties
+        # If use_gpu is explicitly provided, use that value
+        # Otherwise use the value from SETTINGS
+        if use_gpu is None:
+            self.use_gpu = SETTINGS.get('USE_GPU', False)
+        else:
+            self.use_gpu = use_gpu
             
-        # Add use_gpu attribute to fix the missing attribute error
-        self.use_gpu = self.settings['USE_GPU']
-            
-        # Initialize GPU settings - Skip applying memory limits if they've already been set
-        if self.settings['USE_GPU']:
-            try:
-                # Check if GPUs are available without modifying them
-                gpus = tf.config.list_physical_devices('GPU')
-                if gpus:
-                    # Check if memory growth is already set
-                    try:
-                        gpu_already_configured = True
-                        for gpu in gpus:
-                            # Simply check if the GPU is available, don't try to modify it
-                            # This prevents the "Virtual devices cannot be modified after being initialized" error
-                            gpu_details = tf.config.experimental.get_device_details(gpu)
-                            logger.info(f"GPU already configured: {gpu_details}")
-                    except Exception as e:
-                        logger.warning(f"Error checking GPU configuration: {e}")
-                        
-                    logger.info(f"GPU enabled with memory fraction: {self.settings['GPU_MEMORY_FRACTION']}")
-                else:
-                    logger.warning("GPU requested but not available, falling back to CPU")
-                    self.settings['USE_GPU'] = False
-                    self.use_gpu = False
-            except Exception as e:
-                logger.error(f"Error configuring GPU: {e}")
-                self.settings['USE_GPU'] = False
-                self.use_gpu = False
+        # Log GPU usage setting
+        logger.info(f"EnhancedImageMatcher initialized with GPU usage set to: {self.use_gpu}")
+        
+        self.sift_features = SETTINGS['SIFT_FEATURES']
+        self.akaze_features = SETTINGS['AKAZE_FEATURES']
+        self.orb_features = SETTINGS['ORB_FEATURES']
+        self.min_match_count = SETTINGS['MIN_MATCH_COUNT']
+        self.inlier_threshold = SETTINGS['INLIER_THRESHOLD']
+        self.apply_clahe = SETTINGS['APPLY_CLAHE']
+        self.use_multiple_models = SETTINGS['USE_MULTIPLE_MODELS']
         
         # Initialize feature cache
-        self.cache = FeatureCache(
-            cache_dir=self.settings['FEATURE_CACHE_DIR'],
-            max_items=self.settings['MAX_CACHE_ITEMS'],
-            enabled=self.settings['CACHE_FEATURES']
-        )
+        self.feature_cache = FeatureCache()
+        
+        # Initialize OpenCV feature detectors
+        self.sift = cv2.SIFT_create(nfeatures=self.sift_features)
+        self.akaze = cv2.AKAZE_create()
+        self.orb = cv2.ORB_create(nfeatures=self.orb_features)
+        
+        # Initialize matchers
+        self.flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
+        self.bf_akaze = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.bf_orb = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        
+        # Set up CLAHE
+        if self.apply_clahe:
+            self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         
         # Initialize deep learning models
-        self.models = {}
-        self._initialize_deep_models()
+        try:
+            self._initialize_deep_models()
+            
+        except Exception as e:
+            logger.error(f"Error initializing EnhancedImageMatcher: {e}")
+            # Set minimal defaults to avoid method not found errors
+            self.model = None
+            self.models = []
+            
+        # Log initialization
+        logger.info(f"Initialized EnhancedImageMatcher (GPU: {self.use_gpu}, SIFT features: {self.sift_features}, AKAZE features: {self.akaze_features}, ORB features: {self.orb_features})")
         
-        # For backwards compatibility with code expecting 'model' attribute
-        # reference the primary model from the models dictionary
-        if 'efficientnet' in self.models:
-            self.model = self.models['efficientnet']
-        
-        # Initialize thread pool for parallel processing
-        self.thread_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=4,  # Adjust based on your needs
-            thread_name_prefix="ImageMatcher"
-        )
-        
-        # Initialize batch processing queue
-        self.batch_queue = Queue()
-        self.batch_results = {}
-        self.batch_lock = threading.Lock()
-        
-        logger.info(f"Enhanced Image Matcher initialized (GPU: {self.settings['USE_GPU']})")
+        # Verify that critical methods exist and are callable
+        try:
+            if not hasattr(self, 'calculate_similarity'):
+                logger.error("calculate_similarity method missing, restoring default implementation")
+                # Add default implementation if missing
+                setattr(self, 'calculate_similarity', self._default_calculate_similarity)
+        except Exception as attr_error:
+            logger.error(f"Error verifying methods: {attr_error}")
+            
+    def _default_calculate_similarity(self, img_path1: str, img_path2: str, 
+                                      weights: Optional[Dict[str, float]] = None) -> float:
+        """Default implementation of calculate_similarity if missing"""
+        logger.warning("Using default calculate_similarity implementation")
+        try:
+            # Calculate individual similarities
+            sift_score = self.calculate_sift_similarity(img_path1, img_path2)
+            akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
+            
+            # Simple average
+            return (sift_score + akaze_score) / 2.0
+        except Exception as e:
+            logger.error(f"Error in default_calculate_similarity: {e}")
+            return 0.0
     
     def _initialize_deep_models(self):
-        """Initialize deep learning models with GPU support"""
+        """Initialize deep learning models for feature extraction with GPU if available"""
         try:
-            import tensorflow as tf
-            from tensorflow import keras
+            # Configure GPU usage
+            if self.use_gpu:
+                # Ensure the global settings are applied
+                if not SETTINGS.get('USE_GPU', False):
+                    logger.warning("Global GPU settings disabled but instance requested GPU")
+                    logger.warning("Using global setting, disabling GPU for this instance")
+                    self.use_gpu = False
+                
+            # Display status
+            if self.use_gpu:
+                logger.info("Attempting to configure GPU for deep models")
+                # GPU configuration should already be set up globally
+                gpus = tf.config.list_physical_devices('GPU')
+                if gpus:
+                    logger.info(f"Using GPU: {len(gpus)} physical devices available")
+                else:
+                    logger.warning("No GPU devices found despite GPU flag being set")
+                    logger.info("Falling back to CPU mode for deep models")
+                    self.use_gpu = False  # Fall back to CPU
+            else:
+                logger.info("GPU disabled for deep models by configuration")
+                
+            # Initialize primary model (EfficientNetB0)
+            logger.info("Initializing EfficientNetB0 model...")
+            self.model = tf.keras.applications.EfficientNetB0(
+                include_top=False, 
+                weights='imagenet',
+                pooling='avg'
+            )
+            logger.info("EfficientNetB0 model initialized successfully")
             
-            # Configure mixed precision for better GPU performance
-            if self.settings['USE_GPU']:
-                policy = tf.keras.mixed_precision.Policy('mixed_float16')
-                tf.keras.mixed_precision.set_global_policy(policy)
-                logger.info("Enabled mixed precision training")
+            # Initialize additional models for ensemble if enabled
+            self.models = []
+            if self.use_multiple_models:
+                # Add MobileNetV2 (faster but still good features)
+                try:
+                    logger.info("Initializing MobileNetV2 model...")
+                    mobilenet = tf.keras.applications.MobileNetV2(
+                        include_top=False,
+                        weights='imagenet',
+                        pooling='avg'
+                    )
+                    self.models.append(('mobilenet', mobilenet))
+                    logger.info("MobileNetV2 model loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load MobileNetV2: {e}")
+                
+                # Add ResNet50 (better accuracy, slower)
+                try:
+                    logger.info("Initializing ResNet50 model...")
+                    resnet = tf.keras.applications.ResNet50(
+                        include_top=False,
+                        weights='imagenet',
+                        pooling='avg'
+                    )
+                    self.models.append(('resnet', resnet))
+                    logger.info("ResNet50 model loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load ResNet50: {e}")
             
-            # Load models with proper GPU configuration
-            with tf.device('/GPU:0' if self.settings['USE_GPU'] else '/CPU:0'):
-                # Primary model (EfficientNetB0)
-                self.models['efficientnet'] = keras.applications.EfficientNetB0(
-                    weights='imagenet',
-                    include_top=False,
-                    pooling='avg'
-                )
-                
-                # Secondary model (ResNet50V2)
-                self.models['resnet'] = keras.applications.ResNet50V2(
-                    weights='imagenet',
-                    include_top=False,
-                    pooling='avg'
-                )
-                
-                logger.info("Successfully loaded deep learning models")
-                
-        except ImportError as e:
-            logger.error(f"Failed to import TensorFlow: {e}")
-            raise
+            # Standard preprocessing functions
+            self.efficient_preprocess = tf.keras.applications.efficientnet.preprocess_input
+            self.mobilenet_preprocess = tf.keras.applications.mobilenet_v2.preprocess_input
+            self.resnet_preprocess = tf.keras.applications.resnet.preprocess_input
+            
+            logger.info(f"Deep learning models initialized. Using ensemble: {self.use_multiple_models}, GPU: {self.use_gpu}")
+            
         except Exception as e:
             logger.error(f"Error initializing deep learning models: {e}")
-            raise
+            self.model = None
+            self.models = []
     
-    def _process_batch(self, batch_images: List[np.ndarray]) -> List[np.ndarray]:
-        """Process a batch of images using GPU acceleration"""
-        if not self.settings['USE_GPU'] or not self.models:
-            return []
-            
+    def _load_and_prepare_image(self, image_path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Load and prepare an image for processing with preprocessing and contrast enhancement
+        Returns color and grayscale versions
+        Uses cv2.imdecode for robust Unicode path handling on Windows.
+        """
         try:
-            # Convert batch to tensor and ensure correct shape
-            batch_tensor = tf.convert_to_tensor(batch_images)
-            # Remove extra dimension if present (1, 1, 299, 299, 3) -> (1, 299, 299, 3)
-            if len(batch_tensor.shape) == 5:
-                batch_tensor = tf.squeeze(batch_tensor, axis=1)
+            # Check if image exists
+            if not os.path.exists(image_path):
+                logger.warning(f"Image does not exist: {image_path}")
+                return None, None
             
-            # Process with primary model
-            features_primary = self.models['efficientnet'](batch_tensor)
-            
-            # Process with secondary model if available
-            if 'resnet' in self.models:
-                features_secondary = self.models['resnet'](batch_tensor)
-                # Combine features (simple concatenation for now)
-                features = tf.concat([features_primary, features_secondary], axis=1)
-            else:
-                features = features_primary
+            # Handle problematic file extensions before reading
+            _, file_ext = os.path.splitext(image_path)
+            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
+                # Create a copy with .jpg extension
+                new_path = os.path.splitext(image_path)[0] + '.jpg'
+                try:
+                    if not os.path.exists(new_path):
+                        import shutil
+                        shutil.copy2(image_path, new_path)
+                    logger.info(f"Copied {file_ext} file to .jpg for processing: {new_path}")
+                    image_path = new_path # Use the new path for reading
+                except Exception as copy_err:
+                    logger.error(f"Error copying potentially problematic file {image_path} to {new_path}: {copy_err}")
+                    # Proceed with original path, but decoding might fail
+
+            # Read the file into a numpy array
+            np_arr = np.fromfile(image_path, np.uint8)
+            if np_arr.size == 0:
+                logger.warning(f"Failed to read image file (empty): {image_path}")
+                return None, None
+
+            # Decode the image using cv2.imdecode
+            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if img is None:
+                logger.warning(f"Unable to decode image: {image_path}")
+                return None, None
                 
-            return features.numpy()
+            # Get grayscale version
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Apply contrast enhancement if enabled
+            if self.apply_clahe:
+                # Make sure clahe is initialized
+                if not hasattr(self, 'clahe') or self.clahe is None:
+                    self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    logger.debug("Initialized CLAHE within _load_and_prepare_image")
+                gray = self.clahe.apply(gray)
+            
+            return img, gray
             
         except Exception as e:
-            logger.error(f"Error processing batch: {e}")
-            return []
-    
-    def _batch_worker(self):
-        """Background worker for processing image batches"""
-        while True:
-            try:
-                # Get batch of images
-                batch = []
-                batch_keys = []
+            logger.error(f"Error loading image {image_path}: {e}")
+            return None, None
                 
-                # Collect images for the batch
-                while len(batch) < self.settings['BATCH_SIZE']:
-                    try:
-                        key, image = self.batch_queue.get_nowait()
-                        if key is None:  # Shutdown signal
-                            return
-                        batch.append(image)
-                        batch_keys.append(key)
-                    except Empty:  # Changed from Queue.Empty to Empty
-                        break
-                
-                if not batch:
-                    continue
-                
-                # Process batch
-                features = self._process_batch(batch)
-                
-                # Store results
-                with self.batch_lock:
-                    for key, feature in zip(batch_keys, features):
-                        self.batch_results[key] = feature
-                        
-            except Exception as e:
-                logger.error(f"Error in batch worker: {e}")
-    
-    def calculate_similarity(self, img_path1: str, img_path2: str, 
-                           weights: Optional[Dict[str, float]] = None) -> float:
-        """Calculate similarity between two images with GPU acceleration"""
-        if not weights:
-            weights = self.settings['WEIGHTS']
-            
+    def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate SIFT feature similarity with geometric verification"""
         try:
-            # Start batch processing thread if using GPU
-            if self.settings['USE_GPU'] and not hasattr(self, '_batch_thread'):
-                self._batch_thread = threading.Thread(
-                    target=self._batch_worker,
-                    daemon=True
-                )
-                self._batch_thread.start()
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
+            if cached_result is not None:
+                return cached_result
             
-            # Calculate traditional feature similarities in parallel
-            future_sift = self.thread_pool.submit(
-                self.calculate_sift_similarity, img_path1, img_path2)
-            future_akaze = self.thread_pool.submit(
-                self.calculate_akaze_similarity, img_path1, img_path2)
-            future_orb = self.thread_pool.submit(
-                self.calculate_orb_similarity, img_path1, img_path2)
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
             
-            # Calculate deep features (GPU accelerated if available)
-            deep_sim = self.calculate_deep_similarity(img_path1, img_path2)
-            
-            # Get results from parallel computations
-            sift_sim = future_sift.result()
-            akaze_sim = future_akaze.result()
-            orb_sim = future_orb.result()
-            
-            # Check if any similarity score is too low
-            if deep_sim < 0.2 or sift_sim < 0.2 or akaze_sim < 0.2:
-                logger.debug(f"Low individual similarity scores: deep={deep_sim:.3f}, sift={sift_sim:.3f}, akaze={akaze_sim:.3f}")
+            if gray1 is None or gray2 is None:
                 return 0.0
+                
+            # Extract keypoints and descriptors
+            kp1, des1 = self.sift.detectAndCompute(gray1, None)
+            kp2, des2 = self.sift.detectAndCompute(gray2, None)
             
-            # Combine similarities with weighted average
-            combined_sim = (
-                weights['sift'] * sift_sim +
-                weights['akaze'] * akaze_sim +
-                weights['deep'] * deep_sim +
-                weights['orb'] * orb_sim
-            )
+            if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
+                return 0.0
+                
+            # Match features
+            matches = self.flann.knnMatch(des1, des2, k=2)
             
-            # Apply non-linear scaling to emphasize higher similarities
-            if combined_sim > 0.5:
-                combined_sim = 0.5 + (combined_sim - 0.5) * 1.5
+            # Store good matches using Lowe's ratio test
+            good_matches = []
+            for m, n in matches:
+                if m.distance < SETTINGS['SIFT_RATIO_THRESHOLD'] * n.distance:
+                    good_matches.append(m)
+                    
+            num_good_matches = len(good_matches)
+            logger.debug(f"SIFT: {num_good_matches} good matches found")
             
-            return min(combined_sim, 1.0)  # Ensure score doesn't exceed 1.0
+            # Calculate normalized score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
+                src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"SIFT: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale the final score
+            final_score = min(1.0, match_score * 1.5)  # Scale up to better differentiate
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", final_score)
+            
+            return final_score
             
         except Exception as e:
-            logger.error(f"Error calculating similarity: {e}")
+            logger.error(f"Error calculating SIFT similarity: {e}")
+            return 0.0
+    
+    def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate AKAZE feature similarity with geometric verification"""
+        try:
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
+            if cached_result is not None:
+                return cached_result
+            
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
+            
+            if gray1 is None or gray2 is None:
+                return 0.0
+                
+            # Extract keypoints and descriptors
+            kp1, des1 = self.akaze.detectAndCompute(gray1, None)
+            kp2, des2 = self.akaze.detectAndCompute(gray2, None)
+            
+            if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
+                return 0.0
+                
+            # Match features
+            matches = self.bf_akaze.knnMatch(des1, des2, k=2)
+            
+            # Filter matches
+            good_matches = []
+            for match in matches:
+                if len(match) == 2:
+                    m, n = match
+                    if m.distance < (SETTINGS['AKAZE_DISTANCE_THRESHOLD'] / 100.0) * n.distance:
+                        good_matches.append(m)
+                        
+            num_good_matches = len(good_matches)
+            logger.debug(f"AKAZE: {num_good_matches} good matches found")
+            
+            # Calculate base score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
+                src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"AKAZE: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale
+            final_score = min(1.0, match_score * 1.5)
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", final_score)
+            
+            return final_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating AKAZE similarity: {e}")
+            return 0.0
+            
+    def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
+        """Calculate ORB feature similarity with geometric verification"""
+        try:
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "orb_similarity")
+            if cached_result is not None:
+                return cached_result
+            
+            # Load images
+            _, gray1 = self._load_and_prepare_image(img_path1)
+            _, gray2 = self._load_and_prepare_image(img_path2)
+            
+            if gray1 is None or gray2 is None:
+                return 0.0
+                
+            # Extract keypoints and descriptors
+            kp1, des1 = self.orb.detectAndCompute(gray1, None)
+            kp2, des2 = self.orb.detectAndCompute(gray2, None)
+            
+            if des1 is None or des2 is None or len(des1) < 2 or len(des2) < 2:
+                return 0.0
+                
+            # Match features
+            matches = self.bf_orb.knnMatch(des1, des2, k=2)
+            
+            # Filter matches
+            good_matches = []
+            for match in matches:
+                if len(match) == 2:
+                    m, n = match
+                    if m.distance < 0.75 * n.distance:  # Standard ratio for ORB
+                        good_matches.append(m)
+                        
+            num_good_matches = len(good_matches)
+            logger.debug(f"ORB: {num_good_matches} good matches found")
+            
+            # Calculate base score
+            max_possible_matches = min(len(kp1), len(kp2))
+            match_score = len(good_matches) / max(1, max_possible_matches)
+            
+            # Apply geometric verification if we have enough matches
+            inlier_score = 0.0
+            if num_good_matches >= self.min_match_count:
+                # Get matched keypoints
+                src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                
+                # Find homography matrix
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                
+                if H is not None:
+                    # Count inliers
+                    inliers = mask.ravel().sum()
+                    inlier_score = inliers / max(1, num_good_matches)
+                    logger.debug(f"ORB: Homography inliers: {inliers}/{num_good_matches}")
+                    
+                    # Combine raw match score with inlier ratio
+                    match_score = 0.4 * match_score + 0.6 * inlier_score
+            
+            # Normalize and scale
+            final_score = min(1.0, match_score * 1.5)
+            
+            # Cache the result
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "orb_similarity", final_score)
+            
+            return final_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating ORB similarity: {e}")
             return 0.0
     
     def calculate_deep_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate deep learning based similarity with GPU acceleration"""
+        """
+        Calculate deep learning feature similarity using ensemble of models
+        """
         try:
-            # Extract features (GPU accelerated if available)
-            features1 = self._extract_deep_features(img_path1)
-            features2 = self._extract_deep_features(img_path2)
+            # Try to get from cache first
+            cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
+            if cached_result is not None:
+                return cached_result
+                
+            # Check if model is available
+            if self.model is None:
+                logger.warning("Deep model not available")
+                return 0.0
+                
+            # Try to get cached features
+            features1 = self.feature_cache.get(img_path1, "deep_features")
+            features2 = self.feature_cache.get(img_path2, "deep_features")
             
+            # Extract features if not in cache
+            if features1 is None:
+                features1 = self._extract_deep_features(img_path1)
+                if features1 is not None:
+                    self.feature_cache.put(img_path1, "deep_features", features1)
+                    
+            if features2 is None:
+                features2 = self._extract_deep_features(img_path2)
+                if features2 is not None:
+                    self.feature_cache.put(img_path2, "deep_features", features2)
+                    
+            # Check if we got valid features
             if features1 is None or features2 is None:
                 return 0.0
-            
+                
             # Calculate cosine similarity
-            similarity = np.dot(features1, features2) / (
-                np.linalg.norm(features1) * np.linalg.norm(features2)
-            )
+            similarity = np.dot(features1['primary'], features2['primary']) / (
+                np.linalg.norm(features1['primary']) * np.linalg.norm(features2['primary']))
+                
+            # If we have ensemble features, combine them
+            ensemble_similarity = similarity
+            if self.use_multiple_models and 'ensemble' in features1 and 'ensemble' in features2:
+                for model_name in features1['ensemble'].keys():
+                    if model_name in features2['ensemble']:
+                        model_sim = np.dot(features1['ensemble'][model_name], features2['ensemble'][model_name]) / (
+                            np.linalg.norm(features1['ensemble'][model_name]) * np.linalg.norm(features2['ensemble'][model_name]))
+                        # Weight by model importance
+                        if model_name == 'mobilenet':
+                            model_weight = 0.3
+                        elif model_name == 'resnet':
+                            model_weight = 0.4
+                        else:
+                            model_weight = 0.2
+                            
+                        ensemble_similarity = ensemble_similarity * 0.7 + model_sim * 0.3
+                
+            # Cache final similarity
+            self.feature_cache.put(f"{img_path1}|{img_path2}", "deep_similarity", float(ensemble_similarity))
             
-            return float(similarity)
-            
+            return float(ensemble_similarity)
+        
         except Exception as e:
             logger.error(f"Error calculating deep similarity: {e}")
             return 0.0
-    
-    def _load_and_prepare_image(self, img_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
-        """Load and prepare an image for feature extraction
-        
-        Args:
-            img_path: Path to the image file
             
-        Returns:
-            Tuple of (preprocessed_image, error_message)
-        """
+    def _extract_deep_features(self, img_path: str) -> Optional[Dict[str, np.ndarray]]:
+        """Extract deep features from image using ensemble of models"""
         try:
-            # Check if file exists
+            # Check if image exists
             if not os.path.exists(img_path):
-                return None, f"Image file not found: {img_path}"
+                logger.warning(f"Image does not exist: {img_path}")
+                return None
                 
-            # Handle Korean paths by using PIL first
+            # Handle problematic file extensions before reading
+            _, file_ext = os.path.splitext(img_path)
+            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
+                # Create a copy with .jpg extension
+                new_path = os.path.splitext(img_path)[0] + '.jpg'
+                try:
+                    if not os.path.exists(new_path):
+                        import shutil
+                        shutil.copy2(img_path, new_path)
+                    logger.info(f"Copied {file_ext} file to .jpg for deep feature extraction: {new_path}")
+                    img_path = new_path # Use the new path
+                except Exception as copy_err:
+                    logger.error(f"Error copying {img_path} to {new_path}: {copy_err}")
+                
+            # Load image using cv2.imdecode for robust path handling
             try:
-                with Image.open(img_path) as pil_img:
-                    # Convert PIL image to numpy array
-                    img = np.array(pil_img)
-                    if img is None:
-                        return None, f"Failed to convert PIL image: {img_path}"
-                        
-                    # Convert to RGB if needed
-                    if len(img.shape) == 2:  # Grayscale
-                        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                    elif img.shape[2] == 4:  # RGBA
-                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-                    elif img.shape[2] == 3 and img.dtype == np.uint8:
-                        # Already RGB, no conversion needed
-                        pass
-                    else:
-                        return None, f"Unsupported image format: {img_path}"
-            except Exception as pil_error:
-                # Fallback to OpenCV if PIL fails
-                img = cv2.imread(img_path)
-                if img is None:
-                    return None, f"Failed to read image with both PIL and OpenCV: {img_path}, Error: {pil_error}"
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # Resize to model input size
-            img = cv2.resize(img, DEFAULT_IMG_SIZE)
-            
-            # Normalize pixel values
-            img = img.astype(np.float32) / 255.0
-            
-            return img, None
-            
-        except Exception as e:
-            logger.error(f"Error loading image {img_path}: {e}")
-            return None, str(e)
-
-    def _extract_deep_features(self, img_path: str) -> Optional[np.ndarray]:
-        """Extract deep features with GPU acceleration"""
-        try:
-            # Check cache first
-            cached_features = self.cache.get(img_path, 'deep')
-            if cached_features is not None:
-                return cached_features
-            
-            # Load and preprocess image
-            img, error = self._load_and_prepare_image(img_path)
-            if img is None:
+                np_arr = np.fromfile(img_path, np.uint8)
+                if np_arr.size == 0:
+                    logger.warning(f"Failed to read image file for deep features (empty): {img_path}")
+                    return None
+                img_cv = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img_cv is None:
+                    logger.warning(f"Unable to decode image for deep features: {img_path}")
+                    return None
+                # Convert BGR (cv2) to RGB (TensorFlow/PIL)
+                img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                # Resize using cv2 for consistency
+                img_resized = cv2.resize(img_rgb, DEFAULT_IMG_SIZE, interpolation=cv2.INTER_AREA)
+                x = np.expand_dims(img_resized, axis=0)
+                x = self.efficient_preprocess(x)
+            except Exception as img_err:
+                logger.error(f"Error loading/preprocessing image {img_path} for deep features: {img_err}")
                 return None
             
-            # Add batch dimension
-            img = np.expand_dims(img, axis=0)
-            
-            # Use GPU acceleration if available
-            if self.settings['USE_GPU']:
-                # Add to batch queue
-                key = hashlib.md5(img_path.encode()).hexdigest()
-                self.batch_queue.put((key, img))
-                
-                # Wait for result
-                max_wait = 30  # Maximum wait time in seconds
-                start_time = time.time()
-                while time.time() - start_time < max_wait:
-                    with self.batch_lock:
-                        if key in self.batch_results:
-                            features = self.batch_results.pop(key)
-                            # Cache the features
-                            self.cache.put(img_path, 'deep', features)
-                            return features
-                    time.sleep(0.1)
-                
-                logger.warning(f"Timeout waiting for GPU batch processing: {img_path}")
-                
-            # Fall back to CPU processing if GPU not available or timeout
-            features = self.models['efficientnet'].predict(img, verbose=0)
-            if 'resnet' in self.models:
-                features_secondary = self.models['resnet'].predict(img, verbose=0)
-                features = np.concatenate([features, features_secondary], axis=1)
-            
-            # Flatten features
+            # Extract primary features using EfficientNet
+            features = self.model.predict(x, verbose=0)
             features = features.flatten()
             
-            # Cache the features
-            self.cache.put(img_path, 'deep', features)
+            # Normalize features
+            features = features / np.linalg.norm(features)
             
-            return features
+            result = {'primary': features}
+            
+            # Extract ensemble features if enabled
+            if self.use_multiple_models and self.models:
+                ensemble_features = {}
+                for model_name, model in self.models:
+                    try:
+                        # Preprocess according to model
+                        if model_name == 'mobilenet':
+                            x_model = self.mobilenet_preprocess(np.expand_dims(img_resized, axis=0))
+                        elif model_name == 'resnet':
+                            x_model = self.resnet_preprocess(np.expand_dims(img_resized, axis=0))
+                        else:
+                            x_model = x
+                            
+                        # Extract features
+                        model_features = model.predict(x_model, verbose=0).flatten()
+                        model_features = model_features / np.linalg.norm(model_features)
+                        ensemble_features[model_name] = model_features
+                    except Exception as e:
+                        logger.warning(f"Error extracting {model_name} features: {e}")
+                
+                result['ensemble'] = ensemble_features
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error extracting deep features: {e}")
             return None
     
-    def __del__(self):
-        """Cleanup resources"""
-        try:
-            # Stop batch processing
-            if hasattr(self, 'batch_queue'):
-                self.batch_queue.put((None, None))  # Shutdown signal
-            
-            # Close thread pool
-            if hasattr(self, 'thread_pool'):
-                self.thread_pool.shutdown(wait=True)
-                
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-
-    def clear_cache(self):
-        """Clear the feature cache"""
-        try:
-            if hasattr(self, 'cache'):
-                self.cache.memory_cache.clear()
-                self.cache.cache_info.clear()
-                logger.info("Image matcher cache cleared")
-            else:
-                logger.warning("Cache attribute not found, nothing to clear")
-        except Exception as e:
-            logger.error(f"Error clearing cache: {e}")
-
-    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict]:
+    def calculate_combined_similarity(self, img_path1: str, img_path2: str, 
+                                      weights: Optional[Dict[str, float]] = None) -> Tuple[float, Dict[str, float]]:
         """
-        Determine if two images match with combined similarity metrics
+        Calculate combined similarity using all methods
+        Returns the weighted score and individual scores
+        """
+        if not weights:
+            weights = SETTINGS['WEIGHTS']
+            
+        # Calculate similarities
+        sift_score = self.calculate_sift_similarity(img_path1, img_path2)
+        akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
+        deep_score = self.calculate_deep_similarity(img_path1, img_path2)
+        orb_score = self.calculate_orb_similarity(img_path1, img_path2)
+        
+        # Store individual scores
+        scores = {
+            'sift': sift_score,
+            'akaze': akaze_score,
+            'deep': deep_score,
+            'orb': orb_score
+        }
+        
+        # Calculate weighted sum
+        if sum(weights.values()) == 0:
+            logger.warning("All weights are zero, defaulting to equal weights")
+            weights = {k: 1.0/len(weights) for k in weights}
+            
+        combined_score = 0.0
+        weight_sum = 0.0
+        
+        for method, score in scores.items():
+            if method in weights:
+                combined_score += score * weights[method]
+                weight_sum += weights[method]
+                
+        # Normalize by weight sum
+        if weight_sum > 0:
+            combined_score /= weight_sum
+            
+        # Boost score if multiple methods agree
+        high_scores = sum(1 for score in scores.values() if score > 0.65)
+        if high_scores >= 3:
+            combined_score = min(1.0, combined_score * 1.1)  # +10% boost if 3+ methods agree
+        elif high_scores >= 2:
+            combined_score = min(1.0, combined_score * 1.05)  # +5% boost if 2+ methods agree
+            
+        logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
+        
+        return combined_score, scores
+        
+    def calculate_similarity(self, img_path1: str, img_path2: str, 
+                           weights: Optional[Dict[str, float]] = None) -> float:
+        """
+        Calculate combined similarity between two images
+        This is a wrapper around calculate_combined_similarity that returns just the score
+        """
+        try:
+            # Try to get from cache first
+            cache_key = f"{img_path1}|{img_path2}"
+            cached_result = self.feature_cache.get(cache_key, "combined_similarity")
+            if cached_result is not None:
+                return float(cached_result)
+                
+            # Calculate similarity
+            combined_score, _ = self.calculate_combined_similarity(img_path1, img_path2, weights)
+            
+            # Cache the result
+            self.feature_cache.put(cache_key, "combined_similarity", combined_score)
+            
+            return combined_score
+        except Exception as e:
+            logger.error(f"Error calculating similarity between {img_path1} and {img_path2}: {e}")
+            return 0.0
+            
+    def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
+        """
+        Determine if two images match based on similarity score
         
         Args:
             img_path1: Path to first image
             img_path2: Path to second image
-            threshold: Optional similarity threshold (default: from settings)
+            threshold: Similarity threshold (default: from config)
             
         Returns:
-            Tuple of (is_match, similarity_score, detailed_scores)
+            Tuple of (is_match, similarity_score, individual_scores)
         """
         if threshold is None:
-            threshold = self.settings['COMBINED_THRESHOLD']
+            threshold = SETTINGS['COMBINED_THRESHOLD']
             
         try:
-            # Calculate similarity
-            similarity = self.calculate_similarity(img_path1, img_path2)
-            
-            # Get detailed scores for individual methods
-            sift_sim = self.calculate_sift_similarity(img_path1, img_path2)
-            akaze_sim = self.calculate_akaze_similarity(img_path1, img_path2)
-            deep_sim = self.calculate_deep_similarity(img_path1, img_path2)
-            orb_sim = self.calculate_orb_similarity(img_path1, img_path2)
-            
-            # Detailed scores
-            scores = {
-                'sift': sift_sim,
-                'akaze': akaze_sim,
-                'deep': deep_sim,
-                'orb': orb_sim
-            }
-            
-            # Check for minimum confidence gap
-            if similarity < threshold + DEFAULT_MIN_CONFIDENCE_GAP:
-                logger.debug(f"Similarity {similarity:.3f} below confidence threshold {threshold + DEFAULT_MIN_CONFIDENCE_GAP:.3f}")
-                return False, similarity, scores
-            
-            # Additional validation for borderline cases
-            if threshold <= similarity <= threshold + 0.1:
-                # Check if at least two methods agree on the match
-                methods_agree = sum(1 for score in scores.values() if score > threshold) >= 2
-                if not methods_agree:
-                    logger.debug("Insufficient agreement between matching methods")
-                    return False, similarity, scores
+            # Calculate combined similarity
+            similarity, scores = self.calculate_combined_similarity(img_path1, img_path2)
             
             # Determine if it's a match
             is_match = similarity >= threshold
             
             return is_match, similarity, scores
-            
         except Exception as e:
-            logger.error(f"Error determining if images match: {e}")
+            logger.error(f"Error determining match between {img_path1} and {img_path2}: {e}")
             return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
-
-    def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate SIFT-based similarity between two images"""
-        # Implement or use existing implementation
-        return 0.5  # Placeholder value for now
-        
-    def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate AKAZE-based similarity between two images"""
-        # Implement or use existing implementation
-        return 0.5  # Placeholder value for now
-        
-    def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate ORB-based similarity between two images"""
-        # Implement or use existing implementation
-        return 0.5  # Placeholder value for now
+            
+    def clear_cache(self):
+        """Clear the feature cache"""
+        if hasattr(self, 'feature_cache'):
+            logger.debug("Clearing feature cache")
+            # This is a no-op if cache is disabled
+            # Actual cache files will be cleaned up based on cache settings
 
 
 # Helper function to get the common file extension
@@ -1304,174 +1448,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
-# Add a new function for converting complex objects to Excel-friendly format
-def convert_complex_to_simple(data):
-    """
-    Convert complex nested dictionaries and objects to simple strings for Excel compatibility
-    
-    Args:
-        data: The data to convert (dict, list, or other object)
-        
-    Returns:
-        A string representation that's compatible with Excel
-    """
-    if data is None or pd.isna(data):
-        return ''
-        
-    if isinstance(data, (int, float, str)):
-        return data
-        
-    if isinstance(data, dict):
-        # Handle image URL dictionaries
-        if 'url' in data:
-            if isinstance(data['url'], dict) and 'url' in data['url']:
-                return data['url']['url']
-            elif isinstance(data['url'], dict) and 'local_path' in data['url']:
-                return data['url']['local_path']
-            elif isinstance(data['url'], str):
-                return data['url']
-                
-        if 'local_path' in data:
-            return data['local_path']
-            
-        if 'product_name' in data:
-            return f"Product: {data['product_name']}"
-            
-        try:
-            # Try to convert to JSON
-            return json.dumps(data, ensure_ascii=False)
-        except:
-            # If JSON conversion fails, use a simpler string representation
-            return str(data)
-    elif isinstance(data, list):
-        try:
-            return json.dumps(data, ensure_ascii=False)
-        except:
-            return str(data)
-    elif isinstance(data, (np.ndarray, np.generic)):
-        # Handle NumPy types
-        return str(data)
-    else:
-        # For other types, just convert to string
-        return str(data)
-
-def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare DataFrame for Excel output by converting complex objects to strings"""
-    logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
-    
-    try:
-        # Create a copy to avoid modifying the original
-        df_excel = df.copy()
-        
-        # Convert complex objects to strings in all columns
-        for col in df_excel.columns:
-            if df_excel[col].dtype == 'object':
-                df_excel[col] = df_excel[col].apply(convert_complex_to_simple)
-        
-        # Handle image columns specifically
-        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지', '해오름 이미지 URL']
-        for col in image_columns:
-            if col in df_excel.columns:
-                df_excel[col] = df_excel[col].apply(lambda x: convert_complex_to_simple(x))
-        
-        # Remove any problematic characters from strings
-        for col in df_excel.select_dtypes(include=['object']).columns:
-            df_excel[col] = df_excel[col].astype(str).apply(lambda x: x.replace('\x00', ''))
-        
-        logger.info(f"DataFrame finalized successfully. Output shape: {df_excel.shape}")
-        return df_excel
-        
-    except Exception as e:
-        logger.error(f"Error finalizing DataFrame for Excel: {e}")
-        raise
-
-def _write_data_to_worksheet(worksheet, df: pd.DataFrame, start_row: int = 0):
-    """Write data to Excel worksheet with proper formatting"""
-    try:
-        # First convert all data to Excel-friendly format
-        df_excel = finalize_dataframe_for_excel(df)
-        
-        # Write headers
-        for col_idx, col_name in enumerate(df_excel.columns):
-            worksheet.write(start_row, col_idx, col_name)
-        
-        # Write data
-        for row_idx, row in df_excel.iterrows():
-            for col_idx, value in enumerate(row):
-                try:
-                    # Convert the value to string and clean it
-                    clean_value = convert_complex_to_simple(value)
-                    worksheet.write(start_row + row_idx + 1, col_idx, clean_value)
-                except Exception as cell_error:
-                    logger.warning(f"Error writing cell [{row_idx}, {col_idx}]: {cell_error}")
-                    # Write an empty string as fallback
-                    worksheet.write(start_row + row_idx + 1, col_idx, '')
-        
-    except Exception as e:
-        logger.error(f"Error writing data to worksheet: {e}")
-        raise 
-
-def create_excel_output(df: pd.DataFrame, output_path: str, sheet_name: str = 'Sheet1') -> bool:
-    """Create Excel output file with proper formatting and data conversion"""
-    try:
-        logger.info(f"Creating Excel output at {output_path}")
-        logger.info(f"Input DataFrame shape: {df.shape}")
-        
-        # Create Excel workbook
-        workbook = xlsxwriter.Workbook(output_path)
-        worksheet = workbook.add_worksheet(sheet_name)
-        
-        # Set column widths
-        for col_idx in range(len(df.columns)):
-            worksheet.set_column(col_idx, col_idx, 15)  # Default width
-        
-        # Write data with proper conversion
-        _write_data_to_worksheet(worksheet, df)
-        
-        # Close workbook
-        workbook.close()
-        
-        # Verify file was created
-        if os.path.exists(output_path):
-            logger.info(f"Excel file created successfully at {output_path}")
-            return True
-        else:
-            logger.error("Excel file creation failed - file not found")
-            return False
-            
-    except Exception as e:
-        logger.error(f"Error creating Excel file: {e}")
-        if 'workbook' in locals():
-            try:
-                workbook.close()
-            except:
-                pass
-        return False
-
-def _create_result_file(df: pd.DataFrame, base_path: str, timestamp: str = None) -> Tuple[bool, str]:
-    """Create the result Excel file with proper data conversion"""
-    try:
-        # Generate output path
-        if timestamp is None:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        output_dir = os.path.join(base_path, 'output')
-        os.makedirs(output_dir, exist_ok=True)
-        
-        output_path = os.path.join(output_dir, f'result_{timestamp}.xlsx')
-        
-        # Create Excel file
-        success = create_excel_output(df, output_path)
-        
-        if success:
-            logger.info(f"Result file created successfully at {output_path}")
-            return True, output_path
-        else:
-            logger.error("Failed to create result file")
-            return False, ""
-            
-    except Exception as e:
-        logger.error(f"Error creating result file: {e}")
-        return False, "" 
+    main() 

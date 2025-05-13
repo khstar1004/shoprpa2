@@ -1,116 +1,96 @@
-"""
-Test script to verify Excel image dictionary handling fix works properly.
-
-This script will:
-1. Create sample data with complex image dictionaries
-2. Try to write it to Excel using our sanitize_dataframe_for_excel function
-3. Verify the output is correct
-"""
-
 import os
-import sys
 import pandas as pd
 import logging
-from datetime import datetime
+import sys
+from pathlib import Path
 
-# Configure logging
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler()]
 )
-logger = logging.getLogger("TestExcelImageFix")
 
-# Import just the sanitization function
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from excel_utils import sanitize_dataframe_for_excel
+# Import our Excel utilities
+from excel_utils import create_final_output_excel
 
-def create_test_data():
-    """Create test DataFrame with complex image objects"""
-    data = {
-        "상품명": ["테스트 상품 1", "테스트 상품 2", "테스트 상품 3"],
-        "가격": [1000, 2000, 3000],
-        "본사 이미지": [
-            {
-                "url": {
-                    "url": "https://example.com/image1.jpg", 
-                    "local_path": "C:\\RPA\\Image\\Main\\test1.jpg",
-                    "source": "haereum"
-                },
-                "source": "haereum",
-                "product_name": "테스트 상품 1"
-            },
-            {
-                "url": "https://example.com/image2.jpg",
-                "local_path": "C:\\RPA\\Image\\Main\\test2.jpg",
-                "source": "haereum"
-            },
-            "https://example.com/image3.jpg"  # Simple string URL
-        ],
-        "고려기프트 이미지": [
-            "가격 범위내에 없거나 텍스트 유사율을 가진 상품이 없음",
-            {
-                "url": "https://example.com/kogift2.jpg",
-                "local_path": "C:\\RPA\\Image\\Main\\kogift2.jpg",
-                "source": "kogift"
-            },
-            None
-        ],
-        "네이버 이미지": [
-            None,
-            {
-                "product_name": "네이버 상품 2",
-                "image_url": "https://example.com/naver2.jpg"
-            },
-            "일정 정확도 이상의 텍스트 유사율을 가진 상품이 없음"
-        ]
-    }
+def main():
+    """Test script to verify image embedding in Excel files"""
+    logging.info("Starting test for Excel image embedding...")
     
-    return pd.DataFrame(data)
-
-def run_test():
-    """Run the test to verify Excel writing works with complex dictionaries"""
-    logger.info("Creating test data with complex image dictionaries")
-    df = create_test_data()
+    # Create directories for test output
+    output_dir = Path("C:/RPA/Output")
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Print original data
-    logger.info("Original DataFrame:")
-    logger.info(f"Shape: {df.shape}")
-    logger.info(f"Columns: {df.columns.tolist()}")
-    logger.info(f"Sample complex value: {df['본사 이미지'][0]}")
+    # Create test data
+    test_data = []
     
-    # Create output directory
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output")
-    os.makedirs(output_dir, exist_ok=True)
+    # Paths to image directories
+    haereum_dir = Path("C:/RPA/Image/Main/Haereum")
+    kogift_dir = Path("C:/RPA/Image/Main/kogift")
+    naver_dir = Path("C:/RPA/Image/Main/naver")
     
-    # Generate output path with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = os.path.join(output_dir, f"test_image_dict_fix_{timestamp}.xlsx")
+    # Check if directories exist
+    if not haereum_dir.exists() or not kogift_dir.exists() or not naver_dir.exists():
+        logging.error(f"One or more image directories don't exist. Please check paths.")
+        return
     
-    logger.info(f"Sanitizing DataFrame for Excel")
-    df_sanitized = sanitize_dataframe_for_excel(df)
+    # Find sample images (just taking first few from each directory)
+    haereum_images = sorted([f for f in haereum_dir.glob("*.jpg") if not "_nobg" in f.name])[:5]
+    kogift_images = sorted([f for f in kogift_dir.glob("*.jpg") if not "_nobg" in f.name])[:5]
+    naver_images = sorted([f for f in naver_dir.glob("*.jpg") if not "_nobg" in f.name])[:5]
     
-    logger.info("Sanitized DataFrame:")
-    logger.info(f"Shape: {df_sanitized.shape}")
-    logger.info(f"Columns: {df_sanitized.columns.tolist()}")
-    logger.info(f"Sample sanitized value: {df_sanitized['본사 이미지'][0]}")
+    logging.info(f"Found {len(haereum_images)} Haereum images, {len(kogift_images)} Kogift images, {len(naver_images)} Naver images")
     
-    logger.info(f"Writing sanitized data to Excel: {output_path}")
-    
-    # Write direct to Excel using pandas
-    try:
-        df_sanitized.to_excel(output_path, index=False)
-        logger.info(f"Successfully wrote to Excel file: {output_path}")
+    # Create test rows
+    for i in range(max(len(haereum_images), len(kogift_images), len(naver_images))):
+        haereum_img = str(haereum_images[i % len(haereum_images)]) if haereum_images else ""
+        kogift_img = str(kogift_images[i % len(kogift_images)]) if kogift_images else ""
+        naver_img = str(naver_images[i % len(naver_images)]) if naver_images else ""
         
-        # Verify the file exists and has non-zero size
-        file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-        logger.info(f"File size: {file_size} bytes")
-        
-        return True
-    except Exception as e:
-        logger.error(f"Failed to write to Excel: {e}")
-        return False
+        test_data.append({
+            "구분": f"테스트-{i+1}",
+            "담당자": "테스트담당자",
+            "업체명": f"테스트업체-{i+1}",
+            "업체코드": f"TEST{i+1:03d}",
+            "Code": f"P{i+1:04d}",
+            "중분류카테고리": "테스트카테고리",
+            "상품명": f"테스트 상품 {i+1}",
+            "기본수량(1)": 1,
+            "판매단가(V포함)": 10000 + (i * 1000),
+            "본사상품링크": "https://example.com/product1",
+            "기본수량(2)": 1,
+            "판매단가(V포함)(2)": 9500 + (i * 900),
+            "가격차이(2)": 500 + (i * 100),
+            "가격차이(2)(%)": 5.0,
+            "고려기프트 상품링크": "https://kogift.com/product1",
+            "기본수량(3)": 1,
+            "판매단가(V포함)(3)": 9800 + (i * 950),
+            "가격차이(3)": 200 + (i * 50),
+            "가격차이(3)(%)": 2.0,
+            "공급사명": "테스트공급사",
+            "네이버 쇼핑 링크": "https://shopping.naver.com/product1",
+            "공급사 상품링크": "https://supplier.com/product1",
+            "본사 이미지": haereum_img,
+            "고려기프트 이미지": kogift_img,
+            "네이버 이미지": naver_img
+        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(test_data)
+    
+    # Output Excel file
+    output_file = output_dir / "image_embedding_test.xlsx"
+    
+    # Create Excel file with images
+    logging.info(f"Creating Excel file with images: {output_file}")
+    success = create_final_output_excel(df, str(output_file))
+    
+    if success:
+        logging.info(f"Test successful! Excel file created at: {output_file}")
+        logging.info(f"Please check the file to verify that images are displayed correctly.")
+    else:
+        logging.error("Failed to create Excel file.")
 
 if __name__ == "__main__":
-    success = run_test()
-    sys.exit(0 if success else 1) 
+    main() 
