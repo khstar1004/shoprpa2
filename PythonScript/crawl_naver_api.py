@@ -1512,6 +1512,50 @@ async def _test_main():
     
     print("\n--- Naver API Test Finished ---")
 
+async def handle_captcha(page: Page) -> bool:
+    """
+    Check for and handle CAPTCHA on a page.
+    
+    Args:
+        page: Playwright Page object
+        
+    Returns:
+        bool: True if CAPTCHA is detected, False otherwise
+    """
+    try:
+        # Common CAPTCHA selectors
+        captcha_selectors = [
+            'form#captcha_form', 
+            'img[alt*="captcha"]',
+            'div.captcha_wrap',
+            'input[name="captchaBotKey"]',
+            'div[class*="captcha"]',
+            'iframe[src*="captcha"]',
+            'div[class*="bot-check"]',
+            'div[class*="security-check"]'
+        ]
+        
+        # Check for any CAPTCHA elements
+        for selector in captcha_selectors:
+            if await page.locator(selector).count() > 0:
+                logger.info("CAPTCHA detected on page")
+                return True
+                
+        # Check page content for CAPTCHA-related text
+        page_content = await page.content()
+        captcha_keywords = ['captcha', 'robot', 'security check', 'verify', '인증', '로봇', '보안']
+        
+        for keyword in captcha_keywords:
+            if keyword.lower() in page_content.lower():
+                logger.info(f"CAPTCHA-related keyword '{keyword}' found in page content")
+                return True
+                
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking for CAPTCHA: {e}")
+        return False
+
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(level=logging.INFO)
