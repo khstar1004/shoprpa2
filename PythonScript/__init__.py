@@ -1,5 +1,1 @@
-"""
-PythonScript package initialization
-"""
-
 # Initialize PythonScript package to enable absolute imports like 'PythonScript.enhanced_image_matcher' 

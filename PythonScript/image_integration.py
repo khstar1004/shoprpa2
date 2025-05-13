@@ -17,20 +17,6 @@ import glob
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Try to import NaverImageHandler 
-try:
-    from naver_image_handler import NaverImageHandler, fix_naver_image_data
-    NAVER_HANDLER_AVAILABLE = True
-    logger.info("NaverImageHandler is available for improved Naver image processing")
-except ImportError:
-    try:
-        from PythonScript.naver_image_handler import NaverImageHandler, fix_naver_image_data
-        NAVER_HANDLER_AVAILABLE = True
-        logger.info("NaverImageHandler is available from PythonScript")
-    except ImportError:
-        NAVER_HANDLER_AVAILABLE = False
-        logger.warning("NaverImageHandler not available, using legacy Naver image handling")
-
 # Import enhanced image matcher
 try:
     from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
@@ -1378,43 +1364,6 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
         if not naver_images:
             return None
             
-        # Use NaverImageHandler if available for better URL handling and image generation
-        if NAVER_HANDLER_AVAILABLE:
-            try:
-                naver_handler = NaverImageHandler()
-                
-                # Check for Naver link in row data to generate image URL
-                product_url = None
-                for link_col in ['네이버 쇼핑 링크', '네이버 링크']:
-                    if link_col in row_data and pd.notna(row_data[link_col]):
-                        link = str(row_data[link_col]).strip()
-                        if link and link not in ['-', 'None', ''] and link.startswith(('http://', 'https://')):
-                            product_url = link
-                            break
-                
-                if product_url:
-                    # Extract product ID to generate image URL
-                    product_id = naver_handler.extract_product_id_from_url(product_url)
-                    if product_id:
-                        # Generate image URL from product ID
-                        img_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                        
-                        # For synchronous operation, we can't download here but can create the data structure
-                        image_data = {
-                            'url': img_url,
-                            'local_path': '',  # Will be populated during async download
-                            'source': 'naver',
-                            'score': 0.7,  # Moderate confidence for generated URLs
-                            'product_name': product_name,
-                            'product_url': product_url
-                        }
-                        
-                        return image_data
-            except Exception as e:
-                logger.error(f"Error using NaverImageHandler: {e}")
-                # Fall through to legacy method
-        
-        # Legacy fallback method if NaverImageHandler not available or failed
         # 1. Try to find any image with the same product name tokens
         product_tokens = tokenize_product_name(product_name)
         best_match = None
@@ -1438,20 +1387,20 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 
                 # Verify the file exists 
                 if not os.path.exists(img_path):
-                    logger.warning(f"Fallback Naver image path doesn't exist: {img_path}")
+                    logging.warning(f"Fallback Naver image path doesn't exist: {img_path}")
                     # Try to find the file with different extensions
                     base_path = os.path.splitext(img_path)[0]
                     for ext in ['.jpg', '.jpeg', '.png', '.gif']:
                         alt_path = f"{base_path}{ext}"
                         if os.path.exists(alt_path):
-                            logger.info(f"Found alternative path for fallback Naver image: {alt_path}")
+                            logging.info(f"Found alternative path for fallback Naver image: {alt_path}")
                             img_path = alt_path
                             break
                     else:
                         # If still not found, try _nobg version
                         nobg_path = f"{base_path}_nobg.png"
                         if os.path.exists(nobg_path):
-                            logger.info(f"Found _nobg version of fallback Naver image: {nobg_path}")
+                            logging.info(f"Found _nobg version of fallback Naver image: {nobg_path}")
                             img_path = nobg_path
                 
                 # Use absolute path to ensure Excel can find it
@@ -1462,7 +1411,7 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 
                 # Reject "front" URLs which are unreliable
                 if web_url and "pstatic.net/front/" in web_url:
-                    logger.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
+                    logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
                     web_url = ''  # Clear the URL to prevent using invalid "front" URLs
                 
                 image_data = {
@@ -1477,10 +1426,10 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 
                 # Final verification - does the file actually exist and have size > 0?
                 if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                    logger.info(f"Verified fallback Naver image exists: {img_path} ({os.path.getsize(img_path)} bytes)")
+                    logging.info(f"Verified fallback Naver image exists: {img_path} ({os.path.getsize(img_path)} bytes)")
                     return image_data
                 else:
-                    logger.warning(f"Fallback Naver image verification failed - file missing or empty: {img_path}")
+                    logging.warning(f"Fallback Naver image verification failed - file missing or empty: {img_path}")
                 
         # 2. If no matching image found, try to get any available Naver image as fallback
         if not best_match:
@@ -1497,7 +1446,7 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                         
                         # Reject "front" URLs which are unreliable
                         if web_url and "pstatic.net/front/" in web_url:
-                            logger.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
+                            logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
                             web_url = ''  # Clear the URL to prevent using invalid "front" URLs
                         
                         image_data = {
@@ -1509,7 +1458,7 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                             'product_name': product_name,
                             'fallback': True  # Mark as fallback
                         }
-                        logger.info(f"Using random fallback Naver image: {img_path}")
+                        logging.info(f"Using random fallback Naver image: {img_path}")
                         return image_data
         
         # 3. If all else fails, look in the Naver directory for any image
@@ -1527,7 +1476,7 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                 if image_files:
                     # Use the first image file
                     img_path = image_files[0]
-                    logger.info(f"Using first available Naver image as last resort: {img_path}")
+                    logging.info(f"Using first available Naver image as last resort: {img_path}")
                     
                     return {
                         'local_path': img_path,
@@ -1540,11 +1489,11 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
                         'last_resort': True
                     }
         except Exception as e:
-            logger.error(f"Error looking for last resort Naver image: {e}")
+            logging.error(f"Error looking for last resort Naver image: {e}")
         
         return None
     except Exception as e:
-        logger.error(f"대체 네이버 이미지 검색 중 오류 발생: {e}")
+        logging.error(f"대체 네이버 이미지 검색 중 오류 발생: {e}")
         return None
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
@@ -1574,22 +1523,15 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
             logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.01을 사용합니다.")
             similarity_threshold = 0.01
         
-        # Use NaverImageHandler for Naver image validation if available
-        naver_handler = None
-        if NAVER_HANDLER_AVAILABLE:
-            try:
-                naver_handler = NaverImageHandler(config)
-                logging.info("Using NaverImageHandler for improved Naver image validation")
-            except Exception as e:
-                logging.error(f"Error initializing NaverImageHandler: {e}")
-                naver_handler = None
-        
         # -------------------------------------------------------------
         # 이미지 유사도 필터링
         # -------------------------------------------------------------
         # 필터링 기준:
+        #   • '이미지_유사도' 컬럼이 존재하고 수치형 값 < similarity_threshold
         #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
+        #   • 유사도 정보가 없거나 파싱 실패 → 그대로 둠 (보수적)
         #   • 이미지 데이터가 딕셔너리 형태인 경우, 'score' 키의 값 < similarity_threshold
+        #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
 
         # 필터링 임계값을 매우 낮게 설정하여 대부분의 매칭을 유지
         # Remove the redundant filtering block based on the old '이미지_유사도' column.
@@ -1599,10 +1541,9 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         # 너무 낮은 점수에만 필터링 적용 (대부분 유지)
         filtered_count = 0
         rows_affected = set() # Track unique rows affected
-        # Define Haoreum column name
+        # Define Haereum column name
         haoreum_col_name = '본사 이미지'
         kogift_col_name = '고려기프트 이미지'
-        naver_col_name = '네이버 이미지'
 
         # Double check Koreagift product info and image pairing
         kogift_mismatch_count = 0
@@ -1639,8 +1580,10 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 kogift_mismatch_count += 1
                 rows_affected.add(idx)
                 filtered_count += 1
-                
-            # Check for Naver product info existence
+
+        # Now apply similarity filtering on remaining images
+        for idx, row in result_df.iterrows():
+            # Check Naver product info existence first
             has_naver_info = False
             
             # Check all possible Naver info columns
@@ -1658,67 +1601,22 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                     has_naver_info = True
                     break
                     
-            # Handle Naver image with NaverImageHandler if available
-            if naver_col_name in row and naver_handler:
-                img_data = row[naver_col_name]
-                if isinstance(img_data, dict):
-                    # Use NaverImageHandler to fix the image data
-                    fixed_data = fix_naver_image_data(img_data)
-                    
-                    # If Naver product info exists but image data doesn't meet quality criteria, fix or remove
-                    if has_naver_info:
-                        # Check if we need to normalize the URL
-                        if 'url' in fixed_data:
-                            normalized_url = naver_handler.normalize_url(fixed_data['url'])
-                            if normalized_url:
-                                fixed_data['url'] = normalized_url
-                        
-                        # Always preserve image data when product info exists, just fix it
-                        result_df.at[idx, naver_col_name] = fixed_data
-                    else:
-                        # If no Naver product info, check if we should keep the image based on score
-                        score = fixed_data.get('score', 0)
-                        if score < similarity_threshold:
-                            result_df.at[idx, naver_col_name] = '-'
-                            filtered_count += 1
-                            rows_affected.add(idx)
-                        else:
-                            # Keep fixed image data even without product info if score is good
-                            result_df.at[idx, naver_col_name] = fixed_data
-                elif img_data == '-':
-                    # If image is already removed, nothing to do
-                    pass
-                elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
-                    # It's a URL string, convert to dictionary format
-                    normalized_url = naver_handler.normalize_url(img_data)
-                    if normalized_url:
-                        if has_naver_info:
-                            # Always preserve image when product info exists
-                            result_df.at[idx, naver_col_name] = {
-                                'url': normalized_url,
-                                'local_path': '',
-                                'source': 'naver',
-                                'score': 0.7  # Default score for URLs
-                            }
-                        else:
-                            # If no product info, remove the image
-                            result_df.at[idx, naver_col_name] = '-'
-                            filtered_count += 1
-                            rows_affected.add(idx)
-                else:
-                    # Invalid data, remove it
-                    result_df.at[idx, naver_col_name] = '-'
-                    filtered_count += 1
-                    rows_affected.add(idx)
-
-            # Legacy filtering for Naver images when NaverImageHandler is not available
-            elif naver_col_name in row:
-                # Skip Naver filtering if there's Naver product info
-                if has_naver_info:
-                    logging.debug(f"Row {idx}: Preserving Naver image because Naver product info exists")
+            # Iterate only through Kogift and Naver columns for filtering
+            for col_name in ['고려기프트 이미지', '네이버 이미지']:
+                if col_name not in result_df.columns:
                     continue
                 
-                img_data = row[naver_col_name]
+                # Skip Naver filtering if there's Naver product info
+                if col_name == '네이버 이미지' and has_naver_info:
+                    logging.debug(f"Row {idx}: Skipping Naver image filtering because Naver product info exists")
+                    continue
+                
+                # Explicitly skip Haereum column if it somehow gets included here (redundant safety check)
+                if col_name == haoreum_col_name:
+                    logging.debug(f"Skipping Haereum column '{haoreum_col_name}' in similarity filtering loop at index {idx}")
+                    continue
+
+                img_data = row[col_name]
                 
                 # Check if it's a dictionary and contains a score
                 if isinstance(img_data, dict) and 'score' in img_data:
@@ -1726,12 +1624,12 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                         score = float(img_data['score'])
                         # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
                         if score < similarity_threshold:
-                            result_df.at[idx, naver_col_name] = '-' # Filter out very low-score image
+                            result_df.at[idx, col_name] = '-' # Filter out very low-score image
                             filtered_count += 1
                             rows_affected.add(idx)
                     except (ValueError, TypeError):
                         # If score is not a valid number, keep the image data (conservative approach)
-                        logging.warning(f"Invalid score value '{img_data.get('score')}' found in {naver_col_name} at index {idx}. Skipping filtering for this cell.")
+                        logging.warning(f"Invalid score value '{img_data.get('score')}' found in {col_name} at index {idx}. Skipping filtering for this cell.")
                 # If not a dict with score, or already filtered ('-'), leave it as is
 
         # Log count based on unique rows affected
@@ -2269,16 +2167,6 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     # Step 2: Apply image filtering based on similarity
     df_filtered = filter_images_by_similarity(df_with_images, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
-    
-    # Step 3: Use NaverImageHandler to fix Naver image data if available
-    if NAVER_HANDLER_AVAILABLE:
-        try:
-            logger.info("Using NaverImageHandler for advanced Naver image fixing")
-            naver_handler = NaverImageHandler(config)
-            df_filtered = naver_handler.fix_image_data_in_dataframe(df_filtered, naver_img_column='네이버 이미지')
-            logger.info("NaverImageHandler successfully applied")
-        except Exception as e:
-            logger.error(f"Error using NaverImageHandler: {e}")
     
     # FIXED: Added step to improve Kogift image matching
     df_improved = improved_kogift_image_matching(df_filtered)

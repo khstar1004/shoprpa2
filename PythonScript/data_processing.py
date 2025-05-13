@@ -11,81 +11,73 @@ from typing import Optional, Tuple, Dict, List, Any
 import numpy as np
 from pathlib import Path
 import ast
-from urllib.parse import urlparse
 
-def process_input_file(config: configparser.ConfigParser) -> Tuple[pd.DataFrame, str]:
-    """Process the input Excel file and return a DataFrame and filename."""
+def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """Processes the main input Excel file, reading config with ConfigParser."""
     try:
-        input_file = config.get('Paths', 'input_file')
-        if not os.path.exists(input_file):
-            raise FileNotFoundError(f"Input file not found: {input_file}")
-            
-        # Read the Excel file
-        df = pd.read_excel(input_file)
+        # Get input directory from config
+        input_dir = config.get('Paths', 'input_dir')
         
-        # Get the filename without path
-        input_filename = os.path.basename(input_file)
+        # Check if a specific input file is provided in the config
+        specific_input_file = config.get('Paths', 'input_file', fallback=None)
         
-        # Handle Haereum image URLs
-        if '본사 이미지' not in df.columns and '본사상품링크' in df.columns:
-            # Try to extract image URLs from product links
-            df['본사 이미지'] = df['본사상품링크'].apply(lambda x: extract_image_url_from_link(x) if pd.notna(x) else None)
-            logging.info("Extracted image URLs from product links")
+        if specific_input_file and os.path.exists(specific_input_file):
+            # Use the specific input file provided in config
+            logging.info(f"Using specific input file from config: {specific_input_file}")
+            input_file = specific_input_file
+            input_filename = os.path.basename(input_file)
+        else:
+            # No specific file provided, search in the input directory
+            logging.info(f"Checking for input file in {input_dir}")
+            excel_files = glob.glob(os.path.join(input_dir, '*.xlsx'))
+            excel_files = [f for f in excel_files if not os.path.basename(f).startswith('~')]
+
+            if not excel_files:
+                logging.warning(f"No Excel (.xlsx) file found in {input_dir}.")
+                return None, None
+
+            # Process only the first found Excel file
+            input_file = excel_files[0]
+            input_filename = os.path.basename(input_file)
+            logging.info(f"Processing input file: {input_file}")
+    except configparser.Error as e:
+        logging.error(f"Error reading configuration for input processing: {e}. Cannot proceed.")
+        return None, None
+
+    start_time = time.time()
+    try:
+        # Read the entire Excel file at once
+        df = pd.read_excel(input_file, sheet_name=0)
+        logging.info(f"Read {len(df)} rows from '{input_filename}'")
         
-        # Validate URLs
-        if '본사 이미지' in df.columns:
-            df['본사 이미지'] = df['본사 이미지'].apply(lambda x: validate_and_fix_url(x) if pd.notna(x) else None)
-        
+        # Clean column names
+        original_columns = df.columns.tolist()
+        df.columns = [col.strip().replace('\xa0', '') for col in df.columns]
+        cleaned_columns = df.columns.tolist()
+        if original_columns != cleaned_columns:
+            logging.info(f"Cleaned column names. Original: {original_columns}, Cleaned: {cleaned_columns}")
+        logging.info(f"Columns after cleaning: {df.columns.tolist()}")
+
+        # Check for required columns using the imported list
+        missing_cols = [col for col in REQUIRED_INPUT_COLUMNS if col not in df.columns]
+        if missing_cols:
+            logging.error(f"Input file '{input_filename}' missing required columns (defined in excel_utils): {missing_cols}.")
+            logging.error(f"Required columns are: {REQUIRED_INPUT_COLUMNS}")
+            logging.error(f"Columns found in file: {cleaned_columns}")
+            return None, input_filename
+        else:
+            logging.info(f"All required columns found: {REQUIRED_INPUT_COLUMNS}")
+
+        read_time = time.time() - start_time
+        logging.info(f"Read {len(df)} rows from '{input_filename}' in {read_time:.2f} sec.")
         return df, input_filename
-    except Exception as e:
-        logging.error(f"Error processing input file: {e}")
-        raise
 
-def extract_image_url_from_link(link: str) -> Optional[str]:
-    """Try to extract image URL from product link."""
-    if not isinstance(link, str):
-        return None
-    
-    try:
-        # Common patterns for image URLs in product pages
-        img_patterns = [
-            r'https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif)',
-            r'src=[\'"](https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif))[\'"]',
-            r'data-original=[\'"](https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif))[\'"]'
-        ]
-        
-        for pattern in img_patterns:
-            match = re.search(pattern, link, re.IGNORECASE)
-            if match:
-                return match.group(1) if 'src=' in pattern or 'data-original=' in pattern else match.group(0)
-        
-        return None
+    except FileNotFoundError:
+        logging.error(f"Input file {input_file} not found during read attempt.")
+        return None, None
     except Exception as e:
-        logging.warning(f"Error extracting image URL from link: {e}")
-        return None
-
-def validate_and_fix_url(url: str) -> Optional[str]:
-    """Validate and fix common URL issues."""
-    if not isinstance(url, str):
-        return None
-        
-    try:
-        # Remove whitespace
-        url = url.strip()
-        
-        # Add http:// if missing
-        if not url.startswith(('http://', 'https://')):
-            url = 'http://' + url
-            
-        # Validate URL format
-        parsed = urlparse(url)
-        if not all([parsed.scheme, parsed.netloc]):
-            return None
-            
-        return url
-    except Exception as e:
-        logging.warning(f"Error validating URL: {e}")
-        return None
+        logging.error(f"Error reading Excel '{input_file}': {e}", exc_info=True)
+        return None, input_filename
 
 def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """결과 데이터프레임 필터링"""
@@ -225,34 +217,18 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             logging.warning(f"Adding missing required column: {col}")
     
     # Add columns for Kogift results if they don't exist yet
-    kogift_columns = [
-        '기본수량(2)', '판매단가(V포함)(2)', '판매가(V포함)(2)', 
-        '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', 
-        '고려기프트 이미지', '_temp_kogift_quantity_prices'  # Added temporary column
-    ]
-    for col in kogift_columns:
+    # FIXED: Ensure 판매단가(V포함)(2) column exists explicitly for kogift prices
+    for col in ['기본수량(2)', '판매단가(V포함)(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']:
         if col not in df.columns:
             df[col] = None
             logging.debug(f"Adding column for Kogift data: {col}")
     
     # Add columns for Naver results if they don't exist yet
-    # UPDATED: Added temporary columns for internal processing (will be removed before final output)
-    standard_columns = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', 
-                       '네이버 쇼핑 링크', '공급사명', '공급사 상품링크', '네이버 이미지']
-    temp_columns = ['_temp_판촉물여부', '_temp_수량별가격여부', '_temp_수량별가격정보', '_temp_VAT포함여부']
-    
-    # Add standard columns that will remain in final output
-    for col in standard_columns:
+    for col in ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '네이버 쇼핑 링크', '공급사명', '공급사 상품링크', '네이버 이미지']:
         if col not in df.columns:
             df[col] = None
-            logging.debug(f"Adding standard Naver column: {col}")
+            logging.debug(f"Adding column for Naver data: {col}")
     
-    # Add temporary columns for internal processing
-    for col in temp_columns:
-        if col not in df.columns:
-            df[col] = None
-            logging.debug(f"Adding temporary column for processing: {col}")
-
     # Initialize the image columns with proper dictionary format where applicable
     for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
         if img_col in df.columns:
@@ -306,7 +282,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         
         logging.info(f"Added {haoreum_img_count} 해오름 images from input file image map")
 
-    # Process Kogift data
+    # Add Kogift data from crawl results if available
     if kogift_results:
         kogift_update_count = 0
         kogift_img_count = 0
@@ -315,120 +291,48 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
             if product_name in kogift_results:
+                # Get first matching result from Kogift
                 kogift_data = kogift_results[product_name]
                 if kogift_data and len(kogift_data) > 0:
                     item = kogift_data[0]  # Use the first match
                     
-                    # Store quantity prices in temporary column
-                    if 'quantity_prices' in item:
-                        df.at[idx, '_temp_kogift_quantity_prices'] = item['quantity_prices']
+                    # Update Kogift related columns
+                    # 기본수량(2) should match 기본수량(1) for direct price comparison
+                    if '기본수량(2)' in df.columns:
+                        # Copy the value from 기본수량(1)
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량(2)'] = row['기본수량(1)']
+                        # If quantity exists in the item, only use it as a fallback
+                        elif 'quantity' in item:
+                            df.at[idx, '기본수량(2)'] = item['quantity']
                     
-                    # Get base quantity from input
-                    base_quantity = None
-                    if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                        base_quantity = int(row['기본수량(1)'])
-                    elif '기본수량' in df.columns and pd.notna(row['기본수량']):
-                        base_quantity = int(row['기본수량'])
+                    # 기본수량 칼럼도 동일하게 기본수량(1)에서 복사 (요구사항)
+                    if '기본수량' in df.columns:
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량'] = row['기본수량(1)']
                     
-                    # Update quantity and price information
-                    if base_quantity and '_temp_kogift_quantity_prices' in df.columns:
-                        qty_prices = df.at[idx, '_temp_kogift_quantity_prices']
-                        if isinstance(qty_prices, dict):
-                            # Convert string keys to int for proper comparison
-                            qty_prices = {int(k): v for k, v in qty_prices.items()}
-                            
-                            # Sort quantities for proper tier comparison
-                            available_qtys = sorted(qty_prices.keys())
-                            
-                            # Find the closest quantity price
-                            available_qtys = sorted([int(q) for q in qty_prices.keys()])
-                            closest_qty = min(available_qtys, key=lambda x: abs(x - base_quantity))
-                            
-                            # Enhanced error handling for quantity price lookup
-                            try:
-                                # First try with string key
-                                if str(closest_qty) in qty_prices:
-                                    price_info = qty_prices[str(closest_qty)]
-                                # Then try with integer key
-                                elif closest_qty in qty_prices:
-                                    price_info = qty_prices[closest_qty]
-                                # Try looking for a similar key (for minor quantity differences)
-                                else:
-                                    # Log all available quantity keys for debugging
-                                    available_keys = list(qty_prices.keys())
-                                    logging.debug(f"Available quantity price keys: {available_keys}")
-                                    logging.warning(f"Could not find exact match for quantity {closest_qty} in keys {available_keys}")
-                                    
-                                    # Look for the nearest quantity tier in the available keys
-                                    closest_available = min(available_keys, key=lambda x: abs(int(str(x)) - closest_qty), default=None)
-                                    if closest_available:
-                                        logging.info(f"Using closest available quantity tier: {closest_available} instead of {closest_qty}")
-                                        price_info = qty_prices[closest_available]
-                                    else:
-                                        # If all fails, create a default price info
-                                        logging.warning(f"No suitable quantity tier found. Using default price.")
-                                        price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
-                            except Exception as e:
-                                # Handle any errors during price lookup
-                                logging.error(f"Error finding quantity price for {closest_qty}: {e}")
-                                price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
-                            
-                            # Fix: Use closest_qty instead of undefined selected_qty
-                            if closest_qty is not None:
-                                # Use the price from the appropriate tier
-                                df.at[idx, '판매단가(V포함)(2)'] = price_info.get('price_with_vat', price_info.get('price', 0))
-                                df.at[idx, '기본수량(2)'] = base_quantity
-                                kogift_price_count += 1
-                                logging.debug(f"Using price tier {closest_qty} for quantity {base_quantity}")
-                            elif available_qtys:  # If quantity is less than minimum tier
-                                # Use the minimum tier price
-                                min_qty = min(available_qtys)
-                                price_info = qty_prices[min_qty]
-                                df.at[idx, '판매단가(V포함)(2)'] = price_info.get('price_with_vat', price_info.get('price', 0))
-                                df.at[idx, '기본수량(2)'] = base_quantity
-                                kogift_price_count += 1
-                                logging.debug(f"Using minimum tier price ({min_qty}) for quantity {base_quantity}")
+                    # Kogift 제품 URL 업데이트
+                    if '고려기프트 상품링크' in df.columns:
+                        if 'link' in item:
+                            df.at[idx, '고려기프트 상품링크'] = item['link']
+                        elif 'href' in item:
+                            df.at[idx, '고려기프트 상품링크'] = item['href']
                     
-                    # If no quantity prices found or processing failed, use default price
-                    if pd.isna(df.at[idx, '판매단가(V포함)(2)']):
+                    # 판매가 정보 업데이트
+                    if '판매단가(V포함)(2)' in df.columns:
+                        # 부가세 포함 가격이 먼저 있는지 확인
                         if 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
-                            df.at[idx, '기본수량(2)'] = base_quantity if base_quantity else 1
                             kogift_price_count += 1
+                        # 없으면 일반 가격에 1.1 곱해서 부가세 계산
                         elif 'price' in item:
-                            df.at[idx, '판매단가(V포함)(2)'] = item['price']
-                            df.at[idx, '기본수량(2)'] = base_quantity if base_quantity else 1
+                            df.at[idx, '판매단가(V포함)(2)'] = round(item['price'] * 1.1)
                             kogift_price_count += 1
                     
-                    # Copy price to 판매가(V포함)(2) and calculate price differences
-                    if pd.notna(df.at[idx, '판매단가(V포함)(2)']):
-                        # Copy to 판매가(V포함)(2)
+                    # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
+                    if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns and pd.notna(df.at[idx, '판매단가(V포함)(2)']):
                         df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
                         
-                        # Calculate price differences if base price exists
-                        if '판매단가(V포함)' in df.columns and pd.notna(row['판매단가(V포함)']):
-                            try:
-                                base_price = float(row['판매단가(V포함)'])
-                                kogift_price = float(df.at[idx, '판매단가(V포함)(2)'])
-                                
-                                # Calculate absolute difference
-                                price_diff = kogift_price - base_price
-                                df.at[idx, '가격차이(2)'] = price_diff
-                                
-                                # Calculate percentage difference
-                                if base_price != 0:
-                                    pct_diff = (price_diff / base_price) * 100
-                                    # Fix: Use correct column name with consistent naming
-                                    df.at[idx, '가격차이(2)(%)'] = round(pct_diff, 1)
-                            except (ValueError, TypeError) as e:
-                                logging.warning(f"Error calculating price differences for row {idx}: {e}")
-                    
-                    # Update Kogift product URL
-                    if 'link' in item:
-                        df.at[idx, '고려기프트 상품링크'] = item['link']
-                    elif 'href' in item:
-                        df.at[idx, '고려기프트 상품링크'] = item['href']
-                    
                     # 이미지 URL 업데이트
                     # 이미지 URL 파악 (우선순위 순서대로 시도)
                     image_url = None
@@ -511,11 +415,37 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     
                     kogift_update_count += 1
         
-        logging.info(f"Updated {kogift_update_count} rows with Kogift data")
-        logging.info(f"Added {kogift_price_count} Kogift prices")
-        logging.info(f"Added {kogift_img_count} Kogift images")
+        logging.info(f"업데이트된 행 수: {kogift_update_count} (Kogift 데이터)")
+        logging.info(f"Kogift 이미지 추가: {kogift_img_count}개")
+        logging.info(f"Kogift 가격 추가: {kogift_price_count}개")
 
-    # Update Naver data processing section to use temporary columns
+        # === DEBUG LOGGING START ===
+        if kogift_update_count > 0 and '판매단가(V포함)(2)' in df.columns:
+            try:
+                sample_indices = df[df['판매단가(V포함)(2)'].notna()].index[:3] # Get first 3 rows with Kogift price
+                if not sample_indices.empty:
+                    logging.info("[DEBUG] Sample Kogift Price Data after processing:")
+                    for idx in sample_indices:
+                        product_name = df.at[idx, '상품명']
+                        kogift_price = df.at[idx, '판매단가(V포함)(2)']
+                        kogift_img_data = df.at[idx, '고려기프트 이미지'] if '고려기프트 이미지' in df.columns else 'N/A'
+                        
+                        # 이미지 데이터 로깅 형식 개선
+                        img_info = "이미지 없음"
+                        if isinstance(kogift_img_data, dict):
+                            img_info = f"이미지 정보: {{url: '{kogift_img_data.get('url', '없음')[:30]}...'"
+                            if 'local_path' in kogift_img_data:
+                                img_info += f", local_path: '{kogift_img_data.get('local_path', '없음')[-30:]}...'"
+                            img_info += "}"
+                        
+                        logging.info(f"  - 상품: '{product_name}', Kogift 가격: {kogift_price}, {img_info}")
+                else:
+                    logging.info("[DEBUG] 처리 후에도 Kogift 가격 데이터가 없습니다 (kogift_update_count > 0 에도 불구하고).")
+            except Exception as log_err:
+                logging.warning(f"[DEBUG] Kogift 샘플 데이터 로깅 중 오류: {log_err}")
+        # === DEBUG LOGGING END ===
+
+    # Add Naver data from crawl results if available
     if naver_results:
         naver_matched_count = 0
         for idx, row in df.iterrows():
@@ -524,86 +454,35 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             if product_name in naver_results:
                 naver_data = naver_results[product_name]
                 if naver_data and len(naver_data) > 0:
+                    # Use first match for now
                     item = naver_data[0]
                     
+                    # Process if item is valid and has required data
                     if isinstance(item, dict):
                         naver_matched_count += 1
                         
-                        # Update standard columns as before
+                        # Update Naver related columns
+                        # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
                         if '기본수량(3)' in df.columns:
+                            # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
                             if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
                                 df.at[idx, '기본수량(3)'] = row['기본수량(1)']
                             else:
-                                df.at[idx, '기본수량(3)'] = 1
+                                df.at[idx, '기본수량(3)'] = 1  # 기본값
                         
-                        # Update price information
-                        if '판매단가(V포함)(3)' in df.columns:
-                            # If it's a promotional site with quantity pricing, use the price for the base quantity
-                            is_promo = item.get('is_promotional_site', False)
-                            has_qty_pricing = item.get('has_quantity_pricing', False)
-                            qty_prices = item.get('quantity_prices', {})
-                            
-                            if is_promo and has_qty_pricing and qty_prices:
-                                # Store promotional site info in temporary columns
-                                df.at[idx, '_temp_판촉물여부'] = True
-                                df.at[idx, '_temp_수량별가격여부'] = True
-                                df.at[idx, '_temp_VAT포함여부'] = item.get('vat_included', False)
-                                
-                                # Store quantity pricing info for internal use
-                                import json
-                                df.at[idx, '_temp_수량별가격정보'] = json.dumps(qty_prices)
-                                
-                                # Get base quantity price (using 기본수량(1) if available)
-                                base_qty = row['기본수량(1)'] if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']) else 1
-                                
-                                # Find the closest quantity price
-                                available_qtys = sorted([int(q) for q in qty_prices.keys()])
-                                closest_qty = min(available_qtys, key=lambda x: abs(x - base_qty))
-                                
-                                # Enhanced error handling for quantity price lookup
-                                try:
-                                    # First try with string key
-                                    if str(closest_qty) in qty_prices:
-                                        price_info = qty_prices[str(closest_qty)]
-                                    # Then try with integer key
-                                    elif closest_qty in qty_prices:
-                                        price_info = qty_prices[closest_qty]
-                                    # Try looking for a similar key (for minor quantity differences)
-                                    else:
-                                        # Log all available quantity keys for debugging
-                                        available_keys = list(qty_prices.keys())
-                                        logging.debug(f"Available quantity price keys: {available_keys}")
-                                        logging.warning(f"Could not find exact match for quantity {closest_qty} in keys {available_keys}")
-                                        
-                                        # Look for the nearest quantity tier in the available keys
-                                        closest_available = min(available_keys, key=lambda x: abs(int(str(x)) - closest_qty), default=None)
-                                        if closest_available:
-                                            logging.info(f"Using closest available quantity tier: {closest_available} instead of {closest_qty}")
-                                            price_info = qty_prices[closest_available]
-                                        else:
-                                            # If all fails, create a default price info
-                                            logging.warning(f"No suitable quantity tier found. Using default price.")
-                                            price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
-                                except Exception as e:
-                                    # Handle any errors during price lookup
-                                    logging.error(f"Error finding quantity price for {closest_qty}: {e}")
-                                    price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
-                                
-                                # Use VAT-included price
-                                df.at[idx, '판매단가(V포함)(3)'] = price_info.get('price_with_vat', item.get('price', 0))
-                            else:
-                                # Use regular price for non-promotional items
-                                df.at[idx, '판매단가(V포함)(3)'] = item.get('price', 0)
+                        # 판매단가 정보 업데이트
+                        if '판매단가(V포함)(3)' in df.columns and 'price' in item:
+                            df.at[idx, '판매단가(V포함)(3)'] = item['price']
                         
-                        # Update other standard columns
+                        # 링크 정보 업데이트
                         if '네이버 쇼핑 링크' in df.columns and 'link' in item:
                             df.at[idx, '네이버 쇼핑 링크'] = item['link']
                         if '공급사 상품링크' in df.columns and 'seller_link' in item:
                             df.at[idx, '공급사 상품링크'] = item['seller_link']
                         if '공급사명' in df.columns and 'seller_name' in item:
                             df.at[idx, '공급사명'] = item['seller_name']
-                            
-                        # Process image information as before
+                        
+                        # 이미지 URL 추가
                         if '네이버 이미지' in df.columns:
                             # 이미지 경로 정보가 있으면 추가
                             img_path = None
@@ -658,8 +537,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(2)(%)'] = df.apply(
-                lambda x: round((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100, 1)
+                lambda x: int((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
                 if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1
@@ -675,8 +554,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(3)(%)'] = df.apply(
-                lambda x: round((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100, 1)
+                lambda x: int((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
                 if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1
@@ -694,6 +573,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Convert NaN values to None/empty for cleaner Excel output
     # Important: Do not replace '-' here as it's used as a valid placeholder
     df = df.replace({pd.NA: None, np.nan: None}) # Keep NaN -> None for general cleaning
+    # Explicitly replace None with '-' only for specific columns where needed BEFORE final output
+    # This step is usually handled in finalize_dataframe_for_excel
     
     # Count image URLs per column for logging
     img_url_counts = {
@@ -708,46 +589,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     
     # Verify price data is present in the output DataFrame
     kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
-    naver_price_count = df['판매단가(V포함)(3)'].notnull().sum()
-    
-    # Fix: Use the temporary columns for these counts before they're removed
-    # These columns might not exist after previous cleanup
-    promo_site_count = df['_temp_판촉물여부'].sum() if '_temp_판촉물여부' in df.columns else 0
-    qty_pricing_count = df['_temp_수량별가격여부'].sum() if '_temp_수량별가격여부' in df.columns else 0
-    
-    logging.info(f"Data summary:")
-    logging.info(f"- Kogift price data count: {kogift_price_count} rows")
-    logging.info(f"- Naver price data count: {naver_price_count} rows")
-    logging.info(f"- Promotional sites detected: {promo_site_count} rows")
-    logging.info(f"- Quantity pricing available: {qty_pricing_count} rows")
-    
-    # Remove temporary columns before returning
-    # Fix: Define temp_columns list (was being referenced before assignment)
-    all_temp_columns = ['_temp_kogift_quantity_prices', '_temp_판촉물여부', '_temp_수량별가격여부', 
-                        '_temp_수량별가격정보', '_temp_VAT포함여부']
-    
-    for col in all_temp_columns:
-        if col in df.columns:
-            df.drop(columns=[col], inplace=True)
-            logging.debug(f"Removed temporary column: {col}")
-    
-    # Verify final columns match expected format
-    current_cols = set(df.columns)
-    expected_cols = set(FINAL_COLUMN_ORDER)
-    extra_cols = current_cols - expected_cols
-    missing_cols = expected_cols - current_cols
-    
-    if extra_cols:
-        logging.warning(f"Found unexpected columns that will be removed: {extra_cols}")
-        df = df[[col for col in df.columns if col in FINAL_COLUMN_ORDER]]
-    
-    if missing_cols:
-        logging.warning(f"Missing expected columns: {missing_cols}")
-        for col in missing_cols:
-            df[col] = None
-    
-    # Ensure final column order matches exactly
-    df = df[FINAL_COLUMN_ORDER]
+    logging.info(f"Kogift price data count: {kogift_price_count} rows have valid price values")
     
     return df
 

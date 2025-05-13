@@ -1537,6 +1537,135 @@ async def _test_main():
     
     print("\n--- Naver API Test Finished ---")
 
+def generate_output_filename(base_name: str, timestamp: str = None) -> str:
+    """
+    Generate a properly formatted output filename.
+    
+    Args:
+        base_name: Base name for the file
+        timestamp: Optional timestamp string
+        
+    Returns:
+        Properly formatted filename
+    """
+    # Clean the base name
+    base_name = base_name.strip()
+    
+    # Generate timestamp if not provided
+    if not timestamp:
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+    
+    # Create filename with proper path handling
+    filename = f"{base_name}-{timestamp}.xlsx"
+    
+    # Normalize the path to handle Korean characters
+    output_dir = os.path.normpath(os.path.join('C:', 'RPA', 'Output'))
+    full_path = os.path.normpath(os.path.join(output_dir, filename))
+    
+    # Ensure the directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    return full_path
+
+def save_results_to_excel(df: pd.DataFrame, base_name: str = "승인관리", timestamp: str = None) -> str:
+    """
+    Save results to Excel file with proper path handling.
+    
+    Args:
+        df: DataFrame to save
+        base_name: Base name for the output file
+        timestamp: Optional timestamp string
+        
+    Returns:
+        Path to the saved file
+    """
+    try:
+        # Generate proper output path
+        output_path = generate_output_filename(base_name, timestamp)
+        
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Save with encoding specification
+        df.to_excel(output_path, index=False, engine='openpyxl')
+        logger.info(f"Successfully saved results to: {output_path}")
+        
+        return output_path
+    except Exception as e:
+        logger.error(f"Error saving results to Excel: {e}")
+        raise
+
+async def process_matching(df: pd.DataFrame, config: configparser.ConfigParser, browser=None) -> Tuple[pd.DataFrame, str]:
+    """Process product matching with proper output handling."""
+    try:
+        # ... existing processing code ...
+        
+        # Generate timestamp once for consistent naming
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Save results with proper path handling
+        if len(df) <= 10:
+            base_name = f"성은({len(df)}개)-승인관리"
+        else:
+            base_name = f"승인관리"
+        
+        output_path = save_results_to_excel(df, base_name, timestamp)
+        
+        return df, output_path
+    except Exception as e:
+        logger.error(f"Error in process_matching: {e}")
+        raise
+
+async def main(input_file: str = None, output_file: str = None, config_file: str = None):
+    """
+    Main entry point for the Naver crawler.
+    
+    Args:
+        input_file: Path to input Excel file
+        output_file: Path to output Excel file (optional)
+        config_file: Path to config file (optional)
+    """
+    try:
+        # Set up logging
+        setup_logging()
+        
+        # Load configuration
+        config = load_config(config_file)
+        
+        # Read input file
+        df = pd.read_excel(input_file) if input_file else create_test_dataframe()
+        
+        # Process matching
+        result_df, output_path = await process_matching(df, config)
+        
+        logger.info(f"Processing completed successfully. Output saved to: {output_path}")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Error in main function: {e}")
+        raise
+
+def setup_logging():
+    """Configure logging with proper encoding for Korean characters."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('naver_crawler.log', encoding='utf-8')
+        ]
+    )
+
+def load_config(config_file: str = None) -> configparser.ConfigParser:
+    """Load configuration with proper encoding."""
+    config = configparser.ConfigParser()
+    
+    if config_file and os.path.exists(config_file):
+        config.read(config_file, encoding='utf-8')
+    
+    return config
+
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(level=logging.INFO)
