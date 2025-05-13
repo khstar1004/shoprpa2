@@ -25,7 +25,7 @@ from excel_style_constants import (
 logger = logging.getLogger(__name__)
 
 # Define image processing constants
-RESAMPLING_FILTER = Image.Resampling.LANCZOS  # High-quality resampling
+RESAMPLING_FILTER = PILImage.LANCZOS  # High-quality resampling
 MAX_IMAGE_SIZE = IMAGE_SETTINGS['MAX_SIZE']
 STANDARD_IMAGE_SIZE = IMAGE_SETTINGS['STANDARD_SIZE']
 SUPPORTED_FORMATS = IMAGE_SETTINGS['SUPPORTED_FORMATS']
