@@ -11,73 +11,81 @@ from typing import Optional, Tuple, Dict, List, Any
 import numpy as np
 from pathlib import Path
 import ast
+from urllib.parse import urlparse
 
-def process_input_file(config: configparser.ConfigParser) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Processes the main input Excel file, reading config with ConfigParser."""
+def process_input_file(config: configparser.ConfigParser) -> Tuple[pd.DataFrame, str]:
+    """Process the input Excel file and return a DataFrame and filename."""
     try:
-        # Get input directory from config
-        input_dir = config.get('Paths', 'input_dir')
+        input_file = config.get('Paths', 'input_file')
+        if not os.path.exists(input_file):
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+            
+        # Read the Excel file
+        df = pd.read_excel(input_file)
         
-        # Check if a specific input file is provided in the config
-        specific_input_file = config.get('Paths', 'input_file', fallback=None)
+        # Get the filename without path
+        input_filename = os.path.basename(input_file)
         
-        if specific_input_file and os.path.exists(specific_input_file):
-            # Use the specific input file provided in config
-            logging.info(f"Using specific input file from config: {specific_input_file}")
-            input_file = specific_input_file
-            input_filename = os.path.basename(input_file)
-        else:
-            # No specific file provided, search in the input directory
-            logging.info(f"Checking for input file in {input_dir}")
-            excel_files = glob.glob(os.path.join(input_dir, '*.xlsx'))
-            excel_files = [f for f in excel_files if not os.path.basename(f).startswith('~')]
-
-            if not excel_files:
-                logging.warning(f"No Excel (.xlsx) file found in {input_dir}.")
-                return None, None
-
-            # Process only the first found Excel file
-            input_file = excel_files[0]
-            input_filename = os.path.basename(input_file)
-            logging.info(f"Processing input file: {input_file}")
-    except configparser.Error as e:
-        logging.error(f"Error reading configuration for input processing: {e}. Cannot proceed.")
-        return None, None
-
-    start_time = time.time()
-    try:
-        # Read the entire Excel file at once
-        df = pd.read_excel(input_file, sheet_name=0)
-        logging.info(f"Read {len(df)} rows from '{input_filename}'")
+        # Handle Haereum image URLs
+        if '본사 이미지' not in df.columns and '본사상품링크' in df.columns:
+            # Try to extract image URLs from product links
+            df['본사 이미지'] = df['본사상품링크'].apply(lambda x: extract_image_url_from_link(x) if pd.notna(x) else None)
+            logging.info("Extracted image URLs from product links")
         
-        # Clean column names
-        original_columns = df.columns.tolist()
-        df.columns = [col.strip().replace('\xa0', '') for col in df.columns]
-        cleaned_columns = df.columns.tolist()
-        if original_columns != cleaned_columns:
-            logging.info(f"Cleaned column names. Original: {original_columns}, Cleaned: {cleaned_columns}")
-        logging.info(f"Columns after cleaning: {df.columns.tolist()}")
-
-        # Check for required columns using the imported list
-        missing_cols = [col for col in REQUIRED_INPUT_COLUMNS if col not in df.columns]
-        if missing_cols:
-            logging.error(f"Input file '{input_filename}' missing required columns (defined in excel_utils): {missing_cols}.")
-            logging.error(f"Required columns are: {REQUIRED_INPUT_COLUMNS}")
-            logging.error(f"Columns found in file: {cleaned_columns}")
-            return None, input_filename
-        else:
-            logging.info(f"All required columns found: {REQUIRED_INPUT_COLUMNS}")
-
-        read_time = time.time() - start_time
-        logging.info(f"Read {len(df)} rows from '{input_filename}' in {read_time:.2f} sec.")
+        # Validate URLs
+        if '본사 이미지' in df.columns:
+            df['본사 이미지'] = df['본사 이미지'].apply(lambda x: validate_and_fix_url(x) if pd.notna(x) else None)
+        
         return df, input_filename
-
-    except FileNotFoundError:
-        logging.error(f"Input file {input_file} not found during read attempt.")
-        return None, None
     except Exception as e:
-        logging.error(f"Error reading Excel '{input_file}': {e}", exc_info=True)
-        return None, input_filename
+        logging.error(f"Error processing input file: {e}")
+        raise
+
+def extract_image_url_from_link(link: str) -> Optional[str]:
+    """Try to extract image URL from product link."""
+    if not isinstance(link, str):
+        return None
+    
+    try:
+        # Common patterns for image URLs in product pages
+        img_patterns = [
+            r'https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif)',
+            r'src=[\'"](https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif))[\'"]',
+            r'data-original=[\'"](https?://[^\s<>"]+?\.(?:jpg|jpeg|png|gif))[\'"]'
+        ]
+        
+        for pattern in img_patterns:
+            match = re.search(pattern, link, re.IGNORECASE)
+            if match:
+                return match.group(1) if 'src=' in pattern or 'data-original=' in pattern else match.group(0)
+        
+        return None
+    except Exception as e:
+        logging.warning(f"Error extracting image URL from link: {e}")
+        return None
+
+def validate_and_fix_url(url: str) -> Optional[str]:
+    """Validate and fix common URL issues."""
+    if not isinstance(url, str):
+        return None
+        
+    try:
+        # Remove whitespace
+        url = url.strip()
+        
+        # Add http:// if missing
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+            
+        # Validate URL format
+        parsed = urlparse(url)
+        if not all([parsed.scheme, parsed.netloc]):
+            return None
+            
+        return url
+    except Exception as e:
+        logging.warning(f"Error validating URL: {e}")
+        return None
 
 def filter_results(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """결과 데이터프레임 필터링"""
