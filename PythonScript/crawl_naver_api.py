@@ -17,6 +17,7 @@ import aiofiles
 from PIL import Image
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Error as PlaywrightError
 from bs4 import BeautifulSoup
+import random
 
 # Import based on how the file is run
 try:
@@ -58,6 +59,10 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
         or the results from the last attempted keyword.
     """
     logger.debug(f"Initiating Naver search for query: '{original_query}', max_items: {max_items}, ref_price: {reference_price}")
+    
+    # Define the API URL
+    api_url = "https://openapi.naver.com/v1/search/shop.json"  # Example API URL, replace with the correct one if needed
+
     try:
         client_id = config.get('API_Keys', 'naver_client_id', fallback='')
         client_secret = config.get('API_Keys', 'naver_client_secret', fallback='')
@@ -73,12 +78,11 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
     client_secret_display = (client_secret[:4] + '...') if client_secret else 'Not Set'
     logger.info(f"🟢 Naver API Credentials: Client ID starts with '{client_id_display}', Secret starts with '{client_secret_display}'")
 
-    # Get delay between API calls
-    api_delay = config.getfloat('ScraperSettings', 'naver_api_delay', fallback=1.0)
-    # Increase default delay to 1.5 seconds to be more conservative
-    if api_delay < 1.5:
-        api_delay = 1.5
-        logger.info(f"🟢 Adjusted Naver API delay to {api_delay:.1f}s for better rate limiting")
+    # API 요청 딜레이 설정 수정
+    api_delay = config.getfloat('ScraperSettings', 'naver_api_delay', fallback=1.5)
+    if api_delay < 2.0:
+        api_delay = random.uniform(2.0, 4.0)
+    logger.info(f"Using API delay: {api_delay:.2f} seconds")
 
     # Get initial similarity threshold from config
     try:
@@ -103,13 +107,29 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
         current_keyword_results: List[Dict[str, Any]] = []
         processed_api_items = 0
 
-        # API URL and headers
-        api_url = "https://openapi.naver.com/v1/search/shop.json"
+        # API 요청 헤더 개선
         headers = {
             "X-Naver-Client-Id": client_id,
             "X-Naver-Client-Secret": client_secret,
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "DNT": "1",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
+
+        # User-Agent 로테이션
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        ]
+        headers['User-Agent'] = random.choice(user_agents)
 
         # Define promotional keywords (could be moved outside loop/function)
         promo_keywords = [
@@ -665,54 +685,203 @@ async def extract_quantity_price_from_naver_link(page: Page, product_url: str) -
         "supplier_name": "",
         "supplier_url": "",
         "price_table": None,
-        "raw_price_table": None  # Store the raw price table data
+        "raw_price_table": None,  # Store the raw price table data
+        "has_captcha": False
     }
     
     try:
-        # Navigate to the product page
+        # Set random viewport size
+        viewport_sizes = [
+            {"width": 1366, "height": 768},
+            {"width": 1920, "height": 1080},
+            {"width": 1440, "height": 900},
+            {"width": 1536, "height": 864}
+        ]
+        await page.set_viewport_size(random.choice(viewport_sizes))
+        
+        # Set random user agent and headers
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/92.0.902.84 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+        ]
+        
+        await page.set_extra_http_headers({
+            'User-Agent': random.choice(user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
+        })
+        
+        # Add anti-detection JavaScript
+        await page.evaluate('''() => {
+            // Hide automation flags
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en-US', 'en'] });
+            
+            // Add random mouse movements
+            const randomMove = () => {
+                const event = new MouseEvent('mousemove', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: Math.floor(Math.random() * window.innerWidth),
+                    clientY: Math.floor(Math.random() * window.innerHeight)
+                });
+                document.dispatchEvent(event);
+            };
+            setInterval(randomMove, Math.random() * 2000 + 1000);
+        }''')
+        
+        # Navigate to the product page with random delay
         logger.info(f"Navigating to Naver product page: {product_url}")
+        await asyncio.sleep(random.uniform(1, 3))
         await page.goto(product_url, wait_until='networkidle', timeout=30000)
         
-        # Get supplier name
-        supplier_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
-        if await page.locator(supplier_selector).count() > 0:
-            result["supplier_name"] = await page.locator(supplier_selector).text_content()
+        # Check for captcha
+        captcha_selectors = [
+            'form#captcha_form', 
+            'img[alt*="captcha"]',
+            'div.captcha_wrap',
+            'input[name="captchaBotKey"]',
+            'div[class*="captcha"]',
+            'iframe[src*="captcha"]',
+            'div[class*="bot-check"]',
+            'div[class*="security-check"]'
+        ]
+        
+        for selector in captcha_selectors:
+            if await page.locator(selector).count() > 0:
+                logger.info(f"CAPTCHA detected on page: {product_url}")
+                result["has_captcha"] = True
+                return result
+        
+        # Get supplier name with enhanced selectors
+        supplier_selectors = [
+            'div.basicInfo_mall_title__3IDPK a',
+            'a.seller_name',
+            'span.mall_txt',
+            'div.shop_info a.txt',
+            'div[class*="mall_title"] a',
+            'div[class*="seller"] a',
+            'a[class*="mall-name"]'
+        ]
+        
+        for selector in supplier_selectors:
+            if await page.locator(selector).count() > 0:
+                result["supplier_name"] = await page.locator(selector).text_content()
+                result["supplier_name"] = result["supplier_name"].strip()
+                
+                # Get supplier URL
+                supplier_url = await page.locator(selector).get_attribute('href') or ""
+                if supplier_url and not supplier_url.startswith('http'):
+                    supplier_url = f"https://shopping.naver.com{supplier_url}"
+                result["supplier_url"] = supplier_url
+                break
+        
+        # Enhanced lowest price button handling for Naver sellers
+        if "네이버" in result["supplier_name"]:
+            lowest_price_selectors = [
+                '//div[contains(@class, "lowestPrice_btn_box")]/div[contains(@class, "buyButton_compare_wrap")]/a[text()="최저가 사러가기"]',
+                '//a[contains(text(), "최저가 사러가기")]',
+                '//a[contains(text(), "최저가")]',
+                '//a[contains(@class, "lowest_price")]',
+                '//button[contains(text(), "최저가")]',
+                '//div[contains(@class, "lowest")]/a',
+                '//div[contains(@class, "price_compare")]/a',
+                '//a[contains(@class, "price_compare")]',
+                '//div[contains(@class, "compare")]/a[contains(@class, "link")]',
+                '//a[contains(@href, "search/gate")]'
+            ]
             
-            # Get supplier URL
-            supplier_url_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
-            if await page.locator(supplier_url_selector).count() > 0:
-                result["supplier_url"] = await page.locator(supplier_url_selector).get_attribute('href') or ""
-                if result["supplier_url"] and not result["supplier_url"].startswith('http'):
-                    result["supplier_url"] = f"https://shopping.naver.com{result['supplier_url']}"
+            max_retries = 3
+            retry_count = 0
+            button_found = False
+            
+            while retry_count < max_retries and not button_found:
+                for selector in lowest_price_selectors:
+                    try:
+                        # Wait for selector with timeout
+                        await page.wait_for_selector(selector, timeout=5000)
+                        element = page.locator(selector).first
+                        
+                        if await element.is_visible():
+                            logger.info(f"Found lowest price button with selector: {selector}")
+                            
+                            # Get button position and add slight random offset
+                            box = await element.bounding_box()
+                            if box:
+                                x = box['x'] + box['width'] / 2 + random.uniform(-5, 5)
+                                y = box['y'] + box['height'] / 2 + random.uniform(-5, 5)
+                                
+                                # Move mouse naturally to button
+                                await page.mouse.move(x, y, steps=random.randint(5, 10))
+                                await asyncio.sleep(random.uniform(0.1, 0.3))
+                            
+                            # Try to get href first
+                            href = await element.get_attribute('href')
+                            if href:
+                                logger.info(f"Navigating to lowest price URL: {href}")
+                                await page.goto(href, wait_until='networkidle', timeout=30000)
+                            else:
+                                logger.info("Clicking lowest price button")
+                                await element.click()
+                                await page.wait_for_load_state('networkidle', timeout=30000)
+                            
+                            # Add random delay after click
+                            await asyncio.sleep(random.uniform(2, 4))
+                            
+                            button_found = True
+                            break
+                    except Exception as e:
+                        logger.warning(f"Error with lowest price selector {selector} (attempt {retry_count + 1}): {e}")
+                        continue
+                
+                if not button_found:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        # Add increasing delay between retries
+                        await asyncio.sleep(random.uniform(2, 4) * retry_count)
+                        # Reload page before retry
+                        await page.reload(wait_until='networkidle', timeout=30000)
+            
+            if not button_found:
+                logger.warning("Could not find lowest price button after all attempts")
         
-        # Check if it's a promotional site based on supplier name
-        promo_keywords = ['온오프마켓', '답례품', '기프트', '판촉', '기념품', '인쇄', '각인', '제작', '미스터몽키', '홍보', '호갱탈출']
-        if result["supplier_name"]:
-            for keyword in promo_keywords:
-                if keyword in result["supplier_name"]:
-                    result["is_promotional_site"] = True
-                    logger.info(f"Detected promotional site: {result['supplier_name']} contains keyword '{keyword}'")
-                    break
-        
-        # Find the "Visit Store" button and get the seller's site URL
+        # Visit the seller's site to check for quantity-based pricing
         visit_store_selector = 'a.btn_link__dHQPb, a.go_mall, a.link_btn[href*="mall"]'
         if await page.locator(visit_store_selector).count() > 0:
             seller_site_url = await page.locator(visit_store_selector).get_attribute('href') or ""
             logger.info(f"Found seller's site URL: {seller_site_url}")
             
-            # Visit the seller's site to check for quantity-based pricing
             if seller_site_url:
                 try:
                     # Create a new context for visiting the seller's site
                     browser = page.context.browser
                     seller_context = await browser.new_context(
-                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
-                        viewport={'width': 1920, 'height': 1080}
+                        user_agent=random.choice(user_agents),
+                        viewport=random.choice(viewport_sizes)
                     )
                     seller_page = await seller_context.new_page()
                     
-                    # Navigate to the seller's site
-                    logger.info(f"Visiting seller's site: {seller_site_url}")
+                    # Add anti-detection measures to the new context
+                    await seller_page.evaluate('''() => {
+                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                        Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR', 'ko', 'en-US', 'en'] });
+                    }''')
+                    
+                    # Navigate to the seller's site with random delay
+                    await asyncio.sleep(random.uniform(1, 3))
                     await seller_page.goto(seller_site_url, wait_until='domcontentloaded', timeout=30000)
                     
                     # Check for quantity-based pricing tables
@@ -830,6 +999,7 @@ async def extract_quantity_price_from_naver_link(page: Page, product_url: str) -
                     logger.error(f"Error visiting seller site: {e}")
         
         return result
+        
     except Exception as e:
         logger.error(f"Error extracting quantity pricing from {product_url}: {e}")
         return result
@@ -984,20 +1154,23 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'seller_link': first_item.get('mallProductUrl'),
         'source': 'naver',
         'initial_similarity': similarity,
-        'is_naver_site': False
+        'is_naver_site': False,
+        'has_quantity_pricing': False,  # Default values for when we skip crawling
+        'quantity_prices': {},
+        'vat_included': False,
+        'has_captcha': False
     }
     
-    # 네이버 사이트인지 체크 (판촉물 사이트는 항상 외부 사이트임)
+    # 네이버 사이트인지 체크
     product_url = result_data['link']
-    if product_url:
-        is_naver_domain = "naver.com" in product_url or "shopping.naver.com" in product_url
-        result_data['is_naver_site'] = is_naver_domain
-        
-        # 네이버 사이트면 판촉물 사이트가 아님
-        if is_naver_domain:
-            logger.info(f"Direct Naver shopping mall (not promotional site): {product_url}")
-            result_data['is_promotional_site'] = False
-            return result_data
+    seller_name = result_data['seller_name']
+    
+    # 공급사명이 '네이버'인 경우 특별 처리
+    is_naver_seller = seller_name == "네이버" or "네이버" in seller_name
+    is_naver_domain = product_url and ("naver.com" in product_url or "shopping.naver.com" in product_url)
+    
+    result_data['is_naver_site'] = is_naver_domain
+    result_data['is_naver_seller'] = is_naver_seller
 
     # 판촉물 사이트 감지 키워드 확장
     promo_keywords = [
@@ -1028,63 +1201,99 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     
     result_data['is_promotional_site'] = is_promotional
 
-    # Visit seller site to check for quantity-based pricing
+    # Visit seller site to check for quantity-based pricing only if we have a browser and visit_seller_sites is True
     if visit_seller_sites and browser and first_item.get('link'):
-        # 네이버 직접 사이트인 경우는 방문하지 않음 (이미 판촉물 사이트가 아니라고 확인됨)
-        if result_data.get('is_naver_site', False):
-            logger.info(f"Skipping seller site visit for Naver direct site: {first_item.get('link')}")
-            result_data.update({
-                'has_quantity_pricing': False,
-                'quantity_prices': {},
-                'vat_included': False
-            })
-        else:
-            page = None
-            try:
-                page = await browser.new_page()
-                await page.set_viewport_size({"width": 1366, "height": 768})
+        page = None
+        try:
+            page = await browser.new_page()
+            await page.set_viewport_size({"width": 1366, "height": 768})
+            
+            # First check for CAPTCHA
+            await page.goto(first_item.get('link'), wait_until='networkidle', timeout=30000)
+            
+            # Check for CAPTCHA using handle_captcha function
+            has_captcha = await handle_captcha(page)
+            
+            if has_captcha:
+                logger.info(f"CAPTCHA detected for '{product_name}'. Skipping further crawling and using API data only.")
+                result_data['has_captcha'] = True
+                # Don't attempt any further crawling, just use the API data
+            else:
+                # No CAPTCHA, proceed with normal crawling
+                if is_naver_seller:
+                    logger.info(f"Detected Naver seller for '{product_name}'. Navigating to product page and clicking 최저가 button.")
+                    try:
+                        # 최저가 버튼 찾기 및 클릭
+                        lowest_price_selectors = [
+                            '//div[contains(@class, "lowestPrice_btn_box")]/div[contains(@class, "buyButton_compare_wrap")]/a[text()="최저가 사러가기"]',
+                            '//a[contains(text(), "최저가 사러가기")]',
+                            '//a[contains(text(), "최저가")]',
+                            '//a[contains(@class, "lowest_price")]',
+                            '//button[contains(text(), "최저가")]'
+                        ]
+                        
+                        button_found = False
+                        for selector in lowest_price_selectors:
+                            try:
+                                if await page.locator(selector).count() > 0:
+                                    logger.info(f"Found lowest price button with selector: {selector}")
+                                    href = await page.locator(selector).get_attribute('href')
+                                    if href:
+                                        logger.info(f"Navigating to lowest price URL: {href}")
+                                        await page.goto(href, wait_until='networkidle', timeout=30000)
+                                    else:
+                                        logger.info("Clicking lowest price button")
+                                        await page.locator(selector).click()
+                                        await page.wait_for_load_state('networkidle', timeout=30000)
+                                    
+                                    button_found = True
+                                    current_url = page.url
+                                    logger.info(f"After clicking lowest price button, now at URL: {current_url}")
+                                    result_data['link'] = current_url
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Error with lowest price selector {selector}: {e}")
+                                continue
+                        
+                        if not button_found:
+                            logger.warning(f"Could not find lowest price button for Naver seller item '{product_name}'")
+                    
+                    except Exception as e:
+                        logger.error(f"Error navigating to product page or clicking lowest price button: {e}")
                 
-                if not first_item.get('link'):
-                    logger.warning(f"Missing product link for '{product_name}', cannot extract quantity prices")
-                else:
-                    logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {first_item.get('link')}")
+                # Check for quantity pricing only if no CAPTCHA was detected
+                try:
+                    logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {page.url}")
                     print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
                     
-                    try:
-                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'), target_quantities)
-                        await asyncio.sleep(5)
-                        print(f"Completed quantity price check for '{product_name}'")
+                    quantity_pricing = await extract_quantity_prices(page, page.url, target_quantities)
+                    await asyncio.sleep(5)
+                    print(f"Completed quantity price check for '{product_name}'")
 
-                        # 캡차가 감지된 경우
-                        if quantity_pricing.get('has_captcha', False):
-                            logger.info(f"CAPTCHA detected, skipping promotional site check for '{product_name}'")
-                            result_data['is_promotional_site'] = False
-                        # 네이버 사이트인 경우
-                        elif quantity_pricing.get('is_naver_site', False):
-                            logger.info(f"Direct Naver shopping mall, not a promotional site for '{product_name}'")
-                            result_data['is_promotional_site'] = False
-                        # 수량별 가격이 있으면 판촉물 사이트로 간주
-                        elif quantity_pricing.get('has_quantity_pricing'):
-                            result_data['is_promotional_site'] = True
-                            logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
+                    # Update result data with quantity pricing information
+                    result_data.update({
+                        'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
+                        'quantity_prices': quantity_pricing.get('quantity_prices', {}),
+                        'vat_included': quantity_pricing.get('vat_included', False),
+                        'is_naver_site': quantity_pricing.get('is_naver_site', False),
+                        'has_captcha': quantity_pricing.get('has_captcha', False)
+                    })
 
-                        result_data.update({
-                            'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
-                            'quantity_prices': quantity_pricing.get('quantity_prices', {}),
-                            'vat_included': quantity_pricing.get('vat_included', False),
-                            'is_naver_site': quantity_pricing.get('is_naver_site', False),
-                            'has_captcha': quantity_pricing.get('has_captcha', False)
-                        })
-                    except Exception as e:
-                        logger.error(f"Error extracting quantity prices for '{product_name}': {e}")
-            except Exception as e:
-                logger.error(f"Error visiting seller site for '{product_name}': {e}")
-            finally:
-                if page:
-                    try:
-                        await page.close()
-                    except Exception as e:
-                        logger.error(f"Error closing page: {e}")
+                    # Update promotional site status based on quantity pricing
+                    if quantity_pricing.get('has_quantity_pricing'):
+                        result_data['is_promotional_site'] = True
+                        logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
+                except Exception as e:
+                    logger.error(f"Error extracting quantity prices for '{product_name}': {e}")
+                
+        except Exception as e:
+            logger.error(f"Error visiting seller site for '{product_name}': {e}")
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception as e:
+                    logger.error(f"Error closing page: {e}")
 
     # Process image if available
     image_url = first_item.get('image_url')
@@ -1174,19 +1383,20 @@ async def _test_main():
 
     # Test products including promotional items
     test_data = {
-        '구분': ['A', 'A'],
-        '담당자': ['테스트', '테스트'],
-        '업체명': ['테스트업체', '테스트업체'],
-        '업체코드': ['T001', 'T001'],
-        'Code': ['CODE001', 'CODE002'],
-        '중분류카테고리': ['테스트카테고리', '테스트카테고리'],
+        '구분': ['A', 'A', 'A'],  # Adjusted for three products
+        '담당자': ['테스트', '테스트', '테스트'],
+        '업체명': ['테스트업체', '테스트업체', '테스트업체'],
+        '업체코드': ['T001', 'T001', 'T001'],
+        'Code': ['CODE001', 'CODE002', 'CODE003'],
+        '중분류카테고리': ['테스트카테고리', '테스트카테고리', '테스트카테고리'],
         '상품명': [
-            '구급함 피트니스트레이너 다용도구급함 애견유치원',  # 판촉물 상품
-            '보틀로만 파스텔 라이너 스트로우 텀블러'  # 판촉물 상품
+            '멀티 아쿠아 쿨토시',  # New test product 1
+            '원형 미니거울 3TMM007',  # New test product 2
+            '메쉬가방 대형 비치백 망사가방 비치가방 43X39X20'  # New test product 3
         ],
-        '기본수량(1)': [300, 500],  # 테스트할 기본 수량 추가
-        '판매단가(V포함)': [15000, 20000],
-        '본사상품링크': ['', '']
+        '기본수량(1)': [300, 500, 1000],  # Adjusted quantities for testing
+        '판매단가(V포함)': [15000, 20000, 25000],
+        '본사상품링크': ['', '', '']
     }
     test_df = pd.DataFrame(test_data)
     
@@ -1216,6 +1426,10 @@ async def _test_main():
                     print(f"Price: {result.get('price', 'N/A'):,}원")
                     print(f"Seller: {result.get('seller_name', 'Unknown')}")
                     print(f"Similarity score: {result.get('initial_similarity', 0):.3f}")
+                    
+                    # Links
+                    print(f"네이버 쇼핑 링크: {result.get('link', 'No link')}")
+                    print(f"공급사 상품링크: {result.get('seller_link', 'No link')}")
                     
                     # Promotional site check
                     is_promo = result.get('is_promotional_site', False)

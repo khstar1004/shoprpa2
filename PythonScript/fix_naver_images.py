@@ -512,14 +512,28 @@ def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str = None) -> 
         DataFrame with validated local image paths
     """
     try:
-        # For Python 3.7+, create an event loop and run the async function
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            # Create a new event loop if the current one is closed
+        # Check if we're in an existing event loop
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # If we're already in a running event loop, we need to use run_coroutine_threadsafe
+            if loop.is_running():
+                logger.info("Using existing running event loop")
+                # Create a future to get the result
+                future = asyncio.run_coroutine_threadsafe(ensure_naver_local_images_async(df, naver_image_dir), loop)
+                # Wait for the result with a timeout
+                return future.result(timeout=120)  # 2 minute timeout
+            else:
+                # We have a loop but it's not running
+                return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+                
+        except RuntimeError:
+            # No event loop, create a new one
+            logger.info("Creating new event loop for Naver image processing")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+            return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+            
     except Exception as e:
         logger.error(f"Error in ensure_naver_local_images: {e}")
         # Return original DataFrame as fallback
