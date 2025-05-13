@@ -224,11 +224,23 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             logging.debug(f"Adding column for Kogift data: {col}")
     
     # Add columns for Naver results if they don't exist yet
-    for col in ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '네이버 쇼핑 링크', '공급사명', '공급사 상품링크', '네이버 이미지']:
+    # UPDATED: Added temporary columns for internal processing (will be removed before final output)
+    standard_columns = ['기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', 
+                       '네이버 쇼핑 링크', '공급사명', '공급사 상품링크', '네이버 이미지']
+    temp_columns = ['_temp_판촉물여부', '_temp_수량별가격여부', '_temp_수량별가격정보', '_temp_VAT포함여부']
+    
+    # Add standard columns that will remain in final output
+    for col in standard_columns:
         if col not in df.columns:
             df[col] = None
-            logging.debug(f"Adding column for Naver data: {col}")
+            logging.debug(f"Adding standard Naver column: {col}")
     
+    # Add temporary columns for internal processing
+    for col in temp_columns:
+        if col not in df.columns:
+            df[col] = None
+            logging.debug(f"Adding temporary column for processing: {col}")
+
     # Initialize the image columns with proper dictionary format where applicable
     for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
         if img_col in df.columns:
@@ -324,9 +336,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
                             kogift_price_count += 1
-                        # 없으면 일반 가격에 1.1 곱해서 부가세 계산
+                        # 부가세 포함 가격이 없으면 일반 가격 사용 (크롤링 단계에서 이미 부가세 포함)
                         elif 'price' in item:
-                            df.at[idx, '판매단가(V포함)(2)'] = round(item['price'] * 1.1)
+                            df.at[idx, '판매단가(V포함)(2)'] = item['price']
                             kogift_price_count += 1
                     
                     # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
@@ -419,33 +431,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         logging.info(f"Kogift 이미지 추가: {kogift_img_count}개")
         logging.info(f"Kogift 가격 추가: {kogift_price_count}개")
 
-        # === DEBUG LOGGING START ===
-        if kogift_update_count > 0 and '판매단가(V포함)(2)' in df.columns:
-            try:
-                sample_indices = df[df['판매단가(V포함)(2)'].notna()].index[:3] # Get first 3 rows with Kogift price
-                if not sample_indices.empty:
-                    logging.info("[DEBUG] Sample Kogift Price Data after processing:")
-                    for idx in sample_indices:
-                        product_name = df.at[idx, '상품명']
-                        kogift_price = df.at[idx, '판매단가(V포함)(2)']
-                        kogift_img_data = df.at[idx, '고려기프트 이미지'] if '고려기프트 이미지' in df.columns else 'N/A'
-                        
-                        # 이미지 데이터 로깅 형식 개선
-                        img_info = "이미지 없음"
-                        if isinstance(kogift_img_data, dict):
-                            img_info = f"이미지 정보: {{url: '{kogift_img_data.get('url', '없음')[:30]}...'"
-                            if 'local_path' in kogift_img_data:
-                                img_info += f", local_path: '{kogift_img_data.get('local_path', '없음')[-30:]}...'"
-                            img_info += "}"
-                        
-                        logging.info(f"  - 상품: '{product_name}', Kogift 가격: {kogift_price}, {img_info}")
-                else:
-                    logging.info("[DEBUG] 처리 후에도 Kogift 가격 데이터가 없습니다 (kogift_update_count > 0 에도 불구하고).")
-            except Exception as log_err:
-                logging.warning(f"[DEBUG] Kogift 샘플 데이터 로깅 중 오류: {log_err}")
-        # === DEBUG LOGGING END ===
-
-    # Add Naver data from crawl results if available
+    # Update Naver data processing section to use temporary columns
     if naver_results:
         naver_matched_count = 0
         for idx, row in df.iterrows():
@@ -454,35 +440,58 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             if product_name in naver_results:
                 naver_data = naver_results[product_name]
                 if naver_data and len(naver_data) > 0:
-                    # Use first match for now
                     item = naver_data[0]
                     
-                    # Process if item is valid and has required data
                     if isinstance(item, dict):
                         naver_matched_count += 1
                         
-                        # Update Naver related columns
-                        # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
+                        # Update standard columns as before
                         if '기본수량(3)' in df.columns:
-                            # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
                             if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
                                 df.at[idx, '기본수량(3)'] = row['기본수량(1)']
                             else:
-                                df.at[idx, '기본수량(3)'] = 1  # 기본값
+                                df.at[idx, '기본수량(3)'] = 1
                         
-                        # 판매단가 정보 업데이트
-                        if '판매단가(V포함)(3)' in df.columns and 'price' in item:
-                            df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                        # Update price information
+                        if '판매단가(V포함)(3)' in df.columns:
+                            # If it's a promotional site with quantity pricing, use the price for the base quantity
+                            is_promo = item.get('is_promotional_site', False)
+                            has_qty_pricing = item.get('has_quantity_pricing', False)
+                            qty_prices = item.get('quantity_prices', {})
+                            
+                            if is_promo and has_qty_pricing and qty_prices:
+                                # Store promotional site info in temporary columns
+                                df.at[idx, '_temp_판촉물여부'] = True
+                                df.at[idx, '_temp_수량별가격여부'] = True
+                                df.at[idx, '_temp_VAT포함여부'] = item.get('vat_included', False)
+                                
+                                # Store quantity pricing info for internal use
+                                import json
+                                df.at[idx, '_temp_수량별가격정보'] = json.dumps(qty_prices)
+                                
+                                # Get base quantity price (using 기본수량(1) if available)
+                                base_qty = row['기본수량(1)'] if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']) else 1
+                                
+                                # Find the closest quantity price
+                                available_qtys = sorted([int(q) for q in qty_prices.keys()])
+                                closest_qty = min(available_qtys, key=lambda x: abs(x - base_qty))
+                                price_info = qty_prices[str(closest_qty)]
+                                
+                                # Use VAT-included price
+                                df.at[idx, '판매단가(V포함)(3)'] = price_info.get('price_with_vat', item.get('price', 0))
+                            else:
+                                # Use regular price for non-promotional items
+                                df.at[idx, '판매단가(V포함)(3)'] = item.get('price', 0)
                         
-                        # 링크 정보 업데이트
+                        # Update other standard columns
                         if '네이버 쇼핑 링크' in df.columns and 'link' in item:
                             df.at[idx, '네이버 쇼핑 링크'] = item['link']
                         if '공급사 상품링크' in df.columns and 'seller_link' in item:
                             df.at[idx, '공급사 상품링크'] = item['seller_link']
                         if '공급사명' in df.columns and 'seller_name' in item:
                             df.at[idx, '공급사명'] = item['seller_name']
-                        
-                        # 이미지 URL 추가
+                            
+                        # Process image information as before
                         if '네이버 이미지' in df.columns:
                             # 이미지 경로 정보가 있으면 추가
                             img_path = None
@@ -573,8 +582,6 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Convert NaN values to None/empty for cleaner Excel output
     # Important: Do not replace '-' here as it's used as a valid placeholder
     df = df.replace({pd.NA: None, np.nan: None}) # Keep NaN -> None for general cleaning
-    # Explicitly replace None with '-' only for specific columns where needed BEFORE final output
-    # This step is usually handled in finalize_dataframe_for_excel
     
     # Count image URLs per column for logging
     img_url_counts = {
@@ -589,7 +596,39 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     
     # Verify price data is present in the output DataFrame
     kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
-    logging.info(f"Kogift price data count: {kogift_price_count} rows have valid price values")
+    naver_price_count = df['판매단가(V포함)(3)'].notnull().sum()
+    promo_site_count = df['판촉물여부'].sum() if '판촉물여부' in df.columns else 0
+    qty_pricing_count = df['수량별가격여부'].sum() if '수량별가격여부' in df.columns else 0
+    
+    logging.info(f"Data summary:")
+    logging.info(f"- Kogift price data count: {kogift_price_count} rows")
+    logging.info(f"- Naver price data count: {naver_price_count} rows")
+    logging.info(f"- Promotional sites detected: {promo_site_count} rows")
+    logging.info(f"- Quantity pricing available: {qty_pricing_count} rows")
+    
+    # Remove temporary columns before returning
+    for col in temp_columns:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+            logging.debug(f"Removed temporary column: {col}")
+    
+    # Verify final columns match expected format
+    current_cols = set(df.columns)
+    expected_cols = set(FINAL_COLUMN_ORDER)
+    extra_cols = current_cols - expected_cols
+    missing_cols = expected_cols - current_cols
+    
+    if extra_cols:
+        logging.warning(f"Found unexpected columns that will be removed: {extra_cols}")
+        df = df[[col for col in df.columns if col in FINAL_COLUMN_ORDER]]
+    
+    if missing_cols:
+        logging.warning(f"Missing expected columns: {missing_cols}")
+        for col in missing_cols:
+            df[col] = None
+    
+    # Ensure final column order matches exactly
+    df = df[FINAL_COLUMN_ORDER]
     
     return df
 

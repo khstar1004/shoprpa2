@@ -15,16 +15,18 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 import aiohttp
 import aiofiles
 from PIL import Image
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Error as PlaywrightError
+from bs4 import BeautifulSoup
 
 # Import based on how the file is run
 try:
     # When imported as module
-    from .utils import (
+    from utils import (
         download_image_async, get_async_httpx_client, generate_keyword_variations, 
         load_config, tokenize_korean, jaccard_similarity
     )
-    from .image_utils import remove_background_async
+    from image_utils import remove_background_async
+    from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 except ImportError:
     # When run directly as script
     from utils import (
@@ -32,6 +34,7 @@ except ImportError:
         load_config, tokenize_korean, jaccard_similarity
     )
     from image_utils import remove_background_async
+    from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 
 # Setup logger for this module
 logger = logging.getLogger(__name__) # Use module-specific logger
@@ -618,18 +621,199 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         logger.error(f"Error downloading image {url}: {e}")
         return None
 
-async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser) -> list:
+async def extract_quantity_price_from_naver_link(page: Page, product_url: str) -> Dict[str, Any]:
+    """
+    Extracts quantity-based pricing information from a Naver product page.
+    Returns all available quantity-price combinations from the table.
+    
+    Args:
+        page: Playwright Page object
+        product_url: URL of the product page
+        
+    Returns:
+        Dictionary containing pricing information and whether it's a promotional site
+    """
+    result = {
+        "is_promotional_site": False,
+        "has_quantity_pricing": False,
+        "quantity_prices": {},
+        "vat_included": False,
+        "supplier_name": "",
+        "supplier_url": "",
+        "price_table": None,
+        "raw_price_table": None  # Store the raw price table data
+    }
+    
+    try:
+        # Navigate to the product page
+        logger.info(f"Navigating to Naver product page: {product_url}")
+        await page.goto(product_url, wait_until='networkidle', timeout=30000)
+        
+        # Get supplier name
+        supplier_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
+        if await page.locator(supplier_selector).count() > 0:
+            result["supplier_name"] = await page.locator(supplier_selector).text_content()
+            
+            # Get supplier URL
+            supplier_url_selector = 'div.basicInfo_mall_title__3IDPK a, a.seller_name'
+            if await page.locator(supplier_url_selector).count() > 0:
+                result["supplier_url"] = await page.locator(supplier_url_selector).get_attribute('href') or ""
+                if result["supplier_url"] and not result["supplier_url"].startswith('http'):
+                    result["supplier_url"] = f"https://shopping.naver.com{result['supplier_url']}"
+        
+        # Check if it's a promotional site based on supplier name
+        promo_keywords = ['온오프마켓', '답례품', '기프트', '판촉', '기념품', '인쇄', '각인', '제작', '미스터몽키', '홍보', '호갱탈출']
+        if result["supplier_name"]:
+            for keyword in promo_keywords:
+                if keyword in result["supplier_name"]:
+                    result["is_promotional_site"] = True
+                    logger.info(f"Detected promotional site: {result['supplier_name']} contains keyword '{keyword}'")
+                    break
+        
+        # Find the "Visit Store" button and get the seller's site URL
+        visit_store_selector = 'a.btn_link__dHQPb, a.go_mall, a.link_btn[href*="mall"]'
+        if await page.locator(visit_store_selector).count() > 0:
+            seller_site_url = await page.locator(visit_store_selector).get_attribute('href') or ""
+            logger.info(f"Found seller's site URL: {seller_site_url}")
+            
+            # Visit the seller's site to check for quantity-based pricing
+            if seller_site_url:
+                try:
+                    # Create a new context for visiting the seller's site
+                    browser = page.context.browser
+                    seller_context = await browser.new_context(
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36',
+                        viewport={'width': 1920, 'height': 1080}
+                    )
+                    seller_page = await seller_context.new_page()
+                    
+                    # Navigate to the seller's site
+                    logger.info(f"Visiting seller's site: {seller_site_url}")
+                    await seller_page.goto(seller_site_url, wait_until='domcontentloaded', timeout=30000)
+                    
+                    # Check for quantity-based pricing tables
+                    # Look for table with keywords like "수량" and "단가"
+                    quantity_table_selectors = [
+                        'table:has(th:has-text("수량")):has(th:has-text("단가"))',
+                        'table:has(th:has-text("수량")):has(th:has-text("가격"))',
+                        'table.quantity_price__table',
+                        'div.price-box table',
+                        'div.quantity_discount table',
+                        'div.quantity_pricing table',
+                        'table.price_by_quantity'
+                    ]
+                    
+                    for selector in quantity_table_selectors:
+                        if await seller_page.locator(selector).count() > 0:
+                            logger.info(f"Found quantity-based pricing table with selector: {selector}")
+                            result["has_quantity_pricing"] = True
+                            result["is_promotional_site"] = True
+                            
+                            # Extract table HTML
+                            table_html = await seller_page.locator(selector).evaluate('el => el.outerHTML')
+                            
+                            # Use pandas to extract the table data
+                            try:
+                                tables = pd.read_html(table_html)
+                                if tables and len(tables) > 0:
+                                    df = tables[0]
+                                    
+                                    # Find quantity and price columns
+                                    qty_col = None
+                                    price_col = None
+                                    
+                                    for i, col in enumerate(df.columns):
+                                        col_str = str(col).lower()
+                                        if any(k in col_str for k in ['수량', 'qty', 'quantity']):
+                                            qty_col = i
+                                        elif any(k in col_str for k in ['단가', '가격', 'price']):
+                                            price_col = i
+                                    
+                                    if qty_col is not None and price_col is not None:
+                                        # Extract price table
+                                        price_table = []
+                                        for _, row in df.iterrows():
+                                            try:
+                                                qty = row.iloc[qty_col]
+                                                price = row.iloc[price_col]
+                                                
+                                                # Clean data
+                                                if isinstance(qty, str):
+                                                    qty = ''.join(filter(str.isdigit, qty.replace(',', '')))
+                                                    qty = int(qty) if qty else 0
+                                                
+                                                if isinstance(price, str):
+                                                    price = ''.join(filter(str.isdigit, price.replace(',', '')))
+                                                    price = int(price) if price else 0
+                                                
+                                                if qty and price:
+                                                    price_table.append({"quantity": int(qty), "price": int(price)})
+                                            except Exception as e:
+                                                logger.warning(f"Error extracting row from price table: {e}")
+                                                continue
+                                        
+                                        if price_table:
+                                            # Sort price table by quantity
+                                            price_table.sort(key=lambda x: x["quantity"])
+                                            result["price_table"] = price_table
+                                            
+                                            # Store raw table data
+                                            result["raw_price_table"] = {
+                                                "quantities": [item["quantity"] for item in price_table],
+                                                "prices": [item["price"] for item in price_table]
+                                            }
+                                            
+                                            # Check for VAT info on the page
+                                            vat_text_selectors = [
+                                                'div:has-text("부가세")',
+                                                'div:has-text("VAT")',
+                                                'p:has-text("부가세")',
+                                                'p:has-text("VAT")'
+                                            ]
+                                            
+                                            for vat_selector in vat_text_selectors:
+                                                if await seller_page.locator(vat_selector).count() > 0:
+                                                    vat_text = await seller_page.locator(vat_selector).text_content()
+                                                    if '별도' in vat_text or '미포함' in vat_text:
+                                                        result["vat_included"] = False
+                                                        logger.info(f"VAT not included based on text: {vat_text}")
+                                                        break
+                                                    elif '포함' in vat_text:
+                                                        result["vat_included"] = True
+                                                        logger.info(f"VAT included based on text: {vat_text}")
+                                                        break
+                                            
+                                            # Store all quantity prices
+                                            for item in price_table:
+                                                qty = item["quantity"]
+                                                price = item["price"]
+                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
+                                                result["quantity_prices"][qty] = {
+                                                    "price": price,
+                                                    "price_with_vat": price_with_vat,
+                                                    "exact_match": True
+                                                }
+                                            
+                                            logger.info(f"Extracted {len(result['quantity_prices'])} quantity-price pairs")
+                                            break
+                            except Exception as e:
+                                logger.warning(f"Error parsing quantity price table: {e}")
+                    
+                    # Close the seller page context
+                    await seller_context.close()
+                    
+                except Exception as e:
+                    logger.error(f"Error visiting seller site: {e}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error extracting quantity pricing from {product_url}: {e}")
+        return result
+
+async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.ConfigParser, browser=None) -> list:
     """
     Crawl product information from Naver Shopping using API asynchronously for multiple product rows,
-    including image downloading and optional background removal.
-
-    Args:
-        product_rows (pd.DataFrame): DataFrame containing products to search for.
-                                     Requires '상품명'. Optional '판매단가(V포함)', '구분'.
-        config (configparser.ConfigParser): ConfigParser object containing configuration.
-
-    Returns:
-        list: A list of dictionaries containing crawled Naver data with original product names
+    including image downloading, optional background removal, and quantity-based pricing.
     """
     if product_rows is None or len(product_rows) == 0:
         logger.info("🟢 Naver crawl: Input product_rows is empty or None. Skipping.")
@@ -641,126 +825,94 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
     # Get config values
     try:
         base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
-        # Use image_main_dir for Naver images to match the pattern used by Kogift and Haereum
         naver_image_dir = os.path.join(base_image_dir, 'Naver')
         os.makedirs(naver_image_dir, exist_ok=True)
         
         use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
-        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, BG Removal={use_bg_removal}, Image Dir={naver_image_dir}")
+        
+        target_quantities_str = config.get('ScraperSettings', 'target_quantities', fallback='300,500,1000,2000')
+        target_quantities = [int(qty.strip()) for qty in target_quantities_str.split(',') if qty.strip().isdigit()]
+        if not target_quantities:
+            target_quantities = [300, 500, 1000, 2000]
+            
+        visit_seller_sites = config.getboolean('ScraperSettings', 'naver_visit_seller_sites', fallback=True)
+        
+        logger.info(f"🟢 Naver API Configuration: Limit={naver_scrape_limit}, Max Concurrent API={max_concurrent_api}, "
+                    f"BG Removal={use_bg_removal}, Image Dir={naver_image_dir}, "
+                    f"Target Quantities={target_quantities}, Visit Seller Sites={visit_seller_sites}")
     except Exception as e:
         logger.error(f"Error reading config: {e}")
         return []
 
     # Create semaphore for concurrent API requests
     api_semaphore = asyncio.Semaphore(max_concurrent_api)
-
-    # Create tasks for concurrent processing
-    tasks = []
-    async with get_async_httpx_client(config=config) as client:
-        for idx, row in product_rows.iterrows():
-            tasks.append(
-                _process_single_naver_row(
-                    idx, row, config, client, api_semaphore, 
-                    naver_scrape_limit, naver_image_dir
-                )
-            )
-        
-        # Run tasks concurrently and collect results
-        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Filter out exceptions and None results
-    results = []
-    for res in processed_results:
-        if isinstance(res, Exception):
-            logger.error(f"Error processing Naver row: {res}")
-        elif res is not None:
-            results.append(res)
-
-    logger.info(f"🟢 Naver crawl finished. Processed {len(results)} valid results out of {total_products} rows.")
     
-    # FIXED: Add validation for results to ensure image paths are properly set
-    validated_results = []
-    for result in results:
+    # Initialize Playwright browser if we're visiting seller sites and no browser was provided
+    playwright = None
+    if visit_seller_sites and not browser:
         try:
-            # Skip invalid results
-            if not isinstance(result, dict) or 'original_product_name' not in result:
-                logger.warning(f"Skipping invalid Naver result: {result}")
-                continue
-            
-            # Ensure image_data exists and is properly formatted
-            if 'image_data' in result and isinstance(result['image_data'], dict):
-                # Make sure image_data has required fields
-                image_data = result['image_data']
-                
-                # Check if local_path exists and fix it if necessary
-                if 'local_path' not in image_data or not image_data['local_path']:
-                    # Check if we have image_url but no local_path
-                    if 'image_url' in result and result['image_url']:
-                        # Try to download image again or find existing one
-                        try:
-                            local_path = await download_naver_image(
-                                result['image_url'], naver_image_dir, 
-                                result['original_product_name'], config
-                            )
-                            if local_path:
-                                image_data['local_path'] = local_path
-                                logger.info(f"Fixed missing local_path for {result['original_product_name']}")
-                        except Exception as e:
-                            logger.error(f"Failed to download image during validation: {e}")
-                elif image_data['local_path']:
-                    # Make sure it's an absolute path
-                    abs_path = os.path.abspath(image_data['local_path'])
-                    if abs_path != image_data['local_path']:
-                        logger.info(f"Converting relative path to absolute: {image_data['local_path']} -> {abs_path}")
-                        image_data['local_path'] = abs_path
-                
-                # Ensure URL is present
-                if 'url' not in image_data and 'image_url' in result:
-                    image_data['url'] = result['image_url']
-                
-                # Ensure source is present
-                if 'source' not in image_data:
-                    image_data['source'] = 'naver'
-                
-                # Verify local_path exists if specified
-                if 'local_path' in image_data and image_data['local_path']:
-                    if not os.path.exists(image_data['local_path']):
-                        logger.warning(f"Image path doesn't exist: {image_data['local_path']} for {result['original_product_name']}")
-                        
-                        # Try to find the image with a different extension
-                        base_path = os.path.splitext(image_data['local_path'])[0]
-                        for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                            alt_path = f"{base_path}{ext}"
-                            if os.path.exists(alt_path):
-                                logger.info(f"Found alternative image path: {alt_path}")
-                                image_data['local_path'] = alt_path
-                                break
-                        else:
-                            # If no extension alternatives found, try _nobg version
-                            nobg_path = f"{base_path}_nobg.png"
-                            if os.path.exists(nobg_path):
-                                logger.info(f"Found _nobg version of image: {nobg_path}")
-                                image_data['local_path'] = nobg_path
-                
-                # Update result with fixed image_data
-                result['image_data'] = image_data
-            
-            validated_results.append(result)
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(headless=False)
+            logger.info("Created new browser instance for seller site visits")
         except Exception as e:
-            logger.error(f"Error validating Naver result: {e}")
-    
-    logger.info(f"Validation complete. {len(validated_results)} valid results (removed {len(results) - len(validated_results)} invalid)")
-    return validated_results
+            logger.error(f"Failed to create browser instance: {e}")
+            browser = None
+            visit_seller_sites = False
 
-# Helper function to process a single row for crawl_naver_products
-async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir):
+    try:
+        # Create HTTP client
+        async with get_async_httpx_client(config=config) as client:
+            # Process each row concurrently
+            tasks = []
+            for idx, row in product_rows.iterrows():
+                task = _process_single_naver_row(
+                    idx=idx,
+                    row=row,
+                    config=config,
+                    client=client,
+                    api_semaphore=api_semaphore,
+                    naver_scrape_limit=naver_scrape_limit,
+                    naver_image_dir=naver_image_dir,
+                    browser=browser,
+                    target_quantities=target_quantities,
+                    visit_seller_sites=visit_seller_sites
+                )
+                tasks.append(task)
+
+            # Wait for all tasks to complete
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out None results and exceptions
+            valid_results = []
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing product: {result}")
+                elif result is not None:
+                    valid_results.append(result)
+
+            return valid_results
+
+    except Exception as e:
+        logger.error(f"Error in crawl_naver_products: {e}")
+        return []
+    finally:
+        # Clean up browser if we created it
+        if playwright:
+            try:
+                await browser.close()
+                await playwright.stop()
+                logger.info("Closed browser and playwright instance")
+            except Exception as e:
+                logger.error(f"Error closing browser: {e}")
+
+async def _process_single_naver_row(idx, row, config, client, api_semaphore, naver_scrape_limit, naver_image_dir, browser=None, target_quantities=None, visit_seller_sites=False):
     """Processes a single product row for Naver API search and image download."""
     product_name = row.get('상품명', '')
     if not product_name or pd.isna(product_name):
         logger.debug(f"Skipping row {idx} due to missing product name.")
-        return None # Skip this row
+        return None
 
     # Get reference price
     reference_price = 0.0
@@ -782,9 +934,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
 
     if not naver_data:
         logger.warning(f"🟢 No Naver results found for '{product_name}' after trying all keyword variations.")
-        return None  # No Naver data found
+        return None
 
-    # FIXED: Add additional similarity check before returning result
     # Get the threshold from config or use a default
     try:
         min_similarity = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.15)
@@ -807,68 +958,126 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'seller_name': first_item.get('mallName'),
         'link': first_item.get('link'),
         'seller_link': first_item.get('mallProductUrl'),
-        'source': 'naver',  # 공급사 정보 명시 (Kogift 방식을 따라)
-        'initial_similarity': similarity  # Keep track of similarity score
+        'source': 'naver',
+        'initial_similarity': similarity,
+        'is_naver_site': False
     }
+    
+    # 네이버 사이트인지 체크 (판촉물 사이트는 항상 외부 사이트임)
+    product_url = result_data['link']
+    if product_url:
+        is_naver_domain = "naver.com" in product_url or "shopping.naver.com" in product_url
+        result_data['is_naver_site'] = is_naver_domain
+        
+        # 네이버 사이트면 판촉물 사이트가 아님
+        if is_naver_domain:
+            logger.info(f"Direct Naver shopping mall (not promotional site): {product_url}")
+            result_data['is_promotional_site'] = False
+            return result_data
+
+    # 판촉물 사이트 감지 키워드 확장
+    promo_keywords = [
+        '온오프마켓', '답례품', '기프트', '판촉', '기념품', '인쇄', '각인', '제작', 
+        '미스터몽키', '홍보', '호갱탈출', '다조아', '기업판촉', '단체선물', '사은품',
+        '홍보물', '판촉물', '기업기념품', '단체주문', '대량구매', '대량주문', '맞춤제작',
+        '로고인쇄', '로고각인', '주문제작', '제품홍보', '기업홍보', '단체구매'
+    ]
+
+    # 판촉물 사이트 감지 로직 강화 - 외부 사이트만 체크
+    is_promotional = False
+    matching_keywords = []
+
+    # 상품명, 판매자명, 링크 URL에서 키워드 검사
+    for keyword in promo_keywords:
+        if keyword in product_name.lower():
+            is_promotional = True
+            matching_keywords.append(f"상품명: {keyword}")
+        if keyword in result_data['seller_name'].lower():
+            is_promotional = True
+            matching_keywords.append(f"판매자: {keyword}")
+        if result_data['link'] and keyword in result_data['link'].lower():
+            is_promotional = True
+            matching_keywords.append(f"링크: {keyword}")
+
+    if matching_keywords:
+        logger.info(f"판촉물 사이트 감지 - 매칭된 키워드: {', '.join(matching_keywords)}")
+    
+    result_data['is_promotional_site'] = is_promotional
+
+    # Visit seller site to check for quantity-based pricing
+    if visit_seller_sites and browser and first_item.get('link'):
+        # 네이버 직접 사이트인 경우는 방문하지 않음 (이미 판촉물 사이트가 아니라고 확인됨)
+        if result_data.get('is_naver_site', False):
+            logger.info(f"Skipping seller site visit for Naver direct site: {first_item.get('link')}")
+            result_data.update({
+                'has_quantity_pricing': False,
+                'quantity_prices': {},
+                'vat_included': False
+            })
+        else:
+            page = None
+            try:
+                page = await browser.new_page()
+                await page.set_viewport_size({"width": 1366, "height": 768})
+                
+                if not first_item.get('link'):
+                    logger.warning(f"Missing product link for '{product_name}', cannot extract quantity prices")
+                else:
+                    logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {first_item.get('link')}")
+                    print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
+                    
+                    try:
+                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'), target_quantities=target_quantities)
+                        await asyncio.sleep(5)
+                        print(f"Completed quantity price check for '{product_name}'")
+
+                        # 캡차가 감지된 경우
+                        if quantity_pricing.get('has_captcha', False):
+                            logger.info(f"CAPTCHA detected, skipping promotional site check for '{product_name}'")
+                            result_data['is_promotional_site'] = False
+                        # 네이버 사이트인 경우
+                        elif quantity_pricing.get('is_naver_site', False):
+                            logger.info(f"Direct Naver shopping mall, not a promotional site for '{product_name}'")
+                            result_data['is_promotional_site'] = False
+                        # 수량별 가격이 있으면 판촉물 사이트로 간주
+                        elif quantity_pricing.get('has_quantity_pricing'):
+                            result_data['is_promotional_site'] = True
+                            logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
+
+                        result_data.update({
+                            'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
+                            'quantity_prices': quantity_pricing.get('quantity_prices', {}),
+                            'vat_included': quantity_pricing.get('vat_included', False),
+                            'is_naver_site': quantity_pricing.get('is_naver_site', False),
+                            'has_captcha': quantity_pricing.get('has_captcha', False)
+                        })
+                    except Exception as e:
+                        logger.error(f"Error extracting quantity prices for '{product_name}': {e}")
+            except Exception as e:
+                logger.error(f"Error visiting seller site for '{product_name}': {e}")
+            finally:
+                if page:
+                    try:
+                        await page.close()
+                    except Exception as e:
+                        logger.error(f"Error closing page: {e}")
 
     # Process image if available
     image_url = first_item.get('image_url')
     if image_url:
-        # FIXED: Ensure we clearly store the original image URL
         result_data['image_url'] = image_url
-        
-        # Download the image
-        local_path = await download_naver_image(image_url, naver_image_dir, product_name, config) 
+        local_path = await download_naver_image(image_url, naver_image_dir, product_name, config)
         if local_path:
-            # FIXED: Ensure we use absolute path
-            abs_local_path = os.path.abspath(local_path)
-            
-            # Kogift처럼 image_path 대신 더 명확한 구조화된 이미지 정보 제공
-            result_data['image_path'] = abs_local_path
-            
-            # Verify the file exists to prevent missing images in Excel
-            if not os.path.exists(abs_local_path):
-                logger.error(f"Downloaded image file does not exist: {abs_local_path}")
-                # Try to find alternative paths
-                base_path = os.path.splitext(abs_local_path)[0]
-                for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                    alt_path = f"{base_path}{ext}"
-                    if os.path.exists(alt_path):
-                        logger.info(f"Found alternative image path: {alt_path}")
-                        abs_local_path = alt_path
-                        break
-                
-                # Also check for _nobg version
-                nobg_path = f"{base_path}_nobg.png"
-                if os.path.exists(nobg_path):
-                    logger.info(f"Found _nobg image version: {nobg_path}")
-                    abs_local_path = nobg_path
-            
-            # 이미지 데이터를 excel_utils.py에서 사용할 수 있는 형식으로 제공
+            result_data['image_path'] = os.path.abspath(local_path)
             result_data['image_data'] = {
                 'url': image_url,
-                'local_path': abs_local_path,  # Use absolute path
-                'original_path': abs_local_path,  # Keep consistent path references
+                'local_path': local_path,
+                'original_path': local_path,
                 'source': 'naver',
-                'image_url': image_url,  # FIXED: Explicitly add image_url to the dictionary
-                'product_name': product_name,  # FIXED: Add product name for better traceability
-                'similarity': similarity  # FIXED: Add similarity score to image data
+                'image_url': image_url,
+                'product_name': product_name,
+                'similarity': similarity
             }
-            
-            # Log success with verification
-            if os.path.exists(abs_local_path):
-                logger.info(f"Successfully downloaded and verified Naver image for {product_name}")
-                try:
-                    img_size = os.path.getsize(abs_local_path)
-                    logger.debug(f"Image file size: {img_size} bytes")
-                    if img_size == 0:
-                        logger.warning(f"Image file exists but is empty (0 bytes): {abs_local_path}")
-                except Exception as e:
-                    logger.warning(f"Error checking image file size: {e}")
-            else:
-                logger.warning(f"Failed to verify image existence: {abs_local_path}")
-    else:
-        logger.warning(f"No image URL found for Naver product: {product_name}")
     
     return result_data
 
@@ -904,333 +1113,154 @@ async def _run_single_naver_search(idx: int, row: pd.Series, product_name: str, 
 
 # --- Test block Updated for Async ---
 async def _test_main():
+    """Test Naver API and price crawling functionality"""
     # Setup basic logging for the test
-    # Keep the level at INFO for production, DEBUG for development testing
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s:%(name)s:%(lineno)d - %(message)s')
-    # Silence httpx logs unless they are warnings or errors to reduce noise
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    print("--- Running Naver API Test ---")
-    logger.info("--- Running Naver API Test (Async) ---")
+    print("--- Running Naver API Test with Promotional Items ---")
+    logger.info("--- Running Naver API Test with Promotional Items (Async) ---")
 
-    # Use the actual load_config function
+    # Load config
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Assume config.ini is in the parent directory of PythonScript
     config_path = os.path.join(script_dir, '..', 'config.ini')
 
-    # Import load_config from utils (or execution_setup if preferred)
     try:
-        # Load config using the utility function
         config = load_config(config_path)
         print(f"Config loaded from: {config_path}")
-        logger.info(f"Config loaded from: {config_path}")
     except Exception as e:
-        print(f"ERROR loading config from '{config_path}': {e}")
-        logger.error(f"Failed to load config from '{config_path}': {e}", exc_info=True)
+        print(f"ERROR loading config: {e}")
         return
 
-    if not config or not config.sections():
-        print(f"ERROR: No sections found in config file or config loading failed: {config_path}")
-        logger.error(f"Failed to load or parse config file at: {config_path}. Test cannot run.")
-        return
-
-    # Check essential keys for the test
-    client_id = config.get('API_Keys', 'naver_client_id', fallback=None)
-    client_secret = config.get('API_Keys', 'naver_client_secret', fallback=None)
-
-    if not client_id or not client_secret:
-        print("ERROR: Naver API credentials missing in config.ini [API_Keys] section!")
-        logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        logger.error("!!! Naver API credentials missing in [API_Keys] section of config.ini.")
-        logger.error("!!! Test cannot run without valid credentials.")
-        logger.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        return
-
-    # Print the API credentials (masked)
-    print(f"Using Naver client_id: {client_id[:4]}... (length: {len(client_id)})")
-    print(f"Using Naver client_secret: {client_secret[:4]}... (length: {len(client_secret)})")
-    logger.info(f"Test will use Naver client_id: {client_id[:4]}...")
-    logger.info(f"Test will use Naver client_secret: {client_secret[:4]}...")
-
-    # Verify API keys directly with a simple request
-    print("Testing Naver API keys directly...")
-    logger.info("Testing Naver API keys directly...")
-
-    # Use a fresh client for initial API test
-    async with get_async_httpx_client(config=config) as client:
-        try:
-            api_url = "https://openapi.naver.com/v1/search/shop.json"
-            headers = {
-                "X-Naver-Client-Id": client_id,
-                "X-Naver-Client-Secret": client_secret,
-                "Accept": "application/json",
-            }
-            params = {"query": "테스트", "display": 1} # Simple test query
-
-            print(f"Sending test request to Naver API...")
-            logger.debug("Sending API key test request...")
-            response = await client.get(api_url, headers=headers, params=params)
-            status_code = response.status_code
-            print(f"Naver API response status: {status_code}")
-            logger.info(f"API key test response status: {status_code}")
-
-            if status_code == 200:
-                print(f"✅ Naver API key test successful!")
-                logger.info(f"✅ Naver API key test successful!")
-                try:
-                    data = response.json()
-                    total_results = data.get('total', 0)
-                    print(f"Test search found {total_results} total results for query '테스트'")
-                    logger.info(f"Test search found {total_results} total results for query '테스트'")
-                    
-                    # Check if we have items and validate image URLs
-                    items = data.get('items', [])
-                    if items:
-                        print(f"✅ Found {len(items)} items in API response")
-                        logger.info(f"✅ Found {len(items)} items in API response")
-                        
-                        # Verify first item has image URL
-                        first_item = items[0]
-                        image_url = first_item.get('image')
-                        if image_url:
-                            print(f"✅ First item has image URL: {image_url}")
-                            logger.info(f"✅ First item has image URL: {image_url}")
-                            
-                            # Test image URL accessibility
-                            try:
-                                img_response = await client.get(image_url, timeout=10.0)
-                                if img_response.status_code == 200:
-                                    content_type = img_response.headers.get('content-type', '')
-                                    content_length = img_response.headers.get('content-length', '0')
-                                    
-                                    if 'image' in content_type.lower():
-                                        print(f"✅ Image URL is valid! Content-Type: {content_type}, Size: {content_length} bytes")
-                                        logger.info(f"✅ Image URL is valid! Content-Type: {content_type}, Size: {content_length} bytes")
-                                    else:
-                                        print(f"⚠️ URL returns non-image content: {content_type}")
-                                        logger.warning(f"⚠️ URL returns non-image content: {content_type}")
-                                else:
-                                    print(f"⚠️ Image URL returned status code {img_response.status_code}")
-                                    logger.warning(f"⚠️ Image URL returned status code {img_response.status_code}")
-                            except Exception as img_err:
-                                print(f"⚠️ Failed to validate image URL: {img_err}")
-                                logger.warning(f"⚠️ Failed to validate image URL: {img_err}")
-                        else:
-                            print("⚠️ First item has no image URL!")
-                            logger.warning("⚠️ First item has no image URL!")
-                    else:
-                        print("⚠️ No items found in test API response")
-                        logger.warning("⚠️ No items found in test API response")
-                        
-                except json.JSONDecodeError:
-                    logger.error("API key test: Successful status code (200) but failed to decode JSON response.")
-                    print("Error decoding JSON response from API key test.")
-            else:
-                error_text = response.text[:200] + "..." if len(response.text) > 200 else response.text
-                print(f"⛔ Naver API key test failed! Status: {status_code}")
-                print(f"Error response snippet: {error_text}")
-                logger.error(f"⛔ Naver API key test failed! Status: {status_code}")
-                logger.error(f"Error response snippet: {error_text}")
-                if status_code == 401:
-                    print("⛔ API authentication failed (401). Check that your API keys are correct in config.ini.")
-                    logger.error("⛔ API authentication failed (401). Check that your API keys are correct in config.ini.")
-                elif status_code == 429:
-                    print("⛔ API rate limit exceeded during test (429). Wait before making more requests.")
-                    logger.error("⛔ API rate limit exceeded during test (429).")
-                # Don't exit immediately, allow the main test to run if desired
-                # return
-        except httpx.RequestError as req_err:
-            print(f"⛔ API key test request failed with HTTPX exception: {req_err}")
-            logger.error(f"⛔ API key test request failed with HTTPX exception: {req_err}", exc_info=True)
-            return # Cannot proceed if basic connection fails
-        except Exception as e:
-            print(f"⛔ API key test failed with unexpected exception: {e}")
-            logger.error(f"⛔ API key test failed with unexpected exception: {e}", exc_info=True)
-            return # Cannot proceed
-
-    # Ensure test image directory exists using config or fallback
-    # Use target_dir for Naver test images
-    default_img_dir = os.path.join(script_dir, '..', 'naver_test_images')
-    test_image_base_dir = config.get('Paths', 'image_target_dir', fallback=default_img_dir)
-    test_image_dir = os.path.join(test_image_base_dir, 'Naver') # Specify Naver subdirectory
-
-    # Create the directory if it doesn't exist
-    if not os.path.exists(test_image_dir):
-        try:
-             os.makedirs(test_image_dir)
-             logger.info(f"Created test image directory: {test_image_dir}")
-        except OSError as e:
-             # Log error but continue, image download might fail later
-             logger.error(f"Could not create test image directory {test_image_dir}: {e}. Image download might fail.")
-
-    # Test products list (Common Test Data)
-    common_test_products = [
-        "777쓰리쎄븐 TS-6500C 손톱깎이 13P세트",
-        "휴대용 360도 회전 각도조절 접이식 핸드폰 거치대",
-        "피에르가르뎅 3단 슬림 코지가든 우양산",
-        "마루는강쥐 클리어미니케이스",
-        "아테스토니 뱀부사 소프트 3P 타올 세트",
-        "티드 텔유 Y타입 치실 60개입 연세대학교 치과대학"
-    ]
-    
-    # Create test DataFrame with reference prices (Using common test data)
+    # Test products including promotional items
     test_data = {
-        '구분': ['A'] * len(common_test_products),
-        '담당자': ['테스트'] * len(common_test_products),
-        '업체명': ['테스트업체'] * len(common_test_products),
-        '업체코드': ['T001'] * len(common_test_products),
-        'Code': [f'CODE{i+1:03d}' for i in range(len(common_test_products))],
-        '중분류카테고리': ['테스트카테고리'] * len(common_test_products),
-        '상품명': common_test_products,
-        '기본수량(1)': [1] * len(common_test_products),
-        '판매단가(V포함)': [10000, 15000, 25000, 12000, 5000, 8000], # Example reference prices
-        '본사상품링크': [f'http://example.com/product{i+1}' for i in range(len(common_test_products))]
+        '구분': ['A', 'A'],
+        '담당자': ['테스트', '테스트'],
+        '업체명': ['테스트업체', '테스트업체'],
+        '업체코드': ['T001', 'T001'],
+        'Code': ['CODE001', 'CODE002'],
+        '중분류카테고리': ['테스트카테고리', '테스트카테고리'],
+        '상품명': [
+            '구급함 피트니스트레이너 다용도구급함 애견유치원',  # 판촉물 상품
+            '보틀로만 파스텔 라이너 스트로우 텀블러'  # 판촉물 상품
+        ],
+        '기본수량(1)': [300, 500],  # 테스트할 기본 수량 추가
+        '판매단가(V포함)': [15000, 20000],
+        '본사상품링크': ['', '']
     }
     test_df = pd.DataFrame(test_data)
     
-    print(f"Testing Naver API with {len(test_df)} products...")
-    logger.info(f"Testing Naver API with {len(test_df)} products using DataFrame:")
-    logger.info(test_df.to_string()) # Log the test data
-    
+    print("\n=== Testing with promotional items ===")
+    print("Test products:")
+    for idx, name in enumerate(test_df['상품명'], 1):
+        print(f"{idx}. {name}")
+
     try:
-        # Now test the full crawl_naver_products function
-        print("--- Testing full crawl_naver_products function ---")
-        logger.info("--- Testing full crawl_naver_products function ---")
-        start_full_crawl_time = time.monotonic()
-        
-        # FIXED: crawl_naver_products now returns a list, not a DataFrame
-        result_list = await crawl_naver_products(
-            product_rows=test_df.copy(), # Pass a copy to avoid modification issues
-            config=config
-        )
-        full_crawl_time = time.monotonic() - start_full_crawl_time
-        logger.info(f"crawl_naver_products completed in {full_crawl_time:.2f} seconds.")
-    
-        print(f"--- Test Results (crawl_naver_products processed {len(result_list)} rows) ---")
-        logger.info(f"--- Test Results (crawl_naver_products processed {len(result_list)} items) ---")
-        
-        # FIXED: Handle the list output format instead of expecting a DataFrame
-        if isinstance(result_list, list):
-            logger.info(f"Result list contains {len(result_list)} items")
-            
-            # Log sample data for each result
-            for idx, result in enumerate(result_list[:3]): # Show first 3 results only
-                if isinstance(result, dict):
-                    logger.info(f"Result {idx+1} keys: {list(result.keys())}")
-                    product_name = result.get('original_product_name', 'Unknown')
-                    matched_name = result.get('name', 'No match')
-                    price = result.get('price', 'N/A')
+        # Initialize Playwright
+        async with async_playwright() as playwright:
+            try:
+                # Switch to non-headless mode to observe the crawling process
+                browser = await playwright.chromium.launch(headless=False)
+                print(f"Browser launched successfully: {browser}")
+                
+                print("\n--- Testing crawl_naver_products with promotional items ---")
+                result_list = await crawl_naver_products(test_df, config, browser=browser)
+                
+                # Print results
+                for idx, result in enumerate(result_list, 1):
+                    print(f"\nProduct {idx}: {result.get('original_product_name', 'Unknown')}")
+                    print("-" * 50)
                     
-                    logger.info(f"Product: '{product_name}' -> Matched: '{matched_name}' (Price: {price})")
+                    # Basic info
+                    print(f"Matched name: {result.get('name', 'No match')}")
+                    print(f"Price: {result.get('price', 'N/A'):,}원")
+                    print(f"Seller: {result.get('seller_name', 'Unknown')}")
+                    print(f"Similarity score: {result.get('initial_similarity', 0):.3f}")
                     
-                    # Enhanced image validation
-                    if 'image_data' in result and isinstance(result['image_data'], dict):
-                        img_path = result['image_data'].get('local_path', 'No local path')
-                        img_url = result['image_data'].get('url', 'No URL')
-                        logger.info(f"  Image path: {img_path}")
-                        logger.info(f"  Image URL: {img_url}")
+                    # Promotional site check
+                    is_promo = result.get('is_promotional_site', False)
+                    has_qty_pricing = result.get('has_quantity_pricing', False)
+                    print(f"Is promotional site: {'Yes' if is_promo else 'No'}")
+                    print(f"Has quantity pricing: {'Yes' if has_qty_pricing else 'No'}")
+                    
+                    # Add error information if any
+                    if result.get('error'):
+                        print(f"Error: {result.get('error')}")
+                    
+                    # Quantity prices if available
+                    qty_prices = result.get('quantity_prices', {})
+                    if qty_prices:
+                        print("\nQuantity-based prices:")
+                        print("-" * 50)
+                        print("| {:^8} | {:^12} | {:^12} | {:^20} |".format(
+                            "수량", "단가", "VAT포함", "비고"))
+                        print("-" * 50)
                         
-                        # Validate downloaded image exists
-                        if os.path.exists(img_path):
+                        # Ensure sorted display of quantities (smallest to largest)
+                        sorted_quantities = sorted(qty_prices.keys())
+                        
+                        for qty in sorted_quantities:
+                            price_info = qty_prices[qty]
+                            
+                            # Ensure numeric types for proper formatting
                             try:
-                                img_size = os.path.getsize(img_path)
-                                print(f"✅ Downloaded image exists: {img_path} ({img_size} bytes)")
-                                logger.info(f"✅ Downloaded image exists: {img_path} ({img_size} bytes)")
+                                qty_num = int(qty)
+                                price = int(price_info.get('price', 0))
+                                price_vat = int(price_info.get('price_with_vat', 0))
+                                note = "정확한 수량" if price_info.get('exact_match', False) else "근사치"
                                 
-                                # Validate image can be opened with PIL
-                                try:
-                                    with Image.open(img_path) as img:
-                                        width, height = img.size
-                                        print(f"✅ Image is valid: {width}x{height} pixels, format: {img.format}")
-                                        logger.info(f"✅ Image is valid: {width}x{height} pixels, format: {img.format}")
-                                except Exception as img_err:
-                                    print(f"⚠️ Downloaded image cannot be opened: {img_err}")
-                                    logger.warning(f"⚠️ Downloaded image cannot be opened: {img_err}")
-                            except Exception as os_err:
-                                print(f"⚠️ Error checking image file: {os_err}")
-                                logger.warning(f"⚠️ Error checking image file: {os_err}")
+                                print("| {:>8,d} | {:>12,} | {:>12,} | {:<20} |".format(
+                                    qty_num, price, price_vat, note))
+                            except (ValueError, TypeError) as e:
+                                print(f"Error formatting quantity {qty}: {e}")
+                        print("-" * 50)
+                    
+                    # Image information
+                    if 'image_data' in result:
+                        img_data = result['image_data']
+                        print("\nImage information:")
+                        print(f"URL: {img_data.get('url', 'No URL')}")
+                        local_path = img_data.get('local_path', 'No local path')
+                        print(f"Local path: {local_path}")
+                        
+                        if local_path and os.path.exists(local_path):
+                            size = os.path.getsize(local_path)
+                            print(f"Image file size: {size:,} bytes")
                         else:
-                            print(f"⚠️ Downloaded image file not found: {img_path}")
-                            logger.warning(f"⚠️ Downloaded image file not found: {img_path}")
-                    else:
-                        print(f"⚠️ No image data for product: {product_name}")
-                        logger.warning(f"⚠️ No image data for product: {product_name}")
-                else:
-                    logger.info(f"Result {idx+1} is not a dictionary: {type(result)}")
+                            print("Warning: Image file not found locally")
+            except Exception as browser_error:
+                print(f"\n⛔ BROWSER ERROR: {browser_error}")
+                logger.error(f"Browser error: {browser_error}", exc_info=True)
+            finally:
+                if browser:
+                    await browser.close()
+
+            # Summary
+            print("\n=== Test Summary ===")
+            total_results = len(result_list)
+            promo_sites = sum(1 for r in result_list if r.get('is_promotional_site', False))
+            with_qty_pricing = sum(1 for r in result_list if r.get('has_quantity_pricing', False))
+            with_images = sum(1 for r in result_list if 'image_data' in r)
             
-            # Additional validation: Check original image URLs are accessible
-            print("\n--- Validating original image URLs ---")
-            logger.info("--- Validating original image URLs ---")
+            print(f"Total products processed: {total_results}")
+            print(f"Promotional sites detected: {promo_sites}")
+            print(f"Products with quantity pricing: {with_qty_pricing}")
+            print(f"Products with images: {with_images}")
             
-            async with aiohttp.ClientSession() as session:
-                image_validation_tasks = []
-                
-                for idx, result in enumerate(result_list[:3]):  # Test first 3 for speed
-                    if isinstance(result, dict) and 'image_url' in result and result['image_url']:
-                        image_url = result['image_url']
-                        product_name = result.get('original_product_name', f'Product {idx+1}')
-                        
-                        async def validate_image_url(url, product):
-                            try:
-                                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                                    status = response.status
-                                    content_type = response.headers.get('content-type', '')
-                                    
-                                    if status == 200 and 'image' in content_type.lower():
-                                        content_length = response.headers.get('content-length', 'unknown')
-                                        print(f"✅ Image URL valid for '{product}': {url} ({content_type}, {content_length} bytes)")
-                                        logger.info(f"✅ Image URL valid for '{product}': {url} ({content_type}, {content_length} bytes)")
-                                        return True
-                                    else:
-                                        print(f"⚠️ Image URL issue for '{product}': Status {status}, Content-Type: {content_type}")
-                                        logger.warning(f"⚠️ Image URL issue for '{product}': Status {status}, Content-Type: {content_type}")
-                                        return False
-                            except Exception as e:
-                                print(f"⚠️ Error validating image URL for '{product}': {e}")
-                                logger.warning(f"⚠️ Error validating image URL for '{product}': {e}")
-                                return False
-                        
-                        image_validation_tasks.append(validate_image_url(image_url, product_name))
-                
-                # Execute image validation tasks
-                if image_validation_tasks:
-                    image_validation_results = await asyncio.gather(*image_validation_tasks, return_exceptions=True)
-                    valid_urls = sum(1 for res in image_validation_results if res is True)
-                    print(f"Image URL validation: {valid_urls}/{len(image_validation_tasks)} URLs are valid")
-                    logger.info(f"Image URL validation: {valid_urls}/{len(image_validation_tasks)} URLs are valid")
-                else:
-                    print("No image URLs to validate")
-                    logger.warning("No image URLs to validate")
-        else:
-            logger.error(f"Unexpected result type: {type(result_list)}")
-    
-        # Count the actual results with image data
-        items_with_images = sum(1 for r in result_list if isinstance(r, dict) and 'image_data' in r)
-        logger.info(f"Results with image data: {items_with_images}/{len(result_list)}")
-    
-        # Final success/failure assessment based on whether *any* data was found
-        if len(result_list) == 0:
-            print("⛔ TEST FAILED: No data was returned by the crawler!")
-            logger.error("⛔ TEST FAILED: No data was returned by the crawler!")
-        elif items_with_images == 0:
-            print(f"⚠️ TEST PARTIAL SUCCESS: {len(result_list)} results but no images!")
-            logger.warning(f"⚠️ TEST PARTIAL SUCCESS: {len(result_list)} results but no images!")
-        else:
-            print(f"✅ TEST COMPLETED: Data was returned for {len(result_list)} products ({items_with_images} with images).")
-            logger.info(f"✅ TEST COMPLETED: Data was returned for {len(result_list)} products ({items_with_images} with images).")
+            if total_results == 0:
+                print("\n⛔ TEST FAILED: No results returned")
+            else:
+                print("\n✅ TEST COMPLETED SUCCESSFULLY")
     
     except Exception as e:
-        print(f"An error occurred during the async test run: {e}")
-        logger.error(f"An error occurred during the async test run: {e}", exc_info=True)
+        print(f"\n⛔ TEST ERROR: {e}")
+        logger.error(f"Test error: {e}", exc_info=True)
     
-    logger.info("--- Naver API Test (Async) Finished ---")
-    print("--- Naver API Test (Async) Finished ---")
+    print("\n--- Naver API Test Finished ---")
 
 if __name__ == "__main__":
-    # Set up basic logging for when run as a script
-    # Keep the level at INFO for production, DEBUG for development
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s:%(name)s:%(lineno)d - %(message)s')
-    logging.getLogger("httpx").setLevel(logging.WARNING) # Reduce httpx verbosity
-    print("Running Naver API test as main script...")
-
-    # Load config and run the async main test function
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    print("Running Naver API test with promotional items...")
     asyncio.run(_test_main())

@@ -803,11 +803,21 @@ async def get_price_for_specific_quantity(page, product_url, target_quantity, ti
         "quantity": target_quantity,
         "price": 0,
         "price_with_vat": 0,
-        "success": False
+        "success": False,
+        "vat_excluded": False
     }
     
     try:
         await page.goto(product_url, wait_until='domcontentloaded', timeout=timeout)
+        
+        # 부가세 정보 확인
+        try:
+            vat_info = await page.locator("div.quantity_price__wrapper div:last-child").text_content()
+            result["vat_excluded"] = "부가세별도" in vat_info or "부가세 별도" in vat_info
+            logger.debug(f"부가세 정보: {vat_info} (부가세 별도: {result['vat_excluded']})")
+        except Exception as e:
+            logger.warning(f"부가세 정보 확인 실패: {e}")
+            result["vat_excluded"] = True  # 확인 불가능한 경우 부가세 별도로 가정
         
         # 수량 입력 필드 확인
         buynum_input = page.locator('input#buynum')
@@ -843,8 +853,13 @@ async def get_price_for_specific_quantity(page, product_url, target_quantity, ti
             
         price = int(price_clean)
         
-        # 항상 부가세 10%를 추가하여 계산
-        price_with_vat = round(price * 1.1)
+        # 부가세가 별도인 경우에만 10% 추가
+        if result["vat_excluded"]:
+            price_with_vat = round(price * 1.1)
+            logger.debug(f"부가세 별도 가격: {price} -> {price_with_vat} (부가세 포함)")
+        else:
+            price_with_vat = price
+            logger.debug(f"부가세 포함 가격: {price}")
 
         result["price"] = price
         result["price_with_vat"] = price_with_vat
@@ -1178,7 +1193,25 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         item_data['link'] = final_href_url
                                         item_data['name'] = name.strip() if name else ""
                                         item_data['price'] = price_value
-                                        item_data['price_with_vat'] = round(price_value * 1.1)
+                                        
+                                        # 부가세 정보 확인 (기본적으로 부가세 별도로 가정)
+                                        item_data['vat_excluded'] = True
+                                        try:
+                                            vat_info_element = row.locator('div.price_info')
+                                            if await vat_info_element.count() > 0:
+                                                vat_info = await vat_info_element.text_content()
+                                                item_data['vat_excluded'] = "부가세별도" in vat_info or "부가세 별도" in vat_info
+                                        except Exception as e:
+                                            logger.debug(f"부가세 정보 확인 실패: {e}")
+                                        
+                                        # 부가세가 별도인 경우에만 10% 추가
+                                        if item_data['vat_excluded']:
+                                            item_data['price_with_vat'] = round(price_value * 1.1)
+                                            logger.debug(f"부가세 별도 가격: {price_value} -> {item_data['price_with_vat']} (부가세 포함)")
+                                        else:
+                                            item_data['price_with_vat'] = price_value
+                                            logger.debug(f"부가세 포함 가격: {price_value}")
+                                        
                                         item_data['supplier'] = supplier
                                         item_data['search_keyword'] = keyword
                                         
