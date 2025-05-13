@@ -21,12 +21,12 @@ from bs4 import BeautifulSoup
 # Import based on how the file is run
 try:
     # When imported as module
-    from .utils import (
+    from utils import (
         download_image_async, get_async_httpx_client, generate_keyword_variations, 
         load_config, tokenize_korean, jaccard_similarity
     )
-    from .image_utils import remove_background_async
-    from .crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
+    from image_utils import remove_background_async
+    from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 except ImportError:
     # When run directly as script
     from utils import (

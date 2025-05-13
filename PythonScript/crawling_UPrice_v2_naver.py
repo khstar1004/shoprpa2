@@ -1319,6 +1319,50 @@ async def main(URL: str, check_quantities: bool = True) -> Dict[str, Any]:
         result["error"] = error_msg
         return result
 
+def get_quantities_from_excel(excel_file: str) -> List[int]:
+    """
+    엑셀 파일에서 수량 정보를 추출하는 함수
+    
+    Args:
+        excel_file (str): 엑셀 파일 경로
+        
+    Returns:
+        List[int]: 추출된 수량 리스트
+    """
+    try:
+        # 엑셀 파일 읽기
+        df = pd.read_excel(excel_file)
+        
+        # '수량' 또는 'quantity' 열 찾기
+        quantity_columns = [col for col in df.columns if '수량' in str(col).lower() or 'quantity' in str(col).lower()]
+        
+        if not quantity_columns:
+            logger.warning(f"No quantity column found in {excel_file}")
+            return []
+            
+        # 첫 번째 수량 열 사용
+        quantity_col = quantity_columns[0]
+        
+        # 수량 데이터 추출 및 정수로 변환
+        quantities = []
+        for val in df[quantity_col].dropna():
+            try:
+                qty = int(float(str(val).replace(',', '')))
+                if qty > 0:
+                    quantities.append(qty)
+            except (ValueError, TypeError):
+                continue
+                
+        # 중복 제거 및 정렬
+        quantities = sorted(list(set(quantities)))
+        
+        logger.info(f"Extracted {len(quantities)} unique quantities from {excel_file}")
+        return quantities
+        
+    except Exception as e:
+        logger.error(f"Error reading quantities from excel {excel_file}: {e}")
+        return []
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
