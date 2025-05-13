@@ -311,32 +311,49 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
             # Handle dictionary values
             if isinstance(value, dict):
                 try:
-                    # Case 1: Nested URL structure {'url': {'url': 'actual_url', ...}}
+                    # Case 1: Double-nested URL structure {'url': {'url': 'actual_url', ...}}
                     if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
                         return value['url']['url']
                     
-                    # Case 2: Direct URL {'url': 'actual_url'}
+                    # Case 2: Nested local_path
+                    if 'url' in value and isinstance(value['url'], dict) and 'local_path' in value['url']:
+                        return value['url']['local_path']
+                    
+                    # Case 3: Direct URL {'url': 'actual_url'}
                     elif 'url' in value and isinstance(value['url'], str):
                         return value['url']
                         
-                    # Case 3: Local path
+                    # Case 4: Local path
                     elif 'local_path' in value and value['local_path']:
                         return value['local_path']
                     
-                    # Case 4: Product name
+                    # Case 5: Product name
                     elif 'product_name' in value:
                         return f"Product: {value['product_name']}"
                     
+                    # Case 6: Source property (haereum, kogift, naver)
+                    elif 'source' in value and isinstance(value['source'], str):
+                        if 'url' in value or 'local_path' in value:
+                            return value.get('url', value.get('local_path', str(value)))
+                        return f"Source: {value['source']}"
+                    
                     # Default: Convert to string
                     return json.dumps(value, ensure_ascii=False)
-                except:
+                except Exception as dict_error:
+                    logger.warning(f"Error extracting from dict: {dict_error}")
                     return str(value)
                     
             # Handle list/tuple
             if isinstance(value, (list, tuple)):
                 try:
+                    # Try to extract first meaningful item
+                    if len(value) > 0:
+                        first_item = value[0]
+                        if isinstance(first_item, dict) and ('url' in first_item or 'local_path' in first_item):
+                            return extract_url_from_complex_value(first_item)
                     return json.dumps(value, ensure_ascii=False)
-                except:
+                except Exception as list_error:
+                    logger.warning(f"Error extracting from list: {list_error}")
                     return str(value)
                     
             # Default case
@@ -370,7 +387,7 @@ def _write_data_to_worksheet(worksheet, df_for_excel):
 
 def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Flatten nested image dictionaries in DataFrame to simple URL strings.
+    Flatten nested image dictionaries in DataFrame to simple URL strings or local file paths.
     This makes the data suitable for Excel output.
     """
     if df is None or df.empty:
@@ -378,8 +395,19 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     
-    # Define image-related columns
-    image_cols = [col for col in df.columns if any(img_type in col.lower() for img_type in ['이미지', 'image'])]
+    # Define image-related columns - use both standard column names and alternative names
+    image_cols = [col for col in df.columns if col in [
+        # Standard image columns
+        '본사 이미지', '고려기프트 이미지', '네이버 이미지',
+        # Alternative column names
+        '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+    ]]
+    
+    # If no exact matches found, try partial matching
+    if not image_cols:
+        image_cols = [col for col in df.columns if any(img_type in col.lower() for img_type in ['이미지', 'image'])]
+    
+    logger.debug(f"Processing image columns for flattening: {image_cols}")
     
     for col in image_cols:
         for idx in df.index:
@@ -392,27 +420,38 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
             try:
                 # Handle dictionary values
                 if isinstance(value, dict):
-                    # Try to extract URL in order of preference
-                    url = None
+                    # Try to extract URL or local_path in order of preference
+                    result = None
                     
-                    # First check for nested URL structure
-                    if 'url' in value and isinstance(value['url'], dict) and 'url' in value['url']:
-                        url = value['url']['url']
-                    # Then check for direct URL
-                    elif 'url' in value and isinstance(value['url'], str):
-                        url = value['url']
-                    # Check for product URL (common in Naver data)
-                    elif 'product_url' in value and isinstance(value['product_url'], str):
-                        url = value['product_url']
-                    # Finally check other possible URL fields
+                    # Case 1: Double-nested URL structure {'url': {'url': 'actual_url', ...}}
+                    if 'url' in value and isinstance(value['url'], dict):
+                        if 'url' in value['url'] and value['url']['url']:
+                            result = value['url']['url']
+                        elif 'local_path' in value['url'] and value['url']['local_path']:
+                            result = value['url']['local_path']
+                    
+                    # Case 2: Direct URL {'url': 'actual_url'}
+                    elif 'url' in value and isinstance(value['url'], str) and value['url']:
+                        result = value['url']
+                    
+                    # Case 3: Local path
+                    elif 'local_path' in value and value['local_path']:
+                        result = value['local_path']
+                        
+                    # Case 4: Check for other possible URL fields
                     else:
-                        for key in ['image_url', 'original_url', 'src', 'link']:
-                            if key in value and isinstance(value[key], str):
-                                url = value[key]
+                        for key in ['image_url', 'original_url', 'src', 'link', 'product_url']:
+                            if key in value and isinstance(value[key], str) and value[key]:
+                                result = value[key]
                                 break
                     
-                    # Set the flattened value
-                    df.at[idx, col] = url if url else '-'
+                    # Set the flattened value (keep dictionary if we have path+url that might be useful for Excel)
+                    if result and os.path.exists(result):
+                        # If it's a local file that exists, keep a simplified dict for Excel embedding
+                        df.at[idx, col] = {'url': result, 'local_path': result}
+                    else:
+                        # Otherwise just use the string value
+                        df.at[idx, col] = result if result else '-'
                 
                 # Handle Series or other iterable types
                 elif isinstance(value, (pd.Series, list, tuple)):
@@ -420,32 +459,37 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
                     items = value.tolist() if isinstance(value, pd.Series) else value
                     
                     # Try to find a valid URL in the items
-                    url = None
+                    result = None
                     for item in items:
                         if isinstance(item, dict):
                             # Apply the same URL extraction logic as above
                             if 'url' in item and isinstance(item['url'], dict) and 'url' in item['url']:
-                                url = item['url']['url']
+                                result = item['url']['url']
                                 break
                             elif 'url' in item and isinstance(item['url'], str):
-                                url = item['url']
+                                result = item['url']
                                 break
-                            elif 'product_url' in item and isinstance(item['product_url'], str):
-                                url = item['product_url']
+                            elif 'local_path' in item and item['local_path']:
+                                result = item['local_path']
                                 break
                             else:
-                                for key in ['image_url', 'original_url', 'src', 'link']:
-                                    if key in item and isinstance(item[key], str):
-                                        url = item[key]
+                                for key in ['image_url', 'original_url', 'src', 'link', 'product_url']:
+                                    if key in item and isinstance(item[key], str) and item[key]:
+                                        result = item[key]
                                         break
-                                if url:
+                                if result:
                                     break
                         elif isinstance(item, str) and item.startswith(('http://', 'https://')):
-                            url = item
+                            result = item
                             break
                     
                     # Set the flattened value
-                    df.at[idx, col] = url if url else '-'
+                    if result and os.path.exists(result):
+                        # If it's a local file that exists, keep a simplified dict for Excel embedding
+                        df.at[idx, col] = {'url': result, 'local_path': result}
+                    else:
+                        # Otherwise just use the string value
+                        df.at[idx, col] = result if result else '-'
                 
                 else:
                     # For any other type, convert to string
@@ -455,7 +499,7 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
                 logger.warning(f"Error flattening image data in column {col}, row {idx}: {e}")
                 df.at[idx, col] = '-'
     
-    return df 
+    return df
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame) -> int:
     # Add image validation

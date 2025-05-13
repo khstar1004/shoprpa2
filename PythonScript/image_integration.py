@@ -1557,15 +1557,31 @@ def create_excel_with_images(df, output_path):
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             
-        # Flatten image data before creating Excel
+        # Fix nested dictionary structures in image columns
         df_copy = df.copy()
-        image_cols = [col for col in df_copy.columns if any(img_type in col.lower() for img_type in ['이미지', 'image'])]
+        image_cols = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
         
         for col in image_cols:
-            df_copy[col] = df_copy[col].apply(lambda x: 
-                x['url'] if isinstance(x, dict) and 'url' in x else 
-                (x['local_path'] if isinstance(x, dict) and 'local_path' in x else 
-                (x if isinstance(x, str) else '-')))
+            if col in df_copy.columns:
+                df_copy[col] = df_copy[col].apply(lambda x: 
+                    # Fix nested url structure {'url': {'url': '...'}} to correct {'url': '...', 'local_path': '...'}
+                    (x.get('url').get('url') if isinstance(x, dict) and isinstance(x.get('url'), dict) and 'url' in x.get('url') else 
+                    # Fix nested local_path structure
+                    (x.get('url').get('local_path') if isinstance(x, dict) and isinstance(x.get('url'), dict) and 'local_path' in x.get('url') else
+                    # Handle regular dictionary structure
+                    (x.get('local_path') if isinstance(x, dict) and 'local_path' in x else 
+                    (x.get('url') if isinstance(x, dict) and 'url' in x else 
+                    # Handle string values - if it's a path
+                    (x if isinstance(x, str) and (os.path.exists(x) or x.startswith('http')) else 
+                    (x if isinstance(x, str) else '-')))))))
+        
+        # Ensure column order matches the expected "엑셀 골든" format
+        from excel_constants import FINAL_COLUMN_ORDER
+        for col in FINAL_COLUMN_ORDER:
+            if col not in df_copy.columns:
+                df_copy[col] = None
+        
+        df_copy = df_copy[FINAL_COLUMN_ORDER]
         
         # Use the excel generator to create the Excel file
         result_success, _, result_path, _ = excel_generator.create_excel_output(
@@ -1944,23 +1960,46 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     df_filtered = filter_images_by_similarity(df_with_images, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
     
-    # FIXED: Added step to improve Kogift image matching
+    # Step 3: Improve Kogift image matching
     df_improved = improved_kogift_image_matching(df_filtered)
     logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_improved.shape}")
     
-    # Step 3: Save Excel output if requested
+    # Step 4: Ensure column names match the target format ("엑셀 골든")
+    from excel_constants import COLUMN_RENAME_MAP
+    
+    # Apply reverse mapping to ensure expected column names
+    reverse_mapping = {v: k for k, v in COLUMN_RENAME_MAP.items()}
+    # Only rename columns that exist and have a mapping
+    cols_to_rename = {col: reverse_mapping[col] for col in df_improved.columns if col in reverse_mapping}
+    
+    # Ensure image columns have the correct names
+    for old_name, new_name in [
+        ('본사 이미지', '해오름(이미지링크)'),
+        ('고려기프트 이미지', '고려기프트(이미지링크)'),
+        ('네이버 이미지', '네이버쇼핑(이미지링크)')
+    ]:
+        if old_name in df_improved.columns:
+            cols_to_rename[old_name] = new_name
+    
+    # Apply the renaming
+    df_final = df_improved.rename(columns=cols_to_rename)
+    
+    # Step 5: Save Excel output if requested
     if save_excel_output:
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            excel_output = f"image_integration_result_{timestamp}.xlsx"
+            # Use company name instead of "0개" in filename
+            company_info = df_final['공급사명'].iloc[0] if '공급사명' in df_final.columns and len(df_final) > 0 else ""
+            row_count = len(df_final)
+            excel_output = f"{company_info}({row_count}개)_image_integration_{timestamp}.xlsx"
             
             # Create the Excel file with images
-            create_excel_with_images(df_improved, excel_output)
+            create_excel_with_images(df_final, excel_output)
             logger.info(f"Created Excel output file with images: {excel_output}")
         except Exception as e:
             logger.error(f"Error creating Excel output: {e}")
     
-    return df_improved
+    return df_final
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":

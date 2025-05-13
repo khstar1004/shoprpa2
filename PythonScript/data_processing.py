@@ -337,8 +337,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         if 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
                         elif 'price' in item:
-                            # VAT 추가
-                            df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
+                            # 부가세 포함 여부 확인
+                            vat_included = item.get('vat_included', False)
+                            if vat_included:
+                                # 이미 부가세가 포함된 경우
+                                df.at[idx, '판매단가(V포함)(3)'] = item['price']
+                            else:
+                                # 정확히 10% 부가세 적용
+                                df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
                 
             # 판촉물 사이트 여부와 수량별 가격 여부를 더 명확하게 표시
             if '판촉물사이트여부' in df.columns:
@@ -531,7 +537,14 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
                         # 없으면 일반 가격에 1.1 곱해서 부가세 계산
                         elif 'price' in item:
-                            df.at[idx, '판매단가(V포함)(2)'] = round(item['price'] * 1.1)
+                            # 부가세 포함 여부 확인
+                            vat_included = item.get('vat_included', False)
+                            # 만약 부가세가 이미 포함되어 있다면 그대로 사용
+                            if vat_included:
+                                df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                            else:
+                                # 정확히 10% 부가세 적용
+                                df.at[idx, '판매단가(V포함)(2)'] = item['price']
                             kogift_price_count += 1
                     
                     # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
@@ -703,38 +716,18 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                         
                         # 판매단가 정보 업데이트
                         if '판매단가(V포함)(3)' in df.columns:
-                            # NEW: Check for quantity pricing first
-                            if has_quantity_pricing and 'quantity_prices' in item and item['quantity_prices']:
-                                # Get the target quantity from 기본수량(1) or fallback
-                                target_qty = None
-                                if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                                    try:
-                                        target_qty = int(row['기본수량(1)'])
-                                    except (ValueError, TypeError):
-                                        target_qty = None
-                                
-                                # Default if no target found
-                                if target_qty is None:
-                                    target_qty = 300  # Default quantity
-                                
-                                # 자주 사용되는 수량에 대한 가격 캐시
-                                price_cache = {}
-                                cache_key = f"{row['Code']}_{target_qty}"
-                                if cache_key in price_cache:
-                                    df.at[idx, '판매단가(V포함)(3)'] = price_cache[cache_key]
-                                else:
-                                    # 가격 계산 후
-                                    price_cache[cache_key] = df.at[idx, '판매단가(V포함)(3)']
                             # Check for price_with_vat
-                            elif 'price_with_vat' in item:
+                            if 'price_with_vat' in item:
                                 df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
                             # Check for regular price and apply VAT
                             elif 'price' in item:
-                                # If it's a promotional site, add VAT if not already included
-                                if is_promotional and not item.get('vat_included', False):
-                                    df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
-                                    logging.info(f"Added VAT to price for promotional site {product_name}: {item['price']} -> {round(item['price'] * 1.1)}")
+                                # 부가세 포함 여부 확인
+                                vat_included = item.get('vat_included', False)
+                                # 만약 부가세가 이미 포함되어 있다면 그대로 사용
+                                if vat_included:
+                                    df.at[idx, '판매단가(V포함)(3)'] = item['price']
                                 else:
+                                    # 없으면 일반 가격에 1.1 곱해서 부가세 계산 (정확히 10%)
                                     df.at[idx, '판매단가(V포함)(3)'] = item['price']
                         
                         # 링크 정보 업데이트

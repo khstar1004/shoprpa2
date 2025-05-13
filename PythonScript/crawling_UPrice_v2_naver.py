@@ -62,7 +62,8 @@ async def handle_login_one(soup: BeautifulSoup) -> pd.DataFrame:
             df = df.apply(lambda col: col.astype(str).apply(remove_special_chars))
             # Convert to numeric, errors='coerce' will convert invalid values to NaN
             df['일반'] = pd.to_numeric(df['일반'], errors='coerce').fillna(0)
-            df['일반'] = df['일반'].apply(lambda x: float(x)*1.1)
+            # Fix: Apply exactly 10% VAT
+            df['일반'] = df['일반'].apply(lambda x: round(float(x) * 1.1))
             df['수량'] = pd.to_numeric(df['수량'], errors='coerce').fillna(0).astype('int64')
             # Filter out rows with zero quantity
             df = df[df['수량'] > 0]
@@ -257,7 +258,8 @@ async def handle_login_three(soup: BeautifulSoup) -> pd.DataFrame:
                     '수량': quantities,
                     '일반': prices
                 })
-                df['일반'] = df['일반'].apply(lambda x: float(x)*1.1)
+                # Fix: Apply exactly 10% VAT calculation
+                df['일반'] = df['일반'].apply(lambda x: round(float(x) * 1.1))
                 df.sort_values(by='수량', inplace=True, ignore_index=True)
                 return df
             else:
@@ -493,9 +495,10 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
                             for item in price_table:
                                 qty = item["quantity"]
                                 price = item["price"]
+                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
                                 result["quantity_prices"][qty] = {
                                     "price": price,
-                                    "price_with_vat": round(price * 1.1),
+                                    "price_with_vat": price_with_vat,
                                     "exact_match": True
                                 }
                             
@@ -557,6 +560,7 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
                             qty = quantities[i]
                             price = prices[i]
                             
+                            price_with_vat = price if result["vat_included"] else round(price * 1.1)
                             result["price_table"].append({
                                 "quantity": qty,
                                 "price": price
@@ -564,7 +568,7 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
                             
                             result["quantity_prices"][qty] = {
                                 "price": price,
-                                "price_with_vat": round(price * 1.1),
+                                "price_with_vat": price_with_vat,
                                 "exact_match": True
                             }
                         
@@ -784,9 +788,10 @@ async def detect_with_input_fields(page, target_quantities=None) -> Optional[Dic
                             for item in price_table:
                                 qty = item["quantity"]
                                 price = item["price"]
+                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
                                 result["quantity_prices"][qty] = {
                                     "price": price,
-                                    "price_with_vat": round(price * 1.1),
+                                    "price_with_vat": price_with_vat,
                                     "exact_match": True
                                 }
                             
@@ -1096,9 +1101,10 @@ async def analyze_table_structure(table) -> Optional[Dict[str, Any]]:
             for qty, price in sorted(quantity_price_map.items()):
                 if qty > 0 and price > 0:
                     result["price_table"].append({"quantity": qty, "price": price})
+                    price_with_vat = price if result["vat_included"] else round(price * 1.1)
                     result["quantity_prices"][qty] = {
                         "price": price,
-                        "price_with_vat": round(price * 1.1),
+                        "price_with_vat": price_with_vat,
                         "exact_match": True
                     }
             
