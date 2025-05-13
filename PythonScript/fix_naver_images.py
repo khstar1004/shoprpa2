@@ -46,27 +46,51 @@ def verify_naver_product_info(row_data):
     Returns:
         bool: True if valid Naver product info exists
     """
+    # Check for Naver image data
+    if '네이버 이미지' in row_data and pd.notna(row_data['네이버 이미지']):
+        image_data = row_data['네이버 이미지']
+        
+        # Handle dictionary format
+        if isinstance(image_data, dict):
+            # Check for product URL first (preferred)
+            if 'product_url' in image_data and isinstance(image_data['product_url'], str):
+                if image_data['product_url'].startswith(('http://', 'https://')):
+                    return True
+            
+            # Then check for regular URL
+            if 'url' in image_data and isinstance(image_data['url'], str):
+                if image_data['url'].startswith(('http://', 'https://')):
+                    return True
+                    
+            # Check for local path
+            if 'local_path' in image_data and image_data['local_path']:
+                if os.path.exists(image_data['local_path']):
+                    return True
+    
     # Check for Naver link
     naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
-    has_link = False
     for col in naver_link_cols:
-        if col in row_data and isinstance(row_data[col], str):
-            link = row_data[col].strip()
-            if link and link not in ['-', 'None', '']:
-                has_link = True
-                break
+        if col in row_data and pd.notna(row_data[col]):
+            link = str(row_data[col]).strip()
+            if link and link not in ['-', 'None', ''] and link.startswith(('http://', 'https://')):
+                return True
     
     # Check for Naver price
     price_cols = ['판매단가(V포함)(3)', '네이버 판매단가', '판매단가3 (VAT포함)', '네이버 기본수량']
-    has_price = False
     for col in price_cols:
         if col in row_data and pd.notna(row_data[col]):
             price = row_data[col]
-            if price not in [0, '-', '', None]:
-                has_price = True
-                break
+            if isinstance(price, (int, float)) and price > 0:
+                return True
+            elif isinstance(price, str):
+                try:
+                    price = float(price.replace(',', ''))
+                    if price > 0:
+                        return True
+                except:
+                    continue
     
-    return has_link or has_price
+    return False
 
 def extract_naver_image_info(img_data):
     """
@@ -220,6 +244,103 @@ def fix_excel_file(input_file, output_file=None):
     except Exception as e:
         logger.error(f"Error fixing Excel file: {e}")
         return None
+
+def validate_and_fix_naver_image_placement(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Validates and fixes Naver image placement in the DataFrame.
+    
+    Args:
+        df: DataFrame containing Naver image data
+        
+    Returns:
+        DataFrame with validated and fixed Naver image placement
+    """
+    if df.empty:
+        return df
+        
+    result_df = df.copy()
+    
+    # Track statistics
+    fixed_count = 0
+    removed_count = 0
+    
+    # Process Naver image column
+    naver_img_col = '네이버 이미지'
+    naver_link_col = '네이버 쇼핑 링크'
+    
+    if naver_img_col not in result_df.columns:
+        logger.warning(f"Naver image column '{naver_img_col}' not found")
+        return result_df
+        
+    # Process each row
+    for idx in result_df.index:
+        try:
+            img_data = result_df.at[idx, naver_img_col]
+            
+            # Skip empty or invalid data
+            if pd.isna(img_data) or img_data == '-':
+                continue
+                
+            # Handle dictionary format
+            if isinstance(img_data, dict):
+                # Check for product URL first
+                if 'product_url' in img_data and isinstance(img_data['product_url'], str):
+                    if img_data['product_url'].startswith(('http://', 'https://')):
+                        # Keep product URL, it's valid
+                        fixed_count += 1
+                        continue
+                        
+                # Check regular URL
+                if 'url' in img_data:
+                    url = img_data['url']
+                    if isinstance(url, str) and url.startswith(('http://', 'https://')):
+                        if 'pstatic.net/front/' in url:
+                            # Remove unreliable front URL
+                            img_data['url'] = ''
+                            result_df.at[idx, naver_img_col] = img_data
+                            removed_count += 1
+                        else:
+                            # URL is valid
+                            fixed_count += 1
+                            continue
+                            
+                # Check local path
+                if 'local_path' in img_data and img_data['local_path']:
+                    if os.path.exists(img_data['local_path']):
+                        # Local file exists, keep it
+                        fixed_count += 1
+                        continue
+                        
+                # If we get here, no valid image data was found
+                result_df.at[idx, naver_img_col] = '-'
+                removed_count += 1
+                
+            # Handle string format
+            elif isinstance(img_data, str):
+                if img_data.startswith(('http://', 'https://')):
+                    if 'pstatic.net/front/' in img_data:
+                        # Remove unreliable front URL
+                        result_df.at[idx, naver_img_col] = '-'
+                        removed_count += 1
+                    else:
+                        # URL is valid
+                        fixed_count += 1
+                else:
+                    # Not a valid URL
+                    result_df.at[idx, naver_img_col] = '-'
+                    removed_count += 1
+            else:
+                # Invalid data type
+                result_df.at[idx, naver_img_col] = '-'
+                removed_count += 1
+                
+        except Exception as e:
+            logger.error(f"Error processing row {idx}: {e}")
+            result_df.at[idx, naver_img_col] = '-'
+            removed_count += 1
+            
+    logger.info(f"Naver image validation complete: {fixed_count} fixed, {removed_count} removed")
+    return result_df
 
 def main():
     """Main entry point"""

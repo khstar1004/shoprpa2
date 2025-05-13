@@ -358,6 +358,7 @@ async def setup_page_optimizations(page: Page):
 async def extract_price_table(page, product_url, timeout=30000):
     """
     상품 상세 페이지에서 수량-단가 테이블을 추출합니다.
+    모든 가용한 수량-가격 정보를 가져옵니다.
     
     Args:
         page: Playwright Page 객체
@@ -468,34 +469,28 @@ async def extract_price_table(page, product_url, timeout=30000):
                                 price_col = i
                                 break
                         
-                        # 컬럼명에서 찾지 못했다면 첫 번째, 두 번째 컬럼으로 가정
-                        if qty_col is None and price_col is None and len(table_df.columns) >= 2:
-                            # 첫 번째 행에 수량, 단가 등의 키워드가 있는지 확인
-                            if not table_df.empty:
-                                first_row = table_df.iloc[0]
-                                for i, value in enumerate(first_row):
-                                    value_str = str(value).lower()
-                                    if any(keyword in value_str for keyword in qty_keywords):
-                                        qty_col = i
-                                    if any(keyword in value_str for keyword in price_keywords):
-                                        price_col = i
+                        # 컬럼명에서 찾지 못했다면 첫 번째 행에서 찾기
+                        if qty_col is None and price_col is None and not table_df.empty:
+                            first_row = table_df.iloc[0]
+                            for i, value in enumerate(first_row):
+                                value_str = str(value).lower()
+                                if any(keyword in value_str for keyword in qty_keywords):
+                                    qty_col = i
+                                if any(keyword in value_str for keyword in price_keywords):
+                                    price_col = i
                             
-                            # 그래도 못 찾았다면 첫 번째와 두 번째 컬럼 사용
-                            if qty_col is None and price_col is None:
-                                qty_col = 0
-                                price_col = 1
+                            # 첫 번째 행이 헤더인 경우 제거
+                            if qty_col is not None or price_col is not None:
+                                table_df = table_df.iloc[1:]
+                        
+                        # 그래도 못 찾았다면 첫 번째와 두 번째 컬럼 사용
+                        if qty_col is None and price_col is None:
+                            qty_col = 0
+                            price_col = 1
                         
                         if qty_col is not None and price_col is not None:
                             # 수량-가격 테이블 확인됨
-                            # 컬럼 이름 변경
                             result_df = table_df.copy()
-                            new_cols = result_df.columns.tolist()
-                            
-                            # 첫 번째 행이 헤더인 경우 처리
-                            if any(keyword in str(result_df.iloc[0, qty_col]).lower() for keyword in qty_keywords) and \
-                               any(keyword in str(result_df.iloc[0, price_col]).lower() for keyword in price_keywords):
-                                # 첫 번째 행을 제외하고 처리
-                                result_df = result_df.iloc[1:].copy()
                             
                             # 컬럼명 재지정
                             new_cols = result_df.columns.tolist()
@@ -528,7 +523,6 @@ async def extract_price_table(page, product_url, timeout=30000):
                             if not result_df.empty:
                                 return result_df
                 except Exception as table_error:
-                    # 테이블 파싱 실패 시 다음 선택자로 진행
                     continue
         
         # 셀렉트 박스에서 단가 정보 찾기
@@ -571,11 +565,10 @@ async def extract_price_table(page, product_url, timeout=30000):
                 result_df = result_df.sort_values('수량')
                 return result_df
         
-        # 테이블을 찾지 못함
         return None
         
     except Exception as e:
-        # 오류 발생 시 None 반환
+        logger.error(f"수량-가격 테이블 추출 중 오류 발생: {e}")
         return None
 
 # --- 이미지 URL 처리 전용 함수 추가 ---
@@ -789,6 +782,7 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
 async def get_price_for_specific_quantity(page, product_url, target_quantity, timeout=30000):
     """
     상품 상세 페이지에서 특정 수량을 입력하고 업데이트된 가격을 가져옵니다.
+    기본수량 미만 경고 메시지도 감지합니다.
     
     Args:
         page: Playwright Page 객체
@@ -797,72 +791,208 @@ async def get_price_for_specific_quantity(page, product_url, target_quantity, ti
         timeout: 타임아웃(ms)
         
     Returns:
-        dict: 수량, 단가(부가세 포함/미포함), 성공 여부
+        dict: 수량, 단가(부가세 포함/미포함), 성공 여부, 최소 수량 안내
     """
     result = {
         "quantity": target_quantity,
         "price": 0,
         "price_with_vat": 0,
         "success": False,
-        "vat_excluded": False
+        "min_quantity_error": False,
+        "min_quantity": None
     }
     
     try:
+        # Navigate to the product page
         await page.goto(product_url, wait_until='domcontentloaded', timeout=timeout)
         
-        # 부가세 정보 확인
-        try:
-            vat_info = await page.locator("div.quantity_price__wrapper div:last-child").text_content()
-            result["vat_excluded"] = "부가세별도" in vat_info or "부가세 별도" in vat_info
-            logger.debug(f"부가세 정보: {vat_info} (부가세 별도: {result['vat_excluded']})")
-        except Exception as e:
-            logger.warning(f"부가세 정보 확인 실패: {e}")
-            result["vat_excluded"] = True  # 확인 불가능한 경우 부가세 별도로 가정
+        # Wait for a short period for any initial scripts to run
+        await page.wait_for_timeout(1000)
         
-        # 수량 입력 필드 확인
-        buynum_input = page.locator('input#buynum')
-        if await buynum_input.count() == 0:
+        # Try different selectors for the quantity input field
+        input_selectors = [
+            'input#buynum',            # Standard buynum
+            'input[name="buynum"]',    # By name
+            'input.buynum',            # By class
+            'input[id^="buy"]',        # Starts with buy
+            'input[id*="num"]',        # Contains num
+            'input.btn_count'          # Common class for counter inputs
+        ]
+        
+        # Try to find quantity input field with different selectors
+        buynum_input = None
+        for selector in input_selectors:
+            if await page.locator(selector).count() > 0:
+                buynum_input = page.locator(selector).first
+                logger.info(f"Found quantity input with selector: {selector}")
+                break
+        
+        if not buynum_input or await buynum_input.count() == 0:
             logger.warning(f"수량 입력 필드를 찾을 수 없습니다: {product_url}")
             return result
             
-        # 현재 값 지우고 타겟 수량 입력
-        await buynum_input.click()
-        await buynum_input.press("Control+a")
-        await buynum_input.press("Delete")
-        await buynum_input.fill(str(target_quantity))
+        # Get current quantity value to check if we need to change it
+        current_value_text = await buynum_input.input_value()
+        try:
+            current_value = int(current_value_text)
+        except ValueError:
+            current_value = 0
+            
+        # Only change if quantity is different
+        if current_value != target_quantity:
+            # Focus on the input and clear existing value
+            await buynum_input.click()
+            await buynum_input.press("Control+a")
+            await buynum_input.press("Delete")
+            
+            # Input the new quantity
+            await buynum_input.fill(str(target_quantity))
+            
+            # Different ways to trigger price update
+            # 1. Press Enter
+            await buynum_input.press("Enter")
+            
+            # 2. Click outside the input
+            try:
+                await page.click('body', position={'x': 10, 'y': 10})
+            except:
+                pass
+                
+            # 3. Look for and click update buttons
+            update_button_selectors = [
+                'button.update_price',
+                'button.btn_update',
+                'a.update_price',
+                'a.btn_update',
+                'button:has-text("계산")',
+                'button:has-text("적용")',
+                'button:has-text("변경")'
+            ]
+            
+            for btn_selector in update_button_selectors:
+                try:
+                    if await page.locator(btn_selector).count() > 0:
+                        await page.locator(btn_selector).first.click()
+                        logger.info(f"Clicked update button: {btn_selector}")
+                        break
+                except:
+                    continue
+            
+            # Wait for price to update
+            await page.wait_for_timeout(2000)  # Increased wait time
         
-        # 'change' 이벤트 트리거를 위해 다른 곳 클릭 또는 Enter 키 입력
-        await buynum_input.press("Enter")
+        # 기본수량 미만 경고 메시지 확인
+        min_quantity_error_selectors = [
+            'div.alert:has-text("기본수량 미만")',
+            'div.notice:has-text("기본수량 미만")',
+            'div.quantity_error:has-text("기본수량")',
+            'div.alert:has-text("최소 주문")',
+            'span.alert:has-text("최소 주문")',
+            'div.notice:has-text("최소 주문")',
+            'p.alert:has-text("기본수량")'
+        ]
         
-        # 가격이 업데이트될 때까지 짧게 대기
-        await page.wait_for_timeout(1000)
+        # 경고 메시지 확인
+        for error_selector in min_quantity_error_selectors:
+            if await page.locator(error_selector).count() > 0:
+                error_text = await page.locator(error_selector).text_content()
+                logger.info(f"최소 수량 경고 메시지 발견: {error_text}")
+                result["min_quantity_error"] = True
+                
+                # 최소 수량 값 추출 시도
+                try:
+                    # 경고 메시지에서 숫자 추출 (예: "기본수량은 100개 이상입니다")
+                    min_qty_match = re.search(r'(\d+)(?:개|EA|ea|pcs)', error_text)
+                    if min_qty_match:
+                        result["min_quantity"] = int(min_qty_match.group(1))
+                        logger.info(f"최소 주문 수량: {result['min_quantity']}개")
+                except Exception as ex:
+                    logger.warning(f"최소 수량 추출 실패: {ex}")
+                break
         
-        # 업데이트된 가격 가져오기
-        price_element = page.locator('span#main_price')
-        if await price_element.count() == 0:
+        # 최소 수량 확인을 위한 인풋 필드의 min 속성 확인
+        if not result["min_quantity"] and buynum_input:
+            try:
+                min_attr = await buynum_input.get_attribute('min')
+                if min_attr and min_attr.isdigit():
+                    result["min_quantity"] = int(min_attr)
+                    logger.info(f"입력 필드의 최소 수량: {result['min_quantity']}개")
+            except Exception:
+                pass
+        
+        # Price selectors to try
+        price_selectors = [
+            'span#main_price',         # Standard kogift price
+            'span.main_price',         # By class
+            'strong.price',            # Common price element
+            'div.price_wrap .price',   # Price in price wrapper
+            'div.price_value',         # Price value
+            'span.font_price',         # Price with special font
+            '*[id*="price"]:not(input):not(select):not(button)', # Contains price but not form elements
+            'div.total_price'          # Total price
+        ]
+        
+        # Try different price selectors
+        price_element = None
+        for selector in price_selectors:
+            if await page.locator(selector).count() > 0:
+                price_element = page.locator(selector).first
+                logger.info(f"Found price element with selector: {selector}")
+                break
+                
+        if not price_element or await price_element.count() == 0:
             logger.warning(f"가격 요소를 찾을 수 없습니다: {product_url}")
-            return result
             
-        price_text = await price_element.text_content()
-        
-        # 숫자만 추출
-        price_clean = ''.join(filter(str.isdigit, price_text.replace(',', '')))
-        if not price_clean:
-            logger.warning(f"유효한 가격을 찾을 수 없습니다: {product_url}")
-            return result
-            
-        price = int(price_clean)
-        
-        # 부가세가 별도인 경우에만 10% 추가
-        if result["vat_excluded"]:
-            price_with_vat = round(price * 1.1)
-            logger.debug(f"부가세 별도 가격: {price} -> {price_with_vat} (부가세 포함)")
+            # Last resort - try to get any visible price text
+            try:
+                page_content = await page.content()
+                # Look for price patterns in text
+                price_matches = re.findall(r'[\d,]+원', page_content)
+                if price_matches:
+                    price_text = price_matches[0]
+                    logger.info(f"Found price using regex pattern: {price_text}")
+                else:
+                    return result
+            except:
+                return result
         else:
-            price_with_vat = price
-            logger.debug(f"부가세 포함 가격: {price}")
+            # Get price text from element
+            price_text = await price_element.text_content()
+        
+        # Clean and extract price value
+        # Remove non-digit characters except commas, then remove commas
+        price_clean = ''.join(filter(lambda c: c.isdigit() or c == ',', price_text)).replace(',', '')
+        if not price_clean:
+            logger.warning(f"유효한 가격을 찾을 수 없습니다: {product_url} (텍스트: {price_text})")
+            return result
+            
+        # Convert to integer
+        try:
+            price = int(price_clean)
+        except ValueError:
+            logger.warning(f"가격을 정수로 변환할 수 없습니다: {price_clean}")
+            return result
+        
+        # Calculate price with VAT (10%)
+        price_with_vat = round(price * 1.1)
 
+        # Also check if price is per-unit
+        per_unit_selectors = [
+            'span:has-text("단가")',
+            'span:has-text("개당")',
+            'span:has-text("EA당")',
+            'span:has-text("단위가격")'
+        ]
+        
+        is_per_unit = False
+        for selector in per_unit_selectors:
+            if await page.locator(selector).count() > 0:
+                is_per_unit = True
+                break
+                
         result["price"] = price
         result["price_with_vat"] = price_with_vat
+        result["is_per_unit"] = is_per_unit
         result["success"] = True
 
         return result

@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 import openpyxl
 from email_sender import validate_email_config, send_excel_by_email
+from typing import Dict, List
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -670,6 +671,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if not formatted_df.empty:
                         logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
 
+                    # First, validate and fix Naver image placement
+                    if '네이버 이미지' in formatted_df.columns:
+                        from fix_naver_images import validate_and_fix_naver_image_placement
+                        formatted_df = validate_and_fix_naver_image_placement(formatted_df)
+                        logging.info("Validated and fixed Naver image placement")
+
                     # Perform image integration
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     logging.info("Image integration and filtering complete.")
@@ -683,8 +690,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if IMAGE_COLUMNS:
                             img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
                             if img_cols_to_log:
-                                 logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
-
+                                logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
 
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)

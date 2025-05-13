@@ -1069,15 +1069,19 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         local_path = await download_naver_image(image_url, naver_image_dir, product_name, config)
         if local_path:
             result_data['image_path'] = os.path.abspath(local_path)
+            # Ensure proper image data structure for Naver images
             result_data['image_data'] = {
                 'url': image_url,
                 'local_path': local_path,
                 'original_path': local_path,
                 'source': 'naver',
-                'image_url': image_url,
+                'image_url': image_url,  # Keep original URL
                 'product_name': product_name,
-                'similarity': similarity
+                'similarity': similarity,
+                'type': 'naver'  # Explicitly mark as Naver image
             }
+            # Add separate naver_image_data for correct column mapping
+            result_data['naver_image_data'] = result_data['image_data'].copy()
     
     return result_data
 
