@@ -20,7 +20,6 @@ import json
 from copy import copy
 from decimal import Decimal
 from typing import Optional
-from excel_constants import COLUMN_RENAME_MAP, FINAL_COLUMN_ORDER, IMAGE_COLUMNS, UPLOAD_COLUMN_ORDER
 
 # Check Python/PIL version for proper resampling constant
 try:
@@ -59,24 +58,70 @@ except Exception as e:
 # --- Constants ---
 PROMO_KEYWORDS = ['판촉', '기프트', '답례품', '기념품', '인쇄', '각인', '제작', '호갱', '몽키', '홍보']
 
-# --- Column Type Definitions for Formatting ---
-# Update these lists based on the FINAL_COLUMN_ORDER names
-PRICE_COLUMNS = [
-    '판매단가(V포함)', '판매가(V포함)(2)', '판매단가(V포함)(3)',
-    '가격차이(2)', '가격차이(3)'
-]
-QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
-PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
-TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
-LINK_COLUMNS_FOR_HYPERLINK = {
-    # Map final column names used for links
+# Column Rename Mapping (Ensure keys cover variations, values match FINAL_COLUMN_ORDER)
+COLUMN_RENAME_MAP = {
+    # Standard column renames - map FROM old names TO new names
+    '구분(승인관리:A/가격관리:P)': '구분',
+    '공급사명': '업체명',
+    '공급처코드': '업체코드',
+    '상품코드': 'Code',
+    '카테고리(중분류)': '중분류카테고리',
+    '본사 기본수량': '기본수량(1)',
+    '판매단가1(VAT포함)': '판매단가(V포함)',
+    '본사링크': '본사상품링크',
+    '고려 기본수량': '기본수량(2)',
+    '판매단가2(VAT포함)': '판매가(V포함)(2)',
+    '고려 가격차이': '가격차이(2)',
+    '고려 가격차이(%)': '가격차이(2)(%)',
+    '고려 링크': '고려기프트 상품링크',
+    '네이버 기본수량': '기본수량(3)',
+    '판매단가3 (VAT포함)': '판매단가(V포함)(3)',
+    '네이버 가격차이': '가격차이(3)',
+    '네이버가격차이(%)': '가격차이(3)(%)',
+    '네이버 공급사명': '공급사명',
+    '네이버 링크': '네이버 쇼핑 링크',
+    '해오름(이미지링크)': '본사 이미지',
+    '고려기프트(이미지링크)': '고려기프트 이미지',
+    '네이버쇼핑(이미지링크)': '네이버 이미지',
+    
+    # Self-maps (columns that already have correct names)
+    '구분': '구분',
+    '담당자': '담당자',
+    '업체명': '업체명',
+    '업체코드': '업체코드',
+    'Code': 'Code',
+    '중분류카테고리': '중분류카테고리',
+    '상품명': '상품명',
+    '기본수량(1)': '기본수량(1)',
+    '판매단가(V포함)': '판매단가(V포함)',
     '본사상품링크': '본사상품링크',
+    '기본수량(2)': '기본수량(2)',
+    '판매가(V포함)(2)': '판매가(V포함)(2)',
+    '가격차이(2)': '가격차이(2)',
+    '가격차이(2)(%)': '가격차이(2)(%)',
     '고려기프트 상품링크': '고려기프트 상품링크',
+    '기본수량(3)': '기본수량(3)',
+    '판매단가(V포함)(3)': '판매단가(V포함)(3)',
+    '가격차이(3)': '가격차이(3)',
+    '가격차이(3)(%)': '가격차이(3)(%)',
+    '공급사명': '공급사명',
     '네이버 쇼핑 링크': '네이버 쇼핑 링크',
-    '공급사 상품링크': '공급사 상품링크'
+    '공급사 상품링크': '공급사 상품링크',
+    '본사 이미지': '본사 이미지',
+    '고려기프트 이미지': '고려기프트 이미지',
+    '네이버 이미지': '네이버 이미지'
 }
 
-# Final Target Column Order (Based on user requirements)# THIS IS THE STRICT ORDER AND NAMING FOR THE OUTPUT FILEFINAL_COLUMN_ORDER = [    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',    '기본수량(1)', '판매단가(V포함)', '본사상품링크',    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명',     '네이버 쇼핑 링크', '공급사 상품링크',    '본사 이미지', '고려기프트 이미지', '네이버 이미지']
+# Final Target Column Order (Based on "엑셀 골든" sample)
+# THIS IS THE STRICT ORDER AND NAMING FOR THE OUTPUT FILE
+FINAL_COLUMN_ORDER = [
+    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+    '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+    '기본수량(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', 
+    '네이버 쇼핑 링크', '공급사 상품링크',
+    '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+]
 
 # Columns that must be present in the input file for processing
 # Update this based on the new FINAL_COLUMN_ORDER if necessary,
@@ -102,9 +147,17 @@ LINK_COLUMNS_FOR_HYPERLINK = {
     '네이버 쇼핑 링크': '네이버 쇼핑 링크',
     '공급사 상품링크': '공급사 상품링크'
 }
-# Final Target Column Order (Based on user requirements)# THIS IS THE STRICT ORDER AND NAMING FOR THE OUTPUT FILEFINAL_COLUMN_ORDER = [    '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',    '기본수량(1)', '판매단가(V포함)', '본사상품링크',    '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명',     '네이버 쇼핑 링크', '공급사 상품링크',    '본사 이미지', '고려기프트 이미지', '네이버 이미지']# Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDERIMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+# Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
+IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
-# Upload file columns based on user requirementsUPLOAD_COLUMN_ORDER = [    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',    '본사 기본수량', '판매단가1(VAT포함)', '본사링크',    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명',     '네이버 링크', '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+# Upload file columns (based on '엑셀골든_upload' notepad)
+UPLOAD_COLUMN_ORDER = [
+    '구분(승인관리:A/가격관리:P)', '담당자', '공급사명', '공급처코드', '상품코드', '카테고리(중분류)', '상품명',
+    '본사 기본수량', '판매단가1(VAT포함)', '본사링크',
+    '고려 기본수량', '판매단가2(VAT포함)', '고려 가격차이', '고려 가격차이(%)', '고려 링크',
+    '네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', 
+    '네이버 링크', '해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'
+]
 
 # Mapping between FINAL_COLUMN_ORDER and UPLOAD_COLUMN_ORDER
 COLUMN_MAPPING_FINAL_TO_UPLOAD = {
@@ -2214,9 +2267,20 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     
     logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images")
 
-# --- Refactored Data Finalization ---def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:    """    Finalizes the DataFrame for Excel output: Renames columns, ensures all required columns exist,    sets the final column order, and applies basic type formatting.    Assumes image data (paths or dicts) is already present.    """    if df is None:        logger.error("Input DataFrame is None, cannot finalize.")        # Return empty df with correct columns to avoid downstream errors        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)            # Remove debug columns (internal use only, starting with _)    debug_cols = [col for col in df.columns if col.startswith('_')]    if debug_cols:        logger.info(f"Removing {len(debug_cols)} internal debug columns: {debug_cols}")        df = df.drop(columns=debug_cols, errors='ignore')                # Remove all internal/debug columns before processing    # 1. Remove any columns starting with underscore (internal use only)    internal_cols = [col for col in df.columns if col.startswith('_')]    if internal_cols:        logger.info(f"Removing {len(internal_cols)} internal columns: {internal_cols}")        df = df.drop(columns=internal_cols, errors='ignore')            # 2. Remove any debugging/matching specific columns not in FINAL_COLUMN_ORDER     debugging_cols = [col for col in df.columns                      if col not in FINAL_COLUMN_ORDER and                     any(debug_term in col for debug_term in ['매칭_', '텍스트_유사도', '이미지_유사도', '매칭정확도'])]    if debugging_cols:        logger.info(f"Removing {len(debugging_cols)} debugging columns: {debugging_cols}")        df = df.drop(columns=debugging_cols, errors='ignore')
+# --- Refactored Data Finalization ---
+def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Finalizes the DataFrame for Excel output: Renames columns, ensures all required columns exist,
+    sets the final column order, and applies basic type formatting.
+    Assumes image data (paths or dicts) is already present.
+    """
+    if df is None:
+        logger.error("Input DataFrame is None, cannot finalize.")
+        # Return empty df with correct columns to avoid downstream errors
+        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
 
-        # Remove all internal/debug columns before processing    # 1. Remove any columns starting with underscore (internal use only)    internal_cols = [col for col in df.columns if col.startswith('_')]    if internal_cols:        logger.info(f"Removing {len(internal_cols)} internal columns: {internal_cols}")        df = df.drop(columns=internal_cols, errors='ignore')            # 2. Remove any debugging/matching specific columns not in FINAL_COLUMN_ORDER     debugging_cols = [col for col in df.columns                      if col not in FINAL_COLUMN_ORDER and                     any(debug_term in col for debug_term in ['매칭_', '텍스트_유사도', '이미지_유사도', '매칭정확도'])]    if debugging_cols:        logger.info(f"Removing {len(debugging_cols)} debugging columns: {debugging_cols}")        df = df.drop(columns=debugging_cols, errors='ignore')        logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")    logger.debug(f"Input columns: {df.columns.tolist()}")
+    logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
+    logger.debug(f"Input columns: {df.columns.tolist()}")
     
     # Check for duplicate column names - this can cause the 'dtype' error
     duplicate_cols = df.columns[df.columns.duplicated()].tolist()
