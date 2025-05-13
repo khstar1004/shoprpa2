@@ -2242,7 +2242,20 @@ def extract_products_from_input(input_data: str) -> List[Dict[str, Any]]:
     headers = lines[0].split('\t')
     idx_name = next((i for i,h in enumerate(headers) if '상품명' in h), None)
     idx_qty  = next((i for i,h in enumerate(headers) if '수량' in h), None)
-    idx_prc  = next((i for i,h in enumerate(headers) if '단가' in h or '가격' in h), None)
+    
+    # 단가/가격 열 인덱스 찾기 - 더 포괄적인 키워드 사용
+    price_keywords = ['단가', '가격', 'price', '금액', '원가']
+    idx_prc = None
+    for keyword in price_keywords:
+        idx_prc = next((i for i,h in enumerate(headers) if keyword in h), None)
+        if idx_prc is not None:
+            break
+    
+    # 단가 열을 찾지 못한 경우, 가장 마지막 열이 단가일 가능성이 있음
+    if idx_prc is None and len(headers) > 2:
+        logger.warning(f"단가/가격 열을 찾을 수 없습니다. 마지막 열을 단가로 간주합니다.")
+        idx_prc = len(headers) - 1
+    
     if idx_name is None:
         return products
     for row in lines[1:]:

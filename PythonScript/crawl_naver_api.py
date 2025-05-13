@@ -26,7 +26,7 @@ try:
         load_config, tokenize_korean, jaccard_similarity
     )
     from .image_utils import remove_background_async
-    from .crawling_UPrice_v2_naver import extract_quantity_prices
+    from .crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 except ImportError:
     # When run directly as script
     from utils import (
@@ -34,7 +34,7 @@ except ImportError:
         load_config, tokenize_korean, jaccard_similarity
     )
     from image_utils import remove_background_async
-    from crawling_UPrice_v2_naver import extract_quantity_prices
+    from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 
 # Setup logger for this module
 logger = logging.getLogger(__name__) # Use module-specific logger
@@ -1027,7 +1027,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                     print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
                     
                     try:
-                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'))
+                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'), target_quantities=target_quantities)
                         await asyncio.sleep(5)
                         print(f"Completed quantity price check for '{product_name}'")
 

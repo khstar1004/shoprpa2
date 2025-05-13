@@ -690,7 +690,7 @@ async def detect_tables_by_structure(page) -> Optional[Dict[str, Any]]:
         logger.error(f"Error in detect_tables_by_structure: {e}")
         return None
 
-async def detect_with_input_fields(page) -> Optional[Dict[str, Any]]:
+async def detect_with_input_fields(page, target_quantities=None) -> Optional[Dict[str, Any]]:
     """수량 입력 필드 방식으로 가격 정보 감지"""
     try:
         qty_input_selectors = [
@@ -700,15 +700,20 @@ async def detect_with_input_fields(page) -> Optional[Dict[str, Any]]:
             'input[name="qty"]', 'input[type="number"]'
         ]
         
+        # 기본 테스트 수량 설정
+        if not target_quantities:
+            target_quantities = [200, 300, 500, 1000, 3000, 8000, 15000]
+        
+        # 샘플 테스트를 위한 수량 선택 (성능 최적화)
+        sample_quantities = sorted(target_quantities)[:3]  # 처음 3개 수량만 테스트
+        
         for selector in qty_input_selectors:
             try:
                 element = await page.query_selector(selector)
                 if element:
-                    test_quantities = [200, 300, 500, 1000, 3000, 8000, 15000]
                     price_table = []
                     
-                    # 일부 수량만 테스트하여 속도 개선
-                    sample_quantities = [200, 500, 3000]
+                    # 먼저 샘플 수량으로 테스트
                     for qty in sample_quantities:
                         try:
                             # 수량 입력
@@ -744,8 +749,8 @@ async def detect_with_input_fields(page) -> Optional[Dict[str, Any]]:
                     if len(price_table) >= 2:
                         logger.info(f"Found {len(price_table)} prices with input field. Testing all quantities.")
                         
-                        # 나머지 수량도 테스트
-                        remaining_quantities = [q for q in test_quantities if q not in sample_quantities]
+                        # 나머지 수량 테스트
+                        remaining_quantities = [q for q in target_quantities if q not in sample_quantities]
                         for qty in remaining_quantities:
                             try:
                                 await element.fill(str(qty))

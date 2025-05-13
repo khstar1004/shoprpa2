@@ -605,6 +605,119 @@ class ExcelFormatter:
         except Exception as e:
             logger.error(f"Error adding header/footer: {e}")
             raise
+            
+    def format_result_file(self, worksheet, df):
+        """결과 파일의 워크시트에 서식을 적용합니다."""
+        try:
+            # Apply basic formatting
+            self.format_worksheet(worksheet, df.columns)
+            
+            # Apply more specific formatting for result file
+            # Set wider column widths for specific columns
+            for col_idx, col_name in enumerate(df.columns, 1):
+                col_letter = get_column_letter(col_idx)
+                
+                # Adjust column width based on content type
+                if '이미지' in col_name or 'image' in col_name.lower():
+                    worksheet.column_dimensions[col_letter].width = 30
+                elif '링크' in col_name or 'url' in col_name.lower() or 'link' in col_name.lower():
+                    worksheet.column_dimensions[col_letter].width = 40
+                elif '상품명' in col_name or '제품명' in col_name:
+                    worksheet.column_dimensions[col_letter].width = 35
+                elif '가격' in col_name or '단가' in col_name:
+                    worksheet.column_dimensions[col_letter].width = 15
+                    # Right-align price columns
+                    for cell in worksheet[col_letter][1:]:
+                        cell.alignment = Alignment(horizontal='right', vertical='center')
+                
+            # Apply conditional formatting for price difference columns
+            self._apply_price_diff_highlighting(worksheet, df)
+            
+            # Freeze top row
+            worksheet.freeze_panes = 'A2'
+            
+            # Set page layout
+            worksheet.page_setup.orientation = worksheet.ORIENTATION_LANDSCAPE
+            
+        except Exception as e:
+            logger.error(f"Error formatting result file: {e}")
+            raise
+            
+    def format_upload_file(self, worksheet, df):
+        """업로드용 파일의 워크시트에 서식을 적용합니다."""
+        try:
+            # Apply basic formatting
+            self.format_worksheet(worksheet, df.columns)
+            
+            # Apply upload-specific formatting
+            # Set standard column widths
+            for col_idx in range(1, len(df.columns) + 1):
+                col_letter = get_column_letter(col_idx)
+                worksheet.column_dimensions[col_letter].width = 15
+            
+            # Adjust specific columns that need different widths
+            for col_idx, col_name in enumerate(df.columns, 1):
+                col_letter = get_column_letter(col_idx)
+                
+                if '상품명' in col_name:
+                    worksheet.column_dimensions[col_letter].width = 35
+                elif '링크' in col_name or '이미지' in col_name:
+                    worksheet.column_dimensions[col_letter].width = 40
+                    
+            # Freeze top row
+            worksheet.freeze_panes = 'A2'
+            
+        except Exception as e:
+            logger.error(f"Error formatting upload file: {e}")
+            raise
+            
+    def _apply_price_diff_highlighting(self, worksheet, df):
+        """가격 차이가 음수인 셀에 강조 표시를 적용합니다."""
+        try:
+            # Find price difference columns
+            price_diff_cols = [col for col in df.columns if '가격차이' in col]
+            if not price_diff_cols:
+                return
+                
+            # Define highlight fill
+            yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+            
+            # Find column indices in the worksheet
+            col_indices = {}
+            for i, col_name in enumerate(df.columns, 1):
+                if col_name in price_diff_cols:
+                    col_indices[col_name] = i
+                    
+            # Check each cell in price difference columns
+            for row_idx in range(2, worksheet.max_row + 1):
+                for col_name, col_idx in col_indices.items():
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    
+                    # Try to convert to numeric and check if negative
+                    cell_value = cell.value
+                    if cell_value is not None:
+                        try:
+                            if isinstance(cell_value, str):
+                                # Clean the string and convert
+                                clean_value = cell_value.replace(',', '').strip()
+                                if clean_value and clean_value not in ['-', 'N/A']:
+                                    numeric_value = float(clean_value)
+                                    if numeric_value < 0:
+                                        # Apply highlighting to the entire row
+                                        for i in range(1, worksheet.max_column + 1):
+                                            worksheet.cell(row=row_idx, column=i).fill = yellow_fill
+                                        break
+                            elif isinstance(cell_value, (int, float)) and cell_value < 0:
+                                # Apply highlighting to the entire row
+                                for i in range(1, worksheet.max_column + 1):
+                                    worksheet.cell(row=row_idx, column=i).fill = yellow_fill
+                                break
+                        except:
+                            # Skip if conversion fails
+                            continue
+                            
+        except Exception as e:
+            logger.warning(f"Error applying price difference highlighting: {e}")
 
 # Export the class
 __all__ = ['ExcelFormatter'] 

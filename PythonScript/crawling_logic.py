@@ -8,6 +8,7 @@ import asyncio
 from playwright.async_api import async_playwright, Playwright, Browser
 import configparser
 import re
+from typing import List
 
 # Recent Changes (2024-05-21):
 # 1. Updated crawl_haereum_image_urls to handle dictionary return with URL, local path, source
@@ -591,3 +592,40 @@ def _process_single_haoreum_image(product_code, image_info, config):
     except Exception as e:
         logging.error(f"🟡 Unexpected error processing Haereum image for product {product_code} URL {image_url}: {e}", exc_info=True)
         return product_code, None 
+
+def get_target_quantities(config: configparser.ConfigParser, product_rows: pd.DataFrame = None) -> List[int]:
+    """
+    Get target quantities for price checking, prioritizing Excel input.
+    
+    Args:
+        config: ConfigParser object
+        product_rows: DataFrame containing product data (optional)
+        
+    Returns:
+        List[int]: List of quantities to check
+    """
+    quantities = []
+    
+    # 1. Try to get quantities from Excel input
+    if product_rows is not None and '기본수량(1)' in product_rows.columns:
+        quantities = product_rows['기본수량(1)'].dropna().unique().tolist()
+        quantities = [int(qty) for qty in quantities if str(qty).isdigit()]
+        if quantities:
+            logging.info(f"Using quantities from Excel input: {quantities}")
+            return sorted(quantities)
+    
+    # 2. Try to get quantities from config
+    try:
+        target_quantities_str = config.get('ScraperSettings', 'target_quantities', fallback='')
+        if target_quantities_str:
+            quantities = [int(qty.strip()) for qty in target_quantities_str.split(',') if qty.strip().isdigit()]
+            if quantities:
+                logging.info(f"Using quantities from config: {quantities}")
+                return sorted(quantities)
+    except (configparser.Error, ValueError) as e:
+        logging.warning(f"Error reading target quantities from config: {e}")
+    
+    # 3. Use default quantities
+    default_quantities = [300, 500, 1000, 2000]
+    logging.info(f"Using default quantities: {default_quantities}")
+    return default_quantities 
