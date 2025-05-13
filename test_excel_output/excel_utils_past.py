@@ -2268,16 +2268,7 @@ def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksh
     logger.debug(f"Adjusted dimensions for {len(rows_with_images)} rows with images")
 
 # --- Refactored Data Finalization ---
-def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Finalizes the DataFrame for Excel output: Renames columns, ensures all required columns exist,
-    sets the final column order, and applies basic type formatting.
-    Assumes image data (paths or dicts) is already present.
-    """
-    if df is None:
-        logger.error("Input DataFrame is None, cannot finalize.")
-        # Return empty df with correct columns to avoid downstream errors
-        return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
+def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:    """최종 엑셀 출력을 위한 데이터프레임 정리"""        # 필요한 컬럼 순서 정의    final_columns = [        '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',        '기본수량(1)', '판매단가(V포함)', '본사상품링크',        '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',        '본사 이미지', '고려기프트 이미지', '네이버 이미지'    ]        if df is None:        logger.error("Input DataFrame is None, cannot finalize.")        return pd.DataFrame(columns=final_columns)
 
     logger.info(f"Finalizing DataFrame for Excel. Input shape: {df.shape}")
     logger.debug(f"Input columns: {df.columns.tolist()}")

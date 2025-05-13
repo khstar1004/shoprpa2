@@ -413,6 +413,7 @@ async def setup_page_optimizations(page: Page):
 async def extract_price_table(page, product_url, timeout=30000):
     """
     상품 상세 페이지에서 수량-단가 테이블을 추출합니다.
+    모든 가용한 수량-가격 정보를 가져옵니다.
     
     Args:
         page: Playwright Page 객체
@@ -523,34 +524,28 @@ async def extract_price_table(page, product_url, timeout=30000):
                                 price_col = i
                                 break
                         
-                        # 컬럼명에서 찾지 못했다면 첫 번째, 두 번째 컬럼으로 가정
-                        if qty_col is None and price_col is None and len(table_df.columns) >= 2:
-                            # 첫 번째 행에 수량, 단가 등의 키워드가 있는지 확인
-                            if not table_df.empty:
-                                first_row = table_df.iloc[0]
-                                for i, value in enumerate(first_row):
-                                    value_str = str(value).lower()
-                                    if any(keyword in value_str for keyword in qty_keywords):
-                                        qty_col = i
-                                    if any(keyword in value_str for keyword in price_keywords):
-                                        price_col = i
+                        # 컬럼명에서 찾지 못했다면 첫 번째 행에서 찾기
+                        if qty_col is None and price_col is None and not table_df.empty:
+                            first_row = table_df.iloc[0]
+                            for i, value in enumerate(first_row):
+                                value_str = str(value).lower()
+                                if any(keyword in value_str for keyword in qty_keywords):
+                                    qty_col = i
+                                if any(keyword in value_str for keyword in price_keywords):
+                                    price_col = i
                             
-                            # 그래도 못 찾았다면 첫 번째와 두 번째 컬럼 사용
-                            if qty_col is None and price_col is None:
-                                qty_col = 0
-                                price_col = 1
+                            # 첫 번째 행이 헤더인 경우 제거
+                            if qty_col is not None or price_col is not None:
+                                table_df = table_df.iloc[1:]
+                        
+                        # 그래도 못 찾았다면 첫 번째와 두 번째 컬럼 사용
+                        if qty_col is None and price_col is None:
+                            qty_col = 0
+                            price_col = 1
                         
                         if qty_col is not None and price_col is not None:
                             # 수량-가격 테이블 확인됨
-                            # 컬럼 이름 변경
                             result_df = table_df.copy()
-                            new_cols = result_df.columns.tolist()
-                            
-                            # 첫 번째 행이 헤더인 경우 처리
-                            if any(keyword in str(result_df.iloc[0, qty_col]).lower() for keyword in qty_keywords) and \
-                               any(keyword in str(result_df.iloc[0, price_col]).lower() for keyword in price_keywords):
-                                # 첫 번째 행을 제외하고 처리
-                                result_df = result_df.iloc[1:].copy()
                             
                             # 컬럼명 재지정
                             new_cols = result_df.columns.tolist()
@@ -583,54 +578,12 @@ async def extract_price_table(page, product_url, timeout=30000):
                             if not result_df.empty:
                                 return result_df
                 except Exception as table_error:
-                    # 테이블 파싱 실패 시 다음 선택자로 진행
                     continue
         
-        # 셀렉트 박스에서 단가 정보 찾기
-        option_selector = "select[name='chadung_list'] option"
-        if await page.locator(option_selector).count() > 0:
-            options = await page.locator(option_selector).all()
-            
-            quantities = []
-            prices = []
-            
-            for option in options:
-                value = await option.get_attribute('value')
-                text = await option.text_content()
-                
-                # 상품 선택 안내 옵션 스킵
-                if not value or "선택해 주세요" in text or "----------" in text:
-                    continue
-                
-                # 단가 정보가 있는 옵션 처리
-                if "단가::" in value:
-                    parts = value.split('|^|')
-                    if len(parts) >= 3:
-                        qty_part = parts[0].replace('단가::', '')
-                        price_part = parts[1]
-                        
-                        # 수량과 가격 추출
-                        if qty_part.isdigit() and price_part.isdigit():
-                            quantities.append(int(qty_part))
-                            prices.append(int(price_part))
-            
-            # 유효한 데이터가 있는지 확인
-            if quantities and prices:
-                # DataFrame 생성
-                result_df = pd.DataFrame({
-                    '수량': quantities,
-                    '단가': prices
-                })
-                
-                # 수량 기준으로 정렬
-                result_df = result_df.sort_values('수량')
-                return result_df
-        
-        # 테이블을 찾지 못함
         return None
         
     except Exception as e:
-        # 오류 발생 시 None 반환
+        logger.error(f"수량-가격 테이블 추출 중 오류 발생: {e}")
         return None
 
 # --- 이미지 URL 처리 전용 함수 추가 ---

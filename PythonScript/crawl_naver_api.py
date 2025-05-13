@@ -621,21 +621,18 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         logger.error(f"Error downloading image {url}: {e}")
         return None
 
-async def extract_quantity_price_from_naver_link(page: Page, product_url: str, target_quantities: List[int] = None) -> Dict[str, Any]:
+async def extract_quantity_price_from_naver_link(page: Page, product_url: str) -> Dict[str, Any]:
     """
     Extracts quantity-based pricing information from a Naver product page.
+    Returns all available quantity-price combinations from the table.
     
     Args:
         page: Playwright Page object
         product_url: URL of the product page
-        target_quantities: List of quantities to check for
         
     Returns:
         Dictionary containing pricing information and whether it's a promotional site
     """
-    if not target_quantities:
-        target_quantities = [300, 500, 1000, 2000]  # Default quantities to check
-        
     result = {
         "is_promotional_site": False,
         "has_quantity_pricing": False,
@@ -643,7 +640,8 @@ async def extract_quantity_price_from_naver_link(page: Page, product_url: str, t
         "vat_included": False,
         "supplier_name": "",
         "supplier_url": "",
-        "price_table": None
+        "price_table": None,
+        "raw_price_table": None  # Store the raw price table data
     }
     
     try:
@@ -759,6 +757,12 @@ async def extract_quantity_price_from_naver_link(page: Page, product_url: str, t
                                             price_table.sort(key=lambda x: x["quantity"])
                                             result["price_table"] = price_table
                                             
+                                            # Store raw table data
+                                            result["raw_price_table"] = {
+                                                "quantities": [item["quantity"] for item in price_table],
+                                                "prices": [item["price"] for item in price_table]
+                                            }
+                                            
                                             # Check for VAT info on the page
                                             vat_text_selectors = [
                                                 'div:has-text("부가세")',
@@ -779,105 +783,21 @@ async def extract_quantity_price_from_naver_link(page: Page, product_url: str, t
                                                         logger.info(f"VAT included based on text: {vat_text}")
                                                         break
                                             
-                                            # Fill quantity_prices for target quantities
-                                            available_quantities = [item["quantity"] for item in price_table]
-                                            for target_qty in target_quantities:
-                                                # Find the appropriate price for this quantity
-                                                if target_qty in available_quantities:
-                                                    # Exact match
-                                                    for item in price_table:
-                                                        if item["quantity"] == target_qty:
-                                                            price = item["price"]
-                                                            price_with_vat = price if result["vat_included"] else round(price * 1.1)
-                                                            result["quantity_prices"][target_qty] = {
-                                                                "price": price,
-                                                                "price_with_vat": price_with_vat,
-                                                                "exact_match": True
-                                                            }
-                                                            break
-                                                else:
-                                                    # Find closest lower quantity
-                                                    lower_quantities = [q for q in available_quantities if q <= target_qty]
-                                                    if lower_quantities:
-                                                        closest_qty = max(lower_quantities)
-                                                        for item in price_table:
-                                                            if item["quantity"] == closest_qty:
-                                                                price = item["price"]
-                                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
-                                                                result["quantity_prices"][target_qty] = {
-                                                                    "price": price,
-                                                                    "price_with_vat": price_with_vat,
-                                                                    "exact_match": False,
-                                                                    "closest_quantity": closest_qty
-                                                                }
-                                                                break
-                                                    else:
-                                                        # Use the smallest quantity price if target is smaller than all available
-                                                        min_qty = min(available_quantities)
-                                                        for item in price_table:
-                                                            if item["quantity"] == min_qty:
-                                                                price = item["price"]
-                                                                price_with_vat = price if result["vat_included"] else round(price * 1.1)
-                                                                result["quantity_prices"][target_qty] = {
-                                                                    "price": price,
-                                                                    "price_with_vat": price_with_vat,
-                                                                    "exact_match": False,
-                                                                    "closest_quantity": min_qty,
-                                                                    "note": "Using minimum available quantity"
-                                                                }
-                                                                break
-                                            
-                                            logger.info(f"Extracted quantity prices for {len(result['quantity_prices'])} quantities")
-                                            break
-                            except Exception as e:
-                                logger.warning(f"Error parsing quantity price table: {e}")
-                    
-                    # Fallback: If no table found, try input fields for quantity pricing
-                    if not result["has_quantity_pricing"]:
-                        # Try to find quantity input and price display
-                        qty_input_selector = 'input#qty, input.buynum, input[name="quantity"]'
-                        if await seller_page.locator(qty_input_selector).count() > 0:
-                            logger.info("Trying direct quantity input method for pricing")
-                            
-                            # Test different quantities
-                            quantity_prices = {}
-                            for qty in target_quantities:
-                                try:
-                                    # Input the quantity
-                                    await seller_page.locator(qty_input_selector).fill(str(qty))
-                                    await seller_page.locator(qty_input_selector).press('Enter')
-                                    await seller_page.wait_for_timeout(1000)  # Wait for price update
-                                    
-                                    # Try to find the price element
-                                    price_selectors = [
-                                        'span.price, div.price, strong.price, p.price',
-                                        'span.total-price, div.total-price',
-                                        'span#price, div#price',
-                                        'span.amount, div.amount'
-                                    ]
-                                    
-                                    for price_selector in price_selectors:
-                                        if await seller_page.locator(price_selector).count() > 0:
-                                            price_text = await seller_page.locator(price_selector).text_content()
-                                            # Extract numbers from price text
-                                            price_digits = ''.join(filter(str.isdigit, price_text.replace(',', '')))
-                                            if price_digits:
-                                                price = int(price_digits)
+                                            # Store all quantity prices
+                                            for item in price_table:
+                                                qty = item["quantity"]
+                                                price = item["price"]
                                                 price_with_vat = price if result["vat_included"] else round(price * 1.1)
-                                                quantity_prices[qty] = {
+                                                result["quantity_prices"][qty] = {
                                                     "price": price,
                                                     "price_with_vat": price_with_vat,
                                                     "exact_match": True
                                                 }
-                                                logger.info(f"Found price for quantity {qty}: {price}")
-                                                break
-                                except Exception as e:
-                                    logger.warning(f"Error testing quantity {qty}: {e}")
-                            
-                            if quantity_prices:
-                                result["has_quantity_pricing"] = True
-                                result["is_promotional_site"] = True
-                                result["quantity_prices"] = quantity_prices
+                                            
+                                            logger.info(f"Extracted {len(result['quantity_prices'])} quantity-price pairs")
+                                            break
+                            except Exception as e:
+                                logger.warning(f"Error parsing quantity price table: {e}")
                     
                     # Close the seller page context
                     await seller_context.close()

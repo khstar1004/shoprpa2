@@ -16,7 +16,8 @@ from excel_style_constants import (
     LEFT_ALIGNMENT, CENTER_ALIGNMENT, RIGHT_ALIGNMENT,
     DEFAULT_FONT, DEFAULT_BORDER, NEGATIVE_PRICE_FILL,
     LINK_FONT, UPLOAD_HEADER_FILL, COLUMN_WIDTH_SETTINGS,
-    UPLOAD_HEADER_HEIGHT, UPLOAD_DATA_ROW_HEIGHT
+    UPLOAD_HEADER_HEIGHT, UPLOAD_DATA_ROW_HEIGHT,
+    UPLOAD_COLUMN_DEFAULT_WIDTH
 )
 
 # Initialize logger
@@ -450,7 +451,7 @@ def _apply_upload_file_formatting(worksheet, column_list):
         # 1. Set standard column width (7) for all columns
         for col_idx in range(1, len(column_list) + 1):
             column_letter = get_column_letter(col_idx)
-            worksheet.column_dimensions[column_letter].width = 7
+            worksheet.column_dimensions[column_letter].width = UPLOAD_COLUMN_DEFAULT_WIDTH
         
         # Adjust specific columns that need different widths
         special_width_columns = {
@@ -474,20 +475,13 @@ def _apply_upload_file_formatting(worksheet, column_list):
                     break
         
         # 2. Set row heights - header row = 34.5, data rows = 16.9
-        worksheet.row_dimensions[1].height = UPLOAD_HEADER_HEIGHT  # Header row height
+        worksheet.row_dimensions[1].height = UPLOAD_HEADER_HEIGHT
         
         # Set data row heights
         for row_idx in range(2, worksheet.max_row + 1):
             worksheet.row_dimensions[row_idx].height = UPLOAD_DATA_ROW_HEIGHT
         
         # 3. Apply header formatting - gray background and wrap text
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
         for col_idx in range(1, len(column_list) + 1):
             cell = worksheet.cell(row=1, column=col_idx)
             # Apply gray background
@@ -495,7 +489,7 @@ def _apply_upload_file_formatting(worksheet, column_list):
             # Enable text wrapping for 2-line display
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             # Add borders
-            cell.border = thin_border
+            cell.border = DEFAULT_BORDER
             # Bold font
             cell.font = Font(bold=True, size=10)
         
@@ -506,7 +500,7 @@ def _apply_upload_file_formatting(worksheet, column_list):
                 # Enable text wrapping (fit to cell)
                 cell.alignment = Alignment(vertical='center', wrap_text=True)
                 # Add borders
-                cell.border = thin_border
+                cell.border = DEFAULT_BORDER
                 
                 # Adjust alignment based on column content
                 col_name = column_list[col_idx - 1]
@@ -519,6 +513,13 @@ def _apply_upload_file_formatting(worksheet, column_list):
                 # Left-align everything else
                 else:
                     cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                    
+                # Add hyperlinks for URL columns
+                if any(term in col_name for term in ['링크', 'link', 'url']):
+                    value = cell.value
+                    if isinstance(value, str) and value.startswith(('http://', 'https://')):
+                        cell.hyperlink = value
+                        cell.font = LINK_FONT
         
         # 5. Freeze header row
         worksheet.freeze_panes = 'A2'
@@ -527,11 +528,27 @@ def _apply_upload_file_formatting(worksheet, column_list):
         if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
             worksheet.auto_filter.ref = None
         
+        # 6. Add empty row at the end
+        last_row = worksheet.max_row + 1
+        worksheet.row_dimensions[last_row].height = UPLOAD_DATA_ROW_HEIGHT
+        for col_idx in range(1, len(column_list) + 1):
+            cell = worksheet.cell(row=last_row, column=col_idx)
+            cell.value = ""
+            cell.border = DEFAULT_BORDER
+            
+        # 7. Add backslash row
+        backslash_row = last_row + 1
+        worksheet.row_dimensions[backslash_row].height = UPLOAD_DATA_ROW_HEIGHT
+        for col_idx in range(1, len(column_list) + 1):
+            cell = worksheet.cell(row=backslash_row, column=col_idx)
+            cell.value = "\\" if col_idx == 1 else ""
+            cell.border = DEFAULT_BORDER
+        
         logger.info(f"Applied upload file specific formatting to worksheet with {worksheet.max_row} rows.")
         
     except Exception as e:
         logger.warning(f"Error applying upload file formatting: {e}")
-        logger.debug(traceback.format_exc()) 
+        logger.debug(traceback.format_exc())
 
 class ExcelFormatter:
     """Excel 파일의 서식을 관리하는 클래스"""

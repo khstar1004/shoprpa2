@@ -18,7 +18,7 @@ from excel_constants import (
     IMAGE_MAX_SIZE, IMAGE_STANDARD_SIZE, RESAMPLING_FILTER
 )
 from excel_style_constants import (
-    RESULT_IMAGE_WIDTH, RESULT_IMAGE_HEIGHT
+    RESULT_IMAGE_WIDTH, RESULT_IMAGE_HEIGHT, RESULT_ROW_HEIGHT, COLUMN_WIDTH_SETTINGS, LINK_FONT
 )
 
 # Initialize logger
@@ -119,139 +119,74 @@ def safe_load_image(path, max_height=150, max_width=150):
         logger.warning(f"Error loading/resizing image {path}: {e}")
         return None
 
-def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame) -> int:
-    """
-    Process and add images to Excel worksheet.
-    
-    Args:
-        worksheet: The worksheet to add images to
-        df: DataFrame containing image data
-        
-    Returns:
-        int: Number of images successfully added
-    """
+def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
+    """Process and add images to Excel worksheet."""
     try:
-        # Image validation function
-        def validate_image(img_path: str) -> bool:
-            try:
-                if not os.path.exists(img_path):
-                    logging.warning(f"Image file not found: {img_path}")
-                    return False
-                    
-                # Check file size (10MB limit)
-                file_size = os.path.getsize(img_path)
-                if file_size > 10 * 1024 * 1024:
-                    logging.warning(f"Image too large ({file_size/1024/1024:.1f}MB): {img_path}")
-                    return False
-                    
-                # Verify image can be opened and is valid
-                with Image.open(img_path) as img:
-                    img.verify()
-                    
-                    # Check dimensions
-                    if img.size[0] < 100 or img.size[1] < 100:
-                        logging.warning(f"Image too small ({img.size}): {img_path}")
-                        return False
-                        
-                    # Check format
-                    if img.format.lower() not in ['jpeg', 'jpg', 'png', 'gif']:
-                        logging.warning(f"Unsupported image format {img.format}: {img_path}")
-                        return False
-                        
-                return True
-            except Exception as e:
-                logging.error(f"Invalid image {img_path}: {e}")
-                return False
-                
-        # Track progress
-        images_added = 0
-        errors = 0
+        # Set image dimensions
+        image_width = RESULT_IMAGE_WIDTH
+        image_height = RESULT_IMAGE_HEIGHT
         
         # Get image columns
         image_cols = [col for col in df.columns if col in IMAGE_COLUMNS]
-        if not image_cols:
-            logging.info("No image columns found in DataFrame")
-            return 0
-            
+        
         # Process each row
-        for row_idx, row in df.iterrows():
+        for row_idx in range(2, worksheet.max_row + 1):
+            # Set row height for image rows
+            worksheet.row_dimensions[row_idx].height = RESULT_ROW_HEIGHT
+            
+            # Process each image column
             for col in image_cols:
-                try:
-                    img_data = row[col]
-                    if pd.isna(img_data) or img_data == '' or img_data == '-':
-                        continue
-                        
-                    # Extract image path
-                    img_path = None
-                    if isinstance(img_data, dict):
-                        img_path = img_data.get('local_path')
-                    elif isinstance(img_data, str):
-                        if os.path.exists(img_data):
-                            img_path = img_data
-                            
-                    if not img_path:
-                        continue
-                        
-                    # Validate image
-                    if not validate_image(img_path):
-                        errors += 1
-                        continue
-                        
-                    # Add image to worksheet
+                col_idx = df.columns.get_loc(col) + 1
+                col_letter = get_column_letter(col_idx)
+                
+                # Set column width
+                worksheet.column_dimensions[col_letter].width = COLUMN_WIDTH_SETTINGS['image']
+                
+                # Get image data
+                img_value = df.iloc[row_idx - 2][col]
+                
+                # Skip empty cells
+                if pd.isna(img_value) or img_value == '' or img_value == '-':
+                    continue
+                
+                # Get image path
+                img_path = None
+                if isinstance(img_value, dict):
+                    if 'local_path' in img_value and os.path.exists(img_value['local_path']):
+                        img_path = img_value['local_path']
+                elif isinstance(img_value, str) and os.path.exists(img_value):
+                    img_path = img_value
+                
+                # Add image if path exists
+                if img_path:
                     try:
-                        # Calculate cell position
-                        col_letter = get_column_letter(df.columns.get_loc(col) + 1)
-                        cell_pos = f"{col_letter}{row_idx + 2}"  # +2 because Excel is 1-based and we have header
-                        
-                        # Load and resize image
-                        img = Image.open(img_path)
-                        max_height = 150
-                        max_width = 150
-                        
-                        # Calculate aspect ratio
-                        width, height = img.size
-                        aspect = width / height
-                        
-                        if width > max_width or height > max_height:
-                            if aspect > 1:
-                                new_width = max_width
-                                new_height = int(max_width / aspect)
-                            else:
-                                new_height = max_height
-                                new_width = int(max_height * aspect)
-                            img = img.resize((new_width, new_height), Image.LANCZOS)
-                            
-                        # Add image to worksheet
-                        img_path_temp = f"temp_{os.path.basename(img_path)}"
-                        img.save(img_path_temp)
-                        
-                        img = openpyxl.drawing.image.Image(img_path_temp)
-                        img.anchor = cell_pos
+                        img = openpyxl.drawing.image.Image(img_path)
+                        img.width = image_width
+                        img.height = image_height
+                        img.anchor = f"{col_letter}{row_idx}"
                         worksheet.add_image(img)
                         
-                        # Clean up temp file
-                        try:
-                            os.remove(img_path_temp)
-                        except:
-                            pass
-                            
-                        images_added += 1
+                        # Clear cell content
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        cell.value = ""
                         
+                        # Add hyperlink if URL exists
+                        if isinstance(img_value, dict) and 'url' in img_value:
+                            cell.hyperlink = img_value['url']
+                            cell.font = LINK_FONT
                     except Exception as e:
-                        logging.error(f"Error adding image to cell {cell_pos}: {e}")
-                        errors += 1
+                        logger.error(f"Error adding image at row {row_idx}, column {col}: {e}")
                         
-                except Exception as e:
-                    logging.error(f"Error processing image in row {row_idx}, column {col}: {e}")
-                    errors += 1
-                    
-        logging.info(f"Added {images_added} images to worksheet (errors: {errors})")
-        return images_added
-        
+                        # Fallback to URL if available
+                        if isinstance(img_value, dict) and 'url' in img_value:
+                            cell = worksheet.cell(row=row_idx, column=col_idx)
+                            cell.value = img_value['url']
+                            cell.hyperlink = img_value['url']
+                            cell.font = LINK_FONT
+                            
     except Exception as e:
-        logging.error(f"Error in _process_image_columns: {e}")
-        logging.debug(traceback.format_exc())
-        return 0
+        logger.error(f"Error in _process_image_columns: {e}")
+        logger.debug(traceback.format_exc())
 
 def _adjust_image_cell_dimensions(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Adjusts row heights and column widths for cells containing images."""

@@ -490,4 +490,75 @@ def prepare_upload_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error in prepare_upload_dataframe: {e}")
         logger.debug(traceback.format_exc())
-        raise 
+        raise
+
+def format_product_data_for_output(input_df: pd.DataFrame, 
+                             kogift_results: Dict[str, List[Dict]] = None, 
+                             naver_results: Dict[str, List[Dict]] = None,
+                             input_file_image_map: Dict[str, Any] = None,
+                             haereum_image_url_map: Dict[str, str] = None) -> pd.DataFrame:
+    """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
+    
+    # 필요한 컬럼 리스트 정의
+    required_columns = [
+        '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+        '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+        '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
+        '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+    ]
+    
+    # 입력 데이터프레임 복사
+    df = input_df.copy()
+    
+    # ... (기존 코드) ...
+    
+    # 마지막에 필요한 컬럼만 선택하여 반환
+    final_df = df[required_columns]
+    return final_df 
+
+def validate_price_data(row_data, base_qty, price):
+    """
+    가격 데이터를 검증하는 함수
+    
+    Args:
+        row_data: 행 데이터
+        base_qty: 기본 수량
+        price: 검증할 가격
+        
+    Returns:
+        list: 경고 메시지 리스트
+    """
+    warnings = []
+    
+    # None 값 체크
+    if price is None:
+        return warnings
+        
+    try:
+        # 숫자로 변환 시도
+        price = float(price) if price != '' else 0
+        base_qty = int(base_qty) if base_qty is not None and base_qty != '' else 0
+        
+        # 수량 검증
+        if base_qty < 100:  # 일반적인 최소 주문 수량보다 작은 경우
+            warnings.append(f"주문 수량({base_qty})이 일반적인 최소 주문 수량보다 작습니다")
+            
+        # 가격 검증
+        if price <= 0:
+            warnings.append("가격이 0 이하입니다")
+        elif price > 1000000:  # 비정상적으로 높은 가격
+            warnings.append(f"비정상적으로 높은 가격({price:,}원)입니다")
+            
+        # 가격과 수량의 관계 검증
+        if base_qty > 0 and price > 0:
+            price_per_unit = price / base_qty
+            if price_per_unit < 10:  # 단가가 너무 낮은 경우
+                warnings.append(f"단가가 너무 낮습니다 ({price_per_unit:,.1f}원/개)")
+            elif price_per_unit > 100000:  # 단가가 너무 높은 경우
+                warnings.append(f"단가가 너무 높습니다 ({price_per_unit:,.1f}원/개)")
+                
+    except (ValueError, TypeError, ZeroDivisionError):
+        pass  # 변환 실패시 경고 추가하지 않음
+        
+    return warnings 

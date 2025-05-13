@@ -36,12 +36,17 @@ COLUMN_WIDTH_SETTINGS = {
     'quantity': 10,      # Quantity columns
     'code': 12,          # Code columns
     'category': 20,      # Category columns
-    'text_short': 7,     # Short text columns
+    'text_short': 7,     # Short text columns (구분, 담당자 등)
     'default': 15        # Default width
 }
 
 # Result file specific formatting
 RESULT_COLUMN_DEFAULT_WIDTH = 20
-RESULT_ROW_HEIGHT = 380  # Increased row height for image rows
+RESULT_ROW_HEIGHT = 380  # Row height for image rows
 RESULT_IMAGE_WIDTH = 160  # Width of embedded images
-RESULT_IMAGE_HEIGHT = 160  # Height of embedded images 
+RESULT_IMAGE_HEIGHT = 160  # Height of embedded images
+
+# Upload file specific formatting
+UPLOAD_HEADER_HEIGHT = 34.5
+UPLOAD_DATA_ROW_HEIGHT = 16.9
+UPLOAD_COLUMN_DEFAULT_WIDTH = 7 

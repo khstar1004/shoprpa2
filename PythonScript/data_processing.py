@@ -215,6 +215,29 @@ def calculate_price_difference(base_price, compare_price):
         logging.warning(f"가격 차이 계산 중 오류: {e}")
         return pd.Series([None, None])
 
+def validate_price_data(row_data, base_qty, price):
+    warnings = []
+    
+    # None 값 체크
+    if price is None:
+        return warnings
+        
+    try:
+        # 숫자로 변환 시도
+        price = float(price)
+        base_qty = int(base_qty) if base_qty is not None else 0
+        
+        if base_qty < 100:  # 일반적인 최소 주문 수량보다 작은 경우
+            warnings.append(f"주문 수량({base_qty})이 일반적인 최소 주문 수량보다 작습니다")
+        if price <= 0:
+            warnings.append("가격이 0 이하입니다")
+        if price > 1000000:  # 비정상적으로 높은 가격
+            warnings.append(f"비정상적으로 높은 가격({price:,}원)입니다")
+    except (ValueError, TypeError):
+        pass  # 변환 실패시 경고 추가하지 않음
+        
+    return warnings
+
 def format_product_data_for_output(input_df: pd.DataFrame, 
                              kogift_results: Dict[str, List[Dict]] = None, 
                              naver_results: Dict[str, List[Dict]] = None,
@@ -222,7 +245,16 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                              haereum_image_url_map: Dict[str, str] = None) -> pd.DataFrame:
     """Format matched data for final output, ensuring all required columns and image URLs/dicts."""
     
-    # Create a copy of input DataFrame to avoid modifying original
+    # 필요한 컬럼 리스트 정의
+    required_columns = [
+        '구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명',
+        '기본수량(1)', '판매단가(V포함)', '본사상품링크',
+        '기본수량(2)', '판매가(V포함)(2)', '판매단가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크',
+        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명', '네이버 쇼핑 링크', '공급사 상품링크',
+        '본사 이미지', '고려기프트 이미지', '네이버 이미지'
+    ]
+    
+    # 입력 데이터프레임 복사
     df = input_df.copy()
     
     # Store base quantities from input for later use
@@ -805,24 +837,15 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     naver_price_count = df['판매단가(V포함)(3)'].notnull().sum() if '판매단가(V포함)(3)' in df.columns else 0
     logging.info(f"Price data counts: Kogift: {kogift_price_count}, Naver: {naver_price_count} rows have valid price values")
     
-    # 데이터 정합성 검증
-    def validate_price_data(row_data, base_qty, price):
-        warnings = []
-        if base_qty < 100:  # 일반적인 최소 주문 수량보다 작은 경우
-            warnings.append(f"주문 수량({base_qty})이 일반적인 최소 주문 수량보다 작습니다")
-        if price <= 0:
-            warnings.append("가격이 0 이하입니다")
-        if price > 1000000:  # 비정상적으로 높은 가격
-            warnings.append(f"비정상적으로 높은 가격({price:,}원)입니다")
-        return warnings
-
     # 검증 실행
     warnings = validate_price_data(row, target_qty, df.at[idx, '판매단가(V포함)(3)'])
     if warnings:
         for warning in warnings:
             logging.warning(f"상품 '{row.get('상품명')}': {warning}")
     
-    return df
+    # 마지막에 필요한 컬럼만 선택하여 반환
+    final_df = df[required_columns]
+    return final_df
 
 def process_input_data(df: pd.DataFrame, config: Optional[configparser.ConfigParser] = None, 
                     kogift_results: Optional[Dict[str, List[Dict]]] = None,

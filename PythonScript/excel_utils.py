@@ -10,7 +10,29 @@ from datetime import datetime
 import traceback
 import psutil
 
-# Set up logger
+# Import from other modules
+from excel_constants import (
+    FINAL_COLUMN_ORDER,
+    UPLOAD_COLUMN_ORDER, IMAGE_COLUMNS,
+    REQUIRED_INPUT_COLUMNS,
+    UPLOAD_COLUMN_MAPPING
+)
+from excel_formatting import (
+    _apply_basic_excel_formatting,
+    _apply_upload_file_formatting,
+    _add_hyperlinks_to_worksheet,
+    _add_header_footer
+)
+from excel_image_utils import (
+    _process_image_columns,
+    _adjust_image_cell_dimensions
+)
+from excel_file_utils import (
+    generate_file_path,
+    get_source_info
+)
+
+# Initialize logger
 logger = logging.getLogger(__name__)
 
 # Import constants only
@@ -167,21 +189,21 @@ class ExcelGenerator:
             return False, False, None, None
             
     @staticmethod
-    def _generate_file_path(base_path: str, file_type: str) -> str:
+    def _generate_file_path(base_path: str, file_type: str, source_info: str, row_count: int, mgmt_type: str) -> str:
         """Generate appropriate file path based on type."""
         dir_path = os.path.dirname(base_path)
-        file_name = os.path.basename(base_path)
-        name, ext = os.path.splitext(file_name)
+        date_part = datetime.now().strftime("%Y%m%d")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        if not ext:
-            ext = '.xlsx'
-            
+        # Format: {company}({count})-{mgmt_type}-{date}_{type}_{timestamp}.xlsx
         if file_type == 'result':
-            return os.path.join(dir_path, f"{name}_result{ext}")
+            filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_result_{timestamp}.xlsx"
         elif file_type == 'upload':
-            return os.path.join(dir_path, f"{name}_upload{ext}")
+            filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_upload_{timestamp}.xlsx"
         else:
-            return base_path
+            filename = os.path.basename(base_path)
+        
+        return os.path.join(dir_path, filename)
     
     def _create_result_file(self, 
                           df: pd.DataFrame, 
@@ -189,7 +211,7 @@ class ExcelGenerator:
         """Create result file with images"""
         try:
             # Generate result file path
-            result_path = self._generate_file_path(output_path, "result")
+            result_path = self._generate_file_path(output_path, "result", "", 0, "")
             os.makedirs(os.path.dirname(result_path), exist_ok=True)
             
             # Create and format workbook
@@ -223,7 +245,7 @@ class ExcelGenerator:
         """Create upload file with links"""
         try:
             # Generate upload file path
-            upload_path = self._generate_file_path(output_path, "upload")
+            upload_path = self._generate_file_path(output_path, "upload", "", 0, "")
             os.makedirs(os.path.dirname(upload_path), exist_ok=True)
             
             # Prepare data for upload file
@@ -380,4 +402,128 @@ def sanitize_dataframe_for_excel(df):
 excel_generator = ExcelGenerator()
 
 # Export public interface
-__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS', 'REQUIRED_INPUT_COLUMNS', 'FINAL_COLUMN_ORDER'] 
+__all__ = ['excel_generator', 'find_excel_file', 'finalize_dataframe_for_excel', 'IMAGE_COLUMNS', 'REQUIRED_INPUT_COLUMNS', 'FINAL_COLUMN_ORDER']
+
+def generate_timestamped_filenames(source_info: str, row_count: int, mgmt_type: str) -> Tuple[str, str]:
+    """
+    Generate timestamped filenames for result and upload files.
+    
+    Args:
+        source_info: Source information for the file
+        row_count: Number of rows in the data
+        mgmt_type: Management type identifier
+        
+    Returns:
+        Tuple[str, str]: (result_filename, upload_filename)
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    date_part = datetime.now().strftime("%Y%m%d")
+    
+    # Format: {company}({count})-{mgmt_type}-{date}_{type}_{timestamp}.xlsx
+    result_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_result_{timestamp}.xlsx"
+    upload_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_upload_{timestamp}.xlsx"
+    
+    return result_filename, upload_filename
+
+def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str) -> tuple:
+    """
+    Create two Excel files:
+    1. Result file: With images, for viewing
+    2. Upload file: URL links only, for uploading to systems
+
+    Args:
+        df_finalized: The finalized DataFrame with all data
+        output_path_base: The base path for output files
+
+    Returns:
+        tuple: (result_success, upload_success, result_path, upload_path)
+    """
+    if df_finalized is None or df_finalized.empty:
+        logger.error("No data to write to Excel. DataFrame is empty or None.")
+        return False, False, None, None
+
+    # Get source info for file naming
+    source_info, mgmt_type, row_count = get_source_info(df_finalized)
+
+    # Create result file
+    result_success = False
+    result_path = None
+    try:
+        # Generate result file path
+        result_path = generate_file_path(output_path_base, "result", source_info, row_count, mgmt_type)
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
+
+        # Create workbook
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.title = "제품 가격 비교"
+
+        # Write data
+        for col_idx, col_name in enumerate(df_finalized.columns, 1):
+            worksheet.cell(row=1, column=col_idx, value=col_name)
+
+        for row_idx, row in enumerate(df_finalized.itertuples(), 2):
+            for col_idx, value in enumerate(row[1:], 1):
+                worksheet.cell(row=row_idx, column=col_idx, value=value if pd.notna(value) else "")
+
+        # Apply formatting
+        _apply_basic_excel_formatting(worksheet, df_finalized.columns.tolist())
+        _add_hyperlinks_to_worksheet(worksheet, df_finalized)
+        _add_header_footer(worksheet)
+
+        # Process images
+        _process_image_columns(worksheet, df_finalized)
+        _adjust_image_cell_dimensions(worksheet, df_finalized)
+
+        # Save file
+        workbook.save(result_path)
+        result_success = True
+        logger.info(f"Successfully created result file: {result_path}")
+
+    except Exception as e:
+        logger.error(f"Error creating result file: {e}")
+        logger.debug(traceback.format_exc())
+
+    # Create upload file
+    upload_success = False
+    upload_path = None
+    try:
+        # Generate upload file path
+        upload_path = generate_file_path(output_path_base, "upload", source_info, row_count, mgmt_type)
+        os.makedirs(os.path.dirname(upload_path), exist_ok=True)
+
+        # Prepare data for upload file
+        df_upload = df_finalized.copy()
+        
+        # Map columns to upload format
+        df_upload = df_upload.rename(columns=UPLOAD_COLUMN_MAPPING)
+        
+        # Reorder columns
+        df_upload = df_upload[UPLOAD_COLUMN_ORDER]
+
+        # Create workbook
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.title = "제품 가격 비교"
+
+        # Write data
+        for col_idx, col_name in enumerate(df_upload.columns, 1):
+            worksheet.cell(row=1, column=col_idx, value=col_name)
+
+        for row_idx, row in enumerate(df_upload.itertuples(), 2):
+            for col_idx, value in enumerate(row[1:], 1):
+                worksheet.cell(row=row_idx, column=col_idx, value=value if pd.notna(value) else "")
+
+        # Apply upload-specific formatting
+        _apply_upload_file_formatting(worksheet, df_upload.columns.tolist())
+
+        # Save file
+        workbook.save(upload_path)
+        upload_success = True
+        logger.info(f"Successfully created upload file: {upload_path}")
+
+    except Exception as e:
+        logger.error(f"Error creating upload file: {e}")
+        logger.debug(traceback.format_exc())
+
+    return result_success, upload_success, result_path, upload_path 
