@@ -18,11 +18,17 @@ from excel_constants import (
     IMAGE_MAX_SIZE, IMAGE_STANDARD_SIZE, RESAMPLING_FILTER
 )
 from excel_style_constants import (
-    RESULT_IMAGE_WIDTH, RESULT_IMAGE_HEIGHT, RESULT_ROW_HEIGHT, COLUMN_WIDTH_SETTINGS, LINK_FONT, RESULT_DATA_ROW_HEIGHT
+    RESULT_IMAGE_WIDTH, RESULT_IMAGE_HEIGHT, RESULT_DATA_ROW_HEIGHT, COLUMN_WIDTH_SETTINGS, LINK_FONT, IMAGE_SETTINGS
 )
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+# Define image processing constants
+RESAMPLING_FILTER = Image.Resampling.LANCZOS  # High-quality resampling
+MAX_IMAGE_SIZE = IMAGE_SETTINGS['MAX_SIZE']
+STANDARD_IMAGE_SIZE = IMAGE_SETTINGS['STANDARD_SIZE']
+SUPPORTED_FORMATS = IMAGE_SETTINGS['SUPPORTED_FORMATS']
 
 class ImageProcessor:
     """이미지 처리 및 Excel 파일 내 이미지 관리를 위한 클래스"""
@@ -132,7 +138,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         # Process each row
         for row_idx in range(2, worksheet.max_row + 1):
             # Set row height for image rows
-            worksheet.row_dimensions[row_idx].height = RESULT_ROW_HEIGHT
+            worksheet.row_dimensions[row_idx].height = RESULT_DATA_ROW_HEIGHT
             
             # Process each image column
             for col in image_cols:
