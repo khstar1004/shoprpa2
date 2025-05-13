@@ -82,6 +82,51 @@ def get_kogift_urls(config: configparser.ConfigParser) -> List[str]:
     
     return urls
 
+def get_quantities_from_excel(config: configparser.ConfigParser) -> Optional[List[int]]:
+    """
+    Get quantities from input Excel file specified in config.
+    
+    Args:
+        config: ConfigParser object containing configuration
+        
+    Returns:
+        Optional[List[int]]: List of quantities if found, None if not found or error
+    """
+    try:
+        if not config.has_section('Input'):
+            logger.info("No 'Input' section found in config")
+            return None
+            
+        input_file = config.get('Input', 'input_file')
+        if not input_file:
+            logger.info("No input_file specified in config")
+            return None
+            
+        if not os.path.exists(input_file):
+            logger.warning(f"Input Excel file not found: {input_file}")
+            return None
+            
+        logger.info(f"Reading quantities from Excel file: {input_file}")
+        df = pd.read_excel(input_file)
+        
+        if '기본수량(1)' not in df.columns:
+            logger.warning("Column '기본수량(1)' not found in Excel file")
+            return None
+            
+        quantities = df['기본수량(1)'].dropna().unique().tolist()
+        quantities = [int(qty) for qty in quantities if str(qty).isdigit()]
+        
+        if quantities:
+            logger.info(f"Found {len(quantities)} unique quantities in Excel: {quantities}")
+            return sorted(quantities)
+        else:
+            logger.warning("No valid quantities found in Excel file")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error reading quantities from Excel: {e}")
+        return None
+
 def get_max_items_per_variation(config: configparser.ConfigParser) -> int:
     """
     Get maximum number of items to scrape per keyword variation from config.
@@ -1035,22 +1080,19 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     
     # Get quantities to check - use input quantities or fallback to defaults
     if custom_quantities is None or len(custom_quantities) == 0:
-        # Try to get quantities from input Excel if config is provided
-        if config and config.has_section('Input'):
-            try:
-                input_file = config.get('Input', 'input_file')
-                df = pd.read_excel(input_file)
-                if '기본수량(1)' in df.columns:
-                    custom_quantities = df['기본수량(1)'].dropna().unique().tolist()
-                    custom_quantities = [int(qty) for qty in custom_quantities if str(qty).isdigit()]
-                    logger.info(f"Using quantities from input Excel: {custom_quantities}")
-            except Exception as e:
-                logger.warning(f"Could not get quantities from input Excel: {e}")
-                
-        # If still no quantities, use defaults
-        if not custom_quantities:
+        logger.info("No custom quantities provided, attempting to read from Excel...")
+        # Try to get quantities from input Excel
+        excel_quantities = get_quantities_from_excel(config) if config else None
+        
+        if excel_quantities:
+            custom_quantities = excel_quantities
+            logger.info(f"Successfully loaded quantities from Excel: {custom_quantities}")
+        else:
+            # If still no quantities, use defaults
             custom_quantities = [300, 800, 1100, 2000]
-            logger.info("Using default quantities")
+            logger.info(f"Using default quantities (no Excel quantities found): {custom_quantities}")
+    else:
+        logger.info(f"Using provided custom quantities: {custom_quantities}")
     
     logger.info(f"Will check prices for quantities: {custom_quantities}")
     

@@ -257,6 +257,16 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # 입력 데이터프레임 복사
     df = input_df.copy()
     
+    # Initialize all required columns if they don't exist
+    for col in required_columns:
+        if col not in df.columns:
+            df[col] = None
+            logging.debug(f"Adding missing required column: {col}")
+    
+    # Initialize image columns with empty dictionaries
+    for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+        df[img_col] = df[img_col].apply(lambda x: {} if pd.isna(x) or x is None else x)
+    
     # Store base quantities from input for later use
     base_quantities = {}
     if '기본수량(1)' in df.columns:
@@ -379,14 +389,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             df[col] = None
             logging.debug(f"Adding column for promotional site data: {col}")
     
-    # Initialize the image columns with proper dictionary format where applicable
-    for img_col in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
-        if img_col in df.columns:
-            # Ensure we have a valid column (not None)
-            df[img_col] = df[img_col].apply(lambda x: {} if pd.isna(x) or x is None else x)
-            
     # Process input file image map (해오름 이미지)
-    if (input_file_image_map or haereum_image_url_map) and '본사 이미지' in df.columns:
+    if input_file_image_map or haereum_image_url_map:
         haoreum_img_count = 0
         for idx, row in df.iterrows():
             product_code = row.get('Code')
@@ -837,11 +841,32 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     naver_price_count = df['판매단가(V포함)(3)'].notnull().sum() if '판매단가(V포함)(3)' in df.columns else 0
     logging.info(f"Price data counts: Kogift: {kogift_price_count}, Naver: {naver_price_count} rows have valid price values")
     
-    # 검증 실행
-    warnings = validate_price_data(row, target_qty, df.at[idx, '판매단가(V포함)(3)'])
-    if warnings:
-        for warning in warnings:
-            logging.warning(f"상품 '{row.get('상품명')}': {warning}")
+    # Validate price data for each row
+    for idx, row in df.iterrows():
+        try:
+            # Get target quantity
+            target_qty = None
+            if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                try:
+                    target_qty = int(row['기본수량(1)'])
+                except (ValueError, TypeError):
+                    pass
+            
+            # Validate Kogift price
+            if '판매단가(V포함)(2)' in df.columns and pd.notna(row['판매단가(V포함)(2)']):
+                warnings = validate_price_data(row, target_qty, row['판매단가(V포함)(2)'])
+                if warnings:
+                    for warning in warnings:
+                        logging.warning(f"Kogift 상품 '{row.get('상품명')}': {warning}")
+            
+            # Validate Naver price
+            if '판매단가(V포함)(3)' in df.columns and pd.notna(row['판매단가(V포함)(3)']):
+                warnings = validate_price_data(row, target_qty, row['판매단가(V포함)(3)'])
+                if warnings:
+                    for warning in warnings:
+                        logging.warning(f"Naver 상품 '{row.get('상품명')}': {warning}")
+        except Exception as e:
+            logging.error(f"Error validating price data for row {idx}: {e}")
     
     # 마지막에 필요한 컬럼만 선택하여 반환
     final_df = df[required_columns]
