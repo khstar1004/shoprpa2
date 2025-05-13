@@ -562,7 +562,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                                 # Update image_path with local path
                                                 item['image_path'] = img_data['local_path']
                                                 downloads_added += 1
-                            
+                        
                             logging.info(f"Added {downloads_added} Naver image downloads using NaverImageHandler")
                         except Exception as batch_err:
                             logging.error(f"Error in Naver batch image processing: {batch_err}")
@@ -786,38 +786,24 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 )
                 
                 # Create output directory if it doesn't exist
-                output_dir = config.get('Paths', 'output_dir')
-                os.makedirs(output_dir, exist_ok=True)
+                output_dir = Path(config.get('Paths', 'output_dir'))
+                output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # Generate output filename
                 input_filename_base = input_filename.rsplit('.', 1)[0]
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
-                
-                # When reaching the image integration step, use the NaverImageHandler if available
-                # For example, in the Excel creation step:
-                try:
-                    # Use existing integrated_df from the earlier code
-                    # [existing code for integrated_df]
+                output_path = output_dir / f"{input_filename_base}({filter_count}개)-승인관리-{timestamp}.xlsx"
 
-                    # First, validate and fix Naver image placement
-                    if '네이버 이미지' in formatted_df.columns:
-                        from fix_naver_images import validate_and_fix_naver_image_placement, ensure_naver_local_images
-                        
-                        # Fix Naver image placement first
-                        formatted_df = validate_and_fix_naver_image_placement(formatted_df)
-                        logging.info("Validated and fixed Naver image placement")
-                        
-                        # Then ensure local image paths exist for Naver images
-                        naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
-                        formatted_df = ensure_naver_local_images(formatted_df, naver_image_dir)
-                        logging.info(f"Ensured local image paths for Naver images (dir: {naver_image_dir})")
+                # Create Excel file with images
+                try:
+                    success = create_final_output_excel(formatted_df, str(output_path))
+                    if success:
+                        logging.info(f"Successfully created Excel file at: {output_path}")
+                    else:
+                        logging.error("Failed to create Excel file.")
                 except Exception as e:
-                    logging.error(f"Error fixing Naver images: {e}")
-                    if debug_mode:
-                        logging.debug(traceback.format_exc())
-                
-                # [Remaining code in main function continues unchanged]
+                    logging.error(f"Error creating Excel file: {e}", exc_info=True)
+                    output_path = None
             except Exception as e:
                 error_msg = f"Error during output file saving: {str(e)}"
                 logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
