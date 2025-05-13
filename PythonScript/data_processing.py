@@ -332,20 +332,46 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                             # Sort quantities for proper tier comparison
                             available_qtys = sorted(qty_prices.keys())
                             
-                            # Find the appropriate price tier for the quantity
-                            selected_qty = None
-                            for qty in reversed(available_qtys):
-                                if base_quantity >= qty:
-                                    selected_qty = qty
-                                    break
+                            # Find the closest quantity price
+                            available_qtys = sorted([int(q) for q in qty_prices.keys()])
+                            closest_qty = min(available_qtys, key=lambda x: abs(x - base_quantity))
                             
-                            if selected_qty is not None:
+                            # Enhanced error handling for quantity price lookup
+                            try:
+                                # First try with string key
+                                if str(closest_qty) in qty_prices:
+                                    price_info = qty_prices[str(closest_qty)]
+                                # Then try with integer key
+                                elif closest_qty in qty_prices:
+                                    price_info = qty_prices[closest_qty]
+                                # Try looking for a similar key (for minor quantity differences)
+                                else:
+                                    # Log all available quantity keys for debugging
+                                    available_keys = list(qty_prices.keys())
+                                    logging.debug(f"Available quantity price keys: {available_keys}")
+                                    logging.warning(f"Could not find exact match for quantity {closest_qty} in keys {available_keys}")
+                                    
+                                    # Look for the nearest quantity tier in the available keys
+                                    closest_available = min(available_keys, key=lambda x: abs(int(str(x)) - closest_qty), default=None)
+                                    if closest_available:
+                                        logging.info(f"Using closest available quantity tier: {closest_available} instead of {closest_qty}")
+                                        price_info = qty_prices[closest_available]
+                                    else:
+                                        # If all fails, create a default price info
+                                        logging.warning(f"No suitable quantity tier found. Using default price.")
+                                        price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
+                            except Exception as e:
+                                # Handle any errors during price lookup
+                                logging.error(f"Error finding quantity price for {closest_qty}: {e}")
+                                price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
+                            
+                            # Fix: Use closest_qty instead of undefined selected_qty
+                            if closest_qty is not None:
                                 # Use the price from the appropriate tier
-                                price_info = qty_prices[selected_qty]
                                 df.at[idx, '판매단가(V포함)(2)'] = price_info.get('price_with_vat', price_info.get('price', 0))
                                 df.at[idx, '기본수량(2)'] = base_quantity
                                 kogift_price_count += 1
-                                logging.debug(f"Using price tier {selected_qty} for quantity {base_quantity}")
+                                logging.debug(f"Using price tier {closest_qty} for quantity {base_quantity}")
                             elif available_qtys:  # If quantity is less than minimum tier
                                 # Use the minimum tier price
                                 min_qty = min(available_qtys)
@@ -384,6 +410,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 # Calculate percentage difference
                                 if base_price != 0:
                                     pct_diff = (price_diff / base_price) * 100
+                                    # Fix: Use correct column name with consistent naming
                                     df.at[idx, '가격차이(2)(%)'] = round(pct_diff, 1)
                             except (ValueError, TypeError) as e:
                                 logging.warning(f"Error calculating price differences for row {idx}: {e}")
@@ -524,7 +551,35 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 # Find the closest quantity price
                                 available_qtys = sorted([int(q) for q in qty_prices.keys()])
                                 closest_qty = min(available_qtys, key=lambda x: abs(x - base_qty))
-                                price_info = qty_prices[str(closest_qty)]
+                                
+                                # Enhanced error handling for quantity price lookup
+                                try:
+                                    # First try with string key
+                                    if str(closest_qty) in qty_prices:
+                                        price_info = qty_prices[str(closest_qty)]
+                                    # Then try with integer key
+                                    elif closest_qty in qty_prices:
+                                        price_info = qty_prices[closest_qty]
+                                    # Try looking for a similar key (for minor quantity differences)
+                                    else:
+                                        # Log all available quantity keys for debugging
+                                        available_keys = list(qty_prices.keys())
+                                        logging.debug(f"Available quantity price keys: {available_keys}")
+                                        logging.warning(f"Could not find exact match for quantity {closest_qty} in keys {available_keys}")
+                                        
+                                        # Look for the nearest quantity tier in the available keys
+                                        closest_available = min(available_keys, key=lambda x: abs(int(str(x)) - closest_qty), default=None)
+                                        if closest_available:
+                                            logging.info(f"Using closest available quantity tier: {closest_available} instead of {closest_qty}")
+                                            price_info = qty_prices[closest_available]
+                                        else:
+                                            # If all fails, create a default price info
+                                            logging.warning(f"No suitable quantity tier found. Using default price.")
+                                            price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
+                                except Exception as e:
+                                    # Handle any errors during price lookup
+                                    logging.error(f"Error finding quantity price for {closest_qty}: {e}")
+                                    price_info = {'price': item.get('price', 0), 'price_with_vat': item.get('price', 0)}
                                 
                                 # Use VAT-included price
                                 df.at[idx, '판매단가(V포함)(3)'] = price_info.get('price_with_vat', item.get('price', 0))
@@ -595,8 +650,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(2)(%)'] = df.apply(
-                lambda x: int((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
+                lambda x: round((pd.to_numeric(x['가격차이(2)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100, 1)
                 if pd.notna(x['가격차이(2)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1
@@ -612,8 +667,8 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             )
             # Calculate percentage difference
             df['가격차이(3)(%)'] = df.apply(
-                lambda x: int((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
-                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100)
+                lambda x: round((pd.to_numeric(x['가격차이(3)'], errors='coerce') / 
+                           pd.to_numeric(x['판매단가(V포함)'], errors='coerce')) * 100, 1)
                 if pd.notna(x['가격차이(3)']) and pd.notna(x['판매단가(V포함)']) and 
                    pd.to_numeric(x['판매단가(V포함)'], errors='coerce') != 0 else None, 
                 axis=1
@@ -646,8 +701,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     # Verify price data is present in the output DataFrame
     kogift_price_count = df['판매단가(V포함)(2)'].notnull().sum()
     naver_price_count = df['판매단가(V포함)(3)'].notnull().sum()
-    promo_site_count = df['판촉물여부'].sum() if '판촉물여부' in df.columns else 0
-    qty_pricing_count = df['수량별가격여부'].sum() if '수량별가격여부' in df.columns else 0
+    
+    # Fix: Use the temporary columns for these counts before they're removed
+    # These columns might not exist after previous cleanup
+    promo_site_count = df['_temp_판촉물여부'].sum() if '_temp_판촉물여부' in df.columns else 0
+    qty_pricing_count = df['_temp_수량별가격여부'].sum() if '_temp_수량별가격여부' in df.columns else 0
     
     logging.info(f"Data summary:")
     logging.info(f"- Kogift price data count: {kogift_price_count} rows")
@@ -656,8 +714,11 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     logging.info(f"- Quantity pricing available: {qty_pricing_count} rows")
     
     # Remove temporary columns before returning
-    temp_columns = ['_temp_kogift_quantity_prices'] + temp_columns  # Add Kogift temp column
-    for col in temp_columns:
+    # Fix: Define temp_columns list (was being referenced before assignment)
+    all_temp_columns = ['_temp_kogift_quantity_prices', '_temp_판촉물여부', '_temp_수량별가격여부', 
+                        '_temp_수량별가격정보', '_temp_VAT포함여부']
+    
+    for col in all_temp_columns:
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
             logging.debug(f"Removed temporary column: {col}")

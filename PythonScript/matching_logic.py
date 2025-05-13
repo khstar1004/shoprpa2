@@ -1257,8 +1257,8 @@ def process_matching(
         result_df['가격차이(3)'] = None # Calculated later
         result_df['가격차이(3)(%)'] = None # Calculated later
 
-        # Placeholder for specific error messages if needed
-        result_df['매칭_오류메시지'] = None 
+        # Placeholder for specific error messages if needed - internal use only
+        result_df['_매칭_오류메시지'] = None
 
         # Update matched products
         for idx, result in results:
@@ -1282,7 +1282,7 @@ def process_matching(
                         result_df.at[idx, '고려기프트 이미지'] = result.get('image_path')
                     else:
                         # Store error message
-                        result_df.at[idx, '매칭_오류메시지'] = result.get('price') # Or dedicated error field
+                        result_df.at[idx, '_매칭_오류메시지'] = result.get('price') # Or dedicated error field
                         # Optionally clear other Kogift fields or leave as None
                         result_df.at[idx, '고려기프트 상품링크'] = result.get('link') # Keep link if available
                         result_df.at[idx, '고려기프트 이미지'] = result.get('image_path') # Keep image if available
@@ -1319,7 +1319,7 @@ def process_matching(
                             result_df.at[idx, '네이버 이미지'] = None
                     else:
                          # Store error message
-                        result_df.at[idx, '매칭_오류메시지'] = result.get('price')
+                        result_df.at[idx, '_매칭_오류메시지'] = result.get('price')
                         # Optionally clear other Naver fields or leave as None
                         result_df.at[idx, '네이버 쇼핑 링크'] = result.get('link') # Keep link if available
                         
@@ -1344,13 +1344,13 @@ def process_matching(
                     # Handle cases where source is missing or different
                     logging.warning(f"Row {idx}: Match found but source ('{match_source}') is unknown or missing.")
                     if is_error_message:
-                        result_df.at[idx, '매칭_오류메시지'] = result.get('price', '알 수 없는 매칭 오류')
+                        result_df.at[idx, '_매칭_오류메시지'] = result.get('price', '알 수 없는 매칭 오류')
 
             else:
                 # Handle cases where matching failed entirely for the product
                 result_df.at[idx, '매칭_여부'] = 'N'
                 result_df.at[idx, '매칭_품질'] = '실패'
-                result_df.at[idx, '매칭_오류메시지'] = '매칭 결과 없음' # Or a more specific error if available
+                result_df.at[idx, '_매칭_오류메시지'] = '매칭 결과 없음' # Or a more specific error if available
 
         # --- Post-processing: Calculate Price Differences ---
         # Ensure base price column exists and is numeric
@@ -1697,6 +1697,41 @@ def post_process_matching_results(df, config):
                 missing_rows = df.loc[missing_indices].copy()
                 df_filtered = pd.concat([df_filtered, missing_rows])
                 logging.info(f"Restored missing rows. New row count: {len(df_filtered)}")
+
+        # --- 6. FILTER OUT INTERNAL/DEBUG COLUMNS ---
+        try:
+            # Import the FINAL_COLUMN_ORDER from excel_utils
+            from excel_utils import FINAL_COLUMN_ORDER
+            
+            # Get the set of columns that should appear in the final output
+            allowed_columns = set(FINAL_COLUMN_ORDER)
+            
+            # Filter df_filtered to only include allowed columns (if they exist)
+            output_columns = [col for col in df_filtered.columns if col in allowed_columns]
+            
+            # Log columns that were excluded
+            excluded_columns = [col for col in df_filtered.columns if col not in allowed_columns and not col.startswith('_')]
+            internal_columns = [col for col in df_filtered.columns if col.startswith('_')]
+            
+            if excluded_columns:
+                logging.info(f"Excluding non-standard columns from final output: {excluded_columns}")
+            
+            if internal_columns:
+                logging.info(f"Excluding internal columns from final output: {internal_columns}")
+            
+            # Create a new dataframe with only the allowed columns (if they exist in the original df)
+            df_filtered_clean = df_filtered[output_columns].copy()
+            
+            # Log the final column list
+            logging.debug(f"Final columns for output: {df_filtered_clean.columns.tolist()}")
+            
+            # Replace the original filtered df with the clean version
+            df_filtered = df_filtered_clean
+            
+        except ImportError:
+            logging.warning("Could not import FINAL_COLUMN_ORDER from excel_utils.py. Using all columns.")
+        except Exception as e:
+            logging.error(f"Error filtering columns for final output: {e}")
 
         logging.info(f"Finished filtering. {len(df_filtered)}/{initial_rows} rows maintained (no rows dropped).")
         return df_filtered
