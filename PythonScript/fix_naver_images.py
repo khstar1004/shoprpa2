@@ -705,12 +705,39 @@ async def ensure_naver_local_images_async(df: pd.DataFrame, naver_image_dir: str
 def ensure_naver_local_images(df: pd.DataFrame, naver_image_dir: str) -> pd.DataFrame:
     """Wrapper function to run async code"""
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+        # Check if there's a running event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        # Create a new event loop if the current one is closed
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        # Run the async function in the event loop
+        if loop.is_running():
+            # If loop is already running, create a new one in a separate thread
+            import threading
+            def run_async():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                return new_loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+                
+            thread = threading.Thread(target=run_async)
+            thread.start()
+            thread.join()
+        else:
+            # If loop is not running, use it directly
+            return loop.run_until_complete(ensure_naver_local_images_async(df, naver_image_dir))
+            
+        return df
+        
+    except Exception as e:
+        logging.error(f"Error in ensure_naver_local_images: {e}")
+        return df
 
 if __name__ == "__main__":
     sys.exit(main()) 
