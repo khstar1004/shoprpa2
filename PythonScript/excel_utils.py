@@ -20,7 +20,7 @@ import json
 from copy import copy
 from decimal import Decimal
 from typing import Optional
-from .excel_constants import COLUMN_RENAME_MAP, FINAL_COLUMN_ORDER, IMAGE_COLUMNS, UPLOAD_COLUMN_ORDER
+from excel_constants import COLUMN_RENAME_MAP, FINAL_COLUMN_ORDER, IMAGE_COLUMNS, UPLOAD_COLUMN_ORDER
 
 # Check Python/PIL version for proper resampling constant
 try:
