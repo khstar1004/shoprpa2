@@ -673,9 +673,30 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
 
                     # First, validate and fix Naver image placement
                     if '네이버 이미지' in formatted_df.columns:
-                        from fix_naver_images import validate_and_fix_naver_image_placement
+                        from fix_naver_images import validate_and_fix_naver_image_placement, ensure_naver_local_images
+                        
+                        # Fix Naver image placement first
                         formatted_df = validate_and_fix_naver_image_placement(formatted_df)
                         logging.info("Validated and fixed Naver image placement")
+                        
+                        # Then ensure local image paths exist for Naver images
+                        naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
+                        formatted_df = ensure_naver_local_images(formatted_df, naver_image_dir)
+                        logging.info(f"Ensured local image paths for Naver images (dir: {naver_image_dir})")
+                        
+                        # Log sample of fixed images
+                        fixed_count = 0
+                        for idx, row in formatted_df.head(5).iterrows():
+                            if '네이버 이미지' in row and isinstance(row['네이버 이미지'], dict):
+                                img_data = row['네이버 이미지']
+                                if 'local_path' in img_data and img_data['local_path'] and os.path.exists(img_data['local_path']):
+                                    fixed_count += 1
+                                    logging.info(f"Sample fixed Naver image #{fixed_count}: {img_data['local_path']}")
+                        
+                        if fixed_count > 0:
+                            logging.info(f"Found {fixed_count} valid local Naver images in sample")
+                        else:
+                            logging.warning("No valid local Naver images found in sample after fixing")
 
                     # Perform image integration
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
@@ -797,9 +818,36 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         # Only proceed to create Excel if finalization succeeded
                         if df_to_save is not None:
                             try:
-                                # Create Excel files (even if df_to_save is empty, to get headers)
-                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                # Import the transformation function for Naver columns
+                                from fix_naver_images import transform_between_file_types
+                                
+                                # Create DataFrames for both result and upload files
+                                result_df = df_to_save.copy()
+                                upload_df = df_to_save.copy()
+                                
+                                # Transform DataFrames to have correct Naver image columns
+                                logging.info("Preparing Naver image columns for result and upload files...")
+                                result_df = transform_between_file_types(result_df, file_type='result')
+                                upload_df = transform_between_file_types(upload_df, file_type='upload')
+                                
+                                # Base output path
+                                output_base_path = output_path.replace('.xlsx', '')
+                                result_path = f"{output_base_path}_result.xlsx"
+                                upload_path = f"{output_base_path}_upload.xlsx"
+                                
+                                # Save result file (with both local paths and URLs)
+                                logging.info(f"Saving result file to: {result_path}")
+                                result_df.to_excel(result_path, index=False)
+                                result_success = True
+                                
+                                # Save upload file (with URLs only)
+                                logging.info(f"Saving upload file to: {upload_path}")
+                                upload_df.to_excel(upload_path, index=False)
+                                upload_success = True
+                                
+                                # Log the columns in each file
+                                logging.info(f"Result file columns: {result_df.columns.tolist()}")
+                                logging.info(f"Upload file columns: {upload_df.columns.tolist()}")
                                 
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:
@@ -839,7 +887,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             logging.warning("Excel formatting could not be applied to any files")
                                     except Exception as format_err:
                                         logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
-                                        # Don't treat formatting failure as a critical error, continue with the process
                                     # --- End Excel Formatting ---
 
                                     # --- Apply Price Highlighting to Excel files ---
@@ -864,7 +911,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             logging.warning("Price highlighting could not be applied to any files")
                                     except Exception as highlight_err:
                                         logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
-                                        # Don't treat highlighting failure as a critical error, continue with the process
                                     # --- End Price Highlighting ---
                                     
                                     # --- Send Excel files by email ---

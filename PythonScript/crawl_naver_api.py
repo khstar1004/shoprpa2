@@ -515,6 +515,14 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             logger.debug(f"Image already exists: {local_path}")
             
+            # Create consistent image data structure
+            image_data = {
+                'url': url,
+                'local_path': os.path.abspath(local_path),
+                'source': 'naver',
+                'product_name': product_name
+            }
+            
             # 배경 제거 버전이 이미 있는지 확인
             try:
                 use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
@@ -522,6 +530,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                     bg_removed_path = local_path.replace('.', '_nobg.', 1)
                     if os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0:
                         final_image_path = bg_removed_path
+                        image_data['local_path'] = os.path.abspath(bg_removed_path)
                         logger.debug(f"Using existing background-removed image: {final_image_path}")
                     else:
                         # 배경 제거 버전이 없으면 생성 시도
@@ -529,6 +538,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                             from image_utils import remove_background
                             if remove_background(local_path, bg_removed_path):
                                 final_image_path = bg_removed_path
+                                image_data['local_path'] = os.path.abspath(bg_removed_path)
                                 logger.debug(f"Background removed for existing Naver image: {final_image_path}")
                             else:
                                 logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
@@ -584,6 +594,15 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                             os.rename(temp_path, local_path)
                             logger.info(f"Successfully downloaded image: {url} -> {local_path}")
                             
+                            # Create base image data
+                            image_data = {
+                                'url': url,
+                                'local_path': os.path.abspath(local_path),
+                                'original_path': os.path.abspath(local_path),
+                                'source': 'naver',
+                                'product_name': product_name
+                            }
+                            
                             # 필요시 배경 제거 시도
                             try:
                                 use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
@@ -592,12 +611,17 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                                     bg_removed_path = local_path.replace('.', '_nobg.', 1)
                                     if remove_background(local_path, bg_removed_path):
                                         final_image_path = bg_removed_path
+                                        image_data['local_path'] = os.path.abspath(bg_removed_path)
                                         logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
                                     else:
                                         logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
                             except Exception as bg_err:
                                 logger.warning(f"Error during background removal: {bg_err}. Using original image.")
                                 
+                            # Convert to absolute path and update the data
+                            final_image_path = os.path.abspath(final_image_path)
+                            image_data['local_path'] = final_image_path
+                            
                             return final_image_path
                         except Exception as e:
                             logger.error(f"Error processing image {url}: {e}")
@@ -1027,7 +1051,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                     print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
                     
                     try:
-                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'), target_quantities=target_quantities)
+                        quantity_pricing = await extract_quantity_prices(page, first_item.get('link'), target_quantities)
                         await asyncio.sleep(5)
                         print(f"Completed quantity price check for '{product_name}'")
 
@@ -1068,20 +1092,33 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         result_data['image_url'] = image_url
         local_path = await download_naver_image(image_url, naver_image_dir, product_name, config)
         if local_path:
-            result_data['image_path'] = os.path.abspath(local_path)
-            # Ensure proper image data structure for Naver images
-            result_data['image_data'] = {
+            # Ensure absolute path
+            abs_local_path = os.path.abspath(local_path)
+            result_data['image_path'] = abs_local_path
+            
+            # Create consistent image data structure
+            image_data = {
                 'url': image_url,
-                'local_path': local_path,
-                'original_path': local_path,
+                'local_path': abs_local_path,
+                'original_path': abs_local_path,
                 'source': 'naver',
-                'image_url': image_url,  # Keep original URL
                 'product_name': product_name,
                 'similarity': similarity,
                 'type': 'naver'  # Explicitly mark as Naver image
             }
-            # Add separate naver_image_data for correct column mapping
-            result_data['naver_image_data'] = result_data['image_data'].copy()
+            
+            # Add image data to result
+            result_data['image_data'] = image_data
+            result_data['naver_image_data'] = image_data  # Duplicate for correct column mapping
+            
+            # Create a dedicated naver_image entry with the correct structure for '네이버 이미지' column
+            naver_image_entry = {
+                'url': image_url,
+                'local_path': abs_local_path,
+                'source': 'naver',
+                'score': similarity  # Include similarity score for filtering
+            }
+            result_data['네이버 이미지'] = naver_image_entry
     
     return result_data
 

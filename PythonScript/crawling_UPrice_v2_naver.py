@@ -334,7 +334,7 @@ def is_promotional_supplier(supplier_name):
             
     return False
 
-async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
+async def extract_quantity_prices(page, url: str, target_quantities: List[int] = None) -> Dict[str, Any]:
     """수량별 가격 정보 추출 - 여러 사이트 구조에 대응하는 지능형 분석 알고리즘"""
     result = {
         "is_promotional_site": False,
@@ -352,6 +352,10 @@ async def extract_quantity_prices(page, url: str) -> Dict[str, Any]:
         result["error"] = "Invalid page or URL provided"
         logger.error(result["error"])
         return result
+    
+    # Set default target quantities if none provided
+    if target_quantities is None:
+        target_quantities = [200, 300, 500, 1000, 2000, 3000, 5000, 8000, 10000, 15000, 20000]
     
     try:
         logger.info(f"Navigating to product page: {url}")
@@ -694,7 +698,7 @@ async def detect_tables_by_structure(page) -> Optional[Dict[str, Any]]:
         logger.error(f"Error in detect_tables_by_structure: {e}")
         return None
 
-async def detect_with_input_fields(page, target_quantities=None) -> Optional[Dict[str, Any]]:
+async def detect_with_input_fields(page, target_quantities: List[int] = None) -> Optional[Dict[str, Any]]:
     """수량 입력 필드 방식으로 가격 정보 감지"""
     try:
         qty_input_selectors = [

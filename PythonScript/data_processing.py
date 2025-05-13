@@ -217,8 +217,12 @@ def format_product_data_for_output(input_df: pd.DataFrame,
             logging.warning(f"Adding missing required column: {col}")
     
     # Add columns for Kogift results if they don't exist yet
-    # FIXED: Ensure 판매단가(V포함)(2) column exists explicitly for kogift prices
-    for col in ['기본수량(2)', '판매단가(V포함)(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', '고려기프트 이미지']:
+    kogift_columns = [
+        '기본수량(2)', '판매단가(V포함)(2)', '판매가(V포함)(2)', 
+        '가격차이(2)', '가격차이(2)(%)', '고려기프트 상품링크', 
+        '고려기프트 이미지', '_temp_kogift_quantity_prices'  # Added temporary column
+    ]
+    for col in kogift_columns:
         if col not in df.columns:
             df[col] = None
             logging.debug(f"Adding column for Kogift data: {col}")
@@ -294,7 +298,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         
         logging.info(f"Added {haoreum_img_count} 해오름 images from input file image map")
 
-    # Add Kogift data from crawl results if available
+    # Process Kogift data
     if kogift_results:
         kogift_update_count = 0
         kogift_img_count = 0
@@ -303,48 +307,93 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
             if product_name in kogift_results:
-                # Get first matching result from Kogift
                 kogift_data = kogift_results[product_name]
                 if kogift_data and len(kogift_data) > 0:
                     item = kogift_data[0]  # Use the first match
                     
-                    # Update Kogift related columns
-                    # 기본수량(2) should match 기본수량(1) for direct price comparison
-                    if '기본수량(2)' in df.columns:
-                        # Copy the value from 기본수량(1)
-                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                            df.at[idx, '기본수량(2)'] = row['기본수량(1)']
-                        # If quantity exists in the item, only use it as a fallback
-                        elif 'quantity' in item:
-                            df.at[idx, '기본수량(2)'] = item['quantity']
+                    # Store quantity prices in temporary column
+                    if 'quantity_prices' in item:
+                        df.at[idx, '_temp_kogift_quantity_prices'] = item['quantity_prices']
                     
-                    # 기본수량 칼럼도 동일하게 기본수량(1)에서 복사 (요구사항)
-                    if '기본수량' in df.columns:
-                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                            df.at[idx, '기본수량'] = row['기본수량(1)']
+                    # Get base quantity from input
+                    base_quantity = None
+                    if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                        base_quantity = int(row['기본수량(1)'])
+                    elif '기본수량' in df.columns and pd.notna(row['기본수량']):
+                        base_quantity = int(row['기본수량'])
                     
-                    # Kogift 제품 URL 업데이트
-                    if '고려기프트 상품링크' in df.columns:
-                        if 'link' in item:
-                            df.at[idx, '고려기프트 상품링크'] = item['link']
-                        elif 'href' in item:
-                            df.at[idx, '고려기프트 상품링크'] = item['href']
+                    # Update quantity and price information
+                    if base_quantity and '_temp_kogift_quantity_prices' in df.columns:
+                        qty_prices = df.at[idx, '_temp_kogift_quantity_prices']
+                        if isinstance(qty_prices, dict):
+                            # Convert string keys to int for proper comparison
+                            qty_prices = {int(k): v for k, v in qty_prices.items()}
+                            
+                            # Sort quantities for proper tier comparison
+                            available_qtys = sorted(qty_prices.keys())
+                            
+                            # Find the appropriate price tier for the quantity
+                            selected_qty = None
+                            for qty in reversed(available_qtys):
+                                if base_quantity >= qty:
+                                    selected_qty = qty
+                                    break
+                            
+                            if selected_qty is not None:
+                                # Use the price from the appropriate tier
+                                price_info = qty_prices[selected_qty]
+                                df.at[idx, '판매단가(V포함)(2)'] = price_info.get('price_with_vat', price_info.get('price', 0))
+                                df.at[idx, '기본수량(2)'] = base_quantity
+                                kogift_price_count += 1
+                                logging.debug(f"Using price tier {selected_qty} for quantity {base_quantity}")
+                            elif available_qtys:  # If quantity is less than minimum tier
+                                # Use the minimum tier price
+                                min_qty = min(available_qtys)
+                                price_info = qty_prices[min_qty]
+                                df.at[idx, '판매단가(V포함)(2)'] = price_info.get('price_with_vat', price_info.get('price', 0))
+                                df.at[idx, '기본수량(2)'] = base_quantity
+                                kogift_price_count += 1
+                                logging.debug(f"Using minimum tier price ({min_qty}) for quantity {base_quantity}")
                     
-                    # 판매가 정보 업데이트
-                    if '판매단가(V포함)(2)' in df.columns:
-                        # 부가세 포함 가격이 먼저 있는지 확인
+                    # If no quantity prices found or processing failed, use default price
+                    if pd.isna(df.at[idx, '판매단가(V포함)(2)']):
                         if 'price_with_vat' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price_with_vat']
+                            df.at[idx, '기본수량(2)'] = base_quantity if base_quantity else 1
                             kogift_price_count += 1
-                        # 부가세 포함 가격이 없으면 일반 가격 사용 (크롤링 단계에서 이미 부가세 포함)
                         elif 'price' in item:
                             df.at[idx, '판매단가(V포함)(2)'] = item['price']
+                            df.at[idx, '기본수량(2)'] = base_quantity if base_quantity else 1
                             kogift_price_count += 1
                     
-                    # 동일한 가격 정보를 판매가(V포함)(2)에도 복사
-                    if '판매가(V포함)(2)' in df.columns and '판매단가(V포함)(2)' in df.columns and pd.notna(df.at[idx, '판매단가(V포함)(2)']):
+                    # Copy price to 판매가(V포함)(2) and calculate price differences
+                    if pd.notna(df.at[idx, '판매단가(V포함)(2)']):
+                        # Copy to 판매가(V포함)(2)
                         df.at[idx, '판매가(V포함)(2)'] = df.at[idx, '판매단가(V포함)(2)']
                         
+                        # Calculate price differences if base price exists
+                        if '판매단가(V포함)' in df.columns and pd.notna(row['판매단가(V포함)']):
+                            try:
+                                base_price = float(row['판매단가(V포함)'])
+                                kogift_price = float(df.at[idx, '판매단가(V포함)(2)'])
+                                
+                                # Calculate absolute difference
+                                price_diff = kogift_price - base_price
+                                df.at[idx, '가격차이(2)'] = price_diff
+                                
+                                # Calculate percentage difference
+                                if base_price != 0:
+                                    pct_diff = (price_diff / base_price) * 100
+                                    df.at[idx, '가격차이(2)(%)'] = round(pct_diff, 1)
+                            except (ValueError, TypeError) as e:
+                                logging.warning(f"Error calculating price differences for row {idx}: {e}")
+                    
+                    # Update Kogift product URL
+                    if 'link' in item:
+                        df.at[idx, '고려기프트 상품링크'] = item['link']
+                    elif 'href' in item:
+                        df.at[idx, '고려기프트 상품링크'] = item['href']
+                    
                     # 이미지 URL 업데이트
                     # 이미지 URL 파악 (우선순위 순서대로 시도)
                     image_url = None
@@ -427,9 +476,9 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     
                     kogift_update_count += 1
         
-        logging.info(f"업데이트된 행 수: {kogift_update_count} (Kogift 데이터)")
-        logging.info(f"Kogift 이미지 추가: {kogift_img_count}개")
-        logging.info(f"Kogift 가격 추가: {kogift_price_count}개")
+        logging.info(f"Updated {kogift_update_count} rows with Kogift data")
+        logging.info(f"Added {kogift_price_count} Kogift prices")
+        logging.info(f"Added {kogift_img_count} Kogift images")
 
     # Update Naver data processing section to use temporary columns
     if naver_results:
@@ -607,6 +656,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
     logging.info(f"- Quantity pricing available: {qty_pricing_count} rows")
     
     # Remove temporary columns before returning
+    temp_columns = ['_temp_kogift_quantity_prices'] + temp_columns  # Add Kogift temp column
     for col in temp_columns:
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
