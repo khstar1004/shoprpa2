@@ -60,8 +60,9 @@ def find_appropriate_price(quantity_prices, target_quantity):
         except (ValueError, TypeError):
             continue
     
-    # Get available quantities, sorted
-    quantities = sorted(qty_prices.keys())
+    # Get available quantities, sorted in descending order (larger quantities first)
+    # For promotional products, larger quantities have lower per-unit prices
+    quantities = sorted(qty_prices.keys(), reverse=True)
     if not quantities:
         return None, None, False, None, "No valid quantity tiers found"
     
@@ -76,28 +77,35 @@ def find_appropriate_price(quantity_prices, target_quantity):
             "Exact match"
         )
     
-    # Find the highest tier that's not greater than the target quantity
-    applicable_quantities = [q for q in quantities if q <= target_quantity]
-    if applicable_quantities:
-        best_qty = max(applicable_quantities)
-        price_info = qty_prices[best_qty]
+    # For promotional products, if quantity is below the smallest tier,
+    # we should use the smallest tier price
+    min_qty = min(quantities)
+    if target_quantity < min_qty:
+        price_info = qty_prices[min_qty]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
             False,
-            best_qty,
-            f"Using tier {best_qty}"
+            min_qty,
+            f"Using minimum tier {min_qty}"
         )
     
-    # If target is below smallest tier, use the smallest tier
-    min_qty = min(quantities)
-    price_info = qty_prices[min_qty]
+    # Find the appropriate tier: largest quantity that's not greater than target
+    # Sort in ascending order for this search
+    quantities_asc = sorted(quantities)
+    best_qty = quantities_asc[0]  # Initialize with smallest tier as fallback
+    for qty in quantities_asc:
+        if qty > target_quantity:
+            break
+        best_qty = qty
+    
+    price_info = qty_prices[best_qty]
     return (
         price_info.get('price', 0),
         price_info.get('price_with_vat', 0),
         False,
-        min_qty,
-        f"Using minimum tier {min_qty}"
+        best_qty,
+        f"Using tier {best_qty}"
     )
 
 def parse_complex_value(value):
