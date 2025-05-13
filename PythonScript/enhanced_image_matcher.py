@@ -595,6 +595,7 @@ class EnhancedImageMatcher:
         """Initialize deep learning models with GPU support"""
         try:
             import tensorflow as tf
+            from tensorflow import keras
             from tensorflow.keras.applications import EfficientNetB0, ResNet50V2
             
             # Configure mixed precision for better GPU performance
