@@ -24,6 +24,7 @@ from excel_utils import (
     create_split_excel_outputs,
     find_excel_file,
     finalize_dataframe_for_excel,
+    create_final_output_excel,
     IMAGE_COLUMNS
 )
 from crawling_logic import crawl_all_sources
