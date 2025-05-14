@@ -31,254 +31,14 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
-from excel_formatter import apply_excel_formatting
-from fix_excel_output import fix_excel_output
-from fix_result_files import process_files, backup_file  # Add this import
-
-# 이미지 수정 통합 함수 추가
-def integrate_image_fixes(df, is_upload_file=False, config=None):
-    """
-    이미지 처리 통합 함수 - 고려기프트와 네이버 이미지 모두 처리
-    
-    Args:
-        df: 처리할 DataFrame
-        is_upload_file: Upload 파일 형식인지 여부
-        config: 설정 객체
-        
-    Returns:
-        처리된 DataFrame
-    """
-    try:
-        logging.info(f"통합 이미지 수정 시작 (총 {len(df)} 행, Upload 파일: {is_upload_file})")
-        
-        if df.empty:
-            logging.warning("빈 DataFrame이 전달되었습니다. 수정할 내용이 없습니다.")
-            return df
-            
-        result_df = df.copy()
-        
-        # --- 1. 네이버 이미지 수정 ---
-        start_time = time.time()
-        naver_fixed_count = 0
-        naver_removed_count = 0
-        
-        # 네이버 관련 컬럼
-        naver_img_col = '네이버 이미지'
-        naver_link_col = '네이버 쇼핑 링크'
-        naver_upload_col = '네이버쇼핑(이미지링크)'
-        
-        # 네이버 이미지 컬럼 확인
-        if naver_img_col in result_df.columns:
-            for idx, row in result_df.iterrows():
-                try:
-                    # 1. 네이버 상품 정보 확인 (네이버 쇼핑 링크)
-                    has_product_info = False
-                    if naver_link_col in result_df.columns and pd.notna(row[naver_link_col]):
-                        link = str(row[naver_link_col]).strip()
-                        if link and link not in ['-', 'None', ''] and link.startswith(('http://', 'https://')):
-                            has_product_info = True
-                    
-                    # 2. 네이버 상품 정보가 없으면 이미지도 삭제
-                    if not has_product_info:
-                        if pd.notna(row[naver_img_col]) and row[naver_img_col] != '-':
-                            result_df.at[idx, naver_img_col] = '-'
-                            naver_removed_count += 1
-                        continue
-                    
-                    # 3. 이미지 데이터 확인
-                    img_data = row[naver_img_col]
-                    
-                    # 4. 빈 데이터면 건너뛰기
-                    if pd.isna(img_data) or img_data == '-':
-                        continue
-                    
-                    # 5. 이미지 URL 유효성 검사
-                    has_valid_url = False
-                    
-                    if isinstance(img_data, dict):
-                        url = img_data.get('url', '')
-                        if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
-                            if 'shopping-phinf.pstatic.net' in url:
-                                has_valid_url = True
-                    elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
-                        if 'shopping-phinf.pstatic.net' in img_data:
-                            has_valid_url = True
-                    
-                    # 6. 이미지 링크가 없거나 유효하지 않으면 이미지 제거
-                    if not has_valid_url:
-                        result_df.at[idx, naver_img_col] = '-'
-                        naver_removed_count += 1
-                    else:
-                        # 7. 유효한 이미지 정보면 형식 통일
-                        if isinstance(img_data, dict):
-                            # URL 및 필요한 정보만 유지
-                            clean_data = {
-                                'url': img_data.get('url', ''),
-                                'local_path': img_data.get('local_path', ''),
-                                'source': 'naver',
-                                'score': img_data.get('score', 0.7)
-                            }
-                            result_df.at[idx, naver_img_col] = clean_data
-                        elif isinstance(img_data, str):
-                            # 문자열 URL을 딕셔너리 형태로 변환
-                            clean_data = {
-                                'url': img_data,
-                                'local_path': '',
-                                'source': 'naver',
-                                'score': 0.7
-                            }
-                            result_df.at[idx, naver_img_col] = clean_data
-                        
-                        naver_fixed_count += 1
-                except Exception as e:
-                    logging.error(f"네이버 이미지 수정 중 오류(행 {idx}): {e}")
-                    # 오류 발생시 안전하게 이미지 제거
-                    result_df.at[idx, naver_img_col] = '-'
-            
-            logging.info(f"네이버 이미지 수정 완료: {naver_fixed_count}개 수정, {naver_removed_count}개 제거 (소요시간: {time.time() - start_time:.2f}초)")
-            
-            # Upload 파일 형식인 경우 네이버 이미지 URL만 추출
-            if is_upload_file:
-                if naver_upload_col not in result_df.columns:
-                    result_df[naver_upload_col] = '-'
-                
-                for idx, row in result_df.iterrows():
-                    if pd.notna(row[naver_img_col]):
-                        img_data = row[naver_img_col]
-                        if isinstance(img_data, dict) and 'url' in img_data:
-                            url = img_data.get('url', '')
-                            if url:
-                                result_df.at[idx, naver_upload_col] = url
-                        elif isinstance(img_data, str) and img_data.startswith('http'):
-                            result_df.at[idx, naver_upload_col] = img_data
-                
-                # Upload 파일에서는 이미지 컬럼 제거
-                if naver_img_col in result_df.columns:
-                    result_df = result_df.drop(columns=[naver_img_col])
-                    logging.info(f"Upload 파일 형식: '{naver_img_col}' 컬럼 제거, '{naver_upload_col}' 컬럼으로 URL 이동")
-        
-        # --- 2. 고려기프트 이미지 및 가격 수정 ---
-        start_time = time.time()
-        kogift_fixed_count = 0
-        kogift_removed_count = 0
-        price_updated_count = 0
-        
-        # 고려기프트 관련 컬럼
-        kogift_link_col = '고려기프트 상품링크'
-        kogift_img_col = '고려기프트 이미지'
-        kogift_upload_col = '고려기프트(이미지링크)'
-        
-        # 고려기프트 수정 함수 동적 임포트
-        try:
-            from fix_kogift_images import extract_quantity_prices_from_row, find_appropriate_price
-            has_kogift_module = True
-        except ImportError:
-            logging.warning("fix_kogift_images 모듈을 가져올 수 없습니다. 고려기프트 가격 수정 기능이 제한됩니다.")
-            has_kogift_module = False
-
-        # 고려기프트 이미지 컬럼 확인
-        if kogift_link_col in result_df.columns:
-            for idx, row in result_df.iterrows():
-                try:
-                    # 1. 고려기프트 상품 정보 확인
-                    has_product_info = False
-                    if pd.notna(row[kogift_link_col]):
-                        link = str(row[kogift_link_col]).strip()
-                        if link and link not in ['-', 'None', ''] and link.startswith(('http://', 'https://')):
-                            has_product_info = True
-                    
-                    # 2. 상품 정보가 없고 이미지가 있으면 이미지 제거
-                    if not has_product_info and kogift_img_col in result_df.columns:
-                        if pd.notna(row[kogift_img_col]) and row[kogift_img_col] != '-':
-                            result_df.at[idx, kogift_img_col] = '-'
-                            kogift_removed_count += 1
-                    
-                    # 3. 가격 수정 (상품 정보가 있는 경우)
-                    if has_product_info and has_kogift_module:
-                        # 수량과 가격 정보 추출
-                        quantity_prices = extract_quantity_prices_from_row(row)
-                        if quantity_prices and '기본수량(1)' in row and pd.notna(row['기본수량(1)']):
-                            try:
-                                base_quantity = int(row['기본수량(1)'])
-                                price, price_with_vat, _, actual_qty, _ = find_appropriate_price(quantity_prices, base_quantity)
-                                
-                                # 가격 정보가 있으면 업데이트
-                                if price_with_vat:
-                                    kogift_price_col = '판매가(V포함)(2)'
-                                    if kogift_price_col in result_df.columns:
-                                        result_df.at[idx, kogift_price_col] = price_with_vat
-                                        
-                                        # Upload 파일 형식이면 다른 컬럼명 사용
-                                        if is_upload_file and '판매단가2(VAT포함)' in result_df.columns:
-                                            result_df.at[idx, '판매단가2(VAT포함)'] = price_with_vat
-                                        
-                                        price_updated_count += 1
-                                        
-                                        # 가격 차이 계산 (판매단가(V포함)이 있는 경우)
-                                        if '판매단가(V포함)' in row and pd.notna(row['판매단가(V포함)']):
-                                            try:
-                                                base_price = float(row['판매단가(V포함)'])
-                                                price_diff = price_with_vat - base_price
-                                                
-                                                # 가격 차이 컬럼이 있으면 업데이트
-                                                if '가격차이(2)' in result_df.columns:
-                                                    result_df.at[idx, '가격차이(2)'] = price_diff
-                                                
-                                                # 가격 차이 퍼센트 컬럼이 있으면 업데이트
-                                                if '가격차이(2)(%)' in result_df.columns and base_price != 0:
-                                                    pct_diff = (price_diff / base_price) * 100
-                                                    result_df.at[idx, '가격차이(2)(%)'] = round(pct_diff, 1)
-                                            except (ValueError, TypeError) as e:
-                                                logging.warning(f"가격 차이 계산 중 오류(행 {idx}): {e}")
-                            except (ValueError, TypeError) as e:
-                                logging.warning(f"기본수량 변환 중 오류(행 {idx}): {e}")
-                    
-                    # 4. Upload 파일 형식이면 이미지 URL 처리
-                    if is_upload_file and kogift_img_col in result_df.columns:
-                        if kogift_upload_col not in result_df.columns:
-                            result_df[kogift_upload_col] = '-'
-                            
-                        img_data = row.get(kogift_img_col, '-')
-                        if pd.notna(img_data) and img_data != '-':
-                            # 이미지 URL 추출
-                            url = None
-                            if isinstance(img_data, dict) and 'url' in img_data:
-                                url = img_data.get('url', '')
-                            elif isinstance(img_data, str) and img_data.startswith('http'):
-                                url = img_data
-                                
-                            if url:
-                                result_df.at[idx, kogift_upload_col] = url
-                                kogift_fixed_count += 1
-                    
-                except Exception as e:
-                    logging.error(f"고려기프트 데이터 수정 중 오류(행 {idx}): {e}")
-        
-            # Upload 파일에서는 이미지 컬럼 제거
-            if is_upload_file and kogift_img_col in result_df.columns:
-                result_df = result_df.drop(columns=[kogift_img_col])
-                logging.info(f"Upload 파일 형식: '{kogift_img_col}' 컬럼 제거, '{kogift_upload_col}' 컬럼으로 URL 이동")
-        
-        logging.info(f"고려기프트 데이터 수정 완료: {kogift_fixed_count}개 이미지 수정, {kogift_removed_count}개 제거, {price_updated_count}개 가격 수정 (소요시간: {time.time() - start_time:.2f}초)")
-        
-        # 통합 기능 추가 시 여기에 코드 추가
-        
-        return result_df
-    
-    except Exception as e:
-        logging.error(f"통합 이미지 수정 중 오류 발생: {e}", exc_info=True)
-        return df  # 오류 발생 시 원본 DataFrame 반환
+from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
+# Import fix modules
+from fix_naver_images import fix_naver_images, validate_and_fix_naver_image_placement, fix_excel_file
+from fix_kogift_images import fix_excel_kogift_images, find_appropriate_price, extract_quantity_prices_from_row
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
-    # Initialize variables
-    result_success = False
-    upload_path = None
-    result_path = None
-    output_path = None
-    
     try:
-        # Start timing
         main_start_time = time.time()
         logging.info("========= RPA Process Starting ========")
 
@@ -289,7 +49,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         debug_mode = config.getboolean('Debug', 'enabled', fallback=False)
         if debug_mode:
             logging.info("Debug mode enabled - detailed logging will be shown")
-        
+            
         def log_step(step_num, total_steps, message):
             """Helper function for consistent step logging"""
             log_msg = f"[Step {step_num}/{total_steps}] {message}"
@@ -398,7 +158,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 processed_count = len(input_file_image_map)
             else:
                 input_file_image_map = {}
-            
+                processed_count = 0
+                
             logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
             if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
         except Exception as e:
@@ -434,7 +195,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.debug(f"Kogift results type: {type(kogift_crawl_results)}")
                 logging.debug(f"Naver results type: {type(naver_crawl_results)}")
                 logging.debug(f"Haereum map type: {type(haereum_image_url_map)}")
-            
+                
             # 여기서 해오름 이미지 URL 맵을 안전하게 보관 (원본 데이터로 저장)
             # 이 맵은 엑셀 생성 단계에서 바로 사용됨
             original_haereum_image_urls = haereum_image_url_map.copy() if isinstance(haereum_image_url_map, dict) else {}
@@ -446,7 +207,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 for prod_name, url in list(original_haereum_image_urls.items())[:5]:
                     logging.debug(f"보관된 해오름 이미지 URL 샘플 #{sample_count+1}: {prod_name} -> {url}")
                     sample_count += 1
-        
+                
         except Exception as e:
             logging.error(f"Error during crawling: {e}")
             if debug_mode:
@@ -497,7 +258,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 if product_name not in naver_map:
                                     naver_map[product_name] = []
                                 naver_map[product_name].append(naver_data)
-                
+                    
                     logging.debug(f"Created Naver map with {len(naver_map)} entries.")
                     
                     # 샘플 이미지 URL 로깅 (디버깅용)
@@ -509,7 +270,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 if img_url:
                                     logging.debug(f"네이버 이미지 URL 샘플 #{sample_count+1}: {img_url}")
                                     sample_count += 1
-                
+                    
                     # Ensure Naver images are downloaded to the correct directory
                     naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
                     os.makedirs(naver_image_dir, exist_ok=True)
@@ -541,7 +302,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
                                     except Exception as e:
                                         logging.error(f"Error fixing Naver image path: {e}")
-                            
+                                
                             # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
                             if img_url:
                                 # Update the item's image data to dictionary format for excel_utils.py
@@ -712,20 +473,20 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
                                 except Exception as e:
                                     logging.error(f"Error fixing Naver image path: {e}")
-                        
-                        # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
-                        if img_url:
-                            # Update the item's image data to dictionary format for excel_utils.py
-                            image_data = {
-                                'url': img_url,
-                                'local_path': item['image_path'], # Use corrected path
-                                'original_path': item.get('original_path', item['image_path']), # Keep original if available
-                                'source': 'naver'
-                            }
-                            item['image_data'] = image_data
-                    
-                    if img_fix_count > 0:
-                        logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
+                            
+                            # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
+                            if img_url:
+                                # Update the item's image data to dictionary format for excel_utils.py
+                                image_data = {
+                                    'url': img_url,
+                                    'local_path': item['image_path'], # Use corrected path
+                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
+                                    'source': 'naver'
+                                }
+                                item['image_data'] = image_data
+                
+                if img_fix_count > 0:
+                    logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
             except Exception as e:
                 logging.error(f"Error creating Naver map: {e}", exc_info=True)
                 naver_map = {}
@@ -865,8 +626,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             logging.info(f"[Step 6/7] Filtering finished. {filter_count} rows remaining. Duration: {time.time() - step_start_time:.2f} sec")
         except Exception as filter_err:
             logging.error(f"Error during filtering: {filter_err}", exc_info=True)
-            if progress_queue:
-                progress_queue.emit("error", f"Filtering failed: {str(filter_err)}")
+            if progress_queue: progress_queue.emit("error", f"Filtering failed: {str(filter_err)}")
             # Use the processed_matched_df as fallback if filtering fails
             filtered_df = processed_matched_df  
             logging.warning("Using unfiltered (but post-processed) data due to filtering error")
@@ -909,18 +669,32 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     logging.info("Integrating and filtering images immediately before Excel generation...")
                     # Log DataFrame state BEFORE integration
                     logging.info(f"DataFrame shape BEFORE image integration: {formatted_df.shape}")
-                    
+                    logging.debug(f"DataFrame columns BEFORE image integration: {formatted_df.columns.tolist()}")
+                    if not formatted_df.empty:
+                        logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
+
                     # Perform image integration
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     logging.info("Image integration and filtering complete.")
-                    
+
                     # Log DataFrame state AFTER integration
                     logging.info(f"DataFrame shape AFTER image integration: {integrated_df.shape}")
-                    
+                    logging.debug(f"DataFrame columns AFTER image integration: {integrated_df.columns.tolist()}")
+                    if not integrated_df.empty:
+                        logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
+                        # Explicitly check image column sample data
+                        if IMAGE_COLUMNS:
+                            img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
+                            if img_cols_to_log:
+                                 logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
+
+
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)
+                    # Fallback: use the pre-integration DataFrame if integration fails
                     integrated_df = formatted_df
                     logging.warning("Proceeding with pre-integration data due to error.")
+                # --- End Image Integration ---
 
                 # Finalize the DataFrame structure before saving to Excel
                 logging.info("Finalizing DataFrame structure for Excel output...")
@@ -928,69 +702,290 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     # Ensure the finalize function is called with the correct DataFrame
                     df_to_save = finalize_dataframe_for_excel(integrated_df)
                     
+                    # Log the result of finalization
                     if df_to_save.empty and not integrated_df.empty:
                         logging.error("DataFrame became empty after finalization. Skipping Excel creation.")
+                        # Optionally: Emit error to progress_queue if available
                         if progress_queue: progress_queue.emit("error", "Error during data finalization stage.")
+                        # Skip Excel creation steps
                         result_success, upload_success = False, False
+                        result_path, upload_path = None, None
                     else:
                         logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
+                        logging.debug(f"Finalized columns: {df_to_save.columns.tolist()}")
                         
-                        # Use fix_excel_output to create the output files
+                        # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
                         try:
-                            result_path, upload_path = fix_excel_output(df_to_save, output_dir)
-                            if result_path and upload_path:
-                                result_success, upload_success = True, True
-                                output_path = result_path  # Set the output path
-                                logging.info(f"Successfully created output files using fix_excel_output:")
-                                logging.info(f"Result file: {result_path}")
-                                logging.info(f"Upload file: {upload_path}")
-                                
-                                # Apply fix_result_files functionality to the newly created files
-                                try:
-                                    logging.info("Applying additional fixes to result files...")
-                                    files_to_fix = [result_path, upload_path]
+                            # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
+                            if original_haereum_image_urls and not df_to_save.empty:
+                                # '상품명' 컬럼이 있는지 확인
+                                if '상품명' in df_to_save.columns:
+                                    applied_count = 0
+                                    logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
                                     
-                                    # Backup files before fixing
-                                    for file_path in files_to_fix:
-                                        if backup_file(file_path):
-                                            logging.info(f"Created backup of {file_path}")
+                                    # 원본 이미지 URL을 저장할 새 컬럼 생성
+                                    if '해오름 이미지 URL' not in df_to_save.columns:
+                                        df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
                                     
-                                    # Process the files
-                                    results = process_files(files_to_fix, dry_run=False)
-                                    
-                                    # Log the results
-                                    logging.info("=" * 50)
-                                    logging.info("File Fix Summary")
-                                    logging.info("=" * 50)
-                                    logging.info(f"Total files:       {results['total']}")
-                                    logging.info(f"Processed:         {results['processed']}")
-                                    logging.info(f"Successfully fixed: {results['success']}")
-                                    logging.info(f"Failed:            {results['failed']}")
-                                    logging.info(f"Skipped:           {results['skipped']}")
-                                    logging.info("=" * 50)
-                                    
-                                    # Update success status based on fix results
-                                    if results['failed'] > 0:
-                                        logging.warning("Some files failed to be fixed properly")
-                                        result_success = results['success'] > 0
-                                        upload_success = results['success'] > 0
-                                except Exception as fix_err:
-                                    logging.error(f"Error applying additional fixes: {fix_err}")
-                                    # Don't fail the whole process if fixes fail
-                                    logging.warning("Continuing with original files despite fix errors")
+                                    # 각 행에 원본 URL 적용
+                                    for idx, row in df_to_save.iterrows():
+                                        product_name = row['상품명']
+                                        if product_name in original_haereum_image_urls:
+                                            orig_url = original_haereum_image_urls[product_name]
+                                            if orig_url:
+                                                df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
+                                                
+                                                # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
+                                                if '본사 이미지' in df_to_save.columns:
+                                                    current_value = df_to_save.at[idx, '본사 이미지']
+                                                    if isinstance(current_value, dict):
+                                                        current_value['url'] = orig_url
+                                                        df_to_save.at[idx, '본사 이미지'] = current_value
+                                                    else:
+                                                        # 딕셔너리 아닌 경우 새로 생성
+                                                        image_data = {
+                                                            'url': orig_url,
+                                                            'source': 'haereum',
+                                                            'product_name': product_name
+                                                        }
+                                                        df_to_save.at[idx, '본사 이미지'] = image_data
+                                                applied_count += 1
+                                                
+                                    logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
+                                else:
+                                    logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
                             else:
-                                raise Exception("fix_excel_output failed to create output files")
-                        except Exception as fix_err:
-                            logging.error(f"Error using fix_excel_output: {fix_err}")
-                            # Fallback to original method
+                                if not original_haereum_image_urls:
+                                    logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
+                                if df_to_save.empty:
+                                    logging.warning("DataFrame이 비어있어 해오름 이미지 URL을 적용할 수 없습니다.")
+                        except Exception as url_apply_err:
+                            logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
+                            # 이 오류는 치명적이지 않으므로 계속 진행
+                        
+                        # Add Detailed Logging Before Saving
+                        if df_to_save is not None and not df_to_save.empty:
+                            logging.info("--- DataFrame Snapshot Before Excel Write ---")
+                            logging.info(f"Shape: {df_to_save.shape}")
+                            logging.info(f"Columns: {df_to_save.columns.tolist()}")
+                            logging.info(f"dtypes:\n{df_to_save.dtypes.to_string()}")
+                            # Log first 2 rows data, especially image columns
+                            image_cols_in_final = [col for col in IMAGE_COLUMNS if col in df_to_save.columns]
+                            log_limit = min(2, len(df_to_save))
+                            logging.info(f"Sample Data (first {log_limit} rows):")
                             try:
+                                # Use to_string for better formatting of rows/cols
+                                logging.info(f"\n{df_to_save.head(log_limit).to_string()}")
+                                # Specifically log types in image columns for first few rows
+                                if image_cols_in_final:
+                                    logging.info(f"Image Column Data Types (first {log_limit} rows):")
+                                    for i in range(log_limit):
+                                        for col in image_cols_in_final:
+                                            value = df_to_save.iloc[i][col]
+                                            logging.info(f"  Row {i}, Col '{col}': Type={type(value).__name__}, Value=\"{str(value)[:80]}...\"")
+                            except Exception as log_snap_err:
+                                logging.error(f"Could not log DataFrame snapshot: {log_snap_err}")
+                            logging.info("--- End DataFrame Snapshot ---")
+                        elif df_to_save is None:
+                            logging.warning("Skipping Excel write step because DataFrame finalization failed.")
+                        else: # df_to_save is empty
+                            logging.warning("DataFrame is empty after finalization. Excel files will have headers only.")
+
+                        # Only proceed to create Excel if finalization succeeded
+                        if df_to_save is not None:
+                            try:
+                                # Create Excel files (even if df_to_save is empty, to get headers)
+                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
                                 result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
-                                output_path = result_path if result_success else None
-                            except Exception as fallback_err:
-                                logging.error(f"Fallback method also failed: {fallback_err}")
-                                result_success, upload_success = False, False
-                                result_path, upload_path = None, None
+                                
+                                # --- Success/Failure Logging for Excel Creation ---
+                                if result_success and upload_success:
+                                    logging.info("Successfully created both Excel files:")
+                                    logging.info(f"- Result file (with images): {result_path}")
+                                    logging.info(f"- Upload file (links only): {upload_path}")
+
+                                    # --- Apply Filter to Upload File (Remove rows with no external data) ---
+                                    try:
+                                        # Check if upload path is valid before filtering
+                                        if upload_path and isinstance(upload_path, str):
+                                            logging.info(f"Applying filter to upload file: {upload_path}")
+                                            filter_applied = apply_filter_to_upload_excel(upload_path, config)
+                                            if filter_applied:
+                                                logging.info("Filter successfully applied to upload file.")
+                                            else:
+                                                logging.warning("Filter could not be applied to the upload file. Proceeding without this filter.")
+                                        else:
+                                            logging.warning(f"Invalid or missing upload path ({upload_path}), skipping upload file filter.")
+                                    except Exception as filter_err:
+                                        logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
+                                    # --- End Apply Filter ---
+
+                                    # --- Apply Excel Formatting (NEW) ---
+                                    try:
+                                        logging.info("Applying final Excel formatting to result and upload files...")
+                                        format_success_count, total_format_files = apply_excel_formatting(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None
+                                        )
+                                        
+                                        if format_success_count > 0:
+                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
+                                        else:
+                                            logging.warning("Excel formatting could not be applied to any files")
+                                    except Exception as format_err:
+                                        logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
+                                        # Don't treat formatting failure as a critical error, continue with the process
+                                    # --- End Excel Formatting ---
+
+                                    # --- Apply Price Highlighting to Excel files ---
+                                    try:
+                                        logging.info("Applying price difference highlighting to the generated Excel files...")
+                                        # Get threshold value from config, default to -1
+                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                        logging.info(f"Using price difference threshold: {threshold}")
+                                        
+                                        # Apply highlighting to both result and upload files
+                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            threshold=threshold
+                                        )
+                                        
+                                        if highlight_success_count > 0:
+                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
+                                        else:
+                                            logging.warning("Price highlighting could not be applied to any files")
+                                    except Exception as highlight_err:
+                                        logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
+                                        # Don't treat highlighting failure as a critical error, continue with the process
+                                    # --- End Price Highlighting ---
+                                    
+                                    # --- Fix Kogift pricing and Naver images in Excel files ---
+                                    try:
+                                        logging.info("Applying fixes to Kogift pricing and Naver images in the generated Excel files...")
+                                        
+                                        # Fix Kogift pricing in both files
+                                        kogift_fixed_files = []
+                                        if result_success and result_path:
+                                            logging.info(f"Fixing Kogift pricing in result file: {result_path}")
+                                            result_fixed_path = result_path.replace('.xlsx', '_kogift_fixed.xlsx')
+                                            fixed_result = fix_excel_kogift_images(result_path, result_fixed_path)
+                                            if fixed_result:
+                                                logging.info(f"Successfully fixed Kogift pricing in result file: {fixed_result}")
+                                                kogift_fixed_files.append(fixed_result)
+                                                result_path = fixed_result  # Update path for email attachment
+                                            else:
+                                                logging.warning("Failed to fix Kogift pricing in result file")
+                                                
+                                        if upload_success and upload_path:
+                                            logging.info(f"Fixing Kogift pricing in upload file: {upload_path}")
+                                            upload_fixed_path = upload_path.replace('.xlsx', '_kogift_fixed.xlsx')
+                                            fixed_upload = fix_excel_kogift_images(upload_path, upload_fixed_path)
+                                            if fixed_upload:
+                                                logging.info(f"Successfully fixed Kogift pricing in upload file: {fixed_upload}")
+                                                kogift_fixed_files.append(fixed_upload)
+                                                upload_path = fixed_upload  # Update path for email attachment
+                                            else:
+                                                logging.warning("Failed to fix Kogift pricing in upload file")
+                                        
+                                        # Fix Naver images in both files
+                                        naver_fixed_files = []
+                                        for file_path in kogift_fixed_files:
+                                            if os.path.exists(file_path):
+                                                logging.info(f"Fixing Naver images in: {file_path}")
+                                                naver_fixed_path = file_path.replace('_kogift_fixed.xlsx', '_fixed.xlsx')
+                                                fixed_naver = fix_excel_file(file_path, naver_fixed_path)
+                                                if fixed_naver:
+                                                    logging.info(f"Successfully fixed Naver images in file: {fixed_naver}")
+                                                    naver_fixed_files.append(fixed_naver)
+                                                    
+                                                    # Update result or upload path for email attachment
+                                                    if 'result' in file_path:
+                                                        result_path = fixed_naver
+                                                    elif 'upload' in file_path:
+                                                        upload_path = fixed_naver
+                                                else:
+                                                    logging.warning(f"Failed to fix Naver images in file: {file_path}")
+                                        
+                                        if kogift_fixed_files:
+                                            logging.info(f"Fixed Kogift pricing in {len(kogift_fixed_files)} files")
+                                        if naver_fixed_files:
+                                            logging.info(f"Fixed Naver images in {len(naver_fixed_files)} files")
+                                            
+                                        if progress_queue:
+                                            progress_queue.emit("status", f"Fixed Kogift pricing and Naver images in generated files")
+                                            
+                                    except Exception as fix_err:
+                                        logging.error(f"Error applying fixes to Excel files: {fix_err}", exc_info=True)
+                                        # Don't treat fixing failure as a critical error, continue with the process
+                                    # --- End Fix Kogift and Naver ---
+                                    
+                                    # --- Send Excel files by email ---
+                                    try:
+                                        # Check if email functionality is enabled in config
+                                        email_enabled = config.getboolean('Email', 'enabled', fallback=False)
+                                        
+                                        if email_enabled:
+                                            logging.info("Email functionality is enabled. Validating email configuration...")
+                                            # Validate email configuration
+                                            if validate_email_config(config):
+                                                logging.info("Email configuration is valid. Preparing to send email...")
+                                                
+                                                # Prepare paths for email
+                                                excel_paths = {
+                                                    'result': result_path if result_success else None,
+                                                    'upload': upload_path if upload_success else None
+                                                }
+                                                
+                                                # Get email subject prefix from config
+                                                subject_prefix = config.get('Email', 'email_subject_prefix', fallback="ShopRPA 결과")
+                                                
+                                                # Send email
+                                                email_sent = send_excel_by_email(excel_paths, config, subject_prefix)
+                                                
+                                                if email_sent:
+                                                    logging.info("Email sent successfully with Excel attachments.")
+                                                    if progress_queue:
+                                                        progress_queue.emit("status", "Email sent successfully.")
+                                                else:
+                                                    logging.warning("Failed to send email with Excel attachments.")
+                                                    if progress_queue:
+                                                        progress_queue.emit("status", "Failed to send email.")
+                                            else:
+                                                logging.warning("Email configuration is invalid. Email will not be sent.")
+                                                if progress_queue:
+                                                    progress_queue.emit("status", "Email configuration is invalid.")
+                                        else:
+                                            logging.info("Email functionality is disabled in configuration.")
+                                    except Exception as email_err:
+                                        logging.error(f"Error in email sending step: {email_err}", exc_info=True)
+                                        # Don't treat email failure as a critical error, continue with the process
+                                    # --- End Email Sending ---
+                                        
+                                    if progress_queue:
+                                        progress_queue.emit("status", "Output files saved successfully")
+                                        if isinstance(upload_path, str) and os.path.exists(upload_path):
+                                            progress_queue.emit("final_path", upload_path)
+                                            logging.info(f"Emitting final upload path: {upload_path}")
+                                        else:
+                                            logging.warning(f"Upload path is invalid or does not exist: {upload_path}")
+                                            progress_queue.emit("final_path", "Error: Upload file not found")
+                                else:
+                                    logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
+                                    if progress_queue:
+                                        progress_queue.emit("error", "Failed to create one or both Excel output files.")
+                                    output_path = None
+                            except Exception as save_err:
+                                error_msg = f"Failed during Excel creation step: {str(save_err)}"
+                                logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
+                                if progress_queue:
+                                    progress_queue.emit("error", error_msg)
                                 output_path = None
+                                result_success, upload_success = False, False
                 except Exception as finalize_err:
                     logging.error(f"Error during DataFrame finalization step: {finalize_err}", exc_info=True)
                     if progress_queue:
@@ -998,7 +993,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     result_success, upload_success = False, False
                     result_path, upload_path = None, None
                     output_path = None
-
             except Exception as e:
                 error_msg = f"Error during output file saving: {str(e)}"
                 logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
@@ -1013,121 +1007,28 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     output_path = None
                     result_success, upload_success = False, False
 
-                        # --- Final Summary ---
-                    total_time = time.time() - main_start_time
-                    logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
-                    
-                    # Direct emergency file creation if needed (as final safeguard)
-                    if (not output_path or not upload_path or 
-                        (output_path and not os.path.exists(output_path)) or 
-                        (upload_path and not os.path.exists(upload_path))):
-                        
-                        logging.warning("⚠️ No valid output files detected, creating emergency files")
-                        
-                        # Find a valid DataFrame to save
-                        df_to_save = None
-                        for df_var in ['filtered_df', 'formatted_df', 'df_to_save', 'haoreum_df']:
-                            if df_var in locals() and locals()[df_var] is not None and not locals()[df_var].empty:
-                                df_to_save = locals()[df_var]
-                                logging.info(f"Using {df_var} for emergency file")
-                                break
-                        
-                        if df_to_save is None:
-                            logging.warning("No valid DataFrames found, creating empty emergency file")
-                            df_to_save = pd.DataFrame({'emergency_data': ['No data available']})
-                        
-                        # Create output directory if needed
-                        output_dir = config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output')
-                        os.makedirs(output_dir, exist_ok=True)
-                        
-                        # Generate emergency filenames
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        base_name = os.path.splitext(os.path.basename(input_filename))[0] if input_filename else "emergency"
-                        
-                        emergency_result = os.path.join(output_dir, f"{base_name}_emergency_{timestamp}_result.xlsx")
-                        emergency_upload = os.path.join(output_dir, f"{base_name}_emergency_{timestamp}_upload.xlsx")
-                        
-                        try:
-                            # Save files directly using pandas
-                            df_to_save.to_excel(emergency_result, index=False)
-                            df_to_save.to_excel(emergency_upload, index=False)
-                            
-                            if os.path.exists(emergency_result) and os.path.exists(emergency_upload):
-                                logging.info(f"✅ Emergency files created successfully")
-                                output_path = emergency_result
-                                result_path = emergency_result
-                                upload_path = emergency_upload
-                            else:
-                                logging.error("❌ Failed to create emergency files")
-                        except Exception as e:
-                            logging.error(f"❌ Error creating emergency files: {e}")
-                    
-                    if progress_queue:
-                        # Make sure we have valid paths before emitting results
-                        if not output_path:
-                            logging.warning("Output path is None, setting fallback path")
-                            # Create a reasonable fallback path in case none was created earlier
-                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                            output_path = os.path.join(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'), f"fallback_result_{timestamp}.xlsx")
-                        
-                        if not upload_path:
-                            logging.warning("Upload path is None, creating fallback path")
-                            # Create upload path based on output path
-                            upload_path = output_path.replace('.xlsx', '_upload.xlsx')
-                            
-                            # Create a minimal fallback file if needed
-                            if not os.path.exists(upload_path) and filtered_df is not None and not filtered_df.empty:
-                                try:
-                                    # Ensure output directory exists
-                                    os.makedirs(os.path.dirname(upload_path), exist_ok=True)
-                                    # Save a fallback file with at least the key data
-                                    filtered_df.to_excel(upload_path, index=False)
-                                    logging.info(f"Created fallback upload file at: {upload_path}")
-                                except Exception as fallback_err:
-                                    logging.error(f"Failed to create fallback upload file: {fallback_err}")
-                        
-                        # Check if the upload path exists and emit appropriate message
-                        if os.path.exists(upload_path):
-                            logging.info(f"Emitting final upload path: {upload_path}")
-                            progress_queue.emit("final_path", upload_path)
-                        else:
-                            # If we have a result path, use that instead
-                            if result_path and os.path.exists(result_path):
-                                logging.info(f"Upload path not found, using result path instead: {result_path}")
-                                progress_queue.emit("final_path", result_path)
-                            else:
-                                # Last resort - use output path even if it doesn't exist
-                                logging.warning(f"No valid output files found, using base path: {output_path}")
-                                progress_queue.emit("final_path", output_path)
-                        
-                        # Set the output path to ensure it's returned
-                        if result_path and os.path.exists(result_path):
-                            output_path = result_path
-                        elif upload_path and os.path.exists(upload_path):
-                            output_path = upload_path
-
-                        # Send email if enabled and files exist
-                        try:
-                            if config.getboolean('Email', 'enabled', fallback=False):
-                                logging.info("Email sending is enabled, preparing to send results...")
-                                excel_paths = {
-                                    'result': result_path if result_path and os.path.exists(result_path) else None,
-                                    'upload': upload_path if upload_path and os.path.exists(upload_path) else None
-                                }
-                                
-                                if any(excel_paths.values()):
-                                    email_sent = send_excel_by_email(excel_paths, config)
-                                    if email_sent:
-                                        logging.info("Successfully sent email with Excel attachments")
-                                    else:
-                                        logging.warning("Failed to send email with Excel attachments")
-                                else:
-                                    logging.warning("No valid Excel files to attach to email")
-                        except Exception as email_err:
-                            logging.error(f"Error during email sending: {email_err}", exc_info=True)
-
-                        # Always mark the process as finished regardless of outcome
-                        progress_queue.emit("finished", "True")
+            # --- Final Summary ---
+            total_time = time.time() - main_start_time
+            logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
+            if progress_queue:
+                # First send the result path (which is now upload_path) if available
+                if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
+                    # Check if the specifically emitted upload_path exists
+                    final_emitted_path = upload_path # Use the variable we know holds the upload path
+                    if final_emitted_path and os.path.exists(final_emitted_path):
+                        logging.info(f"Emitting final upload path: {final_emitted_path}")
+                        # Ensure final_path signal emission logic remains consistent (already done above)
+                        # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
+                    else:
+                        logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
+                        progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
+                else:
+                    # If output_path wasn't even determined (earlier error maybe)
+                    logging.warning("No base output path available, cannot check for upload file.")
+                    progress_queue.emit("final_path", "Error: No output file created")
+                
+                # Then mark the process as finished
+                progress_queue.emit("finished", "True")
 
     except Exception as e:
         logging.error(f"Error in main: {e}", exc_info=True)
@@ -1169,72 +1070,3 @@ if __name__ == "__main__":
         run_cli()
     else:
         print("Please use --cli flag to run in command line mode, or use the GUI application.")
-
-def ensure_output_file_created(df, config, input_filename):
-    """
-    최종 파일 생성을 보장하는 함수 - 다른 모든 방법이 실패했을 때 실행
-    
-    Args:
-        df: 저장할 DataFrame
-        config: 설정 객체
-        input_filename: 입력 파일명
-        
-    Returns:
-        tuple: (result_path, upload_path) - 생성된 파일 경로
-    """
-    try:
-        logging.info("비상 파일 생성 함수 실행 (최후의 수단)")
-        
-        # 필수 디렉토리 확인 및 생성
-        output_dir = config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output')
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 타임스탬프로 고유한 파일명 생성
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # 입력 파일명에서 기본 파일명 추출
-        if input_filename:
-            base_filename = os.path.splitext(os.path.basename(input_filename))[0]
-        else:
-            base_filename = "emergency_output"
-        
-        # 저장할 DataFrame 확인
-        if df is None or df.empty:
-            logging.warning("저장할 DataFrame이 비어있습니다. 빈 DataFrame 생성")
-            df = pd.DataFrame({'emergency_column': ['비상 생성된 파일입니다']})
-        
-        # 결과 파일 경로 생성 및 저장
-        result_path = os.path.join(output_dir, f"{base_filename}_{timestamp}_result.xlsx")
-        upload_path = os.path.join(output_dir, f"{base_filename}_{timestamp}_upload.xlsx")
-        
-        # 직접 파일 저장 - pandas 엑셀 저장 이용
-        logging.info(f"비상 파일 직접 저장 시도: {result_path}")
-        df.to_excel(result_path, index=False)
-        df.to_excel(upload_path, index=False)
-        
-        # 파일 생성 확인
-        if os.path.exists(result_path) and os.path.exists(upload_path):
-            logging.info(f"비상 파일 생성 성공! 결과: {result_path}, 업로드: {upload_path}")
-            return result_path, upload_path
-        else:
-            raise Exception("파일이 생성되지 않았습니다")
-            
-    except Exception as e:
-        logging.error(f"비상 파일 생성 실패: {e}", exc_info=True)
-        
-        # 마지막 시도: 완전히 다른 경로에 최소 파일 생성
-        try:
-            alt_dir = os.path.join(os.path.expanduser("~"), "Documents")
-            os.makedirs(alt_dir, exist_ok=True)
-            
-            alt_result = os.path.join(alt_dir, f"emergency_result_{timestamp}.xlsx")
-            alt_upload = os.path.join(alt_dir, f"emergency_upload_{timestamp}.xlsx")
-            
-            pd.DataFrame({'emergency': ['emergency backup']}).to_excel(alt_result, index=False)
-            pd.DataFrame({'emergency': ['emergency backup']}).to_excel(alt_upload, index=False)
-            
-            logging.info(f"대체 위치에 비상 파일 생성 성공: {alt_result}")
-            return alt_result, alt_upload
-        except Exception as alt_err:
-            logging.error(f"대체 위치 비상 파일 생성도 실패: {alt_err}")
-            return None, None
