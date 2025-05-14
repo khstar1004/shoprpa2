@@ -32,6 +32,7 @@ from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
 from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
+from fix_kogift_images import fix_excel_kogift_images # Import for Kogift price fix
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -800,6 +801,29 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.info("Successfully created both Excel files:")
                                     logging.info(f"- Result file (with images): {result_path}")
                                     logging.info(f"- Upload file (links only): {upload_path}")
+
+                                    # --- Apply Kogift Price Fixes ---
+                                    try:
+                                        if result_path and os.path.exists(result_path):
+                                            logging.info(f"Applying Kogift price corrections to result file: {result_path}")
+                                            fixed_result_path = fix_excel_kogift_images(result_path, result_path) # Overwrite
+                                            if fixed_result_path:
+                                                logging.info(f"Kogift price corrections applied to result file. Path: {fixed_result_path}")
+                                                result_path = fixed_result_path # Update path (should be same if overwriting)
+                                            else:
+                                                logging.warning(f"Failed to apply Kogift price corrections to result file: {result_path}")
+                                        
+                                        if upload_path and os.path.exists(upload_path):
+                                            logging.info(f"Applying Kogift price corrections to upload file: {upload_path}")
+                                            fixed_upload_path = fix_excel_kogift_images(upload_path, upload_path) # Overwrite
+                                            if fixed_upload_path:
+                                                logging.info(f"Kogift price corrections applied to upload file. Path: {fixed_upload_path}")
+                                                upload_path = fixed_upload_path # Update path
+                                            else:
+                                                logging.warning(f"Failed to apply Kogift price corrections to upload file: {upload_path}")
+                                    except Exception as kogift_fix_err:
+                                        logging.error(f"Error applying Kogift price corrections: {kogift_fix_err}", exc_info=True)
+                                    # --- End Kogift Price Fixes ---
 
                                     # --- Apply Filter to Upload File (Remove rows with no external data) ---
                                     try:
