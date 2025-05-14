@@ -33,15 +33,6 @@ from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
 from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 
-# Import fix_naver_images module if available
-try:
-    from fix_naver_images import fix_excel_file, fix_naver_images
-    HAS_FIX_NAVER_MODULE = True
-    logging.info("Successfully imported fix_naver_images module")
-except ImportError:
-    HAS_FIX_NAVER_MODULE = False
-    logging.warning("fix_naver_images module not available. Naver image fixes will not be applied.")
-
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
     try:
@@ -826,70 +817,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
                                     # --- End Apply Filter ---
 
-                                    # --- Apply Fix Naver Images (NEW) ---
-                                    try:
-                                        logging.info("Applying Naver image fixes to result and upload files...")
-                                        
-                                        # Apply fixes to result file
-                                        if HAS_FIX_NAVER_MODULE and result_path and isinstance(result_path, str) and os.path.exists(result_path):
-                                            logging.info(f"Applying Naver image fixes to result file: {result_path}")
-                                            try:
-                                                # Create fixed file path
-                                                result_basename = os.path.basename(result_path)
-                                                filename, ext = os.path.splitext(result_basename)
-                                                fixed_result_path = os.path.join(os.path.dirname(result_path), f"{filename}_fixed{ext}")
-                                                
-                                                # Apply fixes
-                                                fixed_result = fix_excel_file(result_path, fixed_result_path)
-                                                
-                                                if fixed_result and os.path.exists(fixed_result):
-                                                    logging.info(f"Successfully applied Naver image fixes to result file. Fixed file: {fixed_result}")
-                                                    # Replace original file with fixed file
-                                                    try:
-                                                        shutil.move(fixed_result, result_path)
-                                                        logging.info(f"Replaced original result file with fixed version")
-                                                    except Exception as move_err:
-                                                        logging.error(f"Error replacing original result file: {move_err}")
-                                                else:
-                                                    logging.warning("Failed to apply Naver image fixes to result file")
-                                            except Exception as result_fix_err:
-                                                logging.error(f"Error applying Naver image fixes to result file: {result_fix_err}", exc_info=True)
-                                        
-                                        # Apply fixes to upload file
-                                        if HAS_FIX_NAVER_MODULE and upload_path and isinstance(upload_path, str) and os.path.exists(upload_path):
-                                            logging.info(f"Applying Naver image fixes to upload file: {upload_path}")
-                                            try:
-                                                # Create fixed file path
-                                                upload_basename = os.path.basename(upload_path)
-                                                filename, ext = os.path.splitext(upload_basename)
-                                                fixed_upload_path = os.path.join(os.path.dirname(upload_path), f"{filename}_fixed{ext}")
-                                                
-                                                # Apply fixes
-                                                fixed_upload = fix_excel_file(upload_path, fixed_upload_path)
-                                                
-                                                if fixed_upload and os.path.exists(fixed_upload):
-                                                    logging.info(f"Successfully applied Naver image fixes to upload file. Fixed file: {fixed_upload}")
-                                                    # Replace original file with fixed file
-                                                    try:
-                                                        shutil.move(fixed_upload, upload_path)
-                                                        logging.info(f"Replaced original upload file with fixed version")
-                                                    except Exception as move_err:
-                                                        logging.error(f"Error replacing original upload file: {move_err}")
-                                                else:
-                                                    logging.warning("Failed to apply Naver image fixes to upload file")
-                                            except Exception as upload_fix_err:
-                                                logging.error(f"Error applying Naver image fixes to upload file: {upload_fix_err}", exc_info=True)
-                                        
-                                        # Log summary of Naver image fixes
-                                        if HAS_FIX_NAVER_MODULE:
-                                            logging.info("Completed Naver image fixes for Excel files")
-                                            if progress_queue:
-                                                progress_queue.emit("status", "Completed Naver image fixes for Excel files")
-                                    except Exception as fix_naver_err:
-                                        logging.error(f"Error in Naver image fix step: {fix_naver_err}", exc_info=True)
-                                        # Don't treat this failure as a critical error, continue with the process
-                                    # --- End Fix Naver Images ---
-
                                     # --- Apply Excel Formatting (NEW) ---
                                     try:
                                         logging.info("Applying final Excel formatting to result and upload files...")
@@ -933,7 +860,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
                                         # Don't treat highlighting failure as a critical error, continue with the process
                                     # --- End Price Highlighting ---
-
+                                    
                                     # --- Send Excel files by email ---
                                     try:
                                         # Check if email functionality is enabled in config

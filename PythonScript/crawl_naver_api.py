@@ -1236,34 +1236,12 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
             # First check for CAPTCHA
             await page.goto(first_item.get('link'), wait_until='networkidle', timeout=30000)
             
-            # Check for CAPTCHA using multiple selectors
-            captcha_selectors = [
-                'form#captcha_form', 
-                'img[alt*="captcha"]',
-                'div.captcha_wrap',
-                'input[name="captchaBotKey"]',
-                'div[class*="captcha"]',
-                'iframe[src*="captcha"]',
-                'div[class*="bot-check"]',
-                'div[class*="security-check"]'
-            ]
-            
-            has_captcha = False
-            for selector in captcha_selectors:
-                if await page.locator(selector).count() > 0:
-                    has_captcha = True
-                    logger.info(f"CAPTCHA detected for '{product_name}' using selector: {selector}")
-                    break
+            # Check for CAPTCHA using handle_captcha function
+            has_captcha = await handle_captcha(page)
             
             if has_captcha:
                 logger.info(f"CAPTCHA detected for '{product_name}'. Skipping further crawling and using API data only.")
                 result_data['has_captcha'] = True
-                # TODO: Future enhancement - Implement CAPTCHA handling logic here
-                # Potential approaches:
-                # 1. Use CAPTCHA solving services
-                # 2. Implement browser fingerprinting
-                # 3. Use proxy rotation
-                # 4. Implement delay and retry mechanism
                 # Don't attempt any further crawling, just use the API data
             else:
                 # No CAPTCHA, proceed with normal crawling
@@ -1687,40 +1665,6 @@ def load_config(config_file: str = None) -> configparser.ConfigParser:
         config.read(config_file, encoding='utf-8')
     
     return config
-
-def create_test_dataframe() -> pd.DataFrame:
-    """테스트용 데이터프레임 생성"""
-    test_data = {
-        '상품명': [
-            '판촉물 볼펜 100개',
-            '기념품 텀블러 맞춤제작',
-            '답례품 수건 단체주문',
-            '일반 마우스',
-            '일반 키보드'
-        ],
-        '상품구분': [
-            '판촉물',
-            '기념품',
-            '답례품',
-            '일반',
-            '일반'
-        ],
-        '기준단가': [
-            1000,
-            5000,
-            3000,
-            15000,
-            30000
-        ],
-        '네이버상품URL': [
-            'https://search.shopping.naver.com/catalog/26827347522',
-            'https://search.shopping.naver.com/catalog/30176542618',
-            'https://search.shopping.naver.com/catalog/28112237522',
-            'https://search.shopping.naver.com/catalog/47861603392',
-            'https://search.shopping.naver.com/catalog/39792524949'
-        ]
-    }
-    return pd.DataFrame(test_data)
 
 if __name__ == "__main__":
     # Set up logging

@@ -525,8 +525,8 @@ async def extract_price_table(page, product_url, timeout=30000):
                 if has_vat:
                     result_df.attrs['vat_excluded'] = True
                 
-                # 수량 기준으로 정렬 (내림차순 - 수량이 많을수록 단가가 낮아지는 특성 반영)
-                result_df = result_df.sort_values('수량', ascending=False)
+                # 수량 기준으로 정렬
+                result_df = result_df.sort_values('수량')
                 return result_df
         
         # 다른 선택자 시도
@@ -617,8 +617,8 @@ async def extract_price_table(page, product_url, timeout=30000):
                             result_df['수량'] = result_df['수량'].astype(int)
                             result_df['단가'] = result_df['단가'].astype(int)
                             
-                            # 수량 기준 정렬 (내림차순 - 수량이 많을수록 단가가 낮아지는 특성 반영)
-                            result_df = result_df.sort_values('수량', ascending=False)
+                            # 수량 기준 정렬
+                            result_df = result_df.sort_values('수량')
                             
                             if not result_df.empty:
                                 return result_df
@@ -1418,7 +1418,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         if price_table is not None and not price_table.empty:
                                             logger.info(f"Using price table for {item_data['name']}, table has {len(price_table)} rows")
                                             
-                                            # 테이블에서 최소 수량 확인 (수량이 적은 순서대로 정렬되어 있으므로 첫 번째 행이 최소 수량)
+                                            # 테이블에서 최소 수량 확인
                                             min_table_quantity = price_table['수량'].min()
                                             logger.info(f"테이블 최소 수량: {min_table_quantity}개")
                                             
@@ -1452,12 +1452,12 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                                     logger.info(f"수량 {qty}개 정확히 일치: {exact_price}원")
                                                     continue
                                                 
-                                                # 정확히 일치하지 않는 경우, 주문 수량보다 작거나 같은 최대 수량의 가격을 찾기
-                                                # 판촉물은 수량이 많을수록 단가가 낮아지는 특성을 고려
-                                                lower_qty_rows = price_table[price_table['수량'] <= qty]
-                                                if not lower_qty_rows.empty:
+                                                # 정확히 일치하지 않는 경우, 범위에 맞는 가격 찾기
+                                                # 예: 100개=5천원, 200개=4천원 일 때 120개는 5천원을 적용
+                                                lower_rows = price_table[price_table['수량'] <= qty]
+                                                if not lower_rows.empty:
                                                     # 주문 수량보다 작거나 같은 최대 수량 찾기
-                                                    max_lower_qty = lower_qty_rows['수량'].max()
+                                                    max_lower_qty = lower_rows['수량'].max()
                                                     max_lower_row = price_table[price_table['수량'] == max_lower_qty]
                                                     max_lower_price = max_lower_row['단가'].values[0]
                                                     
@@ -1466,7 +1466,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                                         'price_with_vat': round(max_lower_price * 1.1),
                                                         'exact_match': False,
                                                         'actual_quantity': max_lower_qty,
-                                                        'note': f"구간 {max_lower_qty}개 가격 적용"
+                                                        'note': f"구간 가격({max_lower_qty}개 이상) 적용"
                                                     }
                                                     logger.info(f"수량 {qty}개는 {max_lower_qty}개 구간 가격 적용: {max_lower_price}원")
                                                     continue
