@@ -1363,7 +1363,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         base_name = os.path.splitext(output_path_base)[0]
         # Remove any existing timestamp from the base name
         base_name = re.sub(r'_\d{8}_\d{6}$', '', base_name)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create result file path (with images)
         result_path = f"{base_name}_result_{timestamp}.xlsx"
@@ -2053,7 +2053,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         base_name = os.path.splitext(output_path_base)[0]
         # Remove any existing timestamp from the base name
         base_name = re.sub(r'_\d{8}_\d{6}$', '', base_name)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create result file path (with images)
         result_path = f"{base_name}_result_{timestamp}.xlsx"
