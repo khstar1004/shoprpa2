@@ -832,8 +832,40 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if not formatted_df.empty:
                         logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
 
-                    # Perform image integration
+                    # Perform image integration with improved handling
+                    logging.info("Starting image integration with improved URL handling...")
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
+                    
+                    # Convert image data dictionary to proper format for Excel with enhanced URL handling
+                    for col in IMAGE_COLUMNS:
+                        if col in integrated_df.columns:
+                            integrated_df[col] = integrated_df[col].apply(
+                                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
+                                    x if isinstance(x, str) and x.startswith(('http://', 'https://')) else None
+                                )
+                            )
+                            # Log sample of processed image URLs
+                            sample_urls = integrated_df[col].head()
+                            logging.info(f"Sample of processed {col} URLs:\n{sample_urls.to_string()}")
+                    
+                    # Ensure proper image URL format for Naver images
+                    if '네이버 이미지' in integrated_df.columns:
+                        integrated_df['네이버 이미지'] = integrated_df['네이버 이미지'].apply(
+                            lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
+                                x if isinstance(x, str) and x.startswith('http') else None
+                            )
+                        )
+                        
+                    # Clean up any remaining dictionary formats in image columns
+                    image_columns = ['본사 이미지', '네이버 이미지', '고려기프트 이미지']
+                    for col in image_columns:
+                        if col in integrated_df.columns:
+                            integrated_df[col] = integrated_df[col].apply(
+                                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
+                                    x if isinstance(x, str) else None
+                                )
+                            )
+                    
                     logging.info("Image integration and filtering complete.")
 
                     # Log DataFrame state AFTER integration
@@ -1057,7 +1089,28 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         # Don't treat fixing failure as a critical error, continue with the process
                                     # --- End Naver Image Fixes ---
 
-                                    # --- Apply Excel Formatting (NEW) ---
+                                    # --- Apply Price Highlighting First ---
+                                    try:
+                                        logging.info("Applying price difference highlighting to Excel files...")
+                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                        logging.info(f"Using price difference threshold: {threshold}")
+                                        
+                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            threshold=threshold
+                                        )
+                                        
+                                        if highlight_success_count > 0:
+                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
+                                        else:
+                                            logging.warning("Price highlighting could not be applied to any files")
+                                    except Exception as highlight_err:
+                                        logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
+                                    
+                                    # --- Apply Final Excel Formatting ---
                                     try:
                                         logging.info("Applying final Excel formatting to result and upload files...")
                                         format_success_count, total_format_files = apply_excel_formatting(
