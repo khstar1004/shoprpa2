@@ -30,45 +30,34 @@ import ast
 import random
 from playwright.async_api import Page
 
-# Import the new NaverImageHandler
-try:
-    from naver_image_handler import NaverImageHandler, fix_naver_image_data
-except ImportError:
-    # If direct import fails, try from PythonScript prefix
-    try:
-        from PythonScript.naver_image_handler import NaverImageHandler, fix_naver_image_data
-    except ImportError:
-        # Define a simple version as fallback
-        logging.warning("Unable to import NaverImageHandler module. Using simplified version.")
+def fix_naver_image_data(img_data):
+    """Fallback version when module is not available"""
+    return img_data
+
+class NaverImageHandler:
+    """Simplified fallback version"""
+    def __init__(self, config=None):
+        self.image_dir = Path('C:\\RPA\\Image\\Main\\Naver')
+        self.image_dir.mkdir(parents=True, exist_ok=True)
         
-        def fix_naver_image_data(img_data):
-            """Fallback version when module is not available"""
-            return img_data
+    def fix_image_data_in_dataframe(self, df, naver_img_column='네이버 이미지'):
+        """Simplified version"""
+        return df
+        
+    def transform_for_upload(self, df, result_column='네이버 이미지', upload_column='네이버쇼핑(이미지링크)'):
+        """Simplified version"""
+        if result_column not in df.columns:
+            return df
+        if upload_column not in df.columns:
+            df[upload_column] = '-'
             
-        class NaverImageHandler:
-            """Simplified fallback version"""
-            def __init__(self, config=None):
-                self.image_dir = Path('C:\\RPA\\Image\\Main\\Naver')
-                self.image_dir.mkdir(parents=True, exist_ok=True)
-                
-            def fix_image_data_in_dataframe(self, df, naver_img_column='네이버 이미지'):
-                """Simplified version"""
-                return df
-                
-            def transform_for_upload(self, df, result_column='네이버 이미지', upload_column='네이버쇼핑(이미지링크)'):
-                """Simplified version"""
-                if result_column not in df.columns:
-                    return df
-                if upload_column not in df.columns:
-                    df[upload_column] = '-'
-                    
-                for idx in range(len(df)):
-                    img_data = df.loc[idx, result_column]
-                    if isinstance(img_data, dict) and 'url' in img_data:
-                        df.loc[idx, upload_column] = img_data['url']
-                    else:
-                        df.loc[idx, upload_column] = '-'
-                return df
+        for idx in range(len(df)):
+            img_data = df.loc[idx, result_column]
+            if isinstance(img_data, dict) and 'url' in img_data:
+                df.loc[idx, upload_column] = img_data['url']
+            else:
+                df.loc[idx, upload_column] = '-'
+        return df
 
 # Set up logging
 logging.basicConfig(
@@ -344,148 +333,72 @@ def validate_and_fix_naver_image_placement(df: pd.DataFrame) -> pd.DataFrame:
     # Process each row
     for idx in result_df.index:
         try:
+            # 1. 네이버 상품 정보 확인 (네이버 쇼핑 링크)
+            has_product_info = False
+            if naver_link_col in result_df.columns and pd.notna(result_df.at[idx, naver_link_col]):
+                link = str(result_df.at[idx, naver_link_col]).strip()
+                if link and link not in ['-', 'None', ''] and link.startswith(('http://', 'https://')):
+                    has_product_info = True
+            
+            # 2. 네이버 상품 정보가 없으면 이미지도 삭제
+            if not has_product_info:
+                if naver_img_col in result_df.columns:
+                    result_df.at[idx, naver_img_col] = '-'
+                    removed_count += 1
+                    logger.debug(f"Row {idx}: Removed Naver image due to missing product info")
+                continue
+            
+            # 3. 이미지 데이터 확인
             img_data = result_df.at[idx, naver_img_col]
             
-            # Skip empty or invalid data
+            # 4. 빈 데이터면 건너뛰기
             if pd.isna(img_data) or img_data == '-':
                 continue
                 
-            # Check if the row has a matching score that indicates it passed matching
-            passed_matching = False
-            if '네이버 유사도' in result_df.columns and pd.notna(result_df.at[idx, '네이버 유사도']):
-                try:
-                    score = float(result_df.at[idx, '네이버 유사도'])
-                    # Typically scores above 0.5 are considered matches
-                    if score >= 0.5:
-                        passed_matching = True
-                except (ValueError, TypeError):
-                    pass
+            # 5. 이미지 URL 유효성 검사
+            has_valid_url = False
             
-            # Always keep images that passed matching
-            if passed_matching:
-                fixed_count += 1
-                continue
-                
-            # Handle dictionary format - use improved validation logic
             if isinstance(img_data, dict):
-                # Check URL and ensure it's valid
                 url = img_data.get('url', '')
-                local_path = img_data.get('local_path', '')
-                
-                # Check if URL is valid (improved validation)
-                url_valid = False
                 if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
-                    # Reject known problematic URL patterns
-                    if 'pstatic.net/front/' not in url:
-                        url_valid = True
-                
-                # Check if local path exists
-                path_valid = False
-                if local_path and os.path.exists(local_path):
-                    path_valid = True
-                    
-                # Decision logic
-                if url_valid or path_valid:
-                    # Make sure we have a consistent structure
-                    fixed_data = fix_naver_image_data(img_data)
-                    result_df.at[idx, naver_img_col] = fixed_data
-                    fixed_count += 1
-                else:
-                    # No valid URL or path - try to generate a URL from product link
-                    has_product_link = False
-                    product_url = None
-                    
-                    # Check for Naver link
-                    if naver_link_col in result_df.columns and pd.notna(result_df.at[idx, naver_link_col]):
-                        product_url = str(result_df.at[idx, naver_link_col]).strip()
-                        if product_url and product_url not in ['-', 'None', ''] and product_url.startswith(('http://', 'https://')):
-                            has_product_link = True
-                    
-                    # Try alternative link columns
-                    if not has_product_link:
-                        for alt_col in ['네이버 링크', '네이버 상품 URL']:
-                            if alt_col in result_df.columns and pd.notna(result_df.at[idx, alt_col]):
-                                product_url = str(result_df.at[idx, alt_col]).strip()
-                                if product_url and product_url not in ['-', 'None', ''] and product_url.startswith(('http://', 'https://')):
-                                    has_product_link = True
-                                    break
-                    
-                    if has_product_link:
-                        # Extract product ID to generate image URL
-                        product_id = None
-                        patterns = [
-                            r'main_(\d+)/(\d+)',  # Standard pattern: main_1234567/1234567.jpg
-                            r'cat_id=(\d+)',      # Catalog ID pattern
-                            r'products/(\d+)',    # Product detail page pattern
-                            r'id=(\d+)'           # Simple ID pattern
-                        ]
-                        
-                        for pattern in patterns:
-                            match = re.search(pattern, product_url)
-                            if match:
-                                product_id = match.group(1)
-                                break
-                        
-                        if product_id:
-                            # Generate image URL from product ID
-                            generated_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                            
-                            # Update image data with generated URL
-                            img_data['url'] = generated_url
-                            img_data['source'] = 'naver'
-                            if 'score' not in img_data:
-                                img_data['score'] = 0.7  # Moderate confidence for generated URLs
-                            
-                            result_df.at[idx, naver_img_col] = img_data
-                            fixed_count += 1
-                            logger.info(f"Row {idx}: Generated Naver image URL from product link")
-                        else:
-                            # No product ID found, remove the image data
-                            result_df.at[idx, naver_img_col] = '-'
-                            removed_count += 1
-                    else:
-                        # No product link to generate URL from, remove the image data
-                        result_df.at[idx, naver_img_col] = '-'
-                        removed_count += 1
+                    if 'shopping-phinf.pstatic.net' in url:
+                        has_valid_url = True
+            elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
+                if 'shopping-phinf.pstatic.net' in img_data:
+                    has_valid_url = True
             
-            # Handle string format (URL)
-            elif isinstance(img_data, str):
-                if img_data.startswith(('http://', 'https://')):
-                    if 'pstatic.net/front/' in img_data:
-                        # Remove unreliable front URL
-                        result_df.at[idx, naver_img_col] = '-'
-                        removed_count += 1
-                    else:
-                        # Create proper dictionary structure
-                        clean_img_data = {
-                            'url': img_data,
-                            'local_path': '',  # No local path available
-                            'source': 'naver',
-                            'score': 0.7  # Moderate confidence for direct URLs
-                        }
-                        result_df.at[idx, naver_img_col] = clean_img_data
-                        fixed_count += 1
-                elif os.path.exists(img_data):
-                    # It's a local file path
-                    clean_img_data = {
-                        'url': '',  # No URL available
-                        'local_path': img_data,
-                        'source': 'naver',
-                        'score': 0.8  # Higher confidence for local files
-                    }
-                    result_df.at[idx, naver_img_col] = clean_img_data
-                    fixed_count += 1
-                else:
-                    # Not a valid URL or path
-                    result_df.at[idx, naver_img_col] = '-'
-                    removed_count += 1
-            else:
-                # Invalid data type
+            # 6. 이미지 링크가 없거나 유효하지 않으면 이미지 제거
+            if not has_valid_url:
                 result_df.at[idx, naver_img_col] = '-'
                 removed_count += 1
+                logger.debug(f"Row {idx}: Removed invalid Naver image URL")
+            else:
+                # 7. 유효한 이미지 정보면 형식 통일
+                if isinstance(img_data, dict):
+                    # URL 및 필요한 정보만 유지
+                    clean_data = {
+                        'url': img_data.get('url', ''),
+                        'local_path': img_data.get('local_path', ''),
+                        'source': 'naver',
+                        'score': img_data.get('score', 0.7)
+                    }
+                    result_df.at[idx, naver_img_col] = clean_data
+                elif isinstance(img_data, str):
+                    # 문자열 URL을 딕셔너리 형태로 변환
+                    clean_data = {
+                        'url': img_data,
+                        'local_path': '',
+                        'source': 'naver',
+                        'score': 0.7
+                    }
+                    result_df.at[idx, naver_img_col] = clean_data
+                
+                fixed_count += 1
+                logger.debug(f"Row {idx}: Fixed Naver image format")
                 
         except Exception as e:
             logger.error(f"Error processing row {idx}: {e}")
+            # 오류 발생시 안전하게 이미지 제거
             result_df.at[idx, naver_img_col] = '-'
             removed_count += 1
             

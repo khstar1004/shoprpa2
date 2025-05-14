@@ -60,9 +60,8 @@ def find_appropriate_price(quantity_prices, target_quantity):
         except (ValueError, TypeError):
             continue
     
-    # Get available quantities, sorted in descending order (larger quantities first)
-    # For promotional products, larger quantities have lower per-unit prices
-    quantities = sorted(qty_prices.keys(), reverse=True)
+    # Get available quantities, sorted in ascending order
+    quantities = sorted(qty_prices.keys())
     if not quantities:
         return None, None, False, None, "No valid quantity tiers found"
     
@@ -77,36 +76,32 @@ def find_appropriate_price(quantity_prices, target_quantity):
             "Exact match"
         )
     
-    # For promotional products, if quantity is below the smallest tier,
-    # we should use the smallest tier price
-    min_qty = min(quantities)
-    if target_quantity < min_qty:
-        price_info = qty_prices[min_qty]
+    # Find the appropriate tier: smallest quantity that's greater than or equal to target
+    # 판촉물 사이트 특성: 기본수량보다 큰 수량 중 가장 작은 수량의 가격 적용
+    larger_quantities = [qty for qty in quantities if qty >= target_quantity]
+    
+    if larger_quantities:
+        # 타겟 수량보다 큰 수량들 중 최소값 사용
+        best_qty = min(larger_quantities)
+        price_info = qty_prices[best_qty]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
             False,
-            min_qty,
-            f"Using minimum tier {min_qty}"
+            best_qty,
+            f"Using next tier up {best_qty} for quantity {target_quantity}"
         )
-    
-    # Find the appropriate tier: largest quantity that's not greater than target
-    # Sort in ascending order for this search
-    quantities_asc = sorted(quantities)
-    best_qty = quantities_asc[0]  # Initialize with smallest tier as fallback
-    for qty in quantities_asc:
-        if qty > target_quantity:
-            break
-        best_qty = qty
-    
-    price_info = qty_prices[best_qty]
-    return (
-        price_info.get('price', 0),
-        price_info.get('price_with_vat', 0),
-        False,
-        best_qty,
-        f"Using tier {best_qty}"
-    )
+    else:
+        # 모든 수량보다 타겟 수량이 크면, 가장 큰 수량의 가격 사용
+        max_qty = max(quantities)
+        price_info = qty_prices[max_qty]
+        return (
+            price_info.get('price', 0),
+            price_info.get('price_with_vat', 0),
+            False,
+            max_qty,
+            f"Target quantity {target_quantity} exceeds all tiers, using largest tier {max_qty}"
+        )
 
 def parse_complex_value(value):
     """Parse string representations of dictionaries or complex objects."""
