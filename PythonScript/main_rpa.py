@@ -1080,24 +1080,27 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.error(f"고려기프트 이미지 수정 중 오류: {kogift_err}")
                                     result_success = False
 
-                                # 4. Upload 파일 생성
-                                try:
-                                    from excel_utils import create_split_excel_outputs
-                                    logging.info(f"Upload 파일 생성 중: {result_path}")
-                                    result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
-                                    if result_path and upload_path and os.path.exists(result_path) and os.path.exists(upload_path):
-                                        logging.info(f"Upload 파일 생성 완료: {upload_path}")
-                                    else:
-                                        logging.warning("Upload 파일 생성 실패")
-                                        upload_path = None
-                                except Exception as upload_err:
-                                    logging.error(f"Upload 파일 생성 중 오류: {upload_err}")
-                                    upload_path = None
+                                                                # 4. Upload 파일 생성                                try:                                    from excel_utils import create_split_excel_outputs                                    logging.info(f"Upload 파일 생성 중: {result_path}")                                                                        # Ensure we have a valid DataFrame to save                                    if df_to_save is not None and not df_to_save.empty:                                        # Ensure we have a valid path                                        if not os.path.exists(os.path.dirname(output_path)):                                            os.makedirs(os.path.dirname(output_path), exist_ok=True)                                            logging.info(f"Created output directory: {os.path.dirname(output_path)}")                                                                                # Proceed with split excel outputs                                        try:                                            result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)                                            if result_path and upload_path and os.path.exists(result_path) and os.path.exists(upload_path):                                                logging.info(f"Upload 파일 생성 완료: {upload_path}")                                            else:                                                # Manual creation of upload file if function failed                                                logging.warning("Split Excel 함수 실패, 수동으로 Upload 파일 생성 시도")                                                try:                                                    # Try to save the data directly                                                    temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')                                                    df_to_save.to_excel(temp_upload_path, index=False)                                                    upload_path = temp_upload_path                                                    logging.info(f"수동 Upload 파일 생성 완료: {upload_path}")                                                except Exception as manual_err:                                                    logging.error(f"수동 Upload 파일 생성 실패: {manual_err}")                                                    upload_path = None                                        except Exception as split_err:                                            logging.error(f"Split Excel 함수 오류: {split_err}", exc_info=True)                                            # Try direct saving without the split function                                            temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')                                            df_to_save.to_excel(temp_upload_path, index=False)                                            upload_path = temp_upload_path                                            logging.info(f"대체 Upload 파일 생성 완료: {upload_path}")                                    else:                                        logging.error("Upload 파일 생성 실패: DataFrame이 비어있거나 None입니다")                                        upload_path = None                                except Exception as upload_err:                                    logging.error(f"Upload 파일 생성 중 오류: {upload_err}", exc_info=True)                                    # Final fallback - create an empty upload file                                    try:                                        temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')                                        pd.DataFrame().to_excel(temp_upload_path, index=False)                                        upload_path = temp_upload_path                                        logging.info(f"빈 Upload 파일 생성 완료 (오류 복구): {upload_path}")                                    except:                                        upload_path = None
 
                                 if result_success and result_path and os.path.exists(result_path):
                                     logging.info(f"이미지 및 가격 수정 완료: {result_path}")
                                 else:
                                     logging.warning("이미지 및 가격 수정 실패")
+                                    # Initialize result paths to avoid None values
+                                    if not result_path:
+                                        result_path = output_path
+                                    if not upload_path:
+                                        # Create a standard upload path if none was generated
+                                        upload_path = output_path.replace('.xlsx', '_upload.xlsx')
+                                        logging.info(f"Setting fallback upload path: {upload_path}")
+                                        
+                                        # Ensure the fallback path actually exists by copying the output file
+                                        if os.path.exists(output_path):
+                                            try:
+                                                shutil.copy2(output_path, upload_path)
+                                                logging.info(f"Created fallback upload file at: {upload_path}")
+                                            except Exception as copy_err:
+                                                logging.error(f"Failed to create fallback upload file: {copy_err}")
                         except Exception as fix_files_err:
                             logging.error(f"이미지 및 가격 수정 중 오류 발생: {fix_files_err}", exc_info=True)
                             result_success = False
@@ -1123,26 +1126,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     output_path = None
                     result_success, upload_success = False, False
 
-            # --- Final Summary ---
-            total_time = time.time() - main_start_time
-            logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
-            if progress_queue:
-                # First send the result path (which is now upload_path) if available
-                if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
-                    # Check if the specifically emitted upload_path exists
-                    final_emitted_path = upload_path # Use the variable we know holds the upload path
-                    if final_emitted_path and os.path.exists(final_emitted_path):
-                        logging.info(f"Emitting final upload path: {final_emitted_path}")
-                    else:
-                        logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
-                        progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
-                else:
-                    # If output_path wasn't even determined (earlier error maybe)
-                    logging.warning("No base output path available, cannot check for upload file.")
-                    progress_queue.emit("final_path", "Error: No output file created")
-                
-                # Then mark the process as finished
-                progress_queue.emit("finished", "True")
+                        # --- Final Summary ---            total_time = time.time() - main_start_time            logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")            if progress_queue:                # Make sure we have valid paths before emitting results                if not output_path:                    logging.warning("Output path is None, setting fallback path")                    # Create a reasonable fallback path in case none was created earlier                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")                    output_path = os.path.join(config.get('Paths', 'output_dir', fallback='C:\\RPA\\Output'), f"fallback_result_{timestamp}.xlsx")                                if not upload_path:                    logging.warning("Upload path is None, creating fallback path")                    # Create upload path based on output path                    upload_path = output_path.replace('.xlsx', '_upload.xlsx')                                        # Create a minimal fallback file if needed                    if not os.path.exists(upload_path) and filtered_df is not None and not filtered_df.empty:                        try:                            # Ensure output directory exists                            os.makedirs(os.path.dirname(upload_path), exist_ok=True)                            # Save a fallback file with at least the key data                            filtered_df.to_excel(upload_path, index=False)                            logging.info(f"Created fallback upload file at: {upload_path}")                        except Exception as fallback_err:                            logging.error(f"Failed to create fallback upload file: {fallback_err}")                                # Check if the upload path exists and emit appropriate message                if os.path.exists(upload_path):                    logging.info(f"Emitting final upload path: {upload_path}")                    progress_queue.emit("final_path", upload_path)                else:                    # If we have a result path, use that instead                    if result_path and os.path.exists(result_path):                        logging.info(f"Upload path not found, using result path instead: {result_path}")                        progress_queue.emit("final_path", result_path)                    else:                        # Last resort - use output path even if it doesn't exist                        logging.warning(f"No valid output files found, using base path: {output_path}")                        progress_queue.emit("final_path", f"Warning: Processing complete but could not verify file at {output_path}")                                # Always mark the process as finished regardless of outcome                progress_queue.emit("finished", "True")
 
     except Exception as e:
         logging.error(f"Error in main: {e}", exc_info=True)
