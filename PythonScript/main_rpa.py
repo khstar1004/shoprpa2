@@ -195,6 +195,38 @@ def apply_naver_image_fixes(result_path, upload_path, progress_queue=None):
     
     return fixed_result_path, fixed_upload_path
 
+def ensure_proper_image_format(df):
+    """
+    Ensure all image columns have proper format for Excel output
+    
+    Args:
+        df: DataFrame to process
+        
+    Returns:
+        DataFrame with standardized image format
+    """
+    try:
+        # Get list of image columns
+        image_columns = ['본사 이미지', '네이버 이미지', '고려기프트 이미지']
+        
+        # Process each image column
+        for col in image_columns:
+            if col in df.columns:
+                # Ensure all values are either valid URLs, valid file paths, or '-'
+                df[col] = df[col].apply(
+                    lambda x: x if (isinstance(x, str) and 
+                                   (x.startswith(('http://', 'https://')) or 
+                                    (os.path.exists(x) if not x.startswith(('http://', 'https://')) else True) or 
+                                    x == '-')) else '-'
+                )
+                logging.info(f"Standardized {col} column format")
+        
+        return df
+    except Exception as e:
+        logging.error(f"Error in ensure_proper_image_format: {e}", exc_info=True)
+        # Return original dataframe if error occurs
+        return df
+
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
     try:
