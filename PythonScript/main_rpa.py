@@ -836,34 +836,34 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     logging.info("Starting image integration with improved URL handling...")
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     
-                    # Convert image data dictionary to proper format for Excel with enhanced URL handling
+                    # Apply standardized image format
+                    integrated_df = ensure_proper_image_format(integrated_df)
+                    
+                    # Log the results of image processing
                     for col in IMAGE_COLUMNS:
                         if col in integrated_df.columns:
-                            integrated_df[col] = integrated_df[col].apply(
-                                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
-                                    x if isinstance(x, str) and x.startswith(('http://', 'https://')) else None
-                                )
+                            sample_data = integrated_df[col].head()
+                            logging.info(f"Sample of processed {col} data:\n{sample_data.to_string()}")
+                            
+                            # Verify image paths and URLs
+                            valid_paths = integrated_df[col].apply(
+                                lambda x: (isinstance(x, str) and 
+                                         (os.path.exists(x) or x.startswith(('http://', 'https://'))) and 
+                                         x != '-')
                             )
-                            # Log sample of processed image URLs
-                            sample_urls = integrated_df[col].head()
-                            logging.info(f"Sample of processed {col} URLs:\n{sample_urls.to_string()}")
+                            valid_count = valid_paths.sum()
+                            logging.info(f"Column {col}: Found {valid_count} valid image paths/URLs")
                     
-                    # Ensure proper image URL format for Naver images
-                    if '네이버 이미지' in integrated_df.columns:
-                        integrated_df['네이버 이미지'] = integrated_df['네이버 이미지'].apply(
-                            lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
-                                x if isinstance(x, str) and x.startswith('http') else None
-                            )
-                        )
-                        
-                    # Clean up any remaining dictionary formats in image columns
+                    # Final verification of image data format
                     image_columns = ['본사 이미지', '네이버 이미지', '고려기프트 이미지']
                     for col in image_columns:
                         if col in integrated_df.columns:
+                            # Ensure all values are either valid URLs, valid file paths, or '-'
                             integrated_df[col] = integrated_df[col].apply(
-                                lambda x: x['url'] if isinstance(x, dict) and 'url' in x else (
-                                    x if isinstance(x, str) else None
-                                )
+                                lambda x: x if (isinstance(x, str) and 
+                                              (x.startswith(('http://', 'https://')) or 
+                                               (os.path.exists(x) if not x.startswith(('http://', 'https://')) else True) or 
+                                               x == '-')) else '-'
                             )
                     
                     logging.info("Image integration and filtering complete.")

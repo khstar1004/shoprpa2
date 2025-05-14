@@ -2145,6 +2145,67 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"Kogift image matching completed. Processed {rows_processed} rows, fixed {fixed_count} image links.")
     return df
 
+def ensure_proper_image_format(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    이미지 데이터 형식을 통일화하고 이미지가 Excel에 제대로 표시되도록 보장합니다.
+    
+    Args:
+        df: 처리할 DataFrame
+        
+    Returns:
+        이미지 형식이 통일화된 DataFrame
+    """
+    try:
+        result_df = df.copy()
+        image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+        
+        for col in image_columns:
+            if col not in result_df.columns:
+                continue
+                
+            def standardize_image_data(x):
+                if pd.isna(x) or x == '-' or x is None:
+                    return '-'
+                    
+                try:
+                    if isinstance(x, dict):
+                        # 딕셔너리 형식 처리
+                        if 'local_path' in x and x['local_path'] and os.path.exists(x['local_path']):
+                            return x['local_path']  # 로컬 파일 경로 우선 사용
+                        elif 'url' in x and x['url']:
+                            if isinstance(x['url'], str) and x['url'].startswith(('http://', 'https://')):
+                                return x['url']  # 유효한 URL 반환
+                        return '-'  # 유효하지 않은 딕셔너리
+                    elif isinstance(x, str):
+                        # 문자열 처리
+                        if x.startswith(('http://', 'https://')):
+                            return x  # URL 문자열
+                        elif os.path.exists(x):
+                            return x  # 로컬 파일 경로
+                        elif x == '-':
+                            return '-'
+                        return '-'  # 유효하지 않은 문자열
+                    return '-'  # 기타 타입
+                except Exception as e:
+                    logging.error(f"Error processing image data in {col}: {str(e)}")
+                    return '-'
+            
+            # 이미지 데이터 표준화 적용
+            result_df[col] = result_df[col].apply(standardize_image_data)
+            
+            # 결과 로깅
+            valid_urls = result_df[col].apply(lambda x: x != '-' and (x.startswith(('http://', 'https://')) or os.path.exists(x))).sum()
+            logging.info(f"Column {col}: {valid_urls} valid image paths/URLs found")
+            
+            # 샘플 데이터 로깅
+            sample = result_df[col].head()
+            logging.info(f"Sample of processed {col} data:\n{sample.to_string()}")
+            
+        return result_df
+    except Exception as e:
+        logging.error(f"Error in ensure_proper_image_format: {str(e)}")
+        return df  # 오류 발생 시 원본 반환
+
 def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
                             save_excel_output=False) -> pd.DataFrame:
     """
@@ -2168,23 +2229,27 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     df_filtered = filter_images_by_similarity(df_with_images, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
     
-    # FIXED: Added step to improve Kogift image matching
+    # Step 3: Improve Kogift image matching
     df_improved = improved_kogift_image_matching(df_filtered)
     logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_improved.shape}")
     
-    # Step 3: Save Excel output if requested
+    # Step 4: Ensure proper image format
+    df_formatted = ensure_proper_image_format(df_improved)
+    logger.info(f"Image format standardization completed. DataFrame shape: {df_formatted.shape}")
+    
+    # Step 5: Save Excel output if requested
     if save_excel_output:
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             excel_output = f"image_integration_result_{timestamp}.xlsx"
             
             # Create the Excel file with images
-            create_excel_with_images(df_improved, excel_output)
+            create_excel_with_images(df_formatted, excel_output)
             logger.info(f"Created Excel output file with images: {excel_output}")
         except Exception as e:
             logger.error(f"Error creating Excel output: {e}")
     
-    return df_improved
+    return df_formatted
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":
