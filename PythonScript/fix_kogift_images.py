@@ -60,9 +60,8 @@ def find_appropriate_price(quantity_prices, target_quantity):
         except (ValueError, TypeError):
             continue
     
-    # Get available quantities, sorted in descending order (larger quantities first)
-    # For promotional products, larger quantities have lower per-unit prices
-    quantities = sorted(qty_prices.keys(), reverse=True)
+    # Get available quantities, sorted in ascending order (smaller to larger)
+    quantities = sorted(qty_prices.keys())
     if not quantities:
         return None, None, False, None, "No valid quantity tiers found"
     
@@ -78,8 +77,8 @@ def find_appropriate_price(quantity_prices, target_quantity):
         )
     
     # For promotional products, if quantity is below the smallest tier,
-    # we should use the smallest tier price
-    min_qty = min(quantities)
+    # we need to use the smallest tier's price (since we can't order less than min quantity)
+    min_qty = quantities[0]  # Smallest tier
     if target_quantity < min_qty:
         price_info = qty_prices[min_qty]
         return (
@@ -90,14 +89,16 @@ def find_appropriate_price(quantity_prices, target_quantity):
             f"Using minimum tier {min_qty}"
         )
     
-    # Find the appropriate tier: largest quantity that's not greater than target
-    # Sort in ascending order for this search
-    quantities_asc = sorted(quantities)
-    best_qty = quantities_asc[0]  # Initialize with smallest tier as fallback
-    for qty in quantities_asc:
-        if qty > target_quantity:
+    # Find the appropriate tier for quantities between tiers:
+    # We need the largest tier that's smaller than or equal to the target quantity
+    # Because prices decrease as quantities increase
+    best_qty = min_qty  # Start with smallest as fallback
+    for qty in quantities:
+        if qty <= target_quantity:
+            best_qty = qty
+        else:
+            # Once we find a tier larger than target, we stop and use the previous tier
             break
-        best_qty = qty
     
     price_info = qty_prices[best_qty]
     return (
