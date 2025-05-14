@@ -415,16 +415,6 @@ def find_best_match_with_enhanced_matcher(
 ) -> Optional[str]:
     """
     향상된 이미지 매처를 이용하여 가장 유사한 이미지를 찾습니다.
-    
-    Args:
-        source_img_path: 소스 이미지 경로
-        target_images: 대상 이미지 정보 사전
-        used_images: 이미 사용된 이미지 경로 집합
-        enhanced_matcher: 향상된 이미지 매처 객체
-        
-    Returns:
-        가장 유사한 이미지 경로 또는 None
-        (가장 유사한 이미지 경로, 유사도 점수) 튜플 또는 None
     """
     if not enhanced_matcher:
         logging.warning("향상된 이미지 매처가 없습니다. 기본 텍스트 매칭으로 대체합니다.")
@@ -435,9 +425,9 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    # FIXED: Lowered thresholds to ensure more image matches
-    high_confidence_threshold = 0.40  # 높은 신뢰도 임계값 (0.60에서 0.40으로 낮춤)
-    min_confidence_threshold = 0.15   # 최소 신뢰도 임계값 (0.25에서 0.15로 낮춤)
+    # UPDATED: Use stricter thresholds from config
+    high_confidence_threshold = 0.60  # Increased from 0.40
+    min_confidence_threshold = 0.30   # Increased from 0.15
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -446,24 +436,20 @@ def find_best_match_with_enhanced_matcher(
     # 매칭 결과를 추적하기 위한 리스트
     match_scores = []
     
-    # FIXED: Add secondary verification for better matching
-    secondary_matches = []  # Store multiple high-scoring matches for verification
+    # UPDATED: Add secondary verification for better matching with stricter criteria
+    secondary_matches = []
     
     for img_path, info in target_images.items():
-        # 이미 사용된 이미지는 건너뜀
         if img_path in used_images:
             continue
             
-        # 이미지 유사도 계산
         try:
             similarity = enhanced_matcher.calculate_similarity(source_img_path, str(info['path']))
             
-            # 모든 매칭 점수 추적
-            if similarity > 0:
+            if similarity > min_confidence_threshold:  # Only track scores above minimum threshold
                 match_scores.append((img_path, similarity, info['clean_name']))
                 
-                # FIXED: Store high-scoring candidates for verification
-                if similarity >= min_confidence_threshold:
+                if similarity >= high_confidence_threshold:  # Only consider high confidence matches
                     secondary_matches.append((img_path, similarity, info['clean_name']))
                 
             if similarity > best_score:
@@ -472,37 +458,25 @@ def find_best_match_with_enhanced_matcher(
         except Exception as e:
             logging.warning(f"이미지 유사도 계산 중 오류 발생: {e}")
     
-    # 상위 3개 매칭 점수 로깅
-    if match_scores:
-        # Sort by score (descending)
-        top_matches = sorted(match_scores, key=lambda x: x[1], reverse=True)
-        # Log top candidates (show clean_name and score)
-        top_log = [(name, f"{score:.3f}") for path, score, name in top_matches[:3]]
-        logging.debug(f"  Top 3 candidates: {top_log}")
-    
-    # FIXED: Add additional verification for close matches
-    # If we have multiple high-scoring matches, verify they're consistent
+    # UPDATED: More strict verification for close matches
     if len(secondary_matches) >= 2:
         secondary_matches.sort(key=lambda x: x[1], reverse=True)
-        # Check if second-best match has a similar score (within 80% of best)
         if len(secondary_matches) >= 2:
             best_score = secondary_matches[0][1]
             second_best_score = secondary_matches[1][1]
             score_ratio = second_best_score / best_score if best_score > 0 else 0
             
-            # If scores are too close, it might indicate ambiguity
-            if score_ratio > 0.9 and best_score < high_confidence_threshold:
+            # UPDATED: Stricter ambiguity check
+            if score_ratio > 0.95 and best_score < high_confidence_threshold:
                 logging.warning(f"Ambiguous image matching: Best={secondary_matches[0][2]} ({best_score:.3f}), Second={secondary_matches[1][2]} ({second_best_score:.3f})")
                 
-                # Check if names are similar - if they are completely different, be more cautious
                 from Levenshtein import ratio as text_similarity
                 name_sim = text_similarity(secondary_matches[0][2], secondary_matches[1][2])
                 
-                if name_sim < 0.4:  # Names are very different
+                if name_sim < 0.5:  # Increased threshold for name similarity
                     logging.warning(f"Product names are very different between top matches (sim={name_sim:.2f})")
                     
-                    # Require a higher threshold for ambiguous matches with different names
-                    if best_score < high_confidence_threshold * 1.2:
+                    if best_score < high_confidence_threshold * 1.3:  # Increased required confidence
                         logging.warning(f"Rejecting ambiguous match due to insufficient confidence")
                         return None
     
@@ -511,14 +485,14 @@ def find_best_match_with_enhanced_matcher(
         best_match_name = target_images[best_match]['clean_name']
         logging.info(f"  --> Best Match Selected: {best_match_name} (Score: {best_score:.3f})")
         
-        # FIXED: More lenient thresholds to avoid rejecting matches
+        # UPDATED: More lenient thresholds to avoid rejecting matches
         if best_score < min_confidence_threshold:
             logging.warning(f"매칭 점수가 최소 임계값({min_confidence_threshold})보다 낮아 매칭을 거부합니다: {best_match_name} (점수: {best_score:.3f})")
             return None
         elif best_score < high_confidence_threshold:
             logging.warning(f"낮은 신뢰도로 매칭되었습니다: {best_match_name} (점수: {best_score:.3f})")
             
-            # FIXED: More lenient checks for low confidence matches
+            # UPDATED: More lenient checks for low confidence matches
             try:
                 from Levenshtein import ratio as text_similarity
                 source_name = os.path.basename(source_img_path).split('_', 1)[1] if '_' in os.path.basename(source_img_path) else ''
@@ -532,7 +506,7 @@ def find_best_match_with_enhanced_matcher(
                 name_sim = text_similarity(source_name, target_name)
                 logging.debug(f"Name similarity check: '{source_name}' vs '{target_name}' = {name_sim:.3f}")
                 
-                # FIXED: Made threshold much more lenient to return more matches
+                # UPDATED: Made threshold much more lenient to return more matches
                 if best_score < high_confidence_threshold * 0.5 and name_sim < 0.2:
                     logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 매우 낮아 매칭을 거부합니다")
                     return None
@@ -1166,60 +1140,27 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
                 else:
                     # Naver product info exists but no match was found - try to find a fallback
-                    logging.info(f"Row {idx}: Naver product info exists but no image match found - trying fallback")
+                    logging.info(f"Row {idx}: Naver product info exists but no image match found")
                     
-                    # Try to find any suitable Naver image
-                    fallback_naver_image = find_best_fallback_naver_image(product_names[idx], naver_images, row_data)
+                    # Clear all Naver related information
+                    result_df.at[idx, target_col_naver] = None
                     
-                    if fallback_naver_image:
-                        logging.info(f"Row {idx}: Using fallback Naver image for product {product_names[idx]}")
-                        result_df.at[idx, target_col_naver] = fallback_naver_image
-                    else:
-                        # Try to generate an image URL from the Naver link
-                        naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
-                        naver_url = None
-                        
-                        for link_col in naver_link_cols:
-                            if link_col in row_data and isinstance(row_data[link_col], str) and row_data[link_col].strip() not in ['', '-', 'None', None]:
-                                naver_url = row_data[link_col].strip()
-                                break
-                        
-                        if naver_url:
-                            # Extract product ID from URL or try to construct an image URL
-                            img_url = None
-                            
-                            # Try multiple patterns for Naver shopping URLs
-                            product_id_match = re.search(r'main_(\d+)/(\d+)', naver_url)
-                            if product_id_match:
-                                product_id = product_id_match.group(1)
-                                img_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                            
-                            # If no product ID found, try another pattern
-                            if not img_url and 'naver.com/shop' in naver_url:
-                                # Try to extract catalog ID
-                                catalog_match = re.search(r'cat_id=(\d+)', naver_url)
-                                if catalog_match:
-                                    catalog_id = catalog_match.group(1)
-                                    img_url = f"https://shopping-phinf.pstatic.net/cat_{catalog_id}/{catalog_id}.jpg"
-                            
-                            # DO NOT generate "front" URLs from product names
-                            # Instead, if no valid URL can be found, leave it blank
-                            
-                            # Create image data with the URL if found
-                            if img_url:
-                                image_data = {
-                                    'source': 'naver',
-                                    'url': img_url,
-                                    'score': 0.2,
-                                    'product_name': product_names[idx],
-                                    'fallback': True
-                                }
-                                result_df.at[idx, target_col_naver] = image_data
-                                logging.info(f"Row {idx}: Generated image URL from Naver link: {img_url}")
-                            else:
-                                logging.warning(f"Row {idx}: Could not generate valid image URL from Naver link: {naver_url}")
-                        else:
-                            logging.warning(f"Row {idx}: No valid Naver URL found in row data.")
+                    # Clear all Naver related columns
+                    naver_related_columns = [
+                        '기본수량(3)',
+                        '판매단가(V포함)(3)',
+                        '가격차이(3)',
+                        '가격차이(3)(%)',
+                        '공급사명',
+                        '네이버 쇼핑 링크',
+                        '공급사 상품링크'
+                    ]
+                    
+                    for col in naver_related_columns:
+                        if col in result_df.columns:
+                            result_df.at[idx, col] = None
+                    
+                    logging.info(f"Row {idx}: Cleared all Naver related information for product {product_names[idx]}")
             else:
                  if target_col_naver in result_df.columns:
                      # If no Naver product info or no match found, ensure Naver image is not included
@@ -1285,48 +1226,28 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             # Check for mismatch: Product info without image (the critical issue)
             if has_naver_info and not has_naver_image:
                 naver_mismatch_count += 1
-                logging.warning(f"Row {idx}: Found Naver product info without image. Trying to add a fallback image.")
+                logging.warning(f"Row {idx}: Found Naver product info without image. Clearing all Naver related information.")
                 
-                # Try to find any suitable Naver image as fallback
-                fallback_naver_image = find_best_fallback_naver_image(product_names[idx], naver_images, row_data)
+                # Clear Naver image
+                result_df.at[idx, naver_image_col] = None
                 
-                if fallback_naver_image:
-                    logging.info(f"Row {idx}: Using fallback Naver image for product {product_names[idx]}")
-                    result_df.at[idx, naver_image_col] = fallback_naver_image
-                else:
-                    # Try to use Haereum or Kogift image as fallback
-                    for source_col in ['본사 이미지', '고려기프트 이미지']:
-                        source_img_data = row_data.get(source_col)
-                        if isinstance(source_img_data, dict) and ('url' in source_img_data or 'local_path' in source_img_data):
-                            # Create a copy of the source image with changed source
-                            fallback_img = source_img_data.copy()
-                            fallback_img['source'] = 'naver'
-                            fallback_img['score'] = 0.3  # Lower score since it's a fallback
-                            fallback_img['fallback'] = True  # Mark as fallback
-                            
-                            result_df.at[idx, naver_image_col] = fallback_img
-                            logging.info(f"Row {idx}: Added fallback Naver image from {source_col}")
-                            break
-                    else:
-                        # If still no image found, try one last approach using the link to generate a URL
-                        naver_url = None
-                        for link_col in naver_link_cols:
-                            if link_col in row_data and isinstance(row_data[link_col], str) and row_data[link_col].strip() not in ['', '-', 'None', None]:
-                                naver_url = row_data[link_col].strip()
-                                break
+                # Clear all Naver related columns
+                naver_related_columns = [
+                    '기본수량(3)',
+                    '판매단가(V포함)(3)',
+                    '가격차이(3)',
+                    '가격차이(3)(%)',
+                    '공급사명',
+                    '네이버 쇼핑 링크',
+                    '공급사 상품링크'
+                ]
+                
+                for col in naver_related_columns:
+                    if col in result_df.columns:
+                        result_df.at[idx, col] = None
                         
-                        if naver_url:
-                            # Create a minimal image data with just the URL
-                            img_data = {
-                                'source': 'naver',
-                                'url': naver_url,  # Use the product link directly if we can't extract an image URL
-                                'score': 0.2,  # Very low score for this fallback
-                                'product_name': product_names[idx] if idx < len(product_names) else "Unknown",
-                                'fallback': True
-                            }
-                            result_df.at[idx, naver_image_col] = img_data
-                            logging.info(f"Row {idx}: Added minimal Naver image data with product URL")
-                        
+                logging.info(f"Row {idx}: Cleared all Naver related information for product {product_names[idx]}")
+        
         if mismatch_count > 0:
             logging.info(f"Fixed {mismatch_count} mismatches between Koreagift product info and images")
         
@@ -1499,30 +1420,23 @@ def find_best_fallback_naver_image(product_name, naver_images, row_data):
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
-    임계값보다 낮은 유사도를 가진 이미지는 표시하지 않습니다.
-    해오름(본사) 이미지는 유사도에 관계없이 항상 유지합니다.
-    
-    Args:
-        df: 처리할 DataFrame
-        config: 설정 파일
-    
-    Returns:
-        필터링된 DataFrame
     """
     try:
-        # DataFrame 복사본 생성
         result_df = df.copy()
         
-        # 임계값 설정 - 설정 파일에서 가져오거나 기본값 사용
+        # UPDATED: Get thresholds from config with stricter defaults
         try:
-            # FIXED: 이미지 표시 임계값을 더 낮게 설정 - 0.05에서 0.01로 대폭 인하하여 거의 모든 매칭 유지
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
-            # 필터링이 사실상 비활성화되어 있음을 표시
-            logging.info(f"통합: 이미지 표시 임계값: {similarity_threshold} (매우 낮은 임계값으로 대부분의 매칭을 유지)")
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.30)
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.55)
+            
+            # Use the higher of the two thresholds
+            effective_threshold = max(similarity_threshold, minimum_match_confidence)
+            
+            logging.info(f"통합: 이미지 표시 임계값: {effective_threshold} (더 엄격한 기준 적용)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 매우 낮은 기본값 0.01을 사용합니다.")
-            similarity_threshold = 0.01
-        
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.30을 사용합니다.")
+            effective_threshold = 0.30
+
         # -------------------------------------------------------------
         # 이미지 유사도 필터링
         # -------------------------------------------------------------
@@ -1623,7 +1537,7 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                     try:
                         score = float(img_data['score'])
                         # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
-                        if score < similarity_threshold:
+                        if score < effective_threshold:
                             result_df.at[idx, col_name] = '-' # Filter out very low-score image
                             filtered_count += 1
                             rows_affected.add(idx)
@@ -1634,7 +1548,7 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
 
         # Log count based on unique rows affected
         final_filtered_count = len(rows_affected)
-        logging.info(f"통합: 이미지 점수 기준으로 고려/네이버 이미지를 필터링 ({filtered_count}개 셀 수정됨, {final_filtered_count}개 행 영향 받음, 임계값 < {similarity_threshold})")
+        logging.info(f"통합: 이미지 점수 기준으로 고려/네이버 이미지를 필터링 ({filtered_count}개 셀 수정됨, {final_filtered_count}개 행 영향 받음, 임계값 < {effective_threshold})")
         if kogift_mismatch_count > 0:
             logging.info(f"통합: {kogift_mismatch_count}개의 고려기프트 이미지/상품정보 불일치 수정됨")
         logging.info(f"통합: 해오름 이미지는 점수와 관계없이 유지됩니다.")
