@@ -15,8 +15,9 @@ import shutil
 from pathlib import Path
 import openpyxl
 from email_sender import validate_email_config, send_excel_by_email
-# Import fix_kogift_images functionality
+# Import fix modules
 from fix_kogift_images import fix_excel_kogift_images
+from fix_naver_images import fix_naver_images, remove_naver_data_if_image_missing
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -88,6 +89,109 @@ def apply_kogift_pricing_fixes(result_path, upload_path, progress_queue=None):
         logging.error(f"Error in apply_kogift_pricing_fixes: {e}", exc_info=True)
         if progress_queue:
             progress_queue.emit("status", f"Error applying Kogift pricing fixes: {str(e)}")
+    
+    return fixed_result_path, fixed_upload_path
+
+# Add a new function to fix Naver images
+def apply_naver_image_fixes(result_path, upload_path, progress_queue=None):
+    """
+    Apply fixes to Naver images in the generated Excel files:
+    - Remove Naver product data when image link is missing
+    - Remove misplaced images
+    
+    Args:
+        result_path: Path to the result Excel file
+        upload_path: Path to the upload Excel file
+        progress_queue: Optional progress queue for UI updates
+        
+    Returns:
+        tuple: (fixed_result_path, fixed_upload_path)
+    """
+    fixed_result_path, fixed_upload_path = None, None
+    
+    try:
+        # Fix Naver images in result file
+        if result_path and os.path.exists(result_path):
+            logging.info(f"Fixing Naver images in result file: {result_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Removing invalid Naver data from result file...")
+            
+            # Read Excel file
+            df = pd.read_excel(result_path)
+            
+            # Apply the Naver image fix
+            fixed_df = fix_naver_images(df)
+            
+            # Save back to same file
+            fixed_df.to_excel(result_path, index=False)
+            fixed_result_path = result_path
+            
+            logging.info(f"Successfully fixed Naver images in result file: {fixed_result_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Successfully fixed Naver images in result file")
+        
+        # Fix Naver images in upload file
+        if upload_path and os.path.exists(upload_path):
+            logging.info(f"Fixing Naver images in upload file: {upload_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Removing invalid Naver data from upload file...")
+            
+            # Read Excel file
+            df = pd.read_excel(upload_path)
+            
+            # For upload file, we just need to remove Naver data if image is missing
+            if '네이버 이미지' not in df.columns and '네이버쇼핑(이미지링크)' in df.columns:
+                # If only the upload column exists, we need a different approach
+                # Define columns to check and clear
+                naver_columns = [
+                    '기본수량(3)',
+                    '판매단가(V포함)(3)',
+                    '가격차이(3)',
+                    '가격차이(3)(%)',
+                    '공급사명',
+                    '네이버 쇼핑 링크',
+                    '공급사 상품링크'
+                ]
+                
+                rows_fixed = 0
+                for idx, row in df.iterrows():
+                    # Check if Naver image URL is missing or invalid
+                    has_valid_image = False
+                    if '네이버쇼핑(이미지링크)' in row and pd.notna(row['네이버쇼핑(이미지링크)']):
+                        url = row['네이버쇼핑(이미지링크)']
+                        if isinstance(url, str) and url != '-' and url.startswith(('http://', 'https://')):
+                            has_valid_image = True
+                    
+                    # If no valid Naver image, clear all Naver product data
+                    if not has_valid_image:
+                        # Clear Naver image URL
+                        if '네이버쇼핑(이미지링크)' in df.columns:
+                            df.at[idx, '네이버쇼핑(이미지링크)'] = '-'
+                        
+                        # Clear all related Naver columns
+                        for col in naver_columns:
+                            if col in df.columns:
+                                df.at[idx, col] = '-'
+                        
+                        rows_fixed += 1
+                
+                logging.info(f"Removed Naver product data from {rows_fixed} rows in upload file")
+            else:
+                # Apply the standard fix
+                fixed_df = fix_naver_images(df)
+                df = fixed_df
+            
+            # Save back to same file
+            df.to_excel(upload_path, index=False)
+            fixed_upload_path = upload_path
+            
+            logging.info(f"Successfully fixed Naver images in upload file: {fixed_upload_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Successfully fixed Naver images in upload file")
+    except Exception as e:
+        logging.error(f"Error in apply_naver_image_fixes: {e}", exc_info=True)
+        if progress_queue:
+            progress_queue.emit("status", f"Error fixing Naver images: {str(e)}")
     
     return fixed_result_path, fixed_upload_path
 
@@ -957,6 +1061,45 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             progress_queue.emit("error", f"Error fixing Kogift pricing: {str(fix_err)}")
                                         # Don't treat fixing failure as a critical error, continue with the process
                                     # --- End Kogift Pricing Fixes ---
+                                    
+                                    # --- Apply Naver Image Fixes ---
+                                    try:
+                                        logging.info("Checking and fixing Naver images in the generated Excel files...")
+                                        if progress_queue:
+                                            progress_queue.emit("status", "Fixing Naver images in Excel files...")
+                                        
+                                        fixed_result_path, fixed_upload_path = apply_naver_image_fixes(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            progress_queue=progress_queue
+                                        )
+                                        
+                                        # Update paths if fixes were successful
+                                        if fixed_result_path:
+                                            result_path = fixed_result_path
+                                            if progress_queue:
+                                                progress_queue.emit("status", "Fixed Naver images in result file")
+                                        
+                                        if fixed_upload_path:
+                                            upload_path = fixed_upload_path
+                                            if progress_queue:
+                                                progress_queue.emit("status", "Fixed Naver images in upload file")
+                                        
+                                        # Update the paths for email sending
+                                        if result_success and fixed_result_path:
+                                            result_success = True
+                                            
+                                        if upload_success and fixed_upload_path:
+                                            upload_success = True
+                                            # Make sure to update the final_path signal with the fixed file
+                                            progress_queue.emit("final_path", fixed_upload_path)
+                                            logging.info(f"Updated final upload path to fixed version: {fixed_upload_path}")
+                                    except Exception as fix_err:
+                                        logging.error(f"Error fixing Naver images: {fix_err}", exc_info=True)
+                                        if progress_queue:
+                                            progress_queue.emit("error", f"Error fixing Naver images: {str(fix_err)}")
+                                        # Don't treat fixing failure as a critical error, continue with the process
+                                    # --- End Naver Image Fixes ---
                                     
                                     # --- Send Excel files by email ---
                                     try:

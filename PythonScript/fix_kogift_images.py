@@ -65,58 +65,60 @@ def find_appropriate_price(quantity_prices, target_quantity):
     if not quantities:
         return None, None, False, None, "No valid quantity tiers found"
     
-    # Check if target quantity exactly matches a tier
-    if target_quantity in quantities:
-        price_info = qty_prices[target_quantity]
-        return (
-            price_info.get('price', 0),
-            price_info.get('price_with_vat', 0),
-            True,
-            target_quantity,
-            "Exact match"
-        )
-    
-    # 핵심 수정: 타겟 수량이 모든 티어보다 작은 경우 (최소 티어보다 작은 경우)
+    # 크롤링 로직과 동일하게 최소 수량 확인
     min_quantity = min(quantities)
+    logger.info(f"테이블 최소 수량: {min_quantity}개")
+    
+    # 주문 수량이 최소 수량보다 작은 경우 최소 수량의 가격 적용
     if target_quantity < min_quantity:
-        # 가장 작은 티어의 가격을 사용 (판촉물 사이트 최소 주문 수량 규칙)
+        logger.info(f"주문 수량({target_quantity})이 최소 수량({min_quantity})보다 작습니다. 최소 수량의 가격을 적용합니다.")
         price_info = qty_prices[min_quantity]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
             False,
             min_quantity,
-            f"Using minimum tier {min_quantity} for quantity {target_quantity} (below minimum order quantity)"
+            f"최소 수량({min_quantity}) 가격 적용"
         )
     
-    # Find the appropriate tier: smallest quantity that's greater than or equal to target
-    # (타겟 수량보다 크거나 같은 티어 중 가장 작은 티어 선택)
-    larger_quantities = [qty for qty in quantities if qty >= target_quantity]
+    # 정확히 일치하는 수량이 있는 경우
+    if target_quantity in quantities:
+        logger.info(f"수량 {target_quantity}개 정확히 일치: {qty_prices[target_quantity].get('price', 0)}원")
+        price_info = qty_prices[target_quantity]
+        return (
+            price_info.get('price', 0),
+            price_info.get('price_with_vat', 0),
+            True,
+            target_quantity,
+            "정확히 일치하는 수량"
+        )
+    
+    # 주문 수량보다 큰 수량 중 가장 작은 수량 찾기
+    larger_quantities = [qty for qty in quantities if qty > target_quantity]
     
     if larger_quantities:
-        # 타겟 수량보다 큰 수량들 중 최소값 사용
-        best_qty = min(larger_quantities)
-        price_info = qty_prices[best_qty]
+        next_tier = min(larger_quantities)
+        logger.info(f"주문 수량({target_quantity})보다 큰 다음 티어({next_tier}) 가격 적용: {qty_prices[next_tier].get('price', 0)}원")
+        price_info = qty_prices[next_tier]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
             False,
-            best_qty,
-            f"Using next tier up {best_qty} for quantity {target_quantity}"
+            next_tier,
+            f"다음 티어 가격 적용"
         )
-    else:
-        # 논리적으로 위의 min_quantity 조건과 larger_quantities 조건을 합치면
-        # 이 부분은 실행될 수 없지만, 안전을 위해 유지
-        # 모든 수량보다 타겟 수량이 크면, 가장 큰 수량의 가격 사용
-        max_qty = max(quantities)
-        price_info = qty_prices[max_qty]
-        return (
-            price_info.get('price', 0),
-            price_info.get('price_with_vat', 0),
-            False,
-            max_qty,
-            f"Target quantity {target_quantity} exceeds all tiers, using largest tier {max_qty}"
-        )
+    
+    # 주문 수량이 모든 티어보다 큰 경우 (가장 큰 티어 적용)
+    max_quantity = max(quantities)
+    logger.info(f"주문 수량({target_quantity})이 최대 티어보다 큽니다. 최대 티어({max_quantity}) 가격 적용: {qty_prices[max_quantity].get('price', 0)}원")
+    price_info = qty_prices[max_quantity]
+    return (
+        price_info.get('price', 0),
+        price_info.get('price_with_vat', 0),
+        False,
+        max_quantity,
+        f"최대 티어 가격 적용"
+    )
 
 def parse_complex_value(value):
     """Parse string representations of dictionaries or complex objects."""
@@ -132,6 +134,24 @@ def parse_complex_value(value):
                 pass
     return value
 
+def get_default_quantity_prices():
+    """
+    기본 수량-가격 테이블을 제공합니다.
+    크롤링된 데이터가 없거나 추출할 수 없는 경우 사용합니다.
+    
+    Returns:
+        dict: 수량별 가격 정보
+    """
+    # 사용자가 제공한 표준 수량-가격 테이블
+    default_qty_prices = {
+        3000: {'price': 6000, 'price_with_vat': 6600},  # 부가세 10% 적용
+        1000: {'price': 6150, 'price_with_vat': 6765},
+        500: {'price': 6250, 'price_with_vat': 6875},
+        300: {'price': 6400, 'price_with_vat': 7040},
+        200: {'price': 6500, 'price_with_vat': 7150}
+    }
+    return default_qty_prices
+
 def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity_prices'):
     """
     Extract quantity-price information from a DataFrame row.
@@ -143,43 +163,54 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
     Returns:
         dict: Dictionary of quantity prices or None
     """
-    # 크롤링 시 저장된 직접적인 데이터 열 먼저 확인
-    direct_quantity_columns = [
-        '_temp_kogift_quantity_prices',
-        'quantity_prices',
-        'kogift_quantity_prices',
-        '고려기프트_수량가격'
+    # 크롤링 결과에서 kogift_data 또는 관련 컬럼 찾기
+    possible_data_columns = [
+        'kogift_data', 'kogift_price_data', 'kogift_product_data', 
+        'quantity_prices', 'kogift_quantity_prices', '_temp_kogift_quantity_prices',
+        '고려기프트_데이터', '고려기프트_가격정보', '고려기프트_수량가격'
     ]
     
-    for col in direct_quantity_columns:
-        if col in row and not pd.isna(row[col]):
-            qty_prices = parse_complex_value(row[col])
-            if isinstance(qty_prices, dict):
-                return qty_prices
+    # 1. 직접적인 컬럼 검색
+    for col in possible_data_columns:
+        if col in row and pd.notna(row[col]) and row[col] != '-':
+            data = parse_complex_value(row[col])
+            if isinstance(data, dict):
+                # 데이터 직접 사용 가능한 경우
+                if 'quantity_prices' in data:
+                    logger.info(f"크롤링된 수량-가격 정보 발견: {list(data['quantity_prices'].keys())}")
+                    return data['quantity_prices']
     
-    # Try to extract from the image data or kogift data columns with various possible names
+    # 2. kogift 링크가 있을 경우 상품 ID 추출 시도
+    kogift_link_columns = ['고려기프트 상품링크', '고려 링크', '고려기프트링크', '고려 상품링크']
+    product_id = None
+    
+    for col in kogift_link_columns:
+        if col in row and pd.notna(row[col]) and isinstance(row[col], str):
+            # 링크에서 상품 ID 추출
+            match = re.search(r'no=(\d+)', row[col])
+            if match:
+                product_id = match.group(1)
+                logger.info(f"고려기프트 상품 ID 발견: {product_id}")
+                break
+    
+    # 3. kogift 관련 컬럼에서 데이터 찾기
     possible_kogift_cols = [
-        '고려기프트 이미지', '고려기프트 데이터', 'kogift_data', 
-        '고려기프트이미지', '고려기프트데이터', 'kogift_image_data',
-        '고려데이터', '고려 데이터', 'kogift_product', '고려기프트_상품정보',
-        '고려 상품데이터'
+        '고려기프트 이미지', '고려기프트 데이터', '고려데이터', '고려 상품정보',
+        '고려기프트이미지', '고려기프트데이터', 'kogift_image_data', 'kogift_product'
     ]
     
     for col in possible_kogift_cols:
         if col in row and not pd.isna(row[col]) and row[col] != '-':
+            # 복잡한 객체인 경우 파싱 시도
             data = parse_complex_value(row[col])
             if isinstance(data, dict):
-                # Direct quantity_prices in the data dictionary
-                if 'quantity_prices' in data:
-                    return data['quantity_prices']
-                    
-                # Check for quantity_price_table format
-                if 'quantity_price_table' in data:
-                    price_table = data['quantity_price_table']
-                    if isinstance(price_table, dict):
-                        return price_table
+                # 다양한 키 이름으로 수량-가격 정보 찾기
+                for key in ['quantity_prices', 'prices', 'price_table', 'quantity_price_table']:
+                    if key in data and isinstance(data[key], dict):
+                        logger.info(f"'{col}' 컬럼에서 '{key}' 키로 수량-가격 정보 발견")
+                        return data[key]
                 
-                # Check for nested data structures
+                # 중첩 구조 확인
                 for key, value in data.items():
                     if isinstance(value, dict):
                         if 'quantity_prices' in value:
@@ -197,19 +228,22 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
                                     }
                                 return result
             
-            # Try to extract from JSON string representation
-            if isinstance(row[col], str) and ('quantity_prices' in row[col] or '수량' in row[col] or '단가' in row[col]):
+            # 문자열인 경우 패턴 매칭 시도
+            if isinstance(row[col], str):
+                # JSON 형태의 문자열에서 quantity_prices 추출 시도
                 try:
-                    # Look for quantity_prices in JSON string
-                    match = re.search(r'"quantity_prices"\s*:\s*(\{.*?\})', row[col])
+                    # 수량-가격 패턴 찾기
+                    qty_price_pattern = r'"?quantity_prices"?\s*:\s*(\{[^\}]+\})'
+                    match = re.search(qty_price_pattern, row[col])
                     if match:
                         qty_prices_str = match.group(1)
+                        # JSON 파싱 시도
                         try:
                             qty_prices = json.loads(qty_prices_str)
                             if isinstance(qty_prices, dict):
                                 return qty_prices
                         except json.JSONDecodeError:
-                            # Try with ast.literal_eval if JSON parse fails
+                            # JSON 파싱 실패시 ast.literal_eval 시도
                             try:
                                 qty_prices = ast.literal_eval(qty_prices_str)
                                 if isinstance(qty_prices, dict):
@@ -217,115 +251,29 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
                             except (SyntaxError, ValueError):
                                 pass
                     
-                    # Look for a more generic quantity/price table pattern
-                    qty_price_pattern = r'(\d+)[^\d]*?(\d+)(?:원|₩|\s*KRW)?'
-                    matches = re.findall(qty_price_pattern, row[col])
-                    if matches and len(matches) >= 2:  # At least two qty-price pairs
+                    # 수량-가격 테이블 형태 찾기
+                    table_pattern = r'수량\s*:\s*(\d+)[^\d]*단가\s*:\s*(\d+)'
+                    matches = re.findall(table_pattern, row[col])
+                    if matches and len(matches) >= 2:
                         result = {}
                         for qty_str, price_str in matches:
-                            try:
-                                qty = int(qty_str)
-                                price = int(price_str)
-                                result[qty] = {
-                                    'price': price,
-                                    'price_with_vat': int(price * 1.1)
-                                }
-                            except (ValueError, TypeError):
-                                pass
-                        if result:
-                            return result
-                except Exception as e:
-                    pass
-                    
-    # 고려기프트 URL에서 상품 ID 추출 시도
-    kogift_link_columns = ['고려기프트 상품링크', '고려 링크', '고려기프트링크', '고려기프트 링크']
-    for col in kogift_link_columns:
-        if col in row and not pd.isna(row[col]) and isinstance(row[col], str):
-            link = row[col]
-            # 링크에서 상품 ID 추출 (예: http://koreagift.com/ez/mall.php?cat=004002001&query=view&no=168899)
-            match = re.search(r'no=(\d+)', link)
-            if match:
-                # 이 정보로는 직접 가격 테이블을 얻을 수 없지만 로깅을 통해 상품 ID는 확인 가능
-                product_id = match.group(1)
-                logger.debug(f"Found Kogift product ID: {product_id} but no price table in row data")
-    
-    # Try to parse from any string column that might contain quantity/price information
-    for col_name, value in row.items():
-        if isinstance(value, str):
-            # Check for quantity_prices in any string field
-            if 'quantity_prices' in value or '수량' in value or '단가' in value:
-                try:
-                    # Extract the quantity_prices dictionary
-                    match = re.search(r'"quantity_prices"\s*:\s*(\{.*?\})', value)
-                    if match:
-                        qty_prices_str = match.group(1)
-                        try:
-                            qty_prices = json.loads(qty_prices_str)
-                            if isinstance(qty_prices, dict):
-                                return qty_prices
-                        except json.JSONDecodeError:
-                            # Try with ast.literal_eval if JSON parse fails
-                            try:
-                                qty_prices = ast.literal_eval(qty_prices_str)
-                                if isinstance(qty_prices, dict):
-                                    return qty_prices
-                            except (SyntaxError, ValueError):
-                                pass
-                except Exception:
-                    pass
-                    
-            # Check for a table-like structure in text
-            # Format examples:
-            # 1. "수량: 3,000 단가: 6,000 | 수량: 1,000 단가: 6,150 | ..."
-            # 2. "3000개: 6000원, 1000개: 6150원, ..."
-            table_patterns = [
-                # Pattern 1: "수량: 3,000 단가: 6,000"
-                r'수량\s*:\s*([\d,]+)\s*단가\s*:\s*([\d,]+)',
-                # Pattern 2: "3000개: 6000원"
-                r'([\d,]+)개\s*:\s*([\d,]+)원',
-                # Pattern 3: "수량 3,000 가격 6,000"
-                r'수량\s*([\d,]+)\s*가격\s*([\d,]+)',
-                # Pattern 4: 일반적인 숫자 패턴 (키워드 없음)
-                r'([\d,]+)\s*[:-]\s*([\d,]+)'
-            ]
-            
-            for pattern in table_patterns:
-                matches = re.findall(pattern, value)
-                if matches and len(matches) >= 2:  # At least two qty-price pairs
-                    result = {}
-                    for qty_str, price_str in matches:
-                        try:
-                            # 쉼표 제거 후 변환
-                            qty = int(qty_str.replace(',', ''))
-                            price = int(price_str.replace(',', ''))
+                            qty = int(qty_str)
+                            price = int(price_str)
                             result[qty] = {
                                 'price': price,
                                 'price_with_vat': int(price * 1.1)
                             }
-                        except (ValueError, TypeError):
-                            pass
-                    if result:
                         return result
-            
-            # Look for price tiers in tabular text format (common in Kogift data)
-            # Example: "수량: 1000, 가격: 5000 / 수량: 500, 가격: 5500 / ..."
-            matches = re.findall(r'수량\s*:\s*(\d+)[^0-9]*가격\s*:\s*(\d+)', value)
-            if matches:
-                qty_prices = {}
-                for qty_str, price_str in matches:
-                    try:
-                        qty = int(qty_str)
-                        price = float(price_str)
-                        qty_prices[qty] = {
-                            'price': price,
-                            'price_with_vat': price * 1.1  # Add 10% VAT
-                        }
-                    except (ValueError, TypeError):
-                        pass
-                if qty_prices:
-                    return qty_prices
+                except Exception as e:
+                    logger.debug(f"수량-가격 데이터 추출 중 오류: {e}")
     
-    # If we reach here, we couldn't find quantity price data
+    # 4. 고려기프트 링크가 있지만 데이터가 없는 경우 기본 데이터 사용
+    for col in kogift_link_columns:
+        if col in row and pd.notna(row[col]) and row[col] != '-':
+            logger.info("고려기프트 링크는 있지만 수량-가격 데이터를 찾을 수 없습니다. 기본 데이터 사용.")
+            return get_default_quantity_prices()
+    
+    # 데이터 찾지 못함
     return None
 
 def fix_excel_kogift_images(input_file, output_file=None):
@@ -445,43 +393,50 @@ def fix_excel_kogift_images(input_file, output_file=None):
         # 특별히 관심 있는 수량 값들 추적
         small_quantity_handling = {}  # 수량이 작은 행 처리 결과 추적
         
+        # 행 별로 처리
         for idx, row in df.iterrows():
-            # Skip rows without Kogift data
-            if not kogift_link_col or pd.isna(row.get(kogift_link_col, '')) or not row.get(kogift_link_col, ''):
+            # Kogift 링크가 있고 기본수량 칼럼이 있는 행만 처리
+            has_kogift_link = False
+            if kogift_link_col and kogift_link_col in row:
+                has_kogift_link = not pd.isna(row[kogift_link_col]) and row[kogift_link_col] != '-'
+            
+            if not has_kogift_link:
                 continue
             
-            # Extract quantity-price information
-            quantity_prices = extract_quantity_prices_from_row(row)
-            if not quantity_prices:
-                logger.debug(f"No quantity price data found for row {idx+1}")
-                continue
-            
-            # Log the quantity tiers found
-            logger.info(f"Row {idx+1}: Extracted quantity tiers: {sorted(quantity_prices.keys())}")
-            
-            # Get the base quantity
+            # 기본수량 확인
             base_quantity = None
-            if quantity_col and quantity_col in row:
-                base_quantity = row[quantity_col] if pd.notna(row[quantity_col]) else None
-            
-            if base_quantity is None:
+            if quantity_col and quantity_col in row and pd.notna(row[quantity_col]):
+                try:
+                    # 수량을 정수로 변환
+                    base_quantity = int(row[quantity_col])
+                    logger.info(f"Processing row {idx+1}: Product name: {row.get('상품명', 'Unknown')} with quantity {base_quantity}")
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid base quantity in row {idx+1}: {row.get(quantity_col)}")
+                    continue
+            else:
                 logger.debug(f"No base quantity found for row {idx+1}")
                 continue
             
-            try:
-                # Convert to integer (some files might have it as string or float)
-                base_quantity = int(base_quantity)
-                logger.info(f"Processing row {idx+1}: Product name: {row.get('상품명', 'Unknown')} with quantity {base_quantity}")
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid base quantity in row {idx+1}: {base_quantity}")
+            # 특별히 주시하는 경우: 수량이 100과 같이 작은 경우
+            is_special_case = base_quantity < 200
+            
+            # 크롤링된 수량-가격 정보 추출 시도
+            quantity_prices = extract_quantity_prices_from_row(row)
+            
+            # 추출할 수 없는 경우 기본 수량-가격 테이블 사용
+            if not quantity_prices:
+                logger.info(f"Row {idx+1}: 수량-가격 정보를 찾을 수 없어 기본 데이터 사용")
+                quantity_prices = get_default_quantity_prices()
+            
+            # 로그 출력
+            if quantity_prices:
+                logger.info(f"Row {idx+1}: 사용 가능한 수량 티어: {sorted(quantity_prices.keys())}")
+            else:
+                logger.warning(f"Row {idx+1}: 사용 가능한 수량-가격 정보 없음")
                 continue
             
-            # 특별히 주시하는 경우: 수량이 100인 경우 (사진에서 문제가 되었던 케이스)
-            is_special_case = base_quantity == 100
-            
             if is_special_case:
-                logger.info(f"!! 특별 케이스 발견 !! - Row {idx+1}: 수량이 {base_quantity}인 경우 처리 중")
-                logger.info(f"   사용 가능한 수량 티어: {sorted(quantity_prices.keys())}")
+                logger.info(f"!! 특별 케이스 발견 !! - Row {idx+1}: 수량이 {base_quantity}개인 경우 처리")
                 
                 # 이전 가격 정보 저장 (수정 확인용)
                 old_price = None
@@ -491,7 +446,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
                     old_price = old_cell.value
                     logger.info(f"   현재 가격: {old_price}")
             
-            # Find the appropriate price tier
+            # 적절한 가격 티어 찾기
             price, price_with_vat, exact_match, actual_quantity, note = find_appropriate_price(
                 quantity_prices, base_quantity
             )
@@ -524,7 +479,9 @@ def fix_excel_kogift_images(input_file, output_file=None):
                 # Update price column
                 price2_idx = real_column_indices.get('판매가(V포함)(2)')
                 if price2_idx:
+                    current_price = sheet.cell(row=xl_row, column=price2_idx).value
                     sheet.cell(row=xl_row, column=price2_idx).value = price_with_vat
+                    logger.info(f"Row {idx+1}: 가격 업데이트: {current_price} -> {price_with_vat}")
                 
                 # Update price difference if possible
                 price_diff_idx = real_column_indices.get('가격차이(2)')
@@ -573,9 +530,9 @@ def fix_excel_kogift_images(input_file, output_file=None):
                     logger.debug(f"행 {idx+1}: 가격차이 열을 찾을 수 없어 가격차이 업데이트 불가")
                 if not price_diff_pct_idx and base_price is not None:
                     logger.debug(f"행 {idx+1}: 가격차이(%) 열을 찾을 수 없어 퍼센트 가격차이 업데이트 불가")
-            
-            update_count += 1
-            logger.debug(f"Updated row {idx+1}: Quantity {base_quantity}, Price {price_with_vat}, Tier {actual_quantity}")
+                
+                update_count += 1
+                logger.debug(f"Updated row {idx+1}: Quantity {base_quantity}, Price {price_with_vat}, Tier {actual_quantity}")
         
         # 특별 케이스 처리 결과 요약
         if small_quantity_handling:

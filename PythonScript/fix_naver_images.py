@@ -165,6 +165,64 @@ def extract_naver_image_info(img_data):
     
     return info
 
+# New function to remove Naver product data if image is missing
+def remove_naver_data_if_image_missing(df):
+    """
+    Remove Naver product data from rows where Naver image is missing or invalid.
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        DataFrame: Cleaned DataFrame
+    """
+    result_df = df.copy()
+    rows_fixed = 0
+    
+    # Define columns that should be cleared if Naver image is missing
+    naver_columns = [
+        '기본수량(3)',
+        '판매단가(V포함)(3)',
+        '가격차이(3)',
+        '가격차이(3)(%)',
+        '공급사명',
+        '네이버 쇼핑 링크',
+        '공급사 상품링크'
+    ]
+    
+    for idx, row in result_df.iterrows():
+        # Check if Naver image is missing or invalid
+        has_valid_image = False
+        
+        if '네이버 이미지' in row and pd.notna(row['네이버 이미지']):
+            image_data = row['네이버 이미지']
+            
+            # Handle dictionary format
+            if isinstance(image_data, dict) and 'url' in image_data:
+                url = image_data['url']
+                if url and url != '-' and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                    has_valid_image = True
+            
+            # Handle string format
+            elif isinstance(image_data, str) and image_data.startswith(('http://', 'https://')):
+                has_valid_image = True
+        
+        # If no valid Naver image, clear all Naver product data
+        if not has_valid_image:
+            # Clear Naver image column
+            result_df.at[idx, '네이버 이미지'] = '-'
+            
+            # Clear all related Naver columns
+            for col in naver_columns:
+                if col in result_df.columns:
+                    result_df.at[idx, col] = '-'
+            
+            rows_fixed += 1
+            logger.info(f"Row {idx}: Removed Naver product data due to missing image")
+    
+    logger.info(f"Total rows with Naver data removed due to missing images: {rows_fixed}")
+    return result_df
+
 def fix_naver_images(df):
     """
     Fix Naver image issues in the DataFrame.
@@ -233,6 +291,9 @@ def fix_naver_images(df):
                     result_df.at[idx, '네이버 이미지'] = '-'
                     stats['misplaced_images_removed'] += 1
                     logger.info(f"Row {idx}: Removed misplaced Naver image (no product info)")
+    
+    # Apply new function to remove Naver data from rows without valid images
+    result_df = remove_naver_data_if_image_missing(result_df)
     
     # Log statistics
     logger.info("=== Naver Image Fix Statistics ===")
@@ -403,6 +464,10 @@ def validate_and_fix_naver_image_placement(df: pd.DataFrame) -> pd.DataFrame:
             removed_count += 1
             
     logger.info(f"Naver image validation complete: {fixed_count} fixed, {removed_count} removed")
+    
+    # Apply new function to remove Naver data from rows without valid images
+    result_df = remove_naver_data_if_image_missing(result_df)
+    
     return result_df
 
 def main():
@@ -469,6 +534,9 @@ def prepare_naver_columns_for_excel_output(df: pd.DataFrame, is_upload_file: boo
         logger.warning(f"Column '{result_col_name}' not found, cannot prepare Naver images")
         return df
     
+    # Apply new function to remove Naver data from rows without valid images
+    df = remove_naver_data_if_image_missing(df)
+    
     if is_upload_file:
         # For upload file: Use the handler's transform_for_upload method
         df = naver_handler.transform_for_upload(df, result_column=result_col_name, upload_column=upload_col_name)
@@ -506,6 +574,9 @@ def transform_between_file_types(df: pd.DataFrame, file_type: str) -> pd.DataFra
     # Check if transformation is needed
     result_col_name = '네이버 이미지'
     upload_col_name = '네이버쇼핑(이미지링크)'
+    
+    # Apply new function to remove Naver data from rows without valid images
+    df = remove_naver_data_if_image_missing(df)
     
     # For upload file
     if is_upload:
