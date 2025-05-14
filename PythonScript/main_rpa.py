@@ -978,50 +978,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     except Exception as filter_err:
                                         logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
                                     # --- End Apply Filter ---
-
-                                    # --- Apply Excel Formatting (NEW) ---
-                                    try:
-                                        logging.info("Applying final Excel formatting to result and upload files...")
-                                        format_success_count, total_format_files = apply_excel_formatting(
-                                            result_path=result_path if result_success else None,
-                                            upload_path=upload_path if upload_success else None
-                                        )
-                                        
-                                        if format_success_count > 0:
-                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
-                                            if progress_queue:
-                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
-                                        else:
-                                            logging.warning("Excel formatting could not be applied to any files")
-                                    except Exception as format_err:
-                                        logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
-                                        # Don't treat formatting failure as a critical error, continue with the process
-                                    # --- End Excel Formatting ---
-
-                                    # --- Apply Price Highlighting to Excel files ---
-                                    try:
-                                        logging.info("Applying price difference highlighting to the generated Excel files...")
-                                        # Get threshold value from config, default to -1
-                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
-                                        logging.info(f"Using price difference threshold: {threshold}")
-                                        
-                                        # Apply highlighting to both result and upload files
-                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
-                                            result_path=result_path if result_success else None,
-                                            upload_path=upload_path if upload_success else None,
-                                            threshold=threshold
-                                        )
-                                        
-                                        if highlight_success_count > 0:
-                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
-                                            if progress_queue:
-                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
-                                        else:
-                                            logging.warning("Price highlighting could not be applied to any files")
-                                    except Exception as highlight_err:
-                                        logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
-                                        # Don't treat highlighting failure as a critical error, continue with the process
-                                    # --- End Price Highlighting ---
                                     
                                     # --- Apply Kogift Pricing Fixes ---
                                     try:
@@ -1100,6 +1056,50 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             progress_queue.emit("error", f"Error fixing Naver images: {str(fix_err)}")
                                         # Don't treat fixing failure as a critical error, continue with the process
                                     # --- End Naver Image Fixes ---
+
+                                    # --- Apply Excel Formatting (NEW) ---
+                                    try:
+                                        logging.info("Applying final Excel formatting to result and upload files...")
+                                        format_success_count, total_format_files = apply_excel_formatting(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None
+                                        )
+                                        
+                                        if format_success_count > 0:
+                                            logging.info(f"Excel formatting successfully applied to {format_success_count}/{total_format_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Excel formatting applied to {format_success_count} files")
+                                        else:
+                                            logging.warning("Excel formatting could not be applied to any files")
+                                    except Exception as format_err:
+                                        logging.error(f"Error applying Excel formatting: {format_err}", exc_info=True)
+                                        # Don't treat formatting failure as a critical error, continue with the process
+                                    # --- End Excel Formatting ---
+
+                                    # --- Apply Price Highlighting to Excel files ---
+                                    try:
+                                        logging.info("Applying price difference highlighting to the generated Excel files...")
+                                        # Get threshold value from config, default to -1
+                                        threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                        logging.info(f"Using price difference threshold: {threshold}")
+                                        
+                                        # Apply highlighting to both result and upload files
+                                        highlight_success_count, total_files = apply_price_highlighting_to_files(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            threshold=threshold
+                                        )
+                                        
+                                        if highlight_success_count > 0:
+                                            logging.info(f"Price highlighting successfully applied to {highlight_success_count}/{total_files} files")
+                                            if progress_queue:
+                                                progress_queue.emit("status", f"Price highlighting applied to {highlight_success_count} files")
+                                        else:
+                                            logging.warning("Price highlighting could not be applied to any files")
+                                    except Exception as highlight_err:
+                                        logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
+                                        # Don't treat highlighting failure as a critical error, continue with the process
+                                    # --- End Price Highlighting ---
                                     
                                     # --- Send Excel files by email ---
                                     try:
