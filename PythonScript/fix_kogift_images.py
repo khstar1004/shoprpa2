@@ -135,26 +135,90 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
         if isinstance(qty_prices, dict):
             return qty_prices
     
-    # Try to extract from the image data as it might contain quantity_prices
-    for col in ['고려기프트 이미지', '고려기프트 데이터', 'kogift_data']:
+    # Try to extract from the image data or kogift data columns with various possible names
+    possible_kogift_cols = [
+        '고려기프트 이미지', '고려기프트 데이터', 'kogift_data', 
+        '고려기프트이미지', '고려기프트데이터', 'kogift_image_data',
+        '고려데이터', '고려 데이터'
+    ]
+    
+    for col in possible_kogift_cols:
         if col in row and not pd.isna(row[col]) and row[col] != '-':
             data = parse_complex_value(row[col])
-            if isinstance(data, dict) and 'quantity_prices' in data:
-                return data['quantity_prices']
+            if isinstance(data, dict):
+                # Direct quantity_prices in the data dictionary
+                if 'quantity_prices' in data:
+                    return data['quantity_prices']
+                
+                # Check for nested data structures
+                for key, value in data.items():
+                    if isinstance(value, dict) and 'quantity_prices' in value:
+                        return value['quantity_prices']
+            
+            # Try to extract from JSON string representation
+            if isinstance(row[col], str) and 'quantity_prices' in row[col]:
+                try:
+                    # Look for quantity_prices in JSON string
+                    match = re.search(r'"quantity_prices"\s*:\s*(\{.*?\})', row[col])
+                    if match:
+                        qty_prices_str = match.group(1)
+                        try:
+                            qty_prices = json.loads(qty_prices_str)
+                            if isinstance(qty_prices, dict):
+                                return qty_prices
+                        except json.JSONDecodeError:
+                            # Try with ast.literal_eval if JSON parse fails
+                            try:
+                                qty_prices = ast.literal_eval(qty_prices_str)
+                                if isinstance(qty_prices, dict):
+                                    return qty_prices
+                            except (SyntaxError, ValueError):
+                                pass
+                except (json.JSONDecodeError, ValueError):
+                    pass
     
-    # Try to parse from the raw JSON in any column that might contain it
-    for col_name in row.index:
-        if isinstance(row[col_name], str) and 'quantity_prices' in row[col_name]:
-            try:
-                # Look for quantity_prices in JSON string
-                match = re.search(r'"quantity_prices"\s*:\s*(\{.*?\})', row[col_name])
-                if match:
-                    qty_prices_str = match.group(1)
-                    qty_prices = json.loads(qty_prices_str)
-                    if isinstance(qty_prices, dict):
-                        return qty_prices
-            except (json.JSONDecodeError, ValueError):
-                pass
+    # Try to parse from any string column that might contain quantity/price information
+    for col_name, value in row.items():
+        if isinstance(value, str):
+            # Check for quantity_prices in any string field
+            if 'quantity_prices' in value:
+                try:
+                    # Extract the quantity_prices dictionary
+                    match = re.search(r'"quantity_prices"\s*:\s*(\{.*?\})', value)
+                    if match:
+                        qty_prices_str = match.group(1)
+                        try:
+                            qty_prices = json.loads(qty_prices_str)
+                            if isinstance(qty_prices, dict):
+                                return qty_prices
+                        except json.JSONDecodeError:
+                            # Try with ast.literal_eval if JSON parse fails
+                            try:
+                                qty_prices = ast.literal_eval(qty_prices_str)
+                                if isinstance(qty_prices, dict):
+                                    return qty_prices
+                            except (SyntaxError, ValueError):
+                                pass
+                except Exception:
+                    pass
+            
+            # Look for price tiers in tabular text format (common in Kogift data)
+            # Example: "수량: 1000, 가격: 5000 / 수량: 500, 가격: 5500 / ..."
+            matches = re.findall(r'수량\s*:\s*(\d+)[^0-9]*가격\s*:\s*(\d+)', value)
+            if matches:
+                qty_prices = {}
+                for qty_str, price_str in matches:
+                    try:
+                        qty = int(qty_str)
+                        price = float(price_str)
+                        qty_prices[qty] = {
+                            'price': price,
+                            'price_with_vat': price * 1.1  # Add 10% VAT
+                        }
+                    except (ValueError, TypeError):
+                        pass
+                if qty_prices:
+                    return qty_prices
     
     # If we reach here, we couldn't find quantity price data
     return None
@@ -192,37 +256,76 @@ def fix_excel_kogift_images(input_file, output_file=None):
         workbook = openpyxl.load_workbook(input_file)
         sheet = workbook.active
         
+        # Map column names (accounting for variations in column names)
+        column_mapping = {
+            '기본수량(1)': ['기본수량(1)', '기본수량', '수량'],
+            '고려기프트 상품링크': ['고려기프트 상품링크', '고려기프트상품링크', '고려기프트 링크', '고려 링크'],
+            '기본수량(2)': ['기본수량(2)', '고려 기본수량', '고려기프트 기본수량'],
+            '판매가(V포함)(2)': ['판매가(V포함)(2)', '판매단가(V포함)(2)', '고려 판매가(V포함)', '고려기프트 판매가']
+        }
+        
+        # Find which variant of each column exists in the DataFrame
+        columns_found = {}
+        for key, variants in column_mapping.items():
+            for variant in variants:
+                if variant in df.columns:
+                    columns_found[key] = variant
+                    break
+        
+        # Log found columns
+        logger.info(f"Found column mappings: {columns_found}")
+        
+        # For upload files, the structure may be different and may not have all required columns
+        required_columns_by_type = {
+            'result': ['기본수량(1)', '고려기프트 상품링크'],
+            'upload': [] # Upload files may have different structure, so don't require specific columns
+        }
+        
+        # Get required columns for this file type
+        required_columns = required_columns_by_type.get(file_type, ['기본수량(1)', '고려기프트 상품링크'])
+        
         # Check for required columns
-        required_columns = ['기본수량(1)', '고려기프트 상품링크']
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        missing_columns = [col for col in required_columns if col not in columns_found]
         if missing_columns:
-            logger.error(f"Missing required columns: {missing_columns}")
-            return None
+            # Only log an error if this is a result file (upload files may have different structure)
+            if file_type == 'result':
+                logger.error(f"Missing required columns: {missing_columns}")
+                return None
+            else:
+                logger.warning(f"Missing some columns in {file_type} file: {missing_columns}. Will proceed with available columns.")
         
         # Find column indices for updating (1-indexed for openpyxl)
         column_indices = {}
         for col_idx, cell in enumerate(sheet[1], 1):  # 1-indexed columns
             column_indices[cell.value] = col_idx
         
-        # Log found columns 
+        # Log found column indices
         logger.info(f"Found column indices: {column_indices}")
         
-        # Important column names to look for
-        if '기본수량(2)' not in column_indices:
-            logger.warning("Column '기본수량(2)' not found. Prices may not be updated correctly.")
+        # Map the actual column names in the Excel file to our expected column names
+        # This addresses issues where column headers might have spaces or slight variations
+        real_column_indices = {}
+        for expected_col, column_idx in column_indices.items():
+            # Try to map each column in the excel file to our expected columns
+            for key, variants in column_mapping.items():
+                if expected_col in variants:
+                    real_column_indices[key] = column_idx
+                    break
+                    
+        logger.info(f"Mapped column indices: {real_column_indices}")
         
-        price_column_name = '판매가(V포함)(2)'
-        if price_column_name not in column_indices:
-            # Try alternative name
-            price_column_name = '판매단가(V포함)(2)'
-            if price_column_name not in column_indices:
-                logger.warning(f"Neither '판매가(V포함)(2)' nor '판매단가(V포함)(2)' found. Prices cannot be updated.")
+        # Get the actual column names to use based on what's in the DataFrame
+        quantity_col = columns_found.get('기본수량(1)')
+        kogift_link_col = columns_found.get('고려기프트 상품링크')
+        quantity2_col = columns_found.get('기본수량(2)')
+        price2_col = columns_found.get('판매가(V포함)(2)')
         
         # Process each row that has Kogift data
         update_count = 0
+        price_diffs_updated = 0
         for idx, row in df.iterrows():
             # Skip rows without Kogift data
-            if pd.isna(row['고려기프트 상품링크']) or not row['고려기프트 상품링크']:
+            if not kogift_link_col or pd.isna(row.get(kogift_link_col, '')) or not row.get(kogift_link_col, ''):
                 continue
             
             # Extract quantity-price information
@@ -232,7 +335,13 @@ def fix_excel_kogift_images(input_file, output_file=None):
                 continue
             
             # Get the base quantity
-            base_quantity = row['기본수량(1)'] if pd.notna(row['기본수량(1)']) else 1
+            base_quantity = None
+            if quantity_col and quantity_col in row:
+                base_quantity = row[quantity_col] if pd.notna(row[quantity_col]) else None
+            
+            if base_quantity is None:
+                logger.debug(f"No base quantity found for row {idx+1}")
+                continue
             
             try:
                 # Convert to integer (some files might have it as string or float)
@@ -251,42 +360,60 @@ def fix_excel_kogift_images(input_file, output_file=None):
                 xl_row = idx + 2
                 
                 # Update quantity column
-                if '기본수량(2)' in column_indices:
-                    sheet.cell(row=xl_row, column=column_indices['기본수량(2)']).value = base_quantity
+                quantity2_idx = real_column_indices.get('기본수량(2)')
+                if quantity2_idx:
+                    sheet.cell(row=xl_row, column=quantity2_idx).value = base_quantity
                 
                 # Update price column
-                if price_column_name in column_indices:
-                    sheet.cell(row=xl_row, column=column_indices[price_column_name]).value = price_with_vat
+                price2_idx = real_column_indices.get('판매가(V포함)(2)')
+                if price2_idx:
+                    sheet.cell(row=xl_row, column=price2_idx).value = price_with_vat
                 
                 # Update price difference if possible
-                if '가격차이(2)' in column_indices and '판매단가(V포함)' in df.columns and pd.notna(row['판매단가(V포함)']):
-                    base_price = float(row['판매단가(V포함)'])
-                    price_diff = price_with_vat - base_price
-                    sheet.cell(row=xl_row, column=column_indices['가격차이(2)']).value = price_diff
-                    
-                    # Highlight negative price differences
-                    if price_diff < 0:
-                        sheet.cell(row=xl_row, column=column_indices['가격차이(2)']).fill = PatternFill(
-                            start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'
-                        )
-                    
-                    # Update percentage difference
-                    if '가격차이(2)(%)' in column_indices and base_price != 0:
-                        pct_diff = (price_diff / base_price) * 100
-                        sheet.cell(row=xl_row, column=column_indices['가격차이(2)(%)']).value = round(pct_diff, 1)
+                # Check for price difference column in a more flexible way
+                price_diff_col = None
+                price_diff_pct_col = None
+                for col, idx in column_indices.items():
+                    if col and isinstance(col, str):
+                        if '가격차이(2)' in col and '(%)' not in col:
+                            price_diff_col = idx
+                        elif '가격차이(2)(%)' in col:
+                            price_diff_pct_col = idx
+                
+                # Calculate and update price difference
+                if price_diff_col and '판매단가(V포함)' in df.columns and pd.notna(row['판매단가(V포함)']):
+                    try:
+                        base_price = float(row['판매단가(V포함)'])
+                        price_diff = price_with_vat - base_price
+                        sheet.cell(row=xl_row, column=price_diff_col).value = price_diff
                         
-                        # Highlight negative percentage differences
-                        if pct_diff < 0:
-                            sheet.cell(row=xl_row, column=column_indices['가격차이(2)(%)']).fill = PatternFill(
+                        # Highlight negative price differences
+                        if price_diff < 0:
+                            sheet.cell(row=xl_row, column=price_diff_col).fill = PatternFill(
                                 start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'
                             )
+                        
+                        # Update percentage difference
+                        if price_diff_pct_col and base_price != 0:
+                            pct_diff = (price_diff / base_price) * 100
+                            sheet.cell(row=xl_row, column=price_diff_pct_col).value = round(pct_diff, 1)
+                            
+                            # Highlight negative percentage differences
+                            if pct_diff < 0:
+                                sheet.cell(row=xl_row, column=price_diff_pct_col).fill = PatternFill(
+                                    start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'
+                                )
+                        
+                        price_diffs_updated += 1
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Error calculating price difference for row {idx+1}: {e}")
                 
                 update_count += 1
                 logger.debug(f"Updated row {idx+1}: Quantity {base_quantity}, Price {price_with_vat}, Tier {actual_quantity}")
         
         # Save the modified workbook
         workbook.save(output_file)
-        logger.info(f"Successfully updated {update_count} rows with correct pricing")
+        logger.info(f"Successfully updated {update_count} rows with correct pricing (price differences: {price_diffs_updated})")
         logger.info(f"Saved updated Excel file to: {output_file}")
         
         return output_file

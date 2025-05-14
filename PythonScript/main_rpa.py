@@ -15,6 +15,8 @@ import shutil
 from pathlib import Path
 import openpyxl
 from email_sender import validate_email_config, send_excel_by_email
+# Import fix_kogift_images functionality
+from fix_kogift_images import fix_excel_kogift_images
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -32,9 +34,62 @@ from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
 from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
-# Import fix modules
-from fix_naver_images import fix_naver_images, validate_and_fix_naver_image_placement, fix_excel_file
-from fix_kogift_images import fix_excel_kogift_images, find_appropriate_price, extract_quantity_prices_from_row
+
+# Add a new function to apply Kogift pricing fixes
+def apply_kogift_pricing_fixes(result_path, upload_path, progress_queue=None):
+    """
+    Apply fixes to Kogift pricing in the generated Excel files
+    
+    Args:
+        result_path: Path to the result Excel file
+        upload_path: Path to the upload Excel file
+        progress_queue: Optional progress queue for UI updates
+        
+    Returns:
+        tuple: (fixed_result_path, fixed_upload_path)
+    """
+    fixed_result_path, fixed_upload_path = None, None
+    
+    try:
+        # Fix Kogift pricing in result file
+        if result_path and os.path.exists(result_path):
+            logging.info(f"Fixing Kogift pricing in result file: {result_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Applying Kogift pricing fixes to result file...")
+            
+            # Use original file path for output to overwrite the same file
+            fixed_result_path = fix_excel_kogift_images(result_path, result_path)
+            if fixed_result_path:
+                logging.info(f"Successfully fixed Kogift pricing in result file: {fixed_result_path}")
+                if progress_queue:
+                    progress_queue.emit("status", "Successfully applied Kogift pricing fixes to result file")
+            else:
+                logging.warning("Failed to fix Kogift pricing in result file")
+                if progress_queue:
+                    progress_queue.emit("status", "Failed to apply Kogift pricing fixes to result file")
+        
+        # Fix Kogift pricing in upload file
+        if upload_path and os.path.exists(upload_path):
+            logging.info(f"Fixing Kogift pricing in upload file: {upload_path}")
+            if progress_queue:
+                progress_queue.emit("status", "Applying Kogift pricing fixes to upload file...")
+            
+            # Use original file path for output to overwrite the same file
+            fixed_upload_path = fix_excel_kogift_images(upload_path, upload_path)
+            if fixed_upload_path:
+                logging.info(f"Successfully fixed Kogift pricing in upload file: {fixed_upload_path}")
+                if progress_queue:
+                    progress_queue.emit("status", "Successfully applied Kogift pricing fixes to upload file")
+            else:
+                logging.warning("Failed to fix Kogift pricing in upload file")
+                if progress_queue:
+                    progress_queue.emit("status", "Failed to apply Kogift pricing fixes to upload file")
+    except Exception as e:
+        logging.error(f"Error in apply_kogift_pricing_fixes: {e}", exc_info=True)
+        if progress_queue:
+            progress_queue.emit("status", f"Error applying Kogift pricing fixes: {str(e)}")
+    
+    return fixed_result_path, fixed_upload_path
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -864,65 +919,44 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         # Don't treat highlighting failure as a critical error, continue with the process
                                     # --- End Price Highlighting ---
                                     
-                                    # --- Fix Kogift pricing and Naver images in Excel files ---
+                                    # --- Apply Kogift Pricing Fixes ---
                                     try:
-                                        logging.info("Applying fixes to Kogift pricing and Naver images in the generated Excel files...")
-                                        
-                                        # Fix Kogift pricing in both files
-                                        kogift_fixed_files = []
-                                        if result_success and result_path:
-                                            logging.info(f"Fixing Kogift pricing in result file: {result_path}")
-                                            result_fixed_path = result_path.replace('.xlsx', '_kogift_fixed.xlsx')
-                                            fixed_result = fix_excel_kogift_images(result_path, result_fixed_path)
-                                            if fixed_result:
-                                                logging.info(f"Successfully fixed Kogift pricing in result file: {fixed_result}")
-                                                kogift_fixed_files.append(fixed_result)
-                                                result_path = fixed_result  # Update path for email attachment
-                                            else:
-                                                logging.warning("Failed to fix Kogift pricing in result file")
-                                                
-                                        if upload_success and upload_path:
-                                            logging.info(f"Fixing Kogift pricing in upload file: {upload_path}")
-                                            upload_fixed_path = upload_path.replace('.xlsx', '_kogift_fixed.xlsx')
-                                            fixed_upload = fix_excel_kogift_images(upload_path, upload_fixed_path)
-                                            if fixed_upload:
-                                                logging.info(f"Successfully fixed Kogift pricing in upload file: {fixed_upload}")
-                                                kogift_fixed_files.append(fixed_upload)
-                                                upload_path = fixed_upload  # Update path for email attachment
-                                            else:
-                                                logging.warning("Failed to fix Kogift pricing in upload file")
-                                        
-                                        # Fix Naver images in both files
-                                        naver_fixed_files = []
-                                        for file_path in kogift_fixed_files:
-                                            if os.path.exists(file_path):
-                                                logging.info(f"Fixing Naver images in: {file_path}")
-                                                naver_fixed_path = file_path.replace('_kogift_fixed.xlsx', '_fixed.xlsx')
-                                                fixed_naver = fix_excel_file(file_path, naver_fixed_path)
-                                                if fixed_naver:
-                                                    logging.info(f"Successfully fixed Naver images in file: {fixed_naver}")
-                                                    naver_fixed_files.append(fixed_naver)
-                                                    
-                                                    # Update result or upload path for email attachment
-                                                    if 'result' in file_path:
-                                                        result_path = fixed_naver
-                                                    elif 'upload' in file_path:
-                                                        upload_path = fixed_naver
-                                                else:
-                                                    logging.warning(f"Failed to fix Naver images in file: {file_path}")
-                                        
-                                        if kogift_fixed_files:
-                                            logging.info(f"Fixed Kogift pricing in {len(kogift_fixed_files)} files")
-                                        if naver_fixed_files:
-                                            logging.info(f"Fixed Naver images in {len(naver_fixed_files)} files")
-                                            
+                                        logging.info("Applying fixes to Kogift pricing in the generated Excel files...")
                                         if progress_queue:
-                                            progress_queue.emit("status", f"Fixed Kogift pricing and Naver images in generated files")
+                                            progress_queue.emit("status", "Fixing Kogift pricing in Excel files...")
+                                        
+                                        fixed_result_path, fixed_upload_path = apply_kogift_pricing_fixes(
+                                            result_path=result_path if result_success else None,
+                                            upload_path=upload_path if upload_success else None,
+                                            progress_queue=progress_queue
+                                        )
+                                        
+                                        # Update paths if fixes were successful
+                                        if fixed_result_path:
+                                            result_path = fixed_result_path
+                                            if progress_queue:
+                                                progress_queue.emit("status", "Applied Kogift pricing fixes to result file")
+                                        
+                                        if fixed_upload_path:
+                                            upload_path = fixed_upload_path
+                                            if progress_queue:
+                                                progress_queue.emit("status", "Applied Kogift pricing fixes to upload file")
+                                        
+                                        # Update the paths for email sending
+                                        if result_success and fixed_result_path:
+                                            result_success = True
                                             
+                                        if upload_success and fixed_upload_path:
+                                            upload_success = True
+                                            # Make sure to update the final_path signal with the fixed file
+                                            progress_queue.emit("final_path", fixed_upload_path)
+                                            logging.info(f"Updated final upload path to fixed version: {fixed_upload_path}")
                                     except Exception as fix_err:
-                                        logging.error(f"Error applying fixes to Excel files: {fix_err}", exc_info=True)
+                                        logging.error(f"Error applying Kogift pricing fixes: {fix_err}", exc_info=True)
+                                        if progress_queue:
+                                            progress_queue.emit("error", f"Error fixing Kogift pricing: {str(fix_err)}")
                                         # Don't treat fixing failure as a critical error, continue with the process
-                                    # --- End Fix Kogift and Naver ---
+                                    # --- End Kogift Pricing Fixes ---
                                     
                                     # --- Send Excel files by email ---
                                     try:
