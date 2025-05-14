@@ -1197,8 +1197,34 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             else:
                                 # Last resort - use output path even if it doesn't exist
                                 logging.warning(f"No valid output files found, using base path: {output_path}")
-                                progress_queue.emit("final_path", f"Warning: Processing complete but could not verify file at {output_path}")
+                                progress_queue.emit("final_path", output_path)
                         
+                        # Set the output path to ensure it's returned
+                        if result_path and os.path.exists(result_path):
+                            output_path = result_path
+                        elif upload_path and os.path.exists(upload_path):
+                            output_path = upload_path
+
+                        # Send email if enabled and files exist
+                        try:
+                            if config.getboolean('Email', 'enabled', fallback=False):
+                                logging.info("Email sending is enabled, preparing to send results...")
+                                excel_paths = {
+                                    'result': result_path if result_path and os.path.exists(result_path) else None,
+                                    'upload': upload_path if upload_path and os.path.exists(upload_path) else None
+                                }
+                                
+                                if any(excel_paths.values()):
+                                    email_sent = send_excel_by_email(excel_paths, config)
+                                    if email_sent:
+                                        logging.info("Successfully sent email with Excel attachments")
+                                    else:
+                                        logging.warning("Failed to send email with Excel attachments")
+                                else:
+                                    logging.warning("No valid Excel files to attach to email")
+                        except Exception as email_err:
+                            logging.error(f"Error during email sending: {email_err}", exc_info=True)
+
                         # Always mark the process as finished regardless of outcome
                         progress_queue.emit("finished", "True")
 
