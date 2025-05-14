@@ -11,14 +11,10 @@ from pathlib import Path
 
 # Import our fix script
 try:
-    from PythonScript.kogift_image_fix import fix_excel_kogift_images, download_image, extract_id_from_url
+    from kogift_image_fix import fix_excel_kogift_images, download_image, extract_id_from_url
 except ImportError:
-    try:
-        # Try direct import
-        from kogift_image_fix import fix_excel_kogift_images, download_image, extract_id_from_url
-    except ImportError:
-        print("Error: Could not import kogift_image_fix module. Make sure it exists in the same directory.")
-        sys.exit(1)
+    print("Error: Could not import kogift_image_fix module. Make sure it exists in the same directory.")
+    sys.exit(1)
 
 # Set up logging
 log_filename = f"fix_result_files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
