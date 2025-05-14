@@ -428,135 +428,135 @@ async def extract_quantity_prices(page, url: str, target_quantities: List[int] =
             return result
             
         # 캡차 체크 (개선된 버전)
-            captcha_selectors = [
-                'form#captcha_form', 
-                'img[alt*="captcha"]', 
-                'div.captcha_wrap',
-                'input[name="captchaBotKey"]',
+        captcha_selectors = [
+            'form#captcha_form', 
+            'img[alt*="captcha"]', 
+            'div.captcha_wrap',
+            'input[name="captchaBotKey"]',
             'div[class*="captcha"]',
             'iframe[src*="captcha"]',
             'div[class*="bot-check"]',
             'div[class*="security-check"]'
-            ]
-            
-            for selector in captcha_selectors:
+        ]
+        
+        for selector in captcha_selectors:
             if await page.locator(selector).count() > 0:
-                    logger.info(f"CAPTCHA detected on page: {current_url}")
-                    result["has_captcha"] = True
+                logger.info(f"CAPTCHA detected on page: {current_url}")
+                result["has_captcha"] = True
                 return result  # Return immediately if captcha detected
             
-            # 공급사 정보 수집
-            supplier_selectors = [
-                'div.basicInfo_mall_title__3IDPK a',
-                'a.seller_name',
-                'span.mall_txt',
+        # 공급사 정보 수집
+        supplier_selectors = [
+            'div.basicInfo_mall_title__3IDPK a',
+            'a.seller_name',
+            'span.mall_txt',
             'div.shop_info a.txt',
             'div[class*="mall_title"] a',
             'div[class*="seller"] a',
             'a[class*="mall-name"]'
-            ]
-            
-            for selector in supplier_selectors:
-                if await page.locator(selector).count() > 0:
-                    supplier_name = await page.locator(selector).text_content()
-                    result["supplier_name"] = supplier_name.strip()
-                    logger.info(f"Found supplier name: {result['supplier_name']}")
+        ]
+        
+        for selector in supplier_selectors:
+            if await page.locator(selector).count() > 0:
+                supplier_name = await page.locator(selector).text_content()
+                result["supplier_name"] = supplier_name.strip()
+                logger.info(f"Found supplier name: {result['supplier_name']}")
+                
+                # 공급사가 네이버인지 확인
+                if "네이버" in result["supplier_name"]:
+                    result["is_naver_seller"] = True
+                    logger.info("Detected Naver as the supplier")
                     
-                    # 공급사가 네이버인지 확인
-                    if "네이버" in result["supplier_name"]:
-                        result["is_naver_seller"] = True
-                        logger.info("Detected Naver as the supplier")
-                        
-                    # Enhanced lowest price button handling
-                        lowest_price_selectors = [
-                            '//div[contains(@class, "lowestPrice_btn_box")]/div[contains(@class, "buyButton_compare_wrap")]/a[text()="최저가 사러가기"]',
-                            '//a[contains(text(), "최저가 사러가기")]',
-                            '//a[contains(text(), "최저가")]',
-                            '//a[contains(@class, "lowest_price")]',
-                        '//button[contains(text(), "최저가")]',
-                        '//div[contains(@class, "lowest")]/a',
-                        '//div[contains(@class, "price_compare")]/a',
-                        '//a[contains(@class, "price_compare")]',
-                        '//div[contains(@class, "compare")]/a[contains(@class, "link")]',
-                        '//a[contains(@href, "search/gate")]'
-                    ]
-                    
-                    max_retries = 3
-                    retry_count = 0
-                    button_found = False
-                    
-                    while retry_count < max_retries and not button_found:
-                        for selector in lowest_price_selectors:
-                            try:
-                                # Wait for selector with timeout
-                                await page.wait_for_selector(selector, timeout=5000)
-                                element = page.locator(selector).first
+                # Enhanced lowest price button handling
+                lowest_price_selectors = [
+                    '//div[contains(@class, "lowestPrice_btn_box")]/div[contains(@class, "buyButton_compare_wrap")]/a[text()="최저가 사러가기"]',
+                    '//a[contains(text(), "최저가 사러가기")]',
+                    '//a[contains(text(), "최저가")]',
+                    '//a[contains(@class, "lowest_price")]',
+                    '//button[contains(text(), "최저가")]',
+                    '//div[contains(@class, "lowest")]/a',
+                    '//div[contains(@class, "price_compare")]/a',
+                    '//a[contains(@class, "price_compare")]',
+                    '//div[contains(@class, "compare")]/a[contains(@class, "link")]',
+                    '//a[contains(@href, "search/gate")]'
+                ]
+                
+                max_retries = 3
+                retry_count = 0
+                button_found = False
+                
+                while retry_count < max_retries and not button_found:
+                    for selector in lowest_price_selectors:
+                        try:
+                            # Wait for selector with timeout
+                            await page.wait_for_selector(selector, timeout=5000)
+                            element = page.locator(selector).first
+                            
+                            if await element.is_visible():
+                                logger.info(f"Found lowest price button with selector: {selector}")
                                 
-                                if await element.is_visible():
-                                    logger.info(f"Found lowest price button with selector: {selector}")
+                                # Get button position and add slight random offset
+                                box = await element.bounding_box()
+                                if box:
+                                    x = box['x'] + box['width'] / 2 + random.uniform(-5, 5)
+                                    y = box['y'] + box['height'] / 2 + random.uniform(-5, 5)
                                     
-                                    # Get button position and add slight random offset
-                                    box = await element.bounding_box()
-                                    if box:
-                                        x = box['x'] + box['width'] / 2 + random.uniform(-5, 5)
-                                        y = box['y'] + box['height'] / 2 + random.uniform(-5, 5)
-                                        
-                                        # Move mouse naturally to button
-                                        await page.mouse.move(x, y, steps=random.randint(5, 10))
-                                        await asyncio.sleep(random.uniform(0.1, 0.3))
-                                    
-                                    # Try to get href first
-                                    href = await element.get_attribute('href')
-                                    if href:
-                                        logger.info(f"Navigating to lowest price URL: {href}")
-                                        await page.goto(href, wait_until='networkidle', timeout=30000)
-                                    else:
-                                        logger.info("Clicking lowest price button")
-                                        await element.click()
-                                        await page.wait_for_load_state('networkidle', timeout=30000)
-                                    
-                                    # Add random delay after click (2-4 seconds)
-                                    await asyncio.sleep(random.uniform(2, 4))
-                                    
-                                    button_found = True
-                                    current_url = page.url
-                                    logger.info(f"After clicking lowest price button, now at URL: {current_url}")
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Error with lowest price selector {selector} (attempt {retry_count + 1}): {e}")
-                                continue
-                        
-                        if not button_found:
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                # Add increasing delay between retries
-                                await asyncio.sleep(random.uniform(2, 4) * retry_count)
-                                # Reload page before retry
-                                await page.reload(wait_until='networkidle', timeout=30000)
+                                    # Move mouse naturally to button
+                                    await page.mouse.move(x, y, steps=random.randint(5, 10))
+                                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                                
+                                # Try to get href first
+                                href = await element.get_attribute('href')
+                                if href:
+                                    logger.info(f"Navigating to lowest price URL: {href}")
+                                    await page.goto(href, wait_until='networkidle', timeout=30000)
+                                else:
+                                    logger.info("Clicking lowest price button")
+                                    await element.click()
+                                    await page.wait_for_load_state('networkidle', timeout=30000)
+                                
+                                # Add random delay after click (2-4 seconds)
+                                await asyncio.sleep(random.uniform(2, 4))
+                                
+                                button_found = True
+                                current_url = page.url
+                                logger.info(f"After clicking lowest price button, now at URL: {current_url}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"Error with lowest price selector {selector} (attempt {retry_count + 1}): {e}")
+                            continue
                     
                     if not button_found:
-                        logger.warning(f"Could not find lowest price button after {max_retries} attempts")
-                    break
-            
-            # 네이버 직접 연결된 사이트이고 캡차가 없는 경우, 기본적으로 판촉물 사이트 아님
-            if result["is_naver_site"] and not result["has_captcha"]:
-                logger.info(f"Direct Naver shopping mall (not promotional site): {current_url}")
-                result["is_promotional_site"] = False
-                await page.wait_for_timeout(1000)
-                return result
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            # Add increasing delay between retries
+                            await asyncio.sleep(random.uniform(2, 4) * retry_count)
+                            # Reload page before retry
+                            await page.reload(wait_until='networkidle', timeout=30000)
                 
+                if not button_found:
+                    logger.warning(f"Could not find lowest price button after {max_retries} attempts")
+                break
+        
+        # 네이버 직접 연결된 사이트이고 캡차가 없는 경우, 기본적으로 판촉물 사이트 아님
+        if result["is_naver_site"] and not result["has_captcha"]:
+            logger.info(f"Direct Naver shopping mall (not promotional site): {current_url}")
+            result["is_promotional_site"] = False
+            await page.wait_for_timeout(1000)
+            return result
+            
         # Add random delay before content analysis (2-4 seconds)
         await asyncio.sleep(random.uniform(2, 4))
             
         # Rest of the function remains the same...
         # ... existing code for price table detection and analysis ...
 
-                except Exception as e:
+    except Exception as e:
         logger.error(f"Error in extract_quantity_prices: {e}")
         result["error"] = str(e)
-                            return result
-    
         return result
+    
+    return result
 
 async def detect_tables_by_content(html_content: str) -> Optional[Dict[str, Any]]:
     """HTML 내용 기반으로, 가격표가 있는 테이블 감지"""
