@@ -1222,7 +1222,7 @@ def finalize_dataframe_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             df_final[col] = df_final[col].apply(lambda x: 
                 x.get('url', {}).get('url', '-') if isinstance(x, dict) and 'url' in x 
                 else x.get('url', '-') if isinstance(x, dict) 
-                else x if pd.notna(x) else '-'
+                else str(x) if pd.notna(x) else '-'
             )
     
     # Step 3: Rename columns to the target names
