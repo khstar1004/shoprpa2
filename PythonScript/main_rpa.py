@@ -33,6 +33,7 @@ from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
 from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 from fix_kogift_images import fix_excel_kogift_images # Import for Kogift price fix
+from fix_naver_images import fix_naver_data_in_excel
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -884,6 +885,20 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error applying price highlighting: {highlight_err}", exc_info=True)
                                         # Don't treat highlighting failure as a critical error, continue with the process
                                     # --- End Price Highlighting ---
+
+                                    # --- Fix Naver Image Data ---
+                                    try:
+                                        logging.info("네이버 이미지 데이터 수정 시작...")
+                                        if result_path and os.path.exists(result_path):
+                                            fixed_result_path = fix_naver_data_in_excel(result_path)
+                                            if fixed_result_path:
+                                                logging.info("네이버 이미지 데이터 수정 완료")
+                                                result_path = fixed_result_path
+                                            else:
+                                                logging.warning("네이버 이미지 데이터 수정 실패")
+                                    except Exception as naver_fix_err:
+                                        logging.error(f"네이버 이미지 데이터 수정 중 오류 발생: {naver_fix_err}", exc_info=True)
+                                    # --- End Fix Naver Image Data ---
                                     
                                     # --- Send Excel files by email ---
                                     try:
