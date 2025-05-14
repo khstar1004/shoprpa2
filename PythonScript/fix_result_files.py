@@ -11,11 +11,11 @@ from pathlib import Path
 
 # Import our fix script
 try:
-    from PythonScript.kogift_image_fix import fix_kogift_images, download_image, extract_id_from_url
+    from PythonScript.kogift_image_fix import fix_excel_kogift_images, download_image, extract_id_from_url
 except ImportError:
     try:
         # Try direct import
-        from kogift_image_fix import fix_kogift_images, download_image, extract_id_from_url
+        from kogift_image_fix import fix_excel_kogift_images, download_image, extract_id_from_url
     except ImportError:
         print("Error: Could not import kogift_image_fix module. Make sure it exists in the same directory.")
         sys.exit(1)
@@ -88,7 +88,7 @@ def process_files(files, dry_run=False):
             
         try:
             # Apply the fix
-            success = fix_kogift_images(file_path)
+            success = fix_excel_kogift_images(file_path)
             results['processed'] += 1
             
             if success:
