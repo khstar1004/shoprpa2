@@ -21,6 +21,7 @@ from copy import copy
 from decimal import Decimal
 from typing import Optional
 
+
 # Check Python/PIL version for proper resampling constant
 try:
     # Python 3.10+ with newer Pillow
@@ -380,6 +381,73 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
             else:
                 cell.alignment = LEFT_ALIGNMENT # Default left align for text/links/errors
     logger.debug("Finished applying cell styles.")
+
+
+def clean_naver_images_and_data(worksheet, df):
+    """
+    네이버 이미지 링크가 없는 경우 해당 셀 이미지를 삭제하고,
+    네이버 관련 상품정보 칼럼들을 '-'로 초기화하는 함수.
+    
+    Args:
+        worksheet: openpyxl 워크시트 객체
+        df: pandas DataFrame (엑셀에 쓰여진 데이터와 동일한 순서, 컬럼명 포함)
+    """
+    # 네이버 이미지 컬럼명과 네이버 관련 초기화 대상 컬럼명 리스트
+    naver_image_col_name = '네이버 이미지'
+    naver_related_cols = [
+        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
+        '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+    ]
+    
+    # 컬럼명 -> 엑셀 컬럼 인덱스(1-based) 매핑
+    col_index_map = {col: idx+1 for idx, col in enumerate(df.columns)}
+    
+    # 네이버 이미지 컬럼 인덱스
+    naver_img_col_idx = col_index_map.get(naver_image_col_name)
+    if not naver_img_col_idx:
+        # 네이버 이미지 컬럼이 없으면 종료
+        return
+    
+    # 네이버 관련 컬럼 인덱스
+    naver_related_col_indices = [col_index_map.get(col) for col in naver_related_cols if col in col_index_map]
+    
+    # 워크시트의 이미지 리스트를 직접 참조
+    images_to_remove = []
+    
+    # 네이버 이미지 컬럼의 각 행을 순회하며 링크 유무 확인
+    for row_idx in range(2, worksheet.max_row + 1):  # 1행은 헤더
+        cell_value = worksheet.cell(row=row_idx, column=naver_img_col_idx).value
+        
+        # 링크가 없거나 빈값이면 처리 대상
+        if cell_value in (None, '', '-', '-이미지 없음-', '-처리 오류-'):
+            # 1) 해당 셀 위치에 삽입된 이미지 삭제
+            # openpyxl은 이미지 객체가 워크시트에 리스트로 존재함
+            # 이미지의 anchor 속성으로 위치를 확인 가능
+            cell_coordinate = f"{get_column_letter(naver_img_col_idx)}{row_idx}"
+            
+            for img in worksheet._images:
+                # img.anchor는 openpyxl.drawing.spreadsheet_drawing.Anchor 객체 또는 문자열 좌표
+                # 좌표 문자열인 경우가 많으므로 문자열 비교
+                if hasattr(img.anchor, 'from_'):
+                    # Anchor 객체인 경우 좌표 추출
+                    anchor_coord = f"{get_column_letter(img.anchor._from.col + 1)}{img.anchor._from.row + 1}"
+                else:
+                    anchor_coord = str(img.anchor)
+                
+                if anchor_coord == cell_coordinate:
+                    images_to_remove.append(img)
+            
+            # 2) 네이버 관련 컬럼들 초기화 ('-')
+            for col_idx in naver_related_col_indices:
+                worksheet.cell(row=row_idx, column=col_idx).value = '-'
+    
+    # 이미지 삭제 (리스트에서 제거)
+    for img in images_to_remove:
+        try:
+            worksheet._images.remove(img)
+        except Exception as e:
+            # 로그 남기거나 무시
+            pass
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Process image columns in the DataFrame and add images to the worksheet.
@@ -879,8 +947,35 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         if has_image:
             # FIXED: Set taller row height to accommodate larger images
             worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
+
+        logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
+    if kogift_attempted > 0:
+        logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
+    if naver_attempted > 0:
+        logger.info(f"Naver image processing: {naver_successful}/{naver_attempted} images embedded successfully.")
     
+    # Track image columns for dimension adjustment
+    image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
+    
+    # Adjust row heights where images are embedded
+    for row_idx in range(2, worksheet.max_row + 1):
+        has_image = False
+        for col_idx, _ in image_cols:
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            if cell.value == "": # Cell was cleared for image
+                has_image = True
+                break
+        
+        if has_image:
+            # FIXED: Set taller row height to accommodate larger images
+            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
+    
+    # == 여기부터 추가 ==
+    clean_naver_images_and_data(worksheet, df) # 네이버 이미지 정리 함수 호출
+    # == 여기까지 추가 ==
+
     return successful_embeddings
+    
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for price difference < -1)."""
