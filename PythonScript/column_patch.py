@@ -16,7 +16,6 @@ def patch_column_names():
         
         # Store original values for verification
         original_columns = excel_utils.FINAL_COLUMN_ORDER.copy()
-        original_links = excel_utils.LINK_COLUMNS_FOR_HYPERLINK.copy()
         original_images = excel_utils.IMAGE_COLUMNS.copy()
         
         # New values based on "엑셀 골든"
@@ -29,18 +28,10 @@ def patch_column_names():
             '본사 이미지', '고려기프트 이미지', '네이버 이미지'
         ]
         
-        new_links = {
-            '본사상품링크': '본사상품링크',
-            '고려기프트 상품링크': '고려기프트 상품링크',
-            '네이버 쇼핑 링크': '네이버 쇼핑 링크',
-            '공급사 상품링크': '공급사 상품링크'
-        }
-        
         new_images = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
         
         # Update the constants in the module
         excel_utils.FINAL_COLUMN_ORDER = new_columns
-        excel_utils.LINK_COLUMNS_FOR_HYPERLINK = new_links
         excel_utils.IMAGE_COLUMNS = new_images
         
         # Also update related constants
@@ -91,12 +82,10 @@ def patch_column_names():
         # Log successful patching
         logging.info(f"Patched column names in excel_utils:")
         logging.info(f"  - FINAL_COLUMN_ORDER: {len(new_columns)} columns")
-        logging.info(f"  - LINK_COLUMNS: {len(new_links)} columns")
         logging.info(f"  - IMAGE_COLUMNS: {len(new_images)} columns")
         
         # Verify the patch
         assert excel_utils.FINAL_COLUMN_ORDER != original_columns, "Failed to update FINAL_COLUMN_ORDER"
-        assert excel_utils.LINK_COLUMNS_FOR_HYPERLINK != original_links, "Failed to update LINK_COLUMNS"
         assert excel_utils.IMAGE_COLUMNS != original_images, "Failed to update IMAGE_COLUMNS"
         
         return True

@@ -218,9 +218,6 @@ DEFAULT_FONT = Font(name='맑은 고딕', size=10)
 THIN_BORDER_SIDE = Side(style='thin')
 DEFAULT_BORDER = Border(left=THIN_BORDER_SIDE, right=THIN_BORDER_SIDE, top=THIN_BORDER_SIDE, bottom=THIN_BORDER_SIDE)
 
-LINK_FONT = Font(color="0000FF", underline="single", name='맑은 고딕', size=10)
-INVALID_LINK_FONT = Font(color="FF0000", name='맑은 고딕', size=10) # Red for invalid links
-
 NEGATIVE_PRICE_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Yellow fill for negative diff < -1
 
 # --- Image Processing Constants ---
@@ -620,12 +617,10 @@ def _setup_page_layout(worksheet: openpyxl.worksheet.worksheet.Worksheet):
 
 def _add_hyperlinks_to_worksheet(worksheet, df, hyperlinks_as_formulas=False):
     """
-    Adds hyperlinks to URL cells in the worksheet.
-    If hyperlinks_as_formulas=True, use Excel formulas for hyperlinks.
-    Otherwise, use openpyxl's Hyperlink object.
+    Simplified version that just formats URL cells without hyperlinks.
     """
     try:
-        # Define columns that should contain hyperlinks
+        # Define columns that should contain URLs
         link_columns = [col for col in df.columns if any(term in col.lower() for term in ['링크', 'link', 'url'])]
         
         # Process each URL column
@@ -666,33 +661,22 @@ def _add_hyperlinks_to_worksheet(worksheet, df, hyperlinks_as_formulas=False):
                     url = url.strip()
                     
                     try:
-                        # Cell to apply hyperlink
+                        # Cell to apply formatting
                         cell = worksheet.cell(row=row_idx, column=col_idx)
+                        cell.value = url
                         
-                        if hyperlinks_as_formulas:
-                            # Use Excel HYPERLINK formula
-                            display_text = url
-                            if len(display_text) > 50:
-                                display_text = display_text[:47] + "..."
-                            
-                            cell.value = f'=HYPERLINK("{url}","{display_text}")'
-                        else:
-                            # Use openpyxl hyperlink object
-                            cell.hyperlink = url
-                            cell.value = url
-                            
-                            # Style for hyperlink
-                            cell.font = Font(color="0563C1", underline="single")
+                        # Style for URL
+                        cell.font = Font(color="0563C1", underline="single")
                         
                         total_urls_processed += 1
                     except Exception as hyperlink_err:
-                        logger.warning(f"Error adding hyperlink in row {row_idx}, col {col}: {hyperlink_err}")
-                        # Keep original text if hyperlink fails
+                        logger.warning(f"Error formatting URL in row {row_idx}, col {col}: {hyperlink_err}")
+                        # Keep original text if formatting fails
                         cell.value = url
                         
-        logger.info(f"Processed link columns as plain text. Found {total_urls_processed} URLs across link columns.")
+        logger.info(f"Processed {total_urls_processed} URLs across link columns.")
     except Exception as e:
-        logger.warning(f"Error processing hyperlinks: {e}")
+        logger.warning(f"Error processing URLs: {e}")
         logger.debug(traceback.format_exc())
 
 def _add_header_footer(worksheet: openpyxl.worksheet.worksheet.Worksheet):
@@ -982,7 +966,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             # Apply formatting
             _apply_column_widths(worksheet, result_df)
             _apply_cell_styles_and_alignment(worksheet, result_df)
-            _add_hyperlinks_to_worksheet(worksheet, result_df)
             _add_header_footer(worksheet)
             _apply_table_format(worksheet)
             _apply_conditional_formatting(worksheet, result_df)
@@ -1564,7 +1547,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             # Apply formatting
             _apply_column_widths(worksheet, result_df)
             _apply_cell_styles_and_alignment(worksheet, result_df)
-            _add_hyperlinks_to_worksheet(worksheet, result_df)
             _add_header_footer(worksheet)
             _apply_table_format(worksheet)
             _apply_conditional_formatting(worksheet, result_df)
