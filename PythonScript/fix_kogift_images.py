@@ -309,6 +309,12 @@ def fix_excel_kogift_images(input_file, output_file=None):
         workbook = openpyxl.load_workbook(input_file)
         sheet = workbook.active
         
+        # 고려기프트 이미지 디렉토리 경로 확인
+        kogift_image_dir = os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift')
+        if not os.path.exists(kogift_image_dir):
+            logger.warning(f"고려기프트 이미지 디렉토리가 없습니다: {kogift_image_dir}")
+            kogift_image_dir = None
+        
         # Map column names (accounting for variations in column names)
         column_mapping = {
             '기본수량(1)': ['기본수량(1)', '기본수량', '수량', '본사 기본수량'],
@@ -317,7 +323,8 @@ def fix_excel_kogift_images(input_file, output_file=None):
             '기본수량(2)': ['기본수량(2)', '고려 기본수량', '고려기프트 기본수량'],
             '판매가(V포함)(2)': ['판매가(V포함)(2)', '판매단가(V포함)(2)', '고려 판매가(V포함)', '고려기프트 판매가', '판매단가2(VAT포함)'],
             '가격차이(2)': ['가격차이(2)', '고려 가격차이'],
-            '가격차이(2)(%)': ['가격차이(2)(%)', '고려 가격차이(%)', '고려 가격 차이(%)']
+            '가격차이(2)(%)': ['가격차이(2)(%)', '고려 가격차이(%)', '고려 가격 차이(%)'],
+            '고려기프트 이미지': ['고려기프트 이미지', '고려기프트이미지', '고려 이미지', 'kogift_image']
         }
         
         # Find which variant of each column exists in the DataFrame
@@ -358,7 +365,6 @@ def fix_excel_kogift_images(input_file, output_file=None):
         logger.info(f"Found column indices: {column_indices}")
         
         # Map the actual column names in the Excel file to our expected column names
-        # This addresses issues where column headers might have spaces or slight variations
         real_column_indices = {}
         for expected_col, column_idx in column_indices.items():
             # Try to map each column in the excel file to our expected columns
@@ -377,6 +383,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
         price2_col = columns_found.get('판매가(V포함)(2)')
         price_diff_col = columns_found.get('가격차이(2)')
         price_diff_pct_col = columns_found.get('가격차이(2)(%)')
+        kogift_image_col = columns_found.get('고려기프트 이미지')
         
         # 칼럼을 찾지 못한 경우 로그 남기기
         if not quantity_col:
@@ -389,6 +396,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
         # Process each row that has Kogift data
         update_count = 0
         price_diffs_updated = 0
+        wrong_image_count = 0
         
         # 특별히 관심 있는 수량 값들 추적
         small_quantity_handling = {}  # 수량이 작은 행 처리 결과 추적
@@ -402,6 +410,24 @@ def fix_excel_kogift_images(input_file, output_file=None):
             
             if not has_kogift_link:
                 continue
+            
+            # 이미지 데이터 검증
+            if kogift_image_col and kogift_image_col in row:
+                image_data = parse_complex_value(row[kogift_image_col])
+                if isinstance(image_data, dict):
+                    local_path = image_data.get('local_path') or image_data.get('image_path')
+                    if local_path and isinstance(local_path, str):
+                        # 이미지가 올바른 디렉토리에 있는지 확인
+                        if kogift_image_dir and not local_path.replace('\\', '/').startswith(kogift_image_dir.replace('\\', '/')):
+                            wrong_image_count += 1
+                            logger.warning(f"잘못된 고려기프트 이미지 경로 (행 {idx+1}): {local_path}")
+                            
+                            # 이미지 데이터 초기화
+                            xl_row = idx + 2  # Excel은 1-based indexing이고 헤더가 있으므로 +2
+                            kogift_image_idx = real_column_indices.get('고려기프트 이미지')
+                            if kogift_image_idx:
+                                sheet.cell(row=xl_row, column=kogift_image_idx).value = '-'
+                            continue
             
             # 기본수량 확인
             base_quantity = None

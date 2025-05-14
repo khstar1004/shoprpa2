@@ -3642,3 +3642,25 @@ def is_unreliable_naver_url(url: str) -> bool:
     
     return False
 
+def clean_naver_data_if_link_missing(worksheet, df):
+    """네이버 이미지 링크 누락 시 관련 데이터 제거"""
+    naver_col_idx = df.columns.get_loc('네이버쇼핑(이미지링크)') + 1
+    data_cols_to_clear = [
+        '기본수량(3)', '판매단가(V포함)(3)', 
+        '가격차이(3)', '가격차이(3)(%)'
+    ]
+    
+    for row_idx, row in df.iterrows():
+        naver_info = row['네이버쇼핑(이미지링크)']
+        has_valid_link = isinstance(naver_info, dict) and naver_info.get('url')
+        
+        if not has_valid_link:
+            # 이미지 제거
+            cell = worksheet.cell(row=row_idx+2, column=naver_col_idx)
+            cell.value = '-'
+            
+            # 관련 데이터 클리어
+            for col in data_cols_to_clear:
+                col_idx = df.columns.get_loc(col) + 1
+                worksheet.cell(row=row_idx+2, column=col_idx).value = '-'
+

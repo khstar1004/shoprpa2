@@ -33,6 +33,7 @@ from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
 from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
 from fix_kogift_images import fix_excel_kogift_images # Import for Kogift price fix
+from naver_data_cleaner import clean_naver_data, get_invalid_naver_rows # Import for cleaning Naver data
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
@@ -712,6 +713,27 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
                         logging.debug(f"Finalized columns: {df_to_save.columns.tolist()}")
                         
+                        # Clean Naver data before applying Haereum URLs
+                        try:
+                            # Log invalid Naver rows for debugging
+                            invalid_rows = get_invalid_naver_rows(df_to_save)
+                            if invalid_rows:
+                                logging.warning(f"Found {len(invalid_rows)} rows with invalid Naver data:")
+                                for row in invalid_rows:
+                                    logging.warning(f"Row {row['index']}: {row['product_name']}")
+                            
+                            # Clean the DataFrame
+                            original_len = len(df_to_save)
+                            df_to_save = clean_naver_data(df_to_save)
+                            removed_count = original_len - len(df_to_save)
+                            if removed_count > 0:
+                                logging.info(f"Removed {removed_count} rows with invalid Naver data")
+                                if progress_queue:
+                                    progress_queue.emit("status", f"Removed {removed_count} rows with invalid Naver data")
+                        except Exception as clean_err:
+                            logging.error(f"Error cleaning Naver data: {clean_err}", exc_info=True)
+                            # Continue with original DataFrame if cleaning fails
+                            
                         # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
                         try:
                             # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
