@@ -269,7 +269,14 @@ def integrate_image_fixes(df, is_upload_file=False, config=None):
 
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
+    # Initialize variables
+    result_success = False
+    upload_path = None
+    result_path = None
+    output_path = None
+    
     try:
+        # Start timing
         main_start_time = time.time()
         logging.info("========= RPA Process Starting ========")
 
@@ -280,7 +287,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         debug_mode = config.getboolean('Debug', 'enabled', fallback=False)
         if debug_mode:
             logging.info("Debug mode enabled - detailed logging will be shown")
-            
+        
         def log_step(step_num, total_steps, message):
             """Helper function for consistent step logging"""
             log_msg = f"[Step {step_num}/{total_steps}] {message}"
@@ -389,7 +396,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 processed_count = len(input_file_image_map)
             else:
                 input_file_image_map = {}
-                
+            
             logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
             if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
         except Exception as e:
@@ -425,7 +432,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 logging.debug(f"Kogift results type: {type(kogift_crawl_results)}")
                 logging.debug(f"Naver results type: {type(naver_crawl_results)}")
                 logging.debug(f"Haereum map type: {type(haereum_image_url_map)}")
-                
+            
             # 여기서 해오름 이미지 URL 맵을 안전하게 보관 (원본 데이터로 저장)
             # 이 맵은 엑셀 생성 단계에서 바로 사용됨
             original_haereum_image_urls = haereum_image_url_map.copy() if isinstance(haereum_image_url_map, dict) else {}
@@ -437,7 +444,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 for prod_name, url in list(original_haereum_image_urls.items())[:5]:
                     logging.debug(f"보관된 해오름 이미지 URL 샘플 #{sample_count+1}: {prod_name} -> {url}")
                     sample_count += 1
-                
+        
         except Exception as e:
             logging.error(f"Error during crawling: {e}")
             if debug_mode:
@@ -488,7 +495,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 if product_name not in naver_map:
                                     naver_map[product_name] = []
                                 naver_map[product_name].append(naver_data)
-                    
+                
                     logging.debug(f"Created Naver map with {len(naver_map)} entries.")
                     
                     # 샘플 이미지 URL 로깅 (디버깅용)
@@ -500,7 +507,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 if img_url:
                                     logging.debug(f"네이버 이미지 URL 샘플 #{sample_count+1}: {img_url}")
                                     sample_count += 1
-                    
+                
                     # Ensure Naver images are downloaded to the correct directory
                     naver_image_dir = os.path.join(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'), 'Naver')
                     os.makedirs(naver_image_dir, exist_ok=True)
@@ -532,7 +539,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
                                     except Exception as e:
                                         logging.error(f"Error fixing Naver image path: {e}")
-                                
+                            
                             # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
                             if img_url:
                                 # Update the item's image data to dictionary format for excel_utils.py
@@ -703,17 +710,17 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.debug(f"Fixed Naver image path: {img_path} -> {new_path}")
                                 except Exception as e:
                                     logging.error(f"Error fixing Naver image path: {e}")
-                            
-                            # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
-                            if img_url:
-                                # Update the item's image data to dictionary format for excel_utils.py
-                                image_data = {
-                                    'url': img_url,
-                                    'local_path': item['image_path'], # Use corrected path
-                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
-                                    'source': 'naver'
-                                }
-                                item['image_data'] = image_data
+                        
+                        # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
+                        if img_url:
+                            # Update the item's image data to dictionary format for excel_utils.py
+                            image_data = {
+                                'url': img_url,
+                                'local_path': item['image_path'], # Use corrected path
+                                'original_path': item.get('original_path', item['image_path']), # Keep original if available
+                                'source': 'naver'
+                            }
+                            item['image_data'] = image_data
                 
                 if img_fix_count > 0:
                     logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
@@ -948,47 +955,39 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         try:
                             # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
                             if original_haereum_image_urls and not df_to_save.empty:
-                                # '상품명' 컬럼이 있는지 확인
-                                if '상품명' in df_to_save.columns:
-                                    applied_count = 0
-                                    logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
-                                    
-                                    # 원본 이미지 URL을 저장할 새 컬럼 생성
-                                    if '해오름 이미지 URL' not in df_to_save.columns:
-                                        df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
-                                    
-                                    # 각 행에 원본 URL 적용
-                                    for idx, row in df_to_save.iterrows():
-                                        product_name = row['상품명']
-                                        if product_name in original_haereum_image_urls:
-                                            orig_url = original_haereum_image_urls[product_name]
-                                            if orig_url:
-                                                df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
-                                                
-                                                # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
-                                                if '본사 이미지' in df_to_save.columns:
-                                                    current_value = df_to_save.at[idx, '본사 이미지']
-                                                    if isinstance(current_value, dict):
-                                                        current_value['url'] = orig_url
-                                                        df_to_save.at[idx, '본사 이미지'] = current_value
-                                                    else:
-                                                        # 딕셔너리 아닌 경우 새로 생성
-                                                        image_data = {
-                                                            'url': orig_url,
-                                                            'source': 'haereum',
-                                                            'product_name': product_name
-                                                        }
-                                                        df_to_save.at[idx, '본사 이미지'] = image_data
-                                                applied_count += 1
-                                                
-                                    logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
-                                else:
-                                    logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
+                                logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
+                                
+                                # 원본 이미지 URL을 저장할 새 컬럼 생성
+                                if '해오름 이미지 URL' not in df_to_save.columns:
+                                    df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
+                                
+                                # 각 행에 원본 URL 적용
+                                for idx, row in df_to_save.iterrows():
+                                    product_name = row['상품명']
+                                    if product_name in original_haereum_image_urls:
+                                        orig_url = original_haereum_image_urls[product_name]
+                                        if orig_url:
+                                            df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
+                                            
+                                            # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
+                                            if '본사 이미지' in df_to_save.columns:
+                                                current_value = df_to_save.at[idx, '본사 이미지']
+                                                if isinstance(current_value, dict):
+                                                    current_value['url'] = orig_url
+                                                    df_to_save.at[idx, '본사 이미지'] = current_value
+                                                else:
+                                                    # 딕셔너리 아닌 경우 새로 생성
+                                                    image_data = {
+                                                        'url': orig_url,
+                                                        'source': 'haereum',
+                                                        'product_name': product_name
+                                                    }
+                                                    df_to_save.at[idx, '본사 이미지'] = image_data
+                                            applied_count += 1
+                                            
+                                logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
                             else:
-                                if not original_haereum_image_urls:
-                                    logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
-                                if df_to_save.empty:
-                                    logging.warning("DataFrame이 비어있어 해오름 이미지 URL을 적용할 수 없습니다.")
+                                logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
                         except Exception as url_apply_err:
                             logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
                             # 이 오류는 치명적이지 않으므로 계속 진행
@@ -1029,27 +1028,29 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 # 임시 파일 경로 생성
                                 result_temp_path = result_path.replace('.xlsx', '_temp.xlsx')
                                 
-                                # 1. 고려기프트 이미지/가격 수정
+                                # 1. 해오름 이미지 URL 적용
                                 try:
-                                    from fix_kogift_images import fix_excel_kogift_images
-                                    logging.info(f"Result 파일에 고려기프트 이미지/가격 수정 적용 중: {result_path}")
-                                    kogift_result = fix_excel_kogift_images(result_path, result_temp_path)
-                                    if kogift_result and os.path.exists(kogift_result):
-                                        logging.info(f"고려기프트 이미지/가격 수정 완료: {kogift_result}")
-                                        # 원본 파일로 복사
-                                        shutil.copy2(kogift_result, result_path)
-                                        os.remove(kogift_result)
+                                    if '상품명' in df_to_save.columns and original_haereum_image_urls:
+                                        logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
+                                        for idx, row in df_to_save.iterrows():
+                                            if pd.notna(row['상품명']):
+                                                product_name = row['상품명']
+                                                if product_name in original_haereum_image_urls:
+                                                    df_to_save.at[idx, '해오름 이미지 URL'] = original_haereum_image_urls[product_name]
+                                        logging.info(f"원본 해오름 이미지 URL {len(original_haereum_image_urls)}개 적용 완료.")
                                     else:
-                                        logging.warning("고려기프트 이미지/가격 수정 실패, 원본 파일 유지")
-                                except Exception as kogift_err:
-                                    logging.error(f"고려기프트 이미지/가격 수정 중 오류: {kogift_err}")
-                                    
+                                        if '상품명' not in df_to_save.columns:
+                                            logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
+                                        else:
+                                            logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
+                                except Exception as url_err:
+                                    logging.error(f"해오름 이미지 URL 적용 중 오류: {url_err}")
+                                
                                 # 2. 네이버 이미지 수정
                                 try:
                                     from fix_naver_images import fix_excel_file
                                     logging.info(f"Result 파일에 네이버 이미지 수정 적용 중: {result_path}")
                                     naver_result = fix_excel_file(result_path, result_temp_path)
-                                    result_success = False
                                     if naver_result and os.path.exists(naver_result):
                                         logging.info(f"네이버 이미지 수정 완료: {naver_result}")
                                         # 원본 파일로 복사
@@ -1061,7 +1062,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 except Exception as naver_err:
                                     logging.error(f"네이버 이미지 수정 중 오류: {naver_err}")
                                     result_success = False
-
+                                
                                 # 3. 고려기프트 이미지 수정
                                 try:
                                     from fix_kogift_images import fix_excel_kogift_images
@@ -1099,7 +1100,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     logging.warning("이미지 및 가격 수정 실패")
                         except Exception as fix_files_err:
                             logging.error(f"이미지 및 가격 수정 중 오류 발생: {fix_files_err}", exc_info=True)
-                            # --- 이미지 수정 로직 종료 ---
+                            result_success = False
+                            upload_path = None
                 except Exception as finalize_err:
                     logging.error(f"Error during DataFrame finalization step: {finalize_err}", exc_info=True)
                     if progress_queue:
@@ -1131,8 +1133,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     final_emitted_path = upload_path # Use the variable we know holds the upload path
                     if final_emitted_path and os.path.exists(final_emitted_path):
                         logging.info(f"Emitting final upload path: {final_emitted_path}")
-                        # Ensure final_path signal emission logic remains consistent (already done above)
-                        # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
                     else:
                         logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
                         progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
