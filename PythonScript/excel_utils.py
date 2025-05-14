@@ -143,13 +143,9 @@ PRICE_COLUMNS = [
 QUANTITY_COLUMNS = ['기본수량(1)', '기본수량(2)', '기본수량(3)']
 PERCENTAGE_COLUMNS = ['가격차이(2)(%)', '가격차이(3)(%)']
 TEXT_COLUMNS = ['구분', '담당자', '업체명', '업체코드', 'Code', '중분류카테고리', '상품명', '공급사명']
-LINK_COLUMNS_FOR_HYPERLINK = {
-    # Map final column names used for links
-    '본사상품링크': '본사상품링크',
-    '고려기프트 상품링크': '고려기프트 상품링크',
-    '네이버 쇼핑 링크': '네이버 쇼핑 링크',
-    '공급사 상품링크': '공급사 상품링크'
-}
+LINK_COLUMNS = [
+    '본사상품링크', '고려기프트 상품링크', '네이버 쇼핑 링크', '공급사 상품링크'
+]
 # Define IMAGE_COLUMNS based on FINAL_COLUMN_ORDER
 IMAGE_COLUMNS = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
 
@@ -313,7 +309,7 @@ def _apply_column_widths(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: 
             width = width_hints['image']
         elif '상품명' in col_name_str:
             width = width_hints['name']
-        elif col_name_str in LINK_COLUMNS_FOR_HYPERLINK or '링크' in col_name_str:
+        elif col_name_str in LINK_COLUMNS or '링크' in col_name_str:
             width = width_hints['link']
         elif col_name_str in PRICE_COLUMNS:
             width = width_hints['price']

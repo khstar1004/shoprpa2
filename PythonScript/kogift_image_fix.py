@@ -315,6 +315,49 @@ def find_kogift_image_for_url(url: str, kogift_images: Dict[str, str]) -> Option
     
     return None
 
+def extract_id_from_url(url: str) -> Optional[str]:
+    """
+    Extract product ID from a Kogift URL.
+    
+    Args:
+        url: The URL to extract the ID from
+        
+    Returns:
+        The extracted product ID or None if not found
+    """
+    try:
+        # Parse the URL
+        parsed = urlparse(url)
+        
+        # Extract the path and remove any trailing slashes
+        path = parsed.path.strip('/')
+        
+        # Try to find the product ID in the path
+        # Common patterns in Kogift URLs:
+        # - /shop/item.php?it_id=PRODUCT_ID
+        # - /shop/goods/goods_view.php?goodsNo=PRODUCT_ID
+        # - /shop/goods/PRODUCT_ID
+        
+        # Check for query parameters first
+        if 'it_id=' in url:
+            return url.split('it_id=')[1].split('&')[0]
+        elif 'goodsNo=' in url:
+            return url.split('goodsNo=')[1].split('&')[0]
+            
+        # If no query parameters, try to get the last part of the path
+        parts = path.split('/')
+        if parts:
+            # The last part might be the product ID
+            last_part = parts[-1]
+            # Check if it looks like a product ID (numeric or alphanumeric)
+            if last_part.isalnum():
+                return last_part
+                
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting ID from URL {url}: {e}")
+        return None
+
 def fix_excel_kogift_images(excel_file: str, output_file: Optional[str] = None) -> str:
     """
     Fix Kogift images in an Excel file by ensuring all image URLs are properly linked to local files.
