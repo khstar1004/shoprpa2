@@ -1049,37 +1049,54 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     from fix_naver_images import fix_excel_file
                                     logging.info(f"Result 파일에 네이버 이미지 수정 적용 중: {result_path}")
                                     naver_result = fix_excel_file(result_path, result_temp_path)
+                                    result_success = False
                                     if naver_result and os.path.exists(naver_result):
                                         logging.info(f"네이버 이미지 수정 완료: {naver_result}")
                                         # 원본 파일로 복사
                                         shutil.copy2(naver_result, result_path)
                                         os.remove(naver_result)
+                                        result_success = True
                                     else:
                                         logging.warning("네이버 이미지 수정 실패, 원본 파일 유지")
                                 except Exception as naver_err:
                                     logging.error(f"네이버 이미지 수정 중 오류: {naver_err}")
-                                
-                                # Upload 파일 수정
-                                if upload_success and upload_path and os.path.exists(upload_path):
-                                    logging.info("Upload 파일 생성 완료. 이제 가격 수정 로직을 적용합니다.")
-                                    
-                                    # 임시 파일 경로 생성
-                                    upload_temp_path = upload_path.replace('.xlsx', '_temp.xlsx')
-                                    
-                                    # 고려기프트 가격 수정만 적용 (이미지 URL은 이미 처리됨)
-                                    try:
-                                        from fix_kogift_images import fix_excel_kogift_images
-                                        logging.info(f"Upload 파일에 고려기프트 가격 수정 적용 중: {upload_path}")
-                                        kogift_upload = fix_excel_kogift_images(upload_path, upload_temp_path)
-                                        if kogift_upload and os.path.exists(kogift_upload):
-                                            logging.info(f"Upload 파일 고려기프트 가격 수정 완료: {kogift_upload}")
-                                            # 원본 파일로 복사
-                                            shutil.copy2(kogift_upload, upload_path)
-                                            os.remove(kogift_upload)
-                                        else:
-                                            logging.warning("Upload 파일 고려기프트 가격 수정 실패, 원본 파일 유지")
-                                    except Exception as upload_kogift_err:
-                                        logging.error(f"Upload 파일 고려기프트 가격 수정 중 오류: {upload_kogift_err}")
+                                    result_success = False
+
+                                # 3. 고려기프트 이미지 수정
+                                try:
+                                    from fix_kogift_images import fix_excel_kogift_images
+                                    logging.info(f"Result 파일에 고려기프트 이미지 수정 적용 중: {result_path}")
+                                    kogift_result = fix_excel_kogift_images(result_path, result_temp_path)
+                                    if kogift_result and os.path.exists(kogift_result):
+                                        logging.info(f"고려기프트 이미지 수정 완료: {kogift_result}")
+                                        # 원본 파일로 복사
+                                        shutil.copy2(kogift_result, result_path)
+                                        os.remove(kogift_result)
+                                        result_success = True
+                                    else:
+                                        logging.warning("고려기프트 이미지 수정 실패, 원본 파일 유지")
+                                except Exception as kogift_err:
+                                    logging.error(f"고려기프트 이미지 수정 중 오류: {kogift_err}")
+                                    result_success = False
+
+                                # 4. Upload 파일 생성
+                                try:
+                                    from excel_utils import create_split_excel_outputs
+                                    logging.info(f"Upload 파일 생성 중: {result_path}")
+                                    result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                    if result_path and upload_path and os.path.exists(result_path) and os.path.exists(upload_path):
+                                        logging.info(f"Upload 파일 생성 완료: {upload_path}")
+                                    else:
+                                        logging.warning("Upload 파일 생성 실패")
+                                        upload_path = None
+                                except Exception as upload_err:
+                                    logging.error(f"Upload 파일 생성 중 오류: {upload_err}")
+                                    upload_path = None
+
+                                if result_success and result_path and os.path.exists(result_path):
+                                    logging.info(f"이미지 및 가격 수정 완료: {result_path}")
+                                else:
+                                    logging.warning("이미지 및 가격 수정 실패")
                         except Exception as fix_files_err:
                             logging.error(f"이미지 및 가격 수정 중 오류 발생: {fix_files_err}", exc_info=True)
                             # --- 이미지 수정 로직 종료 ---
