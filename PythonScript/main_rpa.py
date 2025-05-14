@@ -31,7 +31,9 @@ from execution_setup import initialize_environment, clear_temp_files, _load_and_
 from image_integration import integrate_and_filter_images
 from price_highlighter import apply_price_highlighting_to_files
 from upload_filter import apply_filter_to_upload_excel
-from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
+from excel_formatter import apply_excel_formatting
+from fix_excel_output import fix_excel_output
+from fix_result_files import process_files, backup_file  # Add this import
 
 # 이미지 수정 통합 함수 추가
 def integrate_image_fixes(df, is_upload_file=False, config=None):
@@ -907,28 +909,16 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     logging.info("Integrating and filtering images immediately before Excel generation...")
                     # Log DataFrame state BEFORE integration
                     logging.info(f"DataFrame shape BEFORE image integration: {formatted_df.shape}")
-                    logging.debug(f"DataFrame columns BEFORE image integration: {formatted_df.columns.tolist()}")
-                    if not formatted_df.empty:
-                        logging.debug(f"Sample data BEFORE integration:\n{formatted_df.head().to_string()}")
-
+                    
                     # Perform image integration
                     integrated_df = integrate_and_filter_images(formatted_df, config, save_excel_output=False)
                     logging.info("Image integration and filtering complete.")
-
+                    
                     # Log DataFrame state AFTER integration
                     logging.info(f"DataFrame shape AFTER image integration: {integrated_df.shape}")
-                    logging.debug(f"DataFrame columns AFTER image integration: {integrated_df.columns.tolist()}")
-                    if not integrated_df.empty:
-                        logging.debug(f"Sample data AFTER integration:\n{integrated_df.head().to_string()}")
-                        # Explicitly check image column sample data
-                        if IMAGE_COLUMNS:
-                            img_cols_to_log = [col for col in IMAGE_COLUMNS if col in integrated_df.columns]
-                            if img_cols_to_log:
-                                 logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
-
+                    
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)
-                    # Fallback: use the pre-integration DataFrame if integration fails
                     integrated_df = formatted_df
                     logging.warning("Proceeding with pre-integration data due to error.")
 
@@ -938,159 +928,69 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     # Ensure the finalize function is called with the correct DataFrame
                     df_to_save = finalize_dataframe_for_excel(integrated_df)
                     
-                    # Log the result of finalization
                     if df_to_save.empty and not integrated_df.empty:
                         logging.error("DataFrame became empty after finalization. Skipping Excel creation.")
                         if progress_queue: progress_queue.emit("error", "Error during data finalization stage.")
                         result_success, upload_success = False, False
                     else:
                         logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
-                        logging.debug(f"Finalized columns: {df_to_save.columns.tolist()}")
                         
-                        # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
+                        # Use fix_excel_output to create the output files
                         try:
-                            if original_haereum_image_urls and not df_to_save.empty:
-                                logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
+                            result_path, upload_path = fix_excel_output(df_to_save, output_dir)
+                            if result_path and upload_path:
+                                result_success, upload_success = True, True
+                                output_path = result_path  # Set the output path
+                                logging.info(f"Successfully created output files using fix_excel_output:")
+                                logging.info(f"Result file: {result_path}")
+                                logging.info(f"Upload file: {upload_path}")
                                 
-                                if '해오름 이미지 URL' not in df_to_save.columns:
-                                    df_to_save['해오름 이미지 URL'] = '-'
-                                
-                                applied_count = 0
-                                for idx, row in df_to_save.iterrows():
-                                    product_name = row['상품명']
-                                    if product_name in original_haereum_image_urls:
-                                        orig_url = original_haereum_image_urls[product_name]
-                                        if orig_url:
-                                            df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
-                                            
-                                            if '본사 이미지' in df_to_save.columns:
-                                                current_value = df_to_save.at[idx, '본사 이미지']
-                                                if isinstance(current_value, dict):
-                                                    current_value['url'] = orig_url
-                                                    df_to_save.at[idx, '본사 이미지'] = current_value
-                                                else:
-                                                    image_data = {
-                                                        'url': orig_url,
-                                                        'source': 'haereum',
-                                                        'product_name': product_name
-                                                    }
-                                                    df_to_save.at[idx, '본사 이미지'] = image_data
-                                            applied_count += 1
-                                            
-                                logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
+                                # Apply fix_result_files functionality to the newly created files
+                                try:
+                                    logging.info("Applying additional fixes to result files...")
+                                    files_to_fix = [result_path, upload_path]
+                                    
+                                    # Backup files before fixing
+                                    for file_path in files_to_fix:
+                                        if backup_file(file_path):
+                                            logging.info(f"Created backup of {file_path}")
+                                    
+                                    # Process the files
+                                    results = process_files(files_to_fix, dry_run=False)
+                                    
+                                    # Log the results
+                                    logging.info("=" * 50)
+                                    logging.info("File Fix Summary")
+                                    logging.info("=" * 50)
+                                    logging.info(f"Total files:       {results['total']}")
+                                    logging.info(f"Processed:         {results['processed']}")
+                                    logging.info(f"Successfully fixed: {results['success']}")
+                                    logging.info(f"Failed:            {results['failed']}")
+                                    logging.info(f"Skipped:           {results['skipped']}")
+                                    logging.info("=" * 50)
+                                    
+                                    # Update success status based on fix results
+                                    if results['failed'] > 0:
+                                        logging.warning("Some files failed to be fixed properly")
+                                        result_success = results['success'] > 0
+                                        upload_success = results['success'] > 0
+                                except Exception as fix_err:
+                                    logging.error(f"Error applying additional fixes: {fix_err}")
+                                    # Don't fail the whole process if fixes fail
+                                    logging.warning("Continuing with original files despite fix errors")
                             else:
-                                logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
-                        except Exception as url_apply_err:
-                            logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
-
-                        # Add Detailed Logging Before Saving
-                        if df_to_save is not None and not df_to_save.empty:
-                            logging.info("--- DataFrame Snapshot Before Excel Write ---")
-                            logging.info(f"Shape: {df_to_save.shape}")
-                            logging.info(f"Columns: {df_to_save.columns.tolist()}")
-                            logging.info(f"dtypes:\n{df_to_save.dtypes.to_string()}")
-                            
-                            log_limit = min(2, len(df_to_save))
-                            logging.info(f"Sample Data (first {log_limit} rows):")
+                                raise Exception("fix_excel_output failed to create output files")
+                        except Exception as fix_err:
+                            logging.error(f"Error using fix_excel_output: {fix_err}")
+                            # Fallback to original method
                             try:
-                                logging.info(f"\n{df_to_save.head(log_limit).to_string()}")
-                                if IMAGE_COLUMNS:
-                                    logging.info(f"Image Column Data Types (first {log_limit} rows):")
-                                    for i in range(log_limit):
-                                        for col in IMAGE_COLUMNS:
-                                            if col in df_to_save.columns:
-                                                value = df_to_save.iloc[i][col]
-                                                logging.info(f"  Row {i}, Col '{col}': Type={type(value).__name__}, Value=\"{str(value)[:80]}...\"")
-                            except Exception as log_snap_err:
-                                logging.error(f"Could not log DataFrame snapshot: {log_snap_err}")
-                            logging.info("--- End DataFrame Snapshot ---")
-                        elif df_to_save is None:
-                            logging.warning("Skipping Excel write step because DataFrame finalization failed.")
-                        else:
-                            logging.warning("DataFrame is empty after finalization. Excel files will have headers only.")
-
-                        # --- 엑셀 파일 생성 후 이미지 수정 로직 적용 ---
-                        try:
-                            # Fix: Properly unpack all four return values
-                            result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
-                            
-                            if result_success and result_path and os.path.exists(result_path):
-                                logging.info("Result 파일 생성 완료. 이제 이미지 수정 로직을 적용합니다.")
-                                
-                                # 임시 파일 경로 생성
-                                result_temp_path = result_path.replace('.xlsx', '_temp.xlsx')
-                                
-                                # 1. 해오름 이미지 URL 적용
-                                try:
-                                    if '상품명' in df_to_save.columns and original_haereum_image_urls:
-                                        logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
-                                        for idx, row in df_to_save.iterrows():
-                                            if pd.notna(row['상품명']):
-                                                product_name = row['상품명']
-                                                if product_name in original_haereum_image_urls:
-                                                    df_to_save.at[idx, '해오름 이미지 URL'] = original_haereum_image_urls[product_name]
-                                        logging.info(f"원본 해오름 이미지 URL {len(original_haereum_image_urls)}개 적용 완료.")
-                                    else:
-                                        if '상품명' not in df_to_save.columns:
-                                            logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
-                                        else:
-                                            logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
-                                except Exception as url_err:
-                                    logging.error(f"해오름 이미지 URL 적용 중 오류: {url_err}")
-                                
-                                # 2. 네이버 이미지 수정
-                                try:
-                                    from fix_naver_images import fix_excel_file
-                                    logging.info(f"Result 파일에 네이버 이미지 수정 적용 중: {result_path}")
-                                    naver_result = fix_excel_file(result_path, result_temp_path)
-                                    if naver_result and os.path.exists(naver_result):
-                                        logging.info(f"네이버 이미지 수정 완료: {naver_result}")
-                                        shutil.copy2(naver_result, result_path)
-                                        os.remove(naver_result)
-                                        result_success = True
-                                    else:
-                                        logging.warning("네이버 이미지 수정 실패, 원본 파일 유지")
-                                except Exception as naver_err:
-                                    logging.error(f"네이버 이미지 수정 중 오류: {naver_err}")
-                                    result_success = False
-                                
-                                # 3. 고려기프트 이미지 수정
-                                try:
-                                    from fix_kogift_images import fix_excel_kogift_images
-                                    logging.info(f"Result 파일에 고려기프트 이미지 수정 적용 중: {result_path}")
-                                    kogift_result = fix_excel_kogift_images(result_path, result_temp_path)
-                                    if kogift_result and os.path.exists(kogift_result):
-                                        logging.info(f"고려기프트 이미지 수정 완료: {kogift_result}")
-                                        shutil.copy2(kogift_result, result_path)
-                                        os.remove(kogift_result)
-                                        result_success = True
-                                    else:
-                                        logging.warning("고려기프트 이미지 수정 실패, 원본 파일 유지")
-                                except Exception as kogift_err:
-                                    logging.error(f"고려기프트 이미지 수정 중 오류: {kogift_err}")
-                                    result_success = False
-
-                                # 4. 가격 하이라이팅 적용
-                                try:
-                                    from price_highlighter import apply_price_highlighting_to_files
-                                    logging.info("가격 하이라이팅 적용 시작...")
-                                    price_threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
-                                    success_count, total_files = apply_price_highlighting_to_files(
-                                        result_path=result_path,
-                                        upload_path=upload_path,
-                                        threshold=price_threshold
-                                    )
-                                    if success_count > 0:
-                                        logging.info(f"가격 하이라이팅 적용 완료: {success_count}/{total_files} 파일 성공")
-                                    else:
-                                        logging.warning("가격 하이라이팅 적용 실패")
-                                except Exception as highlight_err:
-                                    logging.error(f"가격 하이라이팅 적용 중 오류: {highlight_err}")
-
-                        except Exception as e:
-                            logging.error(f"이미지 수정 로직 적용 중 오류 발생: {e}", exc_info=True)
-                            result_success = False
-
+                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                output_path = result_path if result_success else None
+                            except Exception as fallback_err:
+                                logging.error(f"Fallback method also failed: {fallback_err}")
+                                result_success, upload_success = False, False
+                                result_path, upload_path = None, None
+                                output_path = None
                 except Exception as finalize_err:
                     logging.error(f"Error during DataFrame finalization step: {finalize_err}", exc_info=True)
                     if progress_queue:
@@ -1098,6 +998,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     result_success, upload_success = False, False
                     result_path, upload_path = None, None
                     output_path = None
+
             except Exception as e:
                 error_msg = f"Error during output file saving: {str(e)}"
                 logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
