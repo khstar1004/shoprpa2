@@ -926,13 +926,11 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             if img_cols_to_log:
                                  logging.debug(f"Sample image column data AFTER integration:\n{integrated_df[img_cols_to_log].head().to_string()}")
 
-
                 except Exception as e:
                     logging.error(f"Error during image integration and filtering step: {e}", exc_info=True)
                     # Fallback: use the pre-integration DataFrame if integration fails
                     integrated_df = formatted_df
                     logging.warning("Proceeding with pre-integration data due to error.")
-                # --- End Image Integration ---
 
                 # Finalize the DataFrame structure before saving to Excel
                 logging.info("Finalizing DataFrame structure for Excel output...")
@@ -943,9 +941,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     # Log the result of finalization
                     if df_to_save.empty and not integrated_df.empty:
                         logging.error("DataFrame became empty after finalization. Skipping Excel creation.")
-                        # Optionally: Emit error to progress_queue if available
                         if progress_queue: progress_queue.emit("error", "Error during data finalization stage.")
-                        # Skip Excel creation steps
                         result_success, upload_success = False, False
                     else:
                         logging.info(f"DataFrame finalized successfully. Shape: {df_to_save.shape}")
@@ -953,15 +949,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         
                         # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
                         try:
-                            # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
                             if original_haereum_image_urls and not df_to_save.empty:
                                 logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
                                 
-                                # 원본 이미지 URL을 저장할 새 컬럼 생성
                                 if '해오름 이미지 URL' not in df_to_save.columns:
-                                    df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
+                                    df_to_save['해오름 이미지 URL'] = '-'
                                 
-                                # 각 행에 원본 URL 적용
+                                applied_count = 0
                                 for idx, row in df_to_save.iterrows():
                                     product_name = row['상품명']
                                     if product_name in original_haereum_image_urls:
@@ -969,14 +963,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         if orig_url:
                                             df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
                                             
-                                            # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
                                             if '본사 이미지' in df_to_save.columns:
                                                 current_value = df_to_save.at[idx, '본사 이미지']
                                                 if isinstance(current_value, dict):
                                                     current_value['url'] = orig_url
                                                     df_to_save.at[idx, '본사 이미지'] = current_value
                                                 else:
-                                                    # 딕셔너리 아닌 경우 새로 생성
                                                     image_data = {
                                                         'url': orig_url,
                                                         'source': 'haereum',
@@ -990,38 +982,38 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
                         except Exception as url_apply_err:
                             logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
-                            # 이 오류는 치명적이지 않으므로 계속 진행
-                        
+
                         # Add Detailed Logging Before Saving
                         if df_to_save is not None and not df_to_save.empty:
                             logging.info("--- DataFrame Snapshot Before Excel Write ---")
                             logging.info(f"Shape: {df_to_save.shape}")
                             logging.info(f"Columns: {df_to_save.columns.tolist()}")
                             logging.info(f"dtypes:\n{df_to_save.dtypes.to_string()}")
-                            # Log first 2 rows data, especially image columns
-                            image_cols_in_final = [col for col in IMAGE_COLUMNS if col in df_to_save.columns]
+                            
                             log_limit = min(2, len(df_to_save))
                             logging.info(f"Sample Data (first {log_limit} rows):")
                             try:
-                                # Use to_string for better formatting of rows/cols
                                 logging.info(f"\n{df_to_save.head(log_limit).to_string()}")
-                                # Specifically log types in image columns for first few rows
-                                if image_cols_in_final:
+                                if IMAGE_COLUMNS:
                                     logging.info(f"Image Column Data Types (first {log_limit} rows):")
                                     for i in range(log_limit):
-                                        for col in image_cols_in_final:
-                                            value = df_to_save.iloc[i][col]
-                                            logging.info(f"  Row {i}, Col '{col}': Type={type(value).__name__}, Value=\"{str(value)[:80]}...\"")
+                                        for col in IMAGE_COLUMNS:
+                                            if col in df_to_save.columns:
+                                                value = df_to_save.iloc[i][col]
+                                                logging.info(f"  Row {i}, Col '{col}': Type={type(value).__name__}, Value=\"{str(value)[:80]}...\"")
                             except Exception as log_snap_err:
                                 logging.error(f"Could not log DataFrame snapshot: {log_snap_err}")
                             logging.info("--- End DataFrame Snapshot ---")
                         elif df_to_save is None:
                             logging.warning("Skipping Excel write step because DataFrame finalization failed.")
-                        else: # df_to_save is empty
+                        else:
                             logging.warning("DataFrame is empty after finalization. Excel files will have headers only.")
 
                         # --- 엑셀 파일 생성 후 이미지 수정 로직 적용 ---
                         try:
+                            # Fix: Properly unpack all four return values
+                            result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                            
                             if result_success and result_path and os.path.exists(result_path):
                                 logging.info("Result 파일 생성 완료. 이제 이미지 수정 로직을 적용합니다.")
                                 
@@ -1053,7 +1045,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     naver_result = fix_excel_file(result_path, result_temp_path)
                                     if naver_result and os.path.exists(naver_result):
                                         logging.info(f"네이버 이미지 수정 완료: {naver_result}")
-                                        # 원본 파일로 복사
                                         shutil.copy2(naver_result, result_path)
                                         os.remove(naver_result)
                                         result_success = True
@@ -1070,7 +1061,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     kogift_result = fix_excel_kogift_images(result_path, result_temp_path)
                                     if kogift_result and os.path.exists(kogift_result):
                                         logging.info(f"고려기프트 이미지 수정 완료: {kogift_result}")
-                                        # 원본 파일로 복사
                                         shutil.copy2(kogift_result, result_path)
                                         os.remove(kogift_result)
                                         result_success = True
@@ -1079,85 +1069,28 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                 except Exception as kogift_err:
                                     logging.error(f"고려기프트 이미지 수정 중 오류: {kogift_err}")
                                     result_success = False
+
+                                # 4. 가격 하이라이팅 적용
+                                try:
+                                    from price_highlighter import apply_price_highlighting_to_files
+                                    logging.info("가격 하이라이팅 적용 시작...")
+                                    price_threshold = config.getfloat('PriceHighlighting', 'threshold', fallback=-1)
+                                    success_count, total_files = apply_price_highlighting_to_files(
+                                        result_path=result_path,
+                                        upload_path=upload_path,
+                                        threshold=price_threshold
+                                    )
+                                    if success_count > 0:
+                                        logging.info(f"가격 하이라이팅 적용 완료: {success_count}/{total_files} 파일 성공")
+                                    else:
+                                        logging.warning("가격 하이라이팅 적용 실패")
+                                except Exception as highlight_err:
+                                    logging.error(f"가격 하이라이팅 적용 중 오류: {highlight_err}")
+
                         except Exception as e:
                             logging.error(f"이미지 수정 로직 적용 중 오류 발생: {e}", exc_info=True)
                             result_success = False
 
-                        # 4. Upload 파일 생성
-                        try:
-                            from excel_utils import create_split_excel_outputs
-                            logging.info(f"Upload 파일 생성 중: {result_path}")
-                            
-                            # Ensure we have a valid DataFrame to save
-                            if df_to_save is not None and not df_to_save.empty:
-                                # Ensure we have a valid path
-                                if not os.path.exists(os.path.dirname(output_path)):
-                                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                                    logging.info(f"Created output directory: {os.path.dirname(output_path)}")
-                                
-                                # Proceed with split excel outputs
-                                try:
-                                    result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
-                                    if result_path and upload_path and os.path.exists(result_path) and os.path.exists(upload_path):
-                                        logging.info(f"Upload 파일 생성 완료: {upload_path}")
-                                    else:
-                                        # Manual creation of upload file if function failed
-                                        logging.warning("Split Excel 함수 실패, 수동으로 Upload 파일 생성 시도")
-                                        try:
-                                            # Try to save the data directly
-                                            temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')
-                                            df_to_save.to_excel(temp_upload_path, index=False)
-                                            upload_path = temp_upload_path
-                                            logging.info(f"수동 Upload 파일 생성 완료: {upload_path}")
-                                        except Exception as manual_err:
-                                            logging.error(f"수동 Upload 파일 생성 실패: {manual_err}")
-                                            upload_path = None
-                                except Exception as split_err:
-                                    logging.error(f"Split Excel 함수 오류: {split_err}", exc_info=True)
-                                    # Try direct saving without the split function
-                                    temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')
-                                    df_to_save.to_excel(temp_upload_path, index=False)
-                                    upload_path = temp_upload_path
-                                    logging.info(f"대체 Upload 파일 생성 완료: {upload_path}")
-                            else:
-                                logging.error("Upload 파일 생성 실패: DataFrame이 비어있거나 None입니다")
-                                upload_path = None
-                        except Exception as upload_err:
-                            logging.error(f"Upload 파일 생성 중 오류: {upload_err}", exc_info=True)
-                            # Final fallback - create an empty upload file
-                            try:
-                                temp_upload_path = output_path.replace('.xlsx', '_upload.xlsx')
-                                pd.DataFrame().to_excel(temp_upload_path, index=False)
-                                upload_path = temp_upload_path
-                                logging.info(f"빈 Upload 파일 생성 완료 (오류 복구): {upload_path}")
-                            except:
-                                upload_path = None
-
-                                if result_success and result_path and os.path.exists(result_path):
-                                    logging.info(f"이미지 및 가격 수정 완료: {result_path}")
-                                else:
-                                    logging.warning("이미지 및 가격 수정 실패")
-                                    # Initialize result paths to avoid None values
-                                    if not result_path:
-                                        result_path = output_path
-                                    if not upload_path:
-                                        # Create a standard upload path if none was generated
-                                        upload_path = output_path.replace('.xlsx', '_upload.xlsx')
-                                        logging.info(f"Setting fallback upload path: {upload_path}")
-                                        
-                                        # Ensure the fallback path actually exists by copying the output file
-                                        if os.path.exists(output_path):
-                                            try:
-                                                shutil.copy2(output_path, upload_path)
-                                                logging.info(f"Created fallback upload file at: {upload_path}")
-                                            except Exception as copy_err:
-                                                logging.error(f"Failed to create fallback upload file: {copy_err}")
-                                            except Exception as fix_files_err:                            
-                                                logging.error(f"이미지 및 가격 수정 중 오류 발생: {fix_files_err}", exc_info=True)                            
-                                                result_success = False                          
-                                                upload_path = None                   
-                                                
-                                                                                     # 비상 파일 생성 시도 - 엑셀 생성이 아예 실패한 경우                            try:                                logging.warning("🚨 이미지 및 가격 수정 실패 후 비상 파일 생성 시도")                                if df_to_save is not None and not df_to_save.empty:                                    emergency_result, emergency_upload = ensure_output_file_created(df_to_save, config, input_filename)                                    if emergency_result and os.path.exists(emergency_result):                                        result_path = emergency_result                                        upload_path = emergency_upload                                        output_path = emergency_result                                        logging.info(f"🟢 비상 파일 생성 성공: {result_path}")                                        result_success = True                                else:                                    logging.error("비상 파일 생성을 위한 DataFrame이 없음")                            except Exception as e:                                logging.error(f"비상 파일 생성 시도 중 오류: {e}", exc_info=True)
                 except Exception as finalize_err:
                     logging.error(f"Error during DataFrame finalization step: {finalize_err}", exc_info=True)
                     if progress_queue:
