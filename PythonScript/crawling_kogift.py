@@ -98,6 +98,9 @@ def get_quantities_from_excel(config: configparser.ConfigParser) -> Optional[Lis
             return None
             
         input_file = config.get('Input', 'input_file')
+        # ADD THIS LOG FOR DETAILED VERIFICATION
+        logger.info(f"DETAILED_CONFIG_READ (kogift): [Input] input_file retrieved as: '{input_file}'")
+
         if not input_file:
             logger.info("No input_file specified in config")
             return None

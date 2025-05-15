@@ -118,6 +118,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     config.add_section('Input')
                 config.set('Input', 'input_file', input_filename)
                 logging.info(f"Updated config in memory: [Input] input_file = {input_filename}")
+                # ADD THIS LOG FOR DETAILED VERIFICATION
+                logging.info(f"DETAILED_CONFIG_SET: [Input] input_file has been set to: '{config.get('Input', 'input_file')}'")
             else:
                 # This case should ideally be handled more robustly,
                 # perhaps by raising an error if input_filename is crucial and not found.

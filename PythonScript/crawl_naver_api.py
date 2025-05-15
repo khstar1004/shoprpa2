@@ -1384,7 +1384,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                 'source': 'naver',
                 'product_name': product_name,
                 'similarity': similarity, # Keep a reference to the product's similarity
-                'type': 'naver'  # Explicitly mark as Naver image
+                'type': 'naver',  # Explicitly mark as Naver image
+                'product_id': first_item.get('productId') # Ensure productId is here
             }
             
             # Add image data to result
@@ -1402,6 +1403,10 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                 'original_path': abs_local_path # Store original downloaded path
             }
             result_data['네이버 이미지'] = naver_image_column_entry
+    
+    # Add productId to the main result_data as well, if available
+    if first_item.get('productId'):
+        result_data['naver_product_id'] = first_item.get('productId')
     
     return result_data
 
