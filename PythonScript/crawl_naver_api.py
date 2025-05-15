@@ -435,9 +435,10 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
              best_result_list = current_keyword_results
 
         # Check if we found enough results with this keyword
-        if len(best_result_list) >= MIN_RESULTS_THRESHOLD_NAVER:
-            logger.info(f"🟢 Found sufficient results ({len(best_result_list)} >= {MIN_RESULTS_THRESHOLD_NAVER}) with keyword '{query}'. Stopping keyword variations.")
-            break # Stop trying other keywords
+        # MODIFICATION: Comment out the early break to ensure all keyword variations are tried.
+        # if len(best_result_list) >= MIN_RESULTS_THRESHOLD_NAVER:
+        #     logger.info(f"🟢 Found sufficient results ({len(best_result_list)} >= {MIN_RESULTS_THRESHOLD_NAVER}) with keyword '{query}'. Stopping keyword variations.")
+        #     break # Stop trying other keywords
 
     # --- End of keyword loop ---
     if not best_result_list:

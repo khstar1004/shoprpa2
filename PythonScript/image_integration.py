@@ -1051,7 +1051,9 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명'
             ]
             
-            similarity_threshold = config.getfloat('MatcherConfig', 'IMAGE_SIMILARITY_THRESHOLD', fallback=0.6)
+            # Use IMAGE_DISPLAY_THRESHOLD for deciding if a Naver match is initially acceptable based on score.
+            # This aligns the initial score check with the final display criteria.
+            naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.55)
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
                 naver_path_from_match, naver_score_from_match = naver_match
@@ -1062,8 +1064,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         if col_to_clear in result_df.columns:
                             result_df.at[idx, col_to_clear] = None
                     final_naver_image_data = None
-                elif naver_score_from_match < similarity_threshold:
-                    logging.info(f"Row {idx}: Naver match score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' is below threshold {similarity_threshold}. Clearing ALL Naver data.")
+                elif naver_score_from_match < naver_score_acceptance_threshold:
+                    logging.info(f"Row {idx}: Naver match score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' is below display threshold {naver_score_acceptance_threshold}. Clearing ALL Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
                         if col_to_clear in result_df.columns:
                             result_df.at[idx, col_to_clear] = None
