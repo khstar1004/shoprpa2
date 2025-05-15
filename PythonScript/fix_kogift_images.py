@@ -93,31 +93,43 @@ def find_appropriate_price(quantity_prices, target_quantity):
             "정확히 일치하는 수량"
         )
     
-    # 주문 수량보다 큰 수량 중 가장 작은 수량 찾기
-    larger_quantities = [qty for qty in quantities if qty > target_quantity]
+    # At this point, target_quantity is not an exact match, and target_quantity >= min_quantity.
     
-    if larger_quantities:
-        next_tier = min(larger_quantities)
-        logger.info(f"주문 수량({target_quantity})보다 큰 다음 티어({next_tier}) 가격 적용: {qty_prices[next_tier].get('price', 0)}원")
-        price_info = qty_prices[next_tier]
+    # Find the largest tier that is less than or equal to the target_quantity.
+    # This handles cases where target_quantity is between tiers or above all tiers.
+    lower_or_equal_tiers = [q for q in quantities if q <= target_quantity]
+    
+    if lower_or_equal_tiers:
+        chosen_tier = max(lower_or_equal_tiers)
+        note = f"구간 가격({chosen_tier}개) 적용" # "Applying price for tier {chosen_tier}"
+        # If the chosen tier is the absolute largest tier available, and the target quantity exceeds it
+        if chosen_tier == max(quantities) and target_quantity > chosen_tier:
+             note = f"최대 구간({chosen_tier}개) 가격 적용" # "Applying price for max tier {chosen_tier} as target exceeds it"
+        
+        logger.info(f"주문 수량({target_quantity})에 대해 {note}: {qty_prices[chosen_tier].get('price', 0)}원")
+        price_info = qty_prices[chosen_tier]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
-            False,
-            next_tier,
-            f"다음 티어 가격 적용"
+            False, # Not an exact match for target_quantity itself, but for the chosen_tier
+            chosen_tier,
+            note
         )
     
-    # 주문 수량이 모든 티어보다 큰 경우 (가장 큰 티어 적용)
-    max_quantity = max(quantities)
-    logger.info(f"주문 수량({target_quantity})이 최대 티어보다 큽니다. 최대 티어({max_quantity}) 가격 적용: {qty_prices[max_quantity].get('price', 0)}원")
-    price_info = qty_prices[max_quantity]
+    # This fallback should theoretically not be reached if 'quantities' is not empty 
+    # and the previous conditions are handled, as target_quantity < min_quantity is covered,
+    # and if target_quantity >= min_quantity, lower_or_equal_tiers should not be empty.
+    # However, keeping it as a safeguard.
+    logger.warning(f"주문 수량({target_quantity})에 대한 가격 티어를 결정하는 데 예외적인 상황 발생. 사용 가능한 티어: {quantities}. 최대 티어 가격을 사용합니다.")
+    # Fallback to the largest available tier. 'quantities' is guaranteed not empty here due to earlier checks.
+    max_q_fallback = max(quantities) 
+    price_info = qty_prices[max_q_fallback]
     return (
         price_info.get('price', 0),
         price_info.get('price_with_vat', 0),
         False,
-        max_quantity,
-        f"최대 티어 가격 적용"
+        max_q_fallback,
+        f"폴백: 최대 구간({max_q_fallback}개) 가격 적용" # "Fallback: Applying price for max tier {max_q_fallback}"
     )
 
 def parse_complex_value(value):

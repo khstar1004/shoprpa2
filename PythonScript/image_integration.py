@@ -1054,52 +1054,21 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     naver_path, naver_score = naver_match
                     img_path_obj = naver_images.get(naver_path, {}).get('path')
                     if not img_path_obj:
-                        logging.warning(f"Row {idx}: Naver match found ({naver_path}) but no corresponding image path in metadata.")
+                        logging.warning(f"Row {idx}: Naver match found ({naver_path}) but no corresponding image path in metadata. Clearing Naver image and related data for product '{product_names[idx]}'.")
                         
-                        # Try to find a fallback image from Naver source
-                        fallback_naver_image = find_best_fallback_naver_image(product_names[idx], naver_images, row_data)
+                        result_df.at[idx, target_col_naver] = None # Clear the image field
                         
-                        if fallback_naver_image:
-                            logging.info(f"Row {idx}: Using fallback Naver image for product {product_names[idx]}")
-                            result_df.at[idx, target_col_naver] = fallback_naver_image
-                        else:
-                            # If no fallback found, try to generate a URL from the link
-                            naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
-                            naver_url = None
-                            
-                            for link_col in naver_link_cols:
-                                if link_col in row_data and isinstance(row_data[link_col], str) and row_data[link_col].strip() not in ['', '-', 'None', None]:
-                                    naver_url = row_data[link_col].strip()
-                                    break
-                            
-                            if naver_url:
-                                # Try to extract or construct a Naver image URL
-                                product_id_match = re.search(r'main_(\d+)/(\d+)', naver_url)
-                                if product_id_match:
-                                    product_id = product_id_match.group(1)
-                                    img_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                    
-                                    # Create image data with URL only
-                                    img_data = {
-                                        'source': 'naver',
-                                        'url': img_url,
-                                        'score': 0.5,  # Default score for generated URL
-                                        'product_name': product_names[idx]
-                                    }
-                                    result_df.at[idx, target_col_naver] = img_data
-                                    logging.info(f"Row {idx}: Created Naver image data with generated URL from link")
-                                else:
-                                    # Check existing data before setting to '-'
-                                    existing_naver_data = row_data.get(target_col_naver)
-                                    if not isinstance(existing_naver_data, dict):
-                                        result_df.at[idx, target_col_naver] = '-'
-                            else:
-                                # Check existing data before setting to '-'
-                                existing_naver_data = row_data.get(target_col_naver)
-                                if not isinstance(existing_naver_data, dict):
-                                    result_df.at[idx, target_col_naver] = '-'
+                        # Define Naver related columns to clear (consistent with other parts of the function)
+                        naver_related_columns_to_clear = [
+                            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
+                            '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+                        ]
+                        for col_to_clear in naver_related_columns_to_clear:
+                            if col_to_clear in result_df.columns:
+                                result_df.at[idx, col_to_clear] = None
                         
-                        continue # Skip to next process
+                        logging.info(f"Row {idx}: Cleared all Naver image and data due to invalid primary match path for product '{product_names[idx]}'.")
+                        continue # Skip to next process (effectively, skip further Naver image assignment for this row)
                         
                     img_path = str(img_path_obj)
 
@@ -1275,155 +1244,6 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         logging.error(f"통합: 이미지 통합 중 오류 발생: {e}", exc_info=True)
         return df
 
-# New helper function to find a fallback Naver image when matching fails
-def find_best_fallback_naver_image(product_name, naver_images, row_data):
-    """
-    상품 정보가 있지만 매칭된 이미지가 없는 경우, Naver 이미지 폴더에서 최선의 대체 이미지를 찾습니다.
-    
-    Args:
-        product_name: 상품명
-        naver_images: 네이버 이미지 정보 딕셔너리
-        row_data: 현재 행의 데이터
-        
-    Returns:
-        찾은 이미지 정보 딕셔너리 또는 None
-    """
-    try:
-        if not naver_images:
-            return None
-            
-        # 1. Try to find any image with the same product name tokens
-        product_tokens = tokenize_product_name(product_name)
-        best_match = None
-        best_score = 0
-        
-        for img_path, info in naver_images.items():
-            img_tokens = info.get('tokens', [])
-            common_tokens = set(product_tokens) & set(img_tokens)
-            
-            if common_tokens:
-                similarity = len(common_tokens) / max(len(product_tokens), 1)
-                if similarity > best_score:
-                    best_score = similarity
-                    best_match = img_path
-        
-        # If found a reasonable match
-        if best_match and best_score > 0.1:
-            img_path_obj = naver_images.get(best_match, {}).get('path')
-            if img_path_obj:
-                img_path = str(img_path_obj)
-                
-                # Verify the file exists 
-                if not os.path.exists(img_path):
-                    logging.warning(f"Fallback Naver image path doesn't exist: {img_path}")
-                    # Try to find the file with different extensions
-                    base_path = os.path.splitext(img_path)[0]
-                    for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                        alt_path = f"{base_path}{ext}"
-                        if os.path.exists(alt_path):
-                            logging.info(f"Found alternative path for fallback Naver image: {alt_path}")
-                            img_path = alt_path
-                            break
-                    else:
-                        # If still not found, try _nobg version
-                        nobg_path = f"{base_path}_nobg.png"
-                        if os.path.exists(nobg_path):
-                            logging.info(f"Found _nobg version of fallback Naver image: {nobg_path}")
-                            img_path = nobg_path
-                
-                # Use absolute path to ensure Excel can find it
-                img_path = os.path.abspath(img_path)
-                
-                # Try to get a URL
-                web_url = naver_images.get(best_match, {}).get('url', '')
-                
-                # Reject "front" URLs which are unreliable
-                if web_url and "pstatic.net/front/" in web_url:
-                    logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
-                    web_url = ''  # Clear the URL to prevent using invalid "front" URLs
-                
-                image_data = {
-                    'local_path': img_path,
-                    'source': 'naver',
-                    'url': web_url,
-                    'original_path': img_path,
-                    'score': best_score,
-                    'product_name': product_name,
-                    'fallback': True  # Mark as fallback
-                }
-                
-                # Final verification - does the file actually exist and have size > 0?
-                if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                    logging.info(f"Verified fallback Naver image exists: {img_path} ({os.path.getsize(img_path)} bytes)")
-                    return image_data
-                else:
-                    logging.warning(f"Fallback Naver image verification failed - file missing or empty: {img_path}")
-                
-        # 2. If no matching image found, try to get any available Naver image as fallback
-        if not best_match:
-            # Just use the first available image
-            for img_path, info in naver_images.items():
-                img_path_obj = info.get('path')
-                if img_path_obj:
-                    img_path = str(img_path_obj)
-                    
-                    # Verify file exists and use absolute path
-                    if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
-                        img_path = os.path.abspath(img_path)
-                        web_url = info.get('url', '')
-                        
-                        # Reject "front" URLs which are unreliable
-                        if web_url and "pstatic.net/front/" in web_url:
-                            logging.warning(f"Rejecting unreliable 'front' URL for product {product_name}: {web_url}")
-                            web_url = ''  # Clear the URL to prevent using invalid "front" URLs
-                        
-                        image_data = {
-                            'local_path': img_path,
-                            'source': 'naver',
-                            'url': web_url,
-                            'original_path': img_path,
-                            'score': 0.1,  # Very low score since it's just a random image
-                            'product_name': product_name,
-                            'fallback': True  # Mark as fallback
-                        }
-                        logging.info(f"Using random fallback Naver image: {img_path}")
-                        return image_data
-        
-        # 3. If all else fails, look in the Naver directory for any image
-        try:
-            # Get the Naver directory path
-            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-            naver_dir = os.path.join(base_img_dir, 'Main', 'Naver')
-            
-            if os.path.exists(naver_dir):
-                # List all image files
-                image_files = []
-                for ext in ['*.jpg', '*.jpeg', '*.png', '*.gif']:
-                    image_files.extend(glob.glob(os.path.join(naver_dir, ext)))
-                
-                if image_files:
-                    # Use the first image file
-                    img_path = image_files[0]
-                    logging.info(f"Using first available Naver image as last resort: {img_path}")
-                    
-                    return {
-                        'local_path': img_path,
-                        'source': 'naver',
-                        'url': '',
-                        'original_path': img_path,
-                        'score': 0.05,  # Very low score
-                        'product_name': product_name,
-                        'fallback': True,
-                        'last_resort': True
-                    }
-        except Exception as e:
-            logging.error(f"Error looking for last resort Naver image: {e}")
-        
-        return None
-    except Exception as e:
-        logging.error(f"대체 네이버 이미지 검색 중 오류 발생: {e}")
-        return None
-
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
@@ -1545,9 +1365,25 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                         score = float(img_data['score'])
                         # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
                         if score < effective_threshold:
-                            result_df.at[idx, col_name] = '-' # Filter out very low-score image
-                            filtered_count += 1
-                            rows_affected.add(idx)
+                            if col_name == '네이버 이미지':
+                                logging.info(f"Row {idx}: Naver image score {score:.3f} is below threshold {effective_threshold}. Clearing Naver image and related data for product '{row.get('상품명', 'N/A')}'.")
+                                result_df.at[idx, col_name] = None # Clear Naver image cell
+
+                                # Clear related Naver data columns
+                                naver_related_columns_to_clear = [
+                                    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
+                                    '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+                                ]
+                                for rel_col in naver_related_columns_to_clear:
+                                    if rel_col in result_df.columns:
+                                        result_df.at[idx, rel_col] = None
+                                
+                                filtered_count += 1
+                                rows_affected.add(idx)
+                            else: # For Kogift or other potential future image columns
+                                result_df.at[idx, col_name] = '-' # Keep existing behavior for Kogift
+                                filtered_count += 1
+                                rows_affected.add(idx)
                     except (ValueError, TypeError):
                         # If score is not a valid number, keep the image data (conservative approach)
                         logging.warning(f"Invalid score value '{img_data.get('score')}' found in {col_name} at index {idx}. Skipping filtering for this cell.")
