@@ -1070,7 +1070,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
                     if img_path_actual and os.path.exists(str(img_path_actual)):
                         img_path_actual_str = str(img_path_actual)
-                        web_url = None
+                        web_url = None  # Initialize web_url to None
                         source_of_url = "unknown"
 
                         # 1. Try direct image URL from crawled naver_images metadata (most reliable)
@@ -1087,42 +1087,50 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         if not web_url:
                             product_id_from_meta = img_path_obj_dict_entry.get('product_id')
                             if product_id_from_meta:
-                                for ext_try in ['.jpg', '.png', '.gif']:
-                                    generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_from_meta}/{product_id_from_meta}{ext_try}"
-                                    # Here, we don't verify existence, just construct. Excel part will handle broken links.
-                                    web_url = generated_url_candidate
-                                    source_of_url = "generated_from_product_id"
-                                    logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_from_meta}: {web_url}")
-                                    break
+                                # Attempt to construct a pstatic.net URL.
+                                # We are not exhaustively checking extensions here, assuming the primary one would be .jpg or similar from original crawl.
+                                # If the original `crawled_image_url` was available but not pstatic, this logic might need enhancement
+                                # or rely on the crawler to always provide a pstatic URL if one exists.
+                                # For now, if product_id is known, we can try a common pattern.
+                                # This part might need more robust extension handling or rely on crawler providing the correct one.
+                                # A simple approach if a typical extension isn't known from the original filename:
+                                generated_url_candidate_base = f"https://shopping-phinf.pstatic.net/main_{product_id_from_meta}/{product_id_from_meta}"
+                                # Try common extensions if the original URL didn't give one.
+                                # Prefer extension from original crawled_image_url if it existed but wasn't pstatic,
+                                # otherwise, make a best guess or leave it to the crawler to provide full pstatic URL.
+                                # For simplicity, if 'crawled_image_url' had an extension, try that, else default.
+                                original_extension = ""
+                                if isinstance(crawled_image_url, str) and '.' in crawled_image_url.split('/')[-1]:
+                                    original_extension = '.' + crawled_image_url.split('.')[-1].split('?')[0] # handle query params
+
+                                if original_extension and original_extension.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+                                     generated_url_candidate = f"{generated_url_candidate_base}{original_extension}"
+                                else: # Default or if original_extension was not an image type
+                                    generated_url_candidate = f"{generated_url_candidate_base}.jpg" # Default guess
+
+                                web_url = generated_url_candidate # We don't verify existence here
+                                source_of_url = "generated_from_product_id"
+                                logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_from_meta}: {web_url}")
                         
-                        # 3. If still no image-specific URL, fall back to DataFrame's product/shopping link
-                        if not web_url:
-                            naver_link_columns_in_df = ['네이버 쇼핑 링크', '네이버 링크', '네이버상품URL']
-                            for col_name in naver_link_columns_in_df:
-                                if col_name in row_data and isinstance(row_data[col_name], str) and row_data[col_name].strip().startswith('http'):
-                                    web_url = row_data[col_name].strip()
-                                    source_of_url = f"df_link_column ('{col_name}')"
-                                    logging.info(f"Row {idx}: Naver - Used product/shopping link from DataFrame column '{col_name}' as URL: {web_url}")
-                                    break
+                        # IMPORTANT: Do not fall back to DataFrame's product/shopping link for the IMAGE URL.
+                        # The web_url for the image dictionary should only be a pstatic.net URL.
+                        # If no pstatic.net URL is found/generated, web_url remains None.
                         
-                        if web_url:
+                        if web_url: # Only proceed if we have a pstatic.net URL
                             final_naver_image_data = {
                                 'local_path': img_path_actual_str,
-                                'url': web_url,
+                                'url': web_url, # This will be a pstatic.net URL or None
                                 'score': naver_score_from_match,
                                 'source': 'naver',
                                 'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str),
                                 'product_name': naver_product_name_for_log,
-                                'url_source_debug': source_of_url # For debugging which URL was chosen
+                                'url_source_debug': source_of_url 
                             }
                             logging.info(f"Row {idx}: Naver - Prepared data. Image: '{img_path_actual_str}', URL: '{web_url}' (Source: {source_of_url}), Score: {naver_score_from_match:.3f}")
-                            # Update DataFrame's link columns if we ended up using a direct image URL and the DF link is different or empty
-                            if "pstatic.net" in web_url: # Only if we have a direct image URL
-                                if '네이버 쇼핑 링크' in result_df.columns and result_df.at[idx, '네이버 쇼핑 링크'] != web_url:
-                                     result_df.at[idx, '네이버 쇼핑 링크'] = web_url
-                                     logging.debug(f"Row {idx}: Naver - Updated '네이버 쇼핑 링크' with direct image URL.")
+                            # DO NOT update result_df.at[idx, '네이버 쇼핑 링크'] with web_url here.
+                            # '네이버 쇼핑 링크' should retain its original product page URL.
                         else:
-                            logging.warning(f"Row {idx}: Naver - Matched image '{img_path_actual_str}' (Score: {naver_score_from_match:.3f}) but FAILED to secure any web_url. Clearing data.")
+                            logging.warning(f"Row {idx}: Naver - Matched image '{img_path_actual_str}' (Score: {naver_score_from_match:.3f}) but FAILED to secure a pstatic.net web_url. Clearing data.")
                             for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
                     else:
                         logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but local path '{img_path_actual}' is invalid/missing. Clearing data.")
