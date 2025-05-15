@@ -110,6 +110,21 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 raise Exception("No valid input data found")
             logging.debug(f"Input processing completed in {time.time() - step_start_time:.2f} sec")
             logging.debug(f"Input data shape: {haoreum_df.shape}")
+
+            # Dynamically set the input_file path in the config object
+            # so it can be accessed by other modules like crawling_kogift.py
+            if input_filename:
+                if not config.has_section('Input'):
+                    config.add_section('Input')
+                config.set('Input', 'input_file', input_filename)
+                logging.info(f"Updated config in memory: [Input] input_file = {input_filename}")
+            else:
+                # This case should ideally be handled more robustly,
+                # perhaps by raising an error if input_filename is crucial and not found.
+                logging.error("input_filename was not determined by process_input_file. Cannot set it in config for crawlers.")
+                # Depending on desired behavior, you might want to raise an exception here:
+                # raise Exception("Critical: Input file path could not be determined.")
+
         except Exception as e:
             logging.error(f"Error processing input file: {e}")
             if debug_mode:

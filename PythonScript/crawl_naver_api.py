@@ -1051,10 +1051,34 @@ async def crawl_naver_products(product_rows: pd.DataFrame, config: configparser.
         naver_scrape_limit = config.getint('ScraperSettings', 'naver_scrape_limit', fallback=50)
         max_concurrent_api = config.getint('ScraperSettings', 'naver_max_concurrent_api', fallback=3)
         
+        # Default target quantities from ScraperSettings
         target_quantities_str = config.get('ScraperSettings', 'target_quantities', fallback='300,500,1000,2000')
         target_quantities = [int(qty.strip()) for qty in target_quantities_str.split(',') if qty.strip().isdigit()]
-        if not target_quantities:
+        if not target_quantities: # Fallback if parsing failed or empty
             target_quantities = [300, 500, 1000, 2000]
+
+        # Check if we should prioritize quantities from Excel
+        use_excel_quantities = config.getboolean('ScraperSettings', 'use_excel_quantities', fallback=True)
+        if use_excel_quantities:
+            try:
+                if config.has_section('Input') and config.has_option('Input', 'input_file'):
+                    excel_file_path = config.get('Input', 'input_file')
+                    if excel_file_path and os.path.exists(excel_file_path):
+                        logger.info(f"Attempting to load quantities from Excel file: {excel_file_path} based on 'use_excel_quantities' flag.")
+                        excel_quantities = get_quantities_from_excel(excel_file_path) # Ensure this function is correctly imported and used
+                        if excel_quantities:
+                            target_quantities = excel_quantities
+                            logger.info(f"Successfully loaded quantities from Excel: {target_quantities}")
+                        else:
+                            logger.warning(f"Failed to load quantities from Excel or no quantities found. Falling back to ScraperSettings: {target_quantities}")
+                    else:
+                        logger.warning(f"Excel file path not found ('{excel_file_path}') or does not exist. Falling back to ScraperSettings for target_quantities.")
+                else:
+                    logger.warning("'Input' section or 'input_file' option not found in config. Falling back to ScraperSettings for target_quantities.")
+            except Exception as e_excel_qty:
+                logger.error(f"Error reading quantities from Excel: {e_excel_qty}. Falling back to ScraperSettings.")
+        else:
+            logger.info("Configuration 'use_excel_quantities' is false. Using target_quantities from ScraperSettings.")
             
         visit_seller_sites = config.getboolean('ScraperSettings', 'naver_visit_seller_sites', fallback=True)
         

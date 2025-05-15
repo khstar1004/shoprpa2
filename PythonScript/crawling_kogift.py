@@ -1067,12 +1067,22 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     
     # Initialize variables
     results = []
-    kogift_urls = get_kogift_urls(config)
+    raw_kogift_urls = get_kogift_urls(config)
+    unique_kogift_urls = list(dict.fromkeys(raw_kogift_urls))
+    if len(raw_kogift_urls) != len(unique_kogift_urls):
+        logger.info(f"Removed {len(raw_kogift_urls) - len(unique_kogift_urls)} duplicate Kogift base URLs. Using: {unique_kogift_urls}")
+    else:
+        logger.info(f"Using Kogift base URLs: {unique_kogift_urls}")
+
     max_items_per_variation = get_max_items_per_variation(config)
     
     # Generate keyword variations
-    keyword_variations = generate_keyword_variations(original_keyword1, original_keyword2)
-    logger.info(f"Generated {len(keyword_variations)} keyword variations for search: {keyword_variations}")
+    raw_keyword_variations = generate_keyword_variations(original_keyword1, original_keyword2)
+    unique_keyword_variations = list(dict.fromkeys(raw_keyword_variations))
+    if len(raw_keyword_variations) != len(unique_keyword_variations):
+        logger.info(f"Removed {len(raw_keyword_variations) - len(unique_keyword_variations)} duplicate keyword variations.")
+    
+    logger.info(f"Generated {len(unique_keyword_variations)} unique keyword variations for search: {unique_keyword_variations}")
     logger.info(f"Will scrape up to {max_items_per_variation} items per keyword variation")
     
     # Check if we need to recreate the browser
@@ -1115,7 +1125,7 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
     seen_product_urls = set()  # Track product URLs to avoid duplicates
     
     # Try each URL in sequence
-    for base_url in kogift_urls:
+    for base_url in unique_kogift_urls:
         context = None
         page = None
         try:
@@ -1180,9 +1190,9 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                 await setup_page_optimizations(page)
             
             # Search with each keyword variation for this URL
-            for keyword_index, keyword in enumerate(keyword_variations):
+            for keyword_index, keyword in enumerate(unique_keyword_variations):
                 try:
-                    logger.info(f"Attempting to search with variation {keyword_index+1}/{len(keyword_variations)}: '{keyword}' on {base_url}")
+                    logger.info(f"Attempting to search with variation {keyword_index+1}/{len(unique_keyword_variations)}: '{keyword}' on {base_url}")
                     
                     # Construct search URL
                     search_url = f"{base_url.strip()}/goods/goods_search.php"
