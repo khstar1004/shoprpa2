@@ -147,7 +147,7 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
     """
     # Dedicated column for actual crawled price tiers
     actual_tiers_col_name = '고려기프트_실제가격티어'
-    row_identifier = f"Row {row.name if hasattr(row, 'name') else 'N/A'} (Product: '{row.get("상품명", "Unknown")}')"
+    row_identifier = f"Row {row.name if hasattr(row, 'name') else 'N/A'} (Product: '{row.get('상품명', 'Unknown')}')"
 
     if actual_tiers_col_name in row and pd.notna(row[actual_tiers_col_name]) and row[actual_tiers_col_name] != '-':
         try:
@@ -414,7 +414,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
             quantity_prices = extract_quantity_prices_from_row(row.copy()) # Pass a copy to avoid SettingWithCopyWarning if row is a slice
             
             if not quantity_prices:
-                logger.warning(f"Row {idx+1} (Product: '{row.get("상품명", "Unknown")}'): No valid crawled quantity-price data found. Skipping price update for this row.")
+                logger.warning(f"Row {idx+1} (Product: '{row.get('상품명', 'Unknown')}'): No valid crawled quantity-price data found. Skipping price update for this row.")
                 continue
             
             # 로그 출력
