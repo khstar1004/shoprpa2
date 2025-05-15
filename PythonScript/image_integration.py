@@ -1044,67 +1044,116 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             target_col_naver = '네이버 이미지'
             # naver_match is the tuple (path, score) from verified_matches[idx] or None
 
+            final_naver_image_data = None
+            naver_product_name_for_log = product_names[idx]
+
             if naver_match:
                 naver_path_from_match, naver_score_from_match = naver_match
-
-                # Check if the path from the match exists in our naver_images metadata and is valid
                 img_path_obj = naver_images.get(naver_path_from_match, {}).get('path')
 
-                if not img_path_obj:
-                    logging.warning(f"Row {idx}: Naver image '{naver_path_from_match}' was matched, but its path in naver_images metadata is invalid or missing. Clearing Naver data for product '{product_names[idx]}'.")
-                    result_df.at[idx, target_col_naver] = None
-                    naver_related_columns_to_clear = [
-                        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
-                        '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-                    ]
-                    for col_to_clear in naver_related_columns_to_clear:
-                        if col_to_clear in result_df.columns:
-                            result_df.at[idx, col_to_clear] = None
-                else:
-                    # Matched image path is valid in metadata, proceed to assign it
+                if img_path_obj: # Matched image path is valid in metadata
                     img_path = str(img_path_obj)
-                    
-                    # Prioritize URL from existing data on the DataFrame if available and valid
-                    existing_naver_data_on_df = result_df.loc[idx].get(target_col_naver)
                     web_url = None
+
+                    # 1. Try URL from existing data on DataFrame (if any)
+                    existing_naver_data_on_df = result_df.loc[idx].get(target_col_naver)
                     if isinstance(existing_naver_data_on_df, dict):
                         potential_url = existing_naver_data_on_df.get('url')
                         if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
                             web_url = potential_url
-                            logging.debug(f"Row {idx}: Preserving existing Naver URL from DataFrame: {web_url[:60]}...")
-                
-                    # If no pre-existing valid URL on DataFrame, get from naver_images metadata or generate
+                            logging.debug(f"Row {idx}: Naver - Preserving existing URL from DataFrame: {web_url[:60]}...")
+
+                    # 2. If no valid URL from DF, try from naver_images metadata
                     if not web_url:
                         web_url = naver_images.get(naver_path_from_match, {}).get('url')
-                        
                         if web_url and "pstatic.net/front/" in web_url:
-                            logging.warning(f"Row {idx}: Rejecting unreliable 'front' URL from metadata for Naver image: {web_url}")
-                            web_url = ''
-                        
-                        # Fallback to generating from product_id if still no URL
-                        if not web_url and 'product_id' in naver_images.get(naver_path_from_match, {}):
-                            product_id = naver_images[naver_path_from_match]['product_id']
-                            for ext_try in ['.jpg', '.png', '.gif']: # Check common extensions
-                                generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}{ext_try}"
-                                web_url = generated_url_candidate 
-                                break 
-                        
-                        if not web_url: 
-                            web_url = "" 
-                            logging.warning(f"Row {idx}: Could not find or generate a valid URL for Naver image {img_path} (matched from {naver_path_from_match})")
+                            logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from metadata: {web_url}")
+                            web_url = '' # Clear unreliable URL
 
-                    image_data = {
-                        'local_path': img_path,
-                        'source': 'naver',
-                        'url': web_url,
-                        'original_path': naver_images.get(naver_path_from_match, {}).get('original_path', img_path),
-                        'score': naver_score_from_match,
-                        'product_name': product_names[idx]
+                    # 3. If still no URL, try generating from product_id in metadata
+                    if not web_url:
+                        product_id_from_meta = naver_images.get(naver_path_from_match, {}).get('product_id')
+                        if product_id_from_meta:
+                            for ext_try in ['.jpg', '.png', '.gif']:
+                                generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_from_meta}/{product_id_from_meta}{ext_try}"
+                                # Here, we might need a way to verify if this URL is valid. For now, we assume it might be.
+                                web_url = generated_url_candidate
+                                logging.debug(f"Row {idx}: Naver - Generated URL from product_id {product_id_from_meta}: {web_url}")
+                                break
+                    
+                    if web_url: # Successfully got a web_url for the matched image
+                        final_naver_image_data = {
+                            'local_path': img_path,
+                            'source': 'naver',
+                            'url': web_url,
+                            'original_path': naver_images.get(naver_path_from_match, {}).get('original_path', img_path),
+                            'score': naver_score_from_match,
+                            'product_name': naver_product_name_for_log
+                        }
+                        logging.info(f"Row {idx}: Naver - Successfully prepared image data using matched image '{naver_path_from_match}' with URL '{web_url[:60]}...'")
+                    else:
+                        logging.warning(f"Row {idx}: Naver - Matched image '{naver_path_from_match}' but FAILED to secure a valid web_url. Will attempt DataFrame link fallback.")
+                        # Fall through to DataFrame link fallback by not setting final_naver_image_data here
+
+                else: # naver_match existed, but img_path_obj was invalid in metadata
+                    logging.warning(f"Row {idx}: Naver - Image '{naver_path_from_match}' was matched, but its path in naver_images metadata is invalid/missing. Will attempt DataFrame link fallback.")
+                    # Fall through to DataFrame link fallback
+            else: # naver_match is None (no image initially matched by find_best_image_matches/verify_image_matches)
+                logging.info(f"Row {idx}: Naver - No initial image match from find_best_image_matches. Will attempt DataFrame link fallback.")
+                # Fall through to DataFrame link fallback
+
+            # Fallback: If no image_data from naver_match or if its URL generation failed, try using DataFrame's Naver link
+            if not final_naver_image_data:
+                logging.debug(f"Row {idx}: Naver - Attempting fallback to DataFrame's Naver link for product '{naver_product_name_for_log}'.")
+                df_naver_link = None
+                # Check standard and alternative column names for Naver link in the DataFrame
+                naver_link_columns_in_df = ['네이버 쇼핑 링크', '네이버 링크', '네이버상품URL'] # Add other common names if any
+                for col_name in naver_link_columns_in_df:
+                    if col_name in row_data and isinstance(row_data[col_name], str) and row_data[col_name].strip().startswith('http'):
+                        df_naver_link = row_data[col_name].strip()
+                        logging.info(f"Row {idx}: Naver - Found link in DataFrame column '{col_name}': {df_naver_link[:60]}...")
+                        break
+                
+                if df_naver_link:
+                    # Attempt to generate a more specific image URL from this product link if it's a pstatic.net/main_ type
+                    # This part is tricky and was part of the original deleted fallback logic, re-adding a simplified version.
+                    generated_image_url_from_link = None
+                    # Example: https://shopping.naver.com/gifts/stores/1000023820/products/5678701261
+                    # Example: https://shopping-phinf.pstatic.net/main_5678701261/5678701261.jpg (desired)
+                    product_id_match = re.search(r'(?:products/|main_)(\d+)', df_naver_link)
+                    if product_id_match:
+                        pid = product_id_match.group(1)
+                        # Try common extensions, though .jpg is most typical for main images
+                        for ext_try in ['.jpg', '.png']:
+                             candidate_url = f"https://shopping-phinf.pstatic.net/main_{pid}/{pid}{ext_try}"
+                             # Ideally, we should check if this URL is valid here. For now, we'll use it.
+                             generated_image_url_from_link = candidate_url
+                             logging.debug(f"Row {idx}: Naver - Generated specific image URL '{generated_image_url_from_link}' from product link '{df_naver_link[:60]}...'")
+                             break
+
+                    final_naver_image_data = {
+                        'local_path': None, # No local file in this fallback scenario
+                        'source': 'naver_df_link', # Indicate source
+                        'url': generated_image_url_from_link if generated_image_url_from_link else df_naver_link, # Prefer specific, else product link
+                        'original_path': None,
+                        'score': 0.3, # Low score for DataFrame link fallback
+                        'product_name': naver_product_name_for_log,
+                        'is_product_url': generated_image_url_from_link is None # Flag if we are using the raw product link
                     }
-                    result_df.at[idx, target_col_naver] = image_data
+                    if generated_image_url_from_link:
+                         logging.info(f"Row {idx}: Naver - Used generated image URL '{generated_image_url_from_link}' from DataFrame link for '{naver_product_name_for_log}'.")
+                    else:
+                         logging.info(f"Row {idx}: Naver - Used DataFrame product link '{df_naver_link[:60]}...' as fallback URL for '{naver_product_name_for_log}'.")
+                else:
+                    logging.info(f"Row {idx}: Naver - No valid link found in DataFrame columns. No Naver image or URL will be assigned for '{naver_product_name_for_log}'.")
             
-            else: # naver_match from verified_matches is None (no suitable image found by matching process)
-                logging.info(f"Row {idx}: No Naver image could be matched (verified_match is None for Naver). Clearing Naver image and related data for product '{product_names[idx]}'.")
+            # Assign to DataFrame or clear data if no valid image_data was prepared
+            if final_naver_image_data and final_naver_image_data.get('url'):
+                result_df.at[idx, target_col_naver] = final_naver_image_data
+                # Ensure related Naver product info is NOT cleared if we have a URL
+                # The clearing should only happen if no URL is found at all.
+            else:
+                logging.info(f"Row {idx}: Naver - FINAL: No valid image data or URL. Clearing Naver image and related data for '{naver_product_name_for_log}'.")
                 result_df.at[idx, target_col_naver] = None 
                 naver_related_columns_to_clear = [
                     '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',

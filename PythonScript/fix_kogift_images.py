@@ -58,30 +58,19 @@ def find_appropriate_price(quantity_prices, target_quantity):
         try:
             qty_prices[int(k)] = v
         except (ValueError, TypeError):
-            continue
+            continue # Skip non-integer keys
     
     # Get available quantities, sorted in ascending order
     quantities = sorted(qty_prices.keys())
     if not quantities:
         return None, None, False, None, "No valid quantity tiers found"
     
-    # 크롤링 로직과 동일하게 최소 수량 확인
-    min_quantity = min(quantities)
-    logger.info(f"테이블 최소 수량: {min_quantity}개")
-    
-    # 주문 수량이 최소 수량보다 작은 경우 최소 수량의 가격 적용
-    if target_quantity < min_quantity:
-        logger.info(f"주문 수량({target_quantity})이 최소 수량({min_quantity})보다 작습니다. 최소 수량의 가격을 적용합니다.")
-        price_info = qty_prices[min_quantity]
-        return (
-            price_info.get('price', 0),
-            price_info.get('price_with_vat', 0),
-            False,
-            min_quantity,
-            f"최소 수량({min_quantity}) 가격 적용"
-        )
-    
-    # 정확히 일치하는 수량이 있는 경우
+    min_quantity = min(quantities) # 최소 티어 수량
+    max_quantity = max(quantities) # 최대 티어 수량
+    # logger.info(f"테이블 최소 수량: {min_quantity}개") # Original log line, can be kept or removed.
+
+    # New logic begins
+    # 1. 정확히 일치하는 수량이 있는 경우
     if target_quantity in quantities:
         logger.info(f"수량 {target_quantity}개 정확히 일치: {qty_prices[target_quantity].get('price', 0)}원")
         price_info = qty_prices[target_quantity]
@@ -92,44 +81,54 @@ def find_appropriate_price(quantity_prices, target_quantity):
             target_quantity,
             "정확히 일치하는 수량"
         )
-    
-    # At this point, target_quantity is not an exact match, and target_quantity >= min_quantity.
-    
-    # Find the largest tier that is less than or equal to the target_quantity.
-    # This handles cases where target_quantity is between tiers or above all tiers.
-    lower_or_equal_tiers = [q for q in quantities if q <= target_quantity]
-    
-    if lower_or_equal_tiers:
-        chosen_tier = max(lower_or_equal_tiers)
-        note = f"구간 가격({chosen_tier}개) 적용" # "Applying price for tier {chosen_tier}"
-        # If the chosen tier is the absolute largest tier available, and the target quantity exceeds it
-        if chosen_tier == max(quantities) and target_quantity > chosen_tier:
-             note = f"최대 구간({chosen_tier}개) 가격 적용" # "Applying price for max tier {chosen_tier} as target exceeds it"
+
+    # 2. 주문 수량이 모든 가격 티어보다 큰 경우: 가장 큰 티어의 가격 적용
+    if target_quantity > max_quantity:
+        logger.info(f"주문 수량({target_quantity})이 최대 티어 수량({max_quantity})보다 큽니다. 최대 티어의 가격을 적용합니다.")
+        price_info = qty_prices[max_quantity]
+        return (
+            price_info.get('price', 0),
+            price_info.get('price_with_vat', 0),
+            False,
+            max_quantity,
+            f"최대 구간({max_quantity}개) 가격 적용 (요청 수량 초과)"
+        )
         
+    # 3. 주문 수량이 특정 티어 사이에 있거나, 최소 티어보다 작은 경우:
+    #    주문 수량보다 크거나 같은 티어 중 가장 작은 티어의 가격을 적용
+    #    (예: 티어 [200, 300, 500] / 주문 100 -> 200개 가격 / 주문 250 -> 300개 가격)
+    
+    # target_quantity 보다 크거나 같은 티어들을 찾음
+    higher_or_equal_tiers = [q for q in quantities if q >= target_quantity]
+    
+    if higher_or_equal_tiers:
+        chosen_tier = min(higher_or_equal_tiers) # 그 중 가장 작은 티어 선택
+        note = f"구간 가격({chosen_tier}개) 적용"
+        if target_quantity < chosen_tier: # 요청 수량이 선택된 티어보다 작을 경우 (예: 100개 요청 -> 200개 티어 선택)
+            note = f"최소 적용 가능 구간({chosen_tier}개) 가격 적용"
+            
         logger.info(f"주문 수량({target_quantity})에 대해 {note}: {qty_prices[chosen_tier].get('price', 0)}원")
         price_info = qty_prices[chosen_tier]
         return (
             price_info.get('price', 0),
             price_info.get('price_with_vat', 0),
-            False, # Not an exact match for target_quantity itself, but for the chosen_tier
+            False, # target_quantity와 chosen_tier가 다를 수 있음
             chosen_tier,
             note
         )
-    
-    # This fallback should theoretically not be reached if 'quantities' is not empty 
-    # and the previous conditions are handled, as target_quantity < min_quantity is covered,
-    # and if target_quantity >= min_quantity, lower_or_equal_tiers should not be empty.
-    # However, keeping it as a safeguard.
-    logger.warning(f"주문 수량({target_quantity})에 대한 가격 티어를 결정하는 데 예외적인 상황 발생. 사용 가능한 티어: {quantities}. 최대 티어 가격을 사용합니다.")
-    # Fallback to the largest available tier. 'quantities' is guaranteed not empty here due to earlier checks.
-    max_q_fallback = max(quantities) 
-    price_info = qty_prices[max_q_fallback]
+        
+    # 위의 로직으로 대부분 커버되지만, 예외적 상황(예: quantities가 비어있지 않으나 higher_or_equal_tiers가 빈 경우 등)을 위한 폴백.
+    # 현재 로직 상으로는 이 부분에 도달하기 어려움.
+    # 만약 target_quantity가 min_quantity보다 작다면, higher_or_equal_tiers에는 min_quantity가 포함되어 위에서 처리됨.
+    logger.warning(f"주문 수량({target_quantity})에 대한 가격 티어를 결정하는 데 예외적인 상황 발생. 사용 가능한 티어: {quantities}. 최소 티어 가격을 사용합니다.")
+    # Fallback to the smallest available tier if other logic fails. (min_quantity is already defined)
+    price_info = qty_prices[min_quantity]
     return (
         price_info.get('price', 0),
         price_info.get('price_with_vat', 0),
         False,
-        max_q_fallback,
-        f"폴백: 최대 구간({max_q_fallback}개) 가격 적용" # "Fallback: Applying price for max tier {max_q_fallback}"
+        min_quantity, # Fallback to min_quantity tier
+        f"폴백: 최소 구간({min_quantity}개) 가격 적용"
     )
 
 def parse_complex_value(value):

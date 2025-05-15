@@ -733,6 +733,48 @@ def normalize_kogift_image_url(img_url: str, base_url: str = "https://www.kogift
         logger.warning(f"최종 URL 생성 실패: base='{base_url}', img='{img_url}', final='{final_url}'")
         return final_url, False # 생성 실패
 
+# --- Function to select price when base quantity is not available ---
+def select_highest_price_if_no_base_quantity(quantity_price_tiers, base_quantity_val):
+    """    
+    Selects a price based on quantity_price_tiers.
+    If base_quantity_val is provided and is a valid tier, its price is returned.
+    Otherwise (base_quantity_val is None or not a valid tier), the price for the
+    smallest available quantity tier (highest unit price) is returned.
+
+    Args:
+        quantity_price_tiers (dict): Expected format {int_qty: {'price': X, ...}}
+        base_quantity_val (int, optional): The base quantity to look for.
+
+    Returns:
+        tuple: (selected_quantity, selected_price_or_None)
+    """
+    # 1. If base_quantity_val is provided
+    if base_quantity_val is not None:
+        price_for_base_qty = None
+        if quantity_price_tiers and base_quantity_val in quantity_price_tiers:
+            price_info = quantity_price_tiers.get(base_quantity_val)
+            if price_info:
+                price_for_base_qty = price_info.get('price')
+        return base_quantity_val, price_for_base_qty
+    
+    # 2. If base_quantity_val is None: Find the price for the smallest quantity tier
+    if not quantity_price_tiers:
+        return None, None # No tiers, no price
+    
+    try:
+        # Assuming keys in quantity_price_tiers are integers as constructed
+        min_quantity_tier = min(quantity_price_tiers.keys()) 
+    except (TypeError, ValueError):
+        logger.warning("select_highest_price_if_no_base_quantity: Could not determine min quantity tier from keys.")
+        return None, None
+
+    price_info_for_min_tier = quantity_price_tiers.get(min_quantity_tier)
+    highest_price = None
+    if price_info_for_min_tier:
+        highest_price = price_info_for_min_tier.get('price')
+    
+    return min_quantity_tier, highest_price
+
 async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 10) -> List[Dict]:
     """고려기프트 상품 목록의 이미지 URL을 검증하고 표준화한 후, 이미지를 다운로드합니다."""
     if not product_list:
@@ -1574,14 +1616,23 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         # 수량별 가격 정보 저장
                                         item_data['quantity_prices'] = quantity_prices
                                         
-                                        # 기본 가격 정보 설정 (가장 작은 수량의 가격 또는 목록 페이지 가격)
-                                        if quantity_prices:
-                                            min_qty = min(quantity_prices.keys())
-                                            item_data['price'] = quantity_prices[min_qty]['price']
-                                            item_data['price_with_vat'] = quantity_prices[min_qty]['price_with_vat']
+                                        # 기본 가격 정보 설정 (대표 가격)
+                                        # "기본수량을 못 불러왔을 때"는 base_quantity_val=None으로 처리,
+                                        # 그러면 가장 작은 수량 티어(가장 비싼 단가)의 가격을 가져옴.
+                                        # 사용할 가격 티어 정보는 product_actual_price_tiers (크롤링된 원본 테이블)
+                                        default_price_qty_to_check = None # "기본수량"을 특정할 수 없으므로 None
+                                        
+                                        actual_selected_qty, selected_price = select_highest_price_if_no_base_quantity(
+                                            item_data.get('product_actual_price_tiers'), 
+                                            default_price_qty_to_check
+                                        )
+
+                                        if selected_price is not None:
+                                            item_data['price'] = selected_price
+                                            item_data['price_with_vat'] = round(selected_price * 1.1)
                                         else:
-                                            # 수량별 가격을 가져오지 못한 경우 목록 페이지 가격 사용
-                                            item_data['price'] = price_value
+                                            # Fallback to list price if no price could be determined by new function
+                                            item_data['price'] = price_value # price_value is from list_price
                                             item_data['price_with_vat'] = round(price_value * 1.1)
                                         
                                         # 리소스 정리
