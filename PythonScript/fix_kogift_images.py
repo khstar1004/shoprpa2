@@ -134,147 +134,111 @@ def parse_complex_value(value):
                 pass
     return value
 
-def get_default_quantity_prices():
-    """
-    기본 수량-가격 테이블을 제공합니다.
-    크롤링된 데이터가 없거나 추출할 수 없는 경우 사용합니다.
-    
-    Returns:
-        dict: 수량별 가격 정보
-    """
-    # 사용자가 제공한 표준 수량-가격 테이블
-    default_qty_prices = {
-        3000: {'price': 6000, 'price_with_vat': 6600},  # 부가세 10% 적용
-        1000: {'price': 6150, 'price_with_vat': 6765},
-        500: {'price': 6250, 'price_with_vat': 6875},
-        300: {'price': 6400, 'price_with_vat': 7040},
-        200: {'price': 6500, 'price_with_vat': 7150}
-    }
-    return default_qty_prices
-
 def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity_prices'):
     """
     Extract quantity-price information from a DataFrame row.
+    It should primarily look for '고려기프트_실제가격티어'.
     
     Args:
         row: DataFrame row
-        temp_kogift_col: Name of temporary column with Kogift quantity price data
         
     Returns:
-        dict: Dictionary of quantity prices or None
+        dict: Dictionary of quantity prices or None if not found or parse error
     """
-    # 크롤링 결과에서 kogift_data 또는 관련 컬럼 찾기
+    # Dedicated column for actual crawled price tiers
+    actual_tiers_col_name = '고려기프트_실제가격티어'
+    row_identifier = f"Row {row.name if hasattr(row, 'name') else 'N/A'} (Product: '{row.get("상품명", "Unknown")}')"
+
+    if actual_tiers_col_name in row and pd.notna(row[actual_tiers_col_name]) and row[actual_tiers_col_name] != '-':
+        try:
+            data_str = row[actual_tiers_col_name]
+            if isinstance(data_str, str):
+                # Ensure keys are integers after parsing
+                parsed_data = ast.literal_eval(data_str)
+                if isinstance(parsed_data, dict):
+                    # Convert string keys to int keys if necessary, as ast.literal_eval might keep them as strings
+                    # e.g., {'100': {...}} -> {100: {...}}
+                    int_key_parsed_data = {}
+                    all_keys_valid = True
+                    for k, v in parsed_data.items():
+                        try:
+                            int_key = int(k)
+                            int_key_parsed_data[int_key] = v
+                        except ValueError:
+                            logger.warning(f"{row_identifier}: Invalid key '{k}' in {actual_tiers_col_name} data. Skipping this key.")
+                            all_keys_valid = False # Mark if any key is problematic
+                    
+                    if not int_key_parsed_data: # If all keys were invalid or dict was empty
+                        logger.warning(f"{row_identifier}: No valid integer keys found in {actual_tiers_col_name} after parsing: {data_str}")
+                        return None
+                    
+                    logger.info(f"{row_identifier}: Successfully parsed quantity_prices from '{actual_tiers_col_name}'")
+                    return int_key_parsed_data
+                else:
+                    logger.warning(f"{row_identifier}: Parsed data from '{actual_tiers_col_name}' is not a dict: {type(parsed_data)}")    
+            elif isinstance(data_str, dict): # If it's already a dict (e.g. if DataFrame wasn't purely from Excel)
+                logger.info(f"{row_identifier}: Directly using dict quantity_prices from '{actual_tiers_col_name}'")
+                # Ensure keys are integers for consistency
+                int_key_data = {int(k): v for k, v in data_str.items() if str(k).isdigit()} # simple conversion for already dict case
+                if not int_key_data:
+                     logger.warning(f"{row_identifier}: No valid integer keys in already dict data from '{actual_tiers_col_name}': {data_str}")
+                     return None
+                return int_key_data
+        except Exception as e:
+            logger.warning(f"{row_identifier}: Error parsing quantity_prices from '{actual_tiers_col_name}': {e}. Value: {str(row.get(actual_tiers_col_name, ''))[:200]}")
+            return None
+    else:
+        # Check if there is a Kogift link, if so, it *should* have tier data.
+        kogift_link_columns = ['고려기프트 상품링크', '고려 링크', '고려기프트링크', '고려 상품링크']
+        has_kogift_link = False
+        for col_variant in kogift_link_columns:
+            actual_col_name = None
+            if col_variant in row.index:
+                 actual_col_name = col_variant
+            elif col_variant.replace(" ", "") in row.index: # try with spaces removed
+                 actual_col_name = col_variant.replace(" ", "")
+            
+            if actual_col_name and pd.notna(row[actual_col_name]) and row[actual_col_name] != '-':
+                has_kogift_link = True
+                break
+        
+        if has_kogift_link:
+            logger.warning(f"{row_identifier}: Column '{actual_tiers_col_name}' is missing or empty, but a Kogift link exists. Crawled tier data might be missing.")
+        else:
+            logger.debug(f"{row_identifier}: Column '{actual_tiers_col_name}' is missing or empty, and no Kogift link found. Likely not a Kogift item or no data.")
+
+    # Fallback to trying other columns if the main one isn't there - this is a legacy check and should ideally not be needed.
     possible_data_columns = [
         'kogift_data', 'kogift_price_data', 'kogift_product_data', 
-        'quantity_prices', 'kogift_quantity_prices', '_temp_kogift_quantity_prices',
+        'quantity_prices', 'kogift_quantity_prices', # temp_kogift_col is already passed
         '고려기프트_데이터', '고려기프트_가격정보', '고려기프트_수량가격'
     ]
-    
-    # 1. 직접적인 컬럼 검색
+
     for col in possible_data_columns:
         if col in row and pd.notna(row[col]) and row[col] != '-':
             data = parse_complex_value(row[col])
             if isinstance(data, dict):
-                # 데이터 직접 사용 가능한 경우
-                if 'quantity_prices' in data:
-                    logger.info(f"크롤링된 수량-가격 정보 발견: {list(data['quantity_prices'].keys())}")
-                    return data['quantity_prices']
-    
-    # 2. kogift 링크가 있을 경우 상품 ID 추출 시도
-    kogift_link_columns = ['고려기프트 상품링크', '고려 링크', '고려기프트링크', '고려 상품링크']
-    product_id = None
-    
-    for col in kogift_link_columns:
-        if col in row and pd.notna(row[col]) and isinstance(row[col], str):
-            # 링크에서 상품 ID 추출
-            match = re.search(r'no=(\d+)', row[col])
-            if match:
-                product_id = match.group(1)
-                logger.info(f"고려기프트 상품 ID 발견: {product_id}")
-                break
-    
-    # 3. kogift 관련 컬럼에서 데이터 찾기
-    possible_kogift_cols = [
-        '고려기프트 이미지', '고려기프트 데이터', '고려데이터', '고려 상품정보',
-        '고려기프트이미지', '고려기프트데이터', 'kogift_image_data', 'kogift_product'
-    ]
-    
-    for col in possible_kogift_cols:
-        if col in row and not pd.isna(row[col]) and row[col] != '-':
-            # 복잡한 객체인 경우 파싱 시도
-            data = parse_complex_value(row[col])
-            if isinstance(data, dict):
-                # 다양한 키 이름으로 수량-가격 정보 찾기
-                for key in ['quantity_prices', 'prices', 'price_table', 'quantity_price_table']:
-                    if key in data and isinstance(data[key], dict):
-                        logger.info(f"'{col}' 컬럼에서 '{key}' 키로 수량-가격 정보 발견")
-                        return data[key]
-                
-                # 중첩 구조 확인
-                for key, value in data.items():
-                    if isinstance(value, dict):
-                        if 'quantity_prices' in value:
-                            return value['quantity_prices']
-                        # 중첩된 구조 내에서 'quantity'와 'price' 키가 있는지 확인
-                        if 'quantities' in value and 'prices' in value:
-                            quantities = value.get('quantities', [])
-                            prices = value.get('prices', [])
-                            if len(quantities) == len(prices) and len(quantities) > 0:
-                                result = {}
-                                for i, qty in enumerate(quantities):
-                                    result[qty] = {
-                                        'price': prices[i],
-                                        'price_with_vat': int(prices[i] * 1.1)
-                                    }
-                                return result
-            
-            # 문자열인 경우 패턴 매칭 시도
-            if isinstance(row[col], str):
-                # JSON 형태의 문자열에서 quantity_prices 추출 시도
-                try:
-                    # 수량-가격 패턴 찾기
-                    qty_price_pattern = r'"?quantity_prices"?\s*:\s*(\{[^\}]+\})'
-                    match = re.search(qty_price_pattern, row[col])
-                    if match:
-                        qty_prices_str = match.group(1)
-                        # JSON 파싱 시도
-                        try:
-                            qty_prices = json.loads(qty_prices_str)
-                            if isinstance(qty_prices, dict):
-                                return qty_prices
-                        except json.JSONDecodeError:
-                            # JSON 파싱 실패시 ast.literal_eval 시도
-                            try:
-                                qty_prices = ast.literal_eval(qty_prices_str)
-                                if isinstance(qty_prices, dict):
-                                    return qty_prices
-                            except (SyntaxError, ValueError):
-                                pass
-                    
-                    # 수량-가격 테이블 형태 찾기
-                    table_pattern = r'수량\s*:\s*(\d+)[^\d]*단가\s*:\s*(\d+)'
-                    matches = re.findall(table_pattern, row[col])
-                    if matches and len(matches) >= 2:
-                        result = {}
-                        for qty_str, price_str in matches:
-                            qty = int(qty_str)
-                            price = int(price_str)
-                            result[qty] = {
-                                'price': price,
-                                'price_with_vat': int(price * 1.1)
-                            }
-                        return result
-                except Exception as e:
-                    logger.debug(f"수량-가격 데이터 추출 중 오류: {e}")
-    
-    # 4. 고려기프트 링크가 있지만 데이터가 없는 경우 기본 데이터 사용
-    for col in kogift_link_columns:
-        if col in row and pd.notna(row[col]) and row[col] != '-':
-            logger.info("고려기프트 링크는 있지만 수량-가격 데이터를 찾을 수 없습니다. 기본 데이터 사용.")
-            return get_default_quantity_prices()
-    
-    # 데이터 찾지 못함
-    return None
+                # Check for quantity_prices within this potentially complex dict
+                if 'quantity_prices' in data and isinstance(data['quantity_prices'], dict):
+                    logger.info(f"{row_identifier}: Found quantity_prices in nested structure under column '{col}'")
+                    # Ensure keys are integers
+                    return {int(k): v for k, v in data['quantity_prices'].items() if str(k).isdigit()}
+                # Sometimes the dict itself is the quantity_prices table
+                # Check if keys look like quantities and values look like price info
+                is_likely_tier_table = True
+                temp_tier_table = {}
+                if not data: is_likely_tier_table = False
+                for k, v_dict in data.items():
+                    if not (str(k).isdigit() and isinstance(v_dict, dict) and ('price' in v_dict or 'price_with_vat' in v_dict)):
+                        is_likely_tier_table = False
+                        break
+                    temp_tier_table[int(k)] = v_dict
+                if is_likely_tier_table:
+                    logger.info(f"{row_identifier}: Found quantity_prices directly in column '{col}'")
+                    return temp_tier_table
+
+    logger.warning(f"{row_identifier}: Could not find or parse any valid quantity-price tier data from any known column.")
+    return None # Explicitly return None if no valid data is found
 
 def fix_excel_kogift_images(input_file, output_file=None):
     """
@@ -447,12 +411,11 @@ def fix_excel_kogift_images(input_file, output_file=None):
             is_special_case = base_quantity < 200
             
             # 크롤링된 수량-가격 정보 추출 시도
-            quantity_prices = extract_quantity_prices_from_row(row)
+            quantity_prices = extract_quantity_prices_from_row(row.copy()) # Pass a copy to avoid SettingWithCopyWarning if row is a slice
             
-            # 추출할 수 없는 경우 기본 수량-가격 테이블 사용
             if not quantity_prices:
-                logger.info(f"Row {idx+1}: 수량-가격 정보를 찾을 수 없어 기본 데이터 사용")
-                quantity_prices = get_default_quantity_prices()
+                logger.warning(f"Row {idx+1} (Product: '{row.get("상품명", "Unknown")}'): No valid crawled quantity-price data found. Skipping price update for this row.")
+                continue
             
             # 로그 출력
             if quantity_prices:

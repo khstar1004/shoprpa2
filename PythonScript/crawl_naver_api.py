@@ -1227,7 +1227,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     result_data['is_promotional_site'] = is_promotional
 
     # Visit seller site to check for quantity-based pricing only if we have a browser and visit_seller_sites is True
-    if visit_seller_sites and browser and first_item.get('link'):
+    # AND it's a promotional item
+    if visit_seller_sites and browser and first_item.get('link') and is_promotional:
         page = None
         try:
             page = await browser.new_page()
@@ -1236,8 +1237,23 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
             # First check for CAPTCHA
             await page.goto(first_item.get('link'), wait_until='networkidle', timeout=30000)
             
-            # Check for CAPTCHA using handle_captcha function
-            has_captcha = await handle_captcha(page)
+            # Check for CAPTCHA using direct detection
+            has_captcha = False
+            captcha_selectors = [
+                'form#captcha_form', 
+                'img[alt*="captcha"]',
+                'div.captcha_wrap',
+                'input[name="captchaBotKey"]',
+                'div[class*="captcha"]',
+                'iframe[src*="captcha"]',
+                'div[class*="bot-check"]',
+                'div[class*="security-check"]'
+            ]
+            for selector in captcha_selectors:
+                if await page.locator(selector).count() > 0:
+                    logger.info(f"CAPTCHA detected on page: {first_item.get('link')} for product '{product_name}'")
+                    has_captcha = True
+                    break
             
             if has_captcha:
                 logger.info(f"CAPTCHA detected for '{product_name}'. Skipping further crawling and using API data only.")
@@ -1319,6 +1335,8 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                     await page.close()
                 except Exception as e:
                     logger.error(f"Error closing page: {e}")
+    elif visit_seller_sites and browser and first_item.get('link') and not is_promotional:
+        logger.info(f"판촉물이 아니므로 판매자 사이트 방문 건너뜀: {product_name}")
 
     # Process image if available
     image_url = first_item.get('image_url')
@@ -1665,6 +1683,27 @@ def load_config(config_file: str = None) -> configparser.ConfigParser:
         config.read(config_file, encoding='utf-8')
     
     return config
+
+def create_test_dataframe() -> pd.DataFrame:
+    """Creates a sample DataFrame for testing purposes."""
+    logger.info("Creating a sample DataFrame for testing as no input file was provided.")
+    test_data = {
+        '구분': ['A', 'A', 'A'],
+        '담당자': ['테스트', '테스트', '테스트'],
+        '업체명': ['테스트업체', '테스트업체', '테스트업체'],
+        '업체코드': ['T001', 'T001', 'T001'],
+        'Code': ['CODE001', 'CODE002', 'CODE003'],
+        '중분류카테고리': ['테스트카테고리', '테스트카테고리', '테스트카테고리'],
+        '상품명': [
+            '멀티 아쿠아 쿨토시',
+            '원형 미니거울 3TMM007',
+            '메쉬가방 대형 비치백 망사가방 비치가방 43X39X20'
+        ],
+        '기본수량(1)': [300, 500, 1000],
+        '판매단가(V포함)': [15000, 20000, 25000],
+        '본사상품링크': ['', '', '']
+    }
+    return pd.DataFrame(test_data)
 
 if __name__ == "__main__":
     # Set up logging

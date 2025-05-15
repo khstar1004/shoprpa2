@@ -1414,6 +1414,22 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         if fetch_price_tables:
                                             price_table = await extract_price_table(price_detail_page, final_href_url, timeout=20000)
                                         
+                                        # Store the raw price_table (converted to dict) for later use in fix_script
+                                        if price_table is not None and not price_table.empty:
+                                            actual_tiers_dict = {}
+                                            for _, tier_row in price_table.iterrows():
+                                                try:
+                                                    tier_qty = int(tier_row['수량'])
+                                                    tier_price = int(tier_row['단가'])
+                                                    actual_tiers_dict[tier_qty] = {
+                                                        'price': tier_price,
+                                                        'price_with_vat': round(tier_price * 1.1) 
+                                                    }
+                                                except ValueError:
+                                                    product_name_for_log = item_data.get('name', 'Unknown Product')
+                                                    logger.warning(f"Skipping invalid tier row in price_table for '{product_name_for_log}': {str(tier_row)}")
+                                            item_data['product_actual_price_tiers'] = actual_tiers_dict
+
                                         # 테이블이 있으면 테이블에서 가격 정보 추출
                                         if price_table is not None and not price_table.empty:
                                             logger.info(f"Using price table for {item_data['name']}, table has {len(price_table)} rows")

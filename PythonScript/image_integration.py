@@ -288,8 +288,8 @@ def find_best_image_matches(product_names: List[str],
                         enhanced_matcher
                     )
                 else:
-                    # 텍스트 기반 매칭 (use haereum tokens as base)
-                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.05) # Lower threshold for secondary match
+                    # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
+                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.01) # Much lower threshold for matches
             
             # 네이버 매칭이 없는 경우에만 기존 방식 시도
             if not naver_best:
@@ -307,11 +307,13 @@ def find_best_image_matches(product_names: List[str],
                     )
                 else:
                     # 텍스트 기반 매칭 (use haereum tokens as base)
-                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.05) # Lower threshold for secondary match
+                    # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
+                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01) # Much lower threshold for matches
         else:
             # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
-            kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, similarity_threshold)
-            naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, similarity_threshold)
+            # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
+            kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, 0.01) # Much lower threshold for matches
+            naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01) # Much lower threshold for matches
         
         if kogift_best:
             # Ensure path is added correctly (first element of tuple)
@@ -426,8 +428,8 @@ def find_best_match_with_enhanced_matcher(
     best_match = None
     best_score = 0
     # UPDATED: Use stricter thresholds from config
-    high_confidence_threshold = 0.60  # Increased from 0.40
-    min_confidence_threshold = 0.30   # Increased from 0.15
+    high_confidence_threshold = 0.40  # Increased from 0.40
+    min_confidence_threshold = 0.15   # Increased from 0.15
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -467,16 +469,16 @@ def find_best_match_with_enhanced_matcher(
             score_ratio = second_best_score / best_score if best_score > 0 else 0
             
             # UPDATED: Stricter ambiguity check
-            if score_ratio > 0.95 and best_score < high_confidence_threshold:
+            if score_ratio > 0.98 and best_score < high_confidence_threshold:
                 logging.warning(f"Ambiguous image matching: Best={secondary_matches[0][2]} ({best_score:.3f}), Second={secondary_matches[1][2]} ({second_best_score:.3f})")
                 
                 from Levenshtein import ratio as text_similarity
                 name_sim = text_similarity(secondary_matches[0][2], secondary_matches[1][2])
                 
-                if name_sim < 0.5:  # Increased threshold for name similarity
+                if name_sim < 0.3:  # Reduced threshold for name similarity to allow more matches
                     logging.warning(f"Product names are very different between top matches (sim={name_sim:.2f})")
                     
-                    if best_score < high_confidence_threshold * 1.3:  # Increased required confidence
+                    if best_score < high_confidence_threshold * 1.1:  # Reduced required confidence multiplier
                         logging.warning(f"Rejecting ambiguous match due to insufficient confidence")
                         return None
     
@@ -1017,11 +1019,16 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             result_df.at[idx, target_col_kogift] = img_data
                             logging.info(f"Row {idx}: Created Kogift image data with generated URL")
                         else:
-                            # Fallback to '-' if we couldn't generate a URL
-                            if target_col_kogift in result_df.columns:
-                                current_val = result_df.loc[idx, target_col_kogift]
-                                if not isinstance(current_val, dict):
-                                    result_df.loc[idx, target_col_kogift] = '-'
+                            # 상품 링크 자체를 URL로 사용하는 방법 추가
+                            img_data = {
+                                'source': 'kogift',
+                                'url': kogift_url,  # 이미지 URL이 생성되지 않으면 상품 링크 자체를 사용
+                                'score': 0.3,  # 더 낮은 신뢰도 점수
+                                'product_name': product_names[idx],
+                                'is_product_url': True  # 이것이 실제 이미지 URL이 아닌 상품 URL임을 표시
+                            }
+                            result_df.at[idx, target_col_kogift] = img_data
+                            logging.info(f"Row {idx}: Created Kogift image data using product URL as fallback")
                     else:
                         # No link to use for generating a URL, use '-'
                         if target_col_kogift in result_df.columns:
@@ -1426,16 +1433,16 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         
         # UPDATED: Get thresholds from config with stricter defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.30)
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.55)
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.10)
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.15)
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
             logging.info(f"통합: 이미지 표시 임계값: {effective_threshold} (더 엄격한 기준 적용)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.30을 사용합니다.")
-            effective_threshold = 0.30
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.10을 사용합니다.")
+            effective_threshold = 0.10
 
         # -------------------------------------------------------------
         # 이미지 유사도 필터링
@@ -2078,13 +2085,18 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     df_with_images = integrate_images(df, config)
     logger.info(f"Image integration completed. DataFrame shape: {df_with_images.shape}")
     
+    # FIXED: 고려기프트 이미지 매칭 개선 단계를 필터링 전에 실행
+    logger.info("Improving Kogift image matching before filtering...")
+    df_kogift_improved = improved_kogift_image_matching(df_with_images)
+    logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_kogift_improved.shape}")
+    
     # Step 2: Apply image filtering based on similarity
-    df_filtered = filter_images_by_similarity(df_with_images, config)
+    df_filtered = filter_images_by_similarity(df_kogift_improved, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
     
-    # FIXED: Added step to improve Kogift image matching
-    df_improved = improved_kogift_image_matching(df_filtered)
-    logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_improved.shape}")
+    # FIXED: 추가로 한번 더 고려기프트 이미지 매칭 개선 실행
+    df_final = improved_kogift_image_matching(df_filtered)
+    logger.info(f"Final Kogift image matching improvement completed. DataFrame shape: {df_final.shape}")
     
     # Step 3: Save Excel output if requested
     if save_excel_output:
@@ -2093,12 +2105,12 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
             excel_output = f"image_integration_result_{timestamp}.xlsx"
             
             # Create the Excel file with images
-            create_excel_with_images(df_improved, excel_output)
+            create_excel_with_images(df_final, excel_output)
             logger.info(f"Created Excel output file with images: {excel_output}")
         except Exception as e:
             logger.error(f"Error creating Excel output: {e}")
     
-    return df_improved
+    return df_final
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":

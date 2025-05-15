@@ -413,6 +413,12 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 df.at[idx, '고려기프트 이미지'] = img_dict
                                 kogift_img_count += 1
                     
+                    # Store actual price tiers from Kogift crawl
+                    if 'product_actual_price_tiers' in item and item['product_actual_price_tiers']:
+                        if '고려기프트_실제가격티어' not in df.columns:
+                            df['고려기프트_실제가격티어'] = None # Initialize with a type that allows mixed content or strings
+                        df.at[idx, '고려기프트_실제가격티어'] = str(item['product_actual_price_tiers'])
+                    
                     kogift_update_count += 1
         
         logging.info(f"업데이트된 행 수: {kogift_update_count} (Kogift 데이터)")
