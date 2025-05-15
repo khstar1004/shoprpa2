@@ -241,6 +241,7 @@ def find_best_image_matches(product_names: List[str],
         product_tokens = tokenize_product_name(product_name)
         
         # 각 소스별 최적 매치 찾기
+        # For Haoreum and Naver, we still use the 'used' sets to avoid re-using the same image file for different products
         haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold)
         if haereum_best:
             used_haereum.add(haereum_best[0]) # Add path to used set
@@ -255,73 +256,75 @@ def find_best_image_matches(product_names: List[str],
             
             # ID 기반 정확한 매칭 시도
             if haereum_id:
-                # 고려기프트 매칭
-                if haereum_id in kogift_id_map and kogift_id_map[haereum_id] not in used_kogift:
-                    kogift_path = kogift_id_map[haereum_id]
-                    kogift_best = (kogift_path, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
-                    used_kogift.add(kogift_path)
+                # 고려기프트 매칭 - No 'used_kogift' check here for ID based match
+                if haereum_id in kogift_id_map: # and kogift_id_map[haereum_id] not in used_kogift:
+                    kogift_path_by_id = kogift_id_map[haereum_id]
+                    # Ensure the image file actually exists if we consider it a match
+                    if kogift_path_by_id in kogift_images: 
+                        kogift_best = (kogift_path_by_id, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
+                        # Do NOT add to used_kogift here, allow reuse
                     
-                # 네이버 매칭
+                # 네이버 매칭 (still uses used_naver for ID based match)
                 if haereum_id in naver_id_map and naver_id_map[haereum_id] not in used_naver:
-                    naver_path = naver_id_map[haereum_id]
-                    naver_best = (naver_path, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
-                    used_naver.add(naver_path)
+                    naver_path_by_id = naver_id_map[haereum_id]
+                    if naver_path_by_id in naver_images:
+                        naver_best = (naver_path_by_id, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
+                        used_naver.add(naver_path_by_id)
         else:
             # 해오름 이미지가 없는 경우 다음 단계로 진행
-            pass
+            kogift_best = None # Ensure kogift_best is None if haereum_best is None and no other match found
+            naver_best = None  # Ensure naver_best is None if haereum_best is None
+            pass # Explicitly pass
             
         # ID 기반 매칭이 실패한 경우, 기존 방식으로 매칭 시도    
         # 이미 매칭된 해오름 이미지가 있다면, 그 이미지를 기준으로 다른 소스 매칭 시도
         if haereum_best:
+            haereum_path, haereum_score = haereum_best # Defined if haereum_best is true
+            haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
+
             # 고려기프트 매칭이 없는 경우에만 기존 방식 시도
             if not kogift_best:
-                # 해오름 이미지 이름에서 토큰 추출
-                haereum_path, haereum_score = haereum_best
-                haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
-                
-                # 향상된 이미지 매처 사용 시 이미지 기반 매칭
                 if enhanced_matcher:
                     kogift_best = find_best_match_with_enhanced_matcher(
                         str(haereum_images[haereum_path]['path']),
                         kogift_images,
-                        used_kogift,
+                        None, # Pass None for used_images for Kogift
                         enhanced_matcher
                     )
                 else:
-                    # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
-                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, used_kogift, 0.01) # Much lower threshold for matches
+                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, 0.01) # Pass None for used_images for Kogift
             
-            # 네이버 매칭이 없는 경우에만 기존 방식 시도
+            # 네이버 매칭이 없는 경우에만 기존 방식 시도 (still uses used_naver)
             if not naver_best:
-                # 해오름 이미지 이름에서 토큰 추출
-                haereum_path, haereum_score = haereum_best
-                haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
-                
-                # 향상된 이미지 매처 사용 시 이미지 기반 매칭
                 if enhanced_matcher:
                     naver_best = find_best_match_with_enhanced_matcher(
                         str(haereum_images[haereum_path]['path']),
                         naver_images,
-                        used_naver,
+                        used_naver, # Pass used_naver for Naver
                         enhanced_matcher
                     )
                 else:
-                    # 텍스트 기반 매칭 (use haereum tokens as base)
-                    # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
-                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01) # Much lower threshold for matches
+                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01) # Pass used_naver for Naver
         else:
             # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
-            # 매우 낮은 임계값 적용하여 더 많은 매칭 허용
-            kogift_best = find_best_match_for_product(product_tokens, kogift_images, used_kogift, 0.01) # Much lower threshold for matches
-            naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01) # Much lower threshold for matches
+            # Kogift - pass None for used_images
+            if not kogift_best: # Check if kogift_best is already found by ID match from an earlier (non-Haoreum) source if logic changes
+                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, 0.01)
+            
+            # Naver - pass used_naver
+            if not naver_best:
+                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01)
         
-        if kogift_best:
-            # Ensure path is added correctly (first element of tuple)
-            if isinstance(kogift_best, tuple) and len(kogift_best) > 0:
-                used_kogift.add(kogift_best[0])
+        # DO NOT add kogift_best to used_kogift set to allow reuse
+        # if kogift_best:
+        #     if isinstance(kogift_best, tuple) and len(kogift_best) > 0:
+        #         used_kogift.add(kogift_best[0]) 
+
+        # Naver is still added to its used set if a match is found and it wasn't an ID-based match already added
         if naver_best:
-            # Ensure path is added correctly (first element of tuple)
             if isinstance(naver_best, tuple) and len(naver_best) > 0:
+                # Check if it was an ID-based match; if so, it might already be added.
+                # To be safe, just add it. Set handles duplicates.
                 used_naver.add(naver_best[0])
             
         # 결과 추가
@@ -1045,107 +1048,92 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             final_naver_image_data = None
             naver_product_name_for_log = product_names[idx]
 
-            # Define NAVER_DATA_COLUMNS_TO_CLEAR using the exact column names from the DataFrame
             NAVER_DATA_COLUMNS_TO_CLEAR = [
                 target_col_naver, '네이버 쇼핑 링크', '공급사 상품링크',
                 '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명'
             ]
             
-            # Use IMAGE_DISPLAY_THRESHOLD for deciding if a Naver match is initially acceptable based on score.
-            # This aligns the initial score check with the final display criteria.
             naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.55)
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
                 naver_path_from_match, naver_score_from_match = naver_match
 
                 if not isinstance(naver_score_from_match, (float, int)) or naver_score_from_match is None:
-                    logging.warning(f"Row {idx}: Naver match for '{naver_product_name_for_log}' has invalid or missing score: {naver_score_from_match}. Clearing ALL Naver data.")
-                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                        if col_to_clear in result_df.columns:
-                            result_df.at[idx, col_to_clear] = None
-                    final_naver_image_data = None
+                    logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing data.")
+                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
                 elif naver_score_from_match < naver_score_acceptance_threshold:
-                    logging.info(f"Row {idx}: Naver match score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' is below display threshold {naver_score_acceptance_threshold}. Clearing ALL Naver data.")
-                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                        if col_to_clear in result_df.columns:
-                            result_df.at[idx, col_to_clear] = None
-                    final_naver_image_data = None
-                else: # Score is good, proceed with trying to use this match
+                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < threshold {naver_score_acceptance_threshold}. Clearing data.")
+                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                else:
                     img_path_obj_dict_entry = naver_images.get(naver_path_from_match, {})
-                    img_path_actual = img_path_obj_dict_entry.get('path')
+                    img_path_actual = img_path_obj_dict_entry.get('path') # This should be the local path from crawl_naver_api
 
-                    if img_path_actual:
+                    if img_path_actual and os.path.exists(str(img_path_actual)):
                         img_path_actual_str = str(img_path_actual)
                         web_url = None
-                        
-                        # Try to get URL from naver_images metadata (already downloaded images)
-                        # These URLs are typically image URLs (ending in .jpg, .png etc.)
-                        if isinstance(img_path_obj_dict_entry.get('url'), str) and img_path_obj_dict_entry.get('url').startswith('http'):
-                            web_url = img_path_obj_dict_entry['url']
-                        elif 'web_url' in img_path_obj_dict_entry and isinstance(img_path_obj_dict_entry['web_url'], str) and img_path_obj_dict_entry['web_url'].startswith('http'):
-                            web_url = img_path_obj_dict_entry['web_url']
+                        source_of_url = "unknown"
 
-                        # If no image URL in metadata, try product/shopping link from DataFrame
+                        # 1. Try direct image URL from crawled naver_images metadata (most reliable)
+                        crawled_image_url = img_path_obj_dict_entry.get('url') # This is the API provided image URL
+                        if isinstance(crawled_image_url, str) and crawled_image_url.startswith('http') and "pstatic.net" in crawled_image_url:
+                            if "pstatic.net/front/" in crawled_image_url:
+                                logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from metadata: {crawled_image_url}")
+                            else:
+                                web_url = crawled_image_url
+                                source_of_url = "metadata_image_url (pstatic.net)"
+                                logging.debug(f"Row {idx}: Naver - Using direct image URL from metadata: {web_url}")
+                        
+                        # 2. If no pstatic.net URL from metadata, try product ID based generation (if product_id was stored)
                         if not web_url:
-                            naver_shopping_link_col = '네이버 쇼핑 링크'
-                            naver_supplier_link_col = '공급사 상품링크' # This is often same as shopping link for Naver
-                            
-                            # Check '네이버 쇼핑 링크' first
-                            if naver_shopping_link_col in row_data and pd.notna(row_data[naver_shopping_link_col]) and str(row_data[naver_shopping_link_col]).startswith('http'):
-                                web_url = str(row_data[naver_shopping_link_col])
-                                logging.debug(f"Row {idx}: Naver - Used '{naver_shopping_link_col}' from DataFrame for URL: {web_url}")
-                            # Then check '공급사 상품링크' if the first one wasn't a valid URL
-                            elif naver_supplier_link_col in row_data and pd.notna(row_data[naver_supplier_link_col]) and str(row_data[naver_supplier_link_col]).startswith('http'):
-                                web_url = str(row_data[naver_supplier_link_col])
-                                logging.debug(f"Row {idx}: Naver - Used '{naver_supplier_link_col}' from DataFrame for URL: {web_url}")
+                            product_id_from_meta = img_path_obj_dict_entry.get('product_id')
+                            if product_id_from_meta:
+                                for ext_try in ['.jpg', '.png', '.gif']:
+                                    generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_from_meta}/{product_id_from_meta}{ext_try}"
+                                    # Here, we don't verify existence, just construct. Excel part will handle broken links.
+                                    web_url = generated_url_candidate
+                                    source_of_url = "generated_from_product_id"
+                                    logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_from_meta}: {web_url}")
+                                    break
+                        
+                        # 3. If still no image-specific URL, fall back to DataFrame's product/shopping link
+                        if not web_url:
+                            naver_link_columns_in_df = ['네이버 쇼핑 링크', '네이버 링크', '네이버상품URL']
+                            for col_name in naver_link_columns_in_df:
+                                if col_name in row_data and isinstance(row_data[col_name], str) and row_data[col_name].strip().startswith('http'):
+                                    web_url = row_data[col_name].strip()
+                                    source_of_url = f"df_link_column ('{col_name}')"
+                                    logging.info(f"Row {idx}: Naver - Used product/shopping link from DataFrame column '{col_name}' as URL: {web_url}")
+                                    break
                         
                         if web_url:
                             final_naver_image_data = {
                                 'local_path': img_path_actual_str,
-                                'url': web_url, # This could be an image URL or a product page URL
+                                'url': web_url,
                                 'score': naver_score_from_match,
                                 'source': 'naver',
                                 'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str),
-                                'product_name': naver_product_name_for_log
+                                'product_name': naver_product_name_for_log,
+                                'url_source_debug': source_of_url # For debugging which URL was chosen
                             }
-                            logging.info(f"Row {idx}: Naver - Successfully prepared image data using matched image '{img_path_actual_str}' with URL '{web_url}' (Score: {naver_score_from_match:.3f}) for '{naver_product_name_for_log}'.")
-                            # Ensure DataFrame's link columns are updated if we have a good web_url
-                            if '네이버 쇼핑 링크' in result_df.columns:
-                                result_df.at[idx, '네이버 쇼핑 링크'] = web_url
-                            if '공급사 상품링크' in result_df.columns and str(row_data.get('공급사명','')).lower() == 'naver': # Only if supplier is Naver
-                                 result_df.at[idx, '공급사 상품링크'] = web_url
+                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{img_path_actual_str}', URL: '{web_url}' (Source: {source_of_url}), Score: {naver_score_from_match:.3f}")
+                            # Update DataFrame's link columns if we ended up using a direct image URL and the DF link is different or empty
+                            if "pstatic.net" in web_url: # Only if we have a direct image URL
+                                if '네이버 쇼핑 링크' in result_df.columns and result_df.at[idx, '네이버 쇼핑 링크'] != web_url:
+                                     result_df.at[idx, '네이버 쇼핑 링크'] = web_url
+                                     logging.debug(f"Row {idx}: Naver - Updated '네이버 쇼핑 링크' with direct image URL.")
                         else:
-                            logging.warning(f"Row {idx}: Naver - Matched image '{img_path_actual_str}' (Score: {naver_score_from_match:.3f}) for '{naver_product_name_for_log}' but FAILED to secure a valid web_url. Clearing ALL Naver data.")
-                            for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                                if col_to_clear in result_df.columns:
-                                     result_df.at[idx, col_to_clear] = None
-                            final_naver_image_data = None
-                    else: # Matched image path from find_best_match is NOT valid in naver_images metadata
-                        logging.warning(f"Row {idx}: Naver match found ('{naver_path_from_match}', Score: {naver_score_from_match:.3f}) for '{naver_product_name_for_log}' but no corresponding image path in naver_images metadata. Clearing ALL Naver data.")
-                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                            if col_to_clear in result_df.columns:
-                                result_df.at[idx, col_to_clear] = None
-                        final_naver_image_data = None
-            else: # No naver_match from find_best_image_matches, or it was '없음' or None
-                if naver_match and naver_match[0] == '없음':
-                    logging.info(f"Row {idx}: Naver match explicitly marked as '없음' for '{naver_product_name_for_log}'. Clearing ALL Naver data.")
-                else:
-                    logging.info(f"Row {idx}: No valid initial Naver image match for '{naver_product_name_for_log}'. Clearing ALL Naver data.")
-                
-                for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                    if col_to_clear in result_df.columns:
-                        result_df.at[idx, col_to_clear] = None
-                final_naver_image_data = None
+                            logging.warning(f"Row {idx}: Naver - Matched image '{img_path_actual_str}' (Score: {naver_score_from_match:.3f}) but FAILED to secure any web_url. Clearing data.")
+                            for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                    else:
+                        logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but local path '{img_path_actual}' is invalid/missing. Clearing data.")
+                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+            else: # No initial match or match was '없음'
+                log_msg = f"Row {idx}: Naver - No valid initial match (match: {naver_match}). Clearing data for '{naver_product_name_for_log}'."
+                if naver_match and naver_match[0] == '없음': log_msg = f"Row {idx}: Naver - Match explicitly '없음' for '{naver_product_name_for_log}'. Clearing data."
+                logging.info(log_msg)
+                for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
             
-            result_df.at[idx, target_col_naver] = final_naver_image_data
-            
-            # Final check: if image data is None, ensure all other related Naver columns are also cleared
-            if final_naver_image_data is None:
-                for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR:
-                    if col_to_clear != target_col_naver and col_to_clear in result_df.columns:
-                        # Only clear if not already cleared to avoid redundant logging / processing
-                        if pd.notna(result_df.at[idx, col_to_clear]) and result_df.at[idx, col_to_clear] != None: # Check against None
-                            result_df.at[idx, col_to_clear] = None
+            result_df.at[idx, target_col_naver] = final_naver_image_data # This will be None if data was cleared
 
         # Final post-processing: Ensure Koreagift product info and images are properly paired
         kogift_image_col = '고려기프트 이미지'
@@ -1622,88 +1610,50 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                 for file in os.listdir(dir_path):
                     if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
                         full_path = os.path.join(dir_path, file)
-                        
+                        base_name = os.path.basename(file) # Original filename with extension
+
                         # Skip small files
                         if os.path.getsize(full_path) < 1000:  # Less than 1KB
                             continue
-                            
-                        # Store by full filename
-                        base_name = os.path.basename(file)
+
+                        # Always map the actual filename (and its lowercase version) to its actual path
                         kogift_images[base_name] = full_path
-                        
-                        # Store by lowercase filename
                         kogift_images[base_name.lower()] = full_path
                         
-                        # For filenames with kogift_ prefix
+                        # Handle 'kogift_' prefix
                         if base_name.lower().startswith('kogift_'):
-                            # Strip the prefix and store that too
-                            no_prefix = base_name[7:]  # Remove 'kogift_'
-                            kogift_images[no_prefix] = full_path
-                            kogift_images[no_prefix.lower()] = full_path
-                            
-                            # Try to extract hash part
-                            hash_match = re.search(r'kogift_.*?_([a-f0-9]{8,})\.', base_name.lower())
-                            if hash_match:
-                                hash_val = hash_match.group(1)
-                                # Store hash-only versions
-                                kogift_images[hash_val] = full_path
-                                # Store with various extensions/prefixes
+                            no_prefix_name = base_name[7:] # Remove 'kogift_'
+                            kogift_images[no_prefix_name] = full_path
+                            kogift_images[no_prefix_name.lower()] = full_path
+
+                        # Handle 'shop_' prefix (common in some Kogift URLs/files)
+                        # This can be complex if 'kogift_' and 'shop_' appear together.
+                        # Example: shop_kogift_product.jpg -> product.jpg
+                        # Example: kogift_shop_product.jpg -> shop_product.jpg (less common)
+                        # Example: shop_product.jpg -> product.jpg
+                        
+                        temp_name_for_shop_handling = base_name
+                        if temp_name_for_shop_handling.lower().startswith('kogift_'):
+                            temp_name_for_shop_handling = temp_name_for_shop_handling[7:]
+                        
+                        if temp_name_for_shop_handling.lower().startswith('shop_'):
+                            name_after_shop = temp_name_for_shop_handling[5:] # Remove 'shop_'
+                            kogift_images[name_after_shop] = full_path
+                            kogift_images[name_after_shop.lower()] = full_path
+
+                        # Store hash-based keys if a hash is identifiable in the filename
+                        # e.g., kogift_productname_a1b2c3d4.jpg -> a1b2c3d4
+                        hash_match = re.search(r'_([a-f0-9]{8,})\.', base_name.lower())
+                        if hash_match:
+                            hash_val = hash_match.group(1)
+                            kogift_images[hash_val] = full_path
+                            # Also store common prefixed hash patterns if the original name had them
+                            if base_name.lower().startswith('kogift_'):
                                 kogift_images[f"kogift_{hash_val}.jpg"] = full_path
                                 kogift_images[f"kogift_{hash_val}.png"] = full_path
-                                
-                            # ADDED: Special handling for _nobg images
-                            if '_nobg' in base_name.lower():
-                                # Get the name without _nobg suffix
-                                base_without_nobg = re.sub(r'_nobg\.[^.]+$', '', base_name)
-                                # Store mappings for regular image names to find _nobg versions
-                                regular_name = f"{base_without_nobg}.jpg"
-                                kogift_images[regular_name] = full_path
-                                regular_name_png = f"{base_without_nobg}.png"
-                                kogift_images[regular_name_png] = full_path
-                                
-                                # If it has the kogift_ prefix, also store without it
-                                if base_without_nobg.lower().startswith('kogift_'):
-                                    base_without_prefix = base_without_nobg[7:]  # Remove 'kogift_'
-                                    kogift_images[f"{base_without_prefix}.jpg"] = full_path
-                                    kogift_images[f"{base_without_prefix}.png"] = full_path
-                            
-                            # ADDED: Also map from regular images to their _nobg counterparts
-                            # This ensures we can find _nobg versions when looking for regular images
-                            elif not '_nobg' in base_name.lower():
-                                # Create the _nobg variant name
-                                base_without_ext = os.path.splitext(base_name)[0]
-                                nobg_name = f"{base_without_ext}_nobg.png"
-                                nobg_path = os.path.join(dir_path, nobg_name)
-                                
-                                # If the _nobg file exists, create a mapping
-                                if os.path.exists(nobg_path):
-                                    # Continue using the regular name as key, but point to nobg file
-                                    logger.debug(f"Mapped regular image {base_name} to _nobg version {nobg_name}")
-                                    kogift_images[base_name] = nobg_path
-                                    kogift_images[base_name.lower()] = nobg_path
-                                    
-                                    # Also map hash variants if they exist
-                                    if hash_match:
-                                        kogift_images[f"kogift_{hash_val}.jpg"] = nobg_path
-                                        kogift_images[f"kogift_{hash_val}.png"] = nobg_path
-                                        kogift_images[hash_val] = nobg_path
-                        else:
-                            # For files without kogift_ prefix, add it as an alternate key
-                            with_prefix = f"kogift_{base_name}"
-                            kogift_images[with_prefix] = full_path
-                            
-                        # Special handling for shop_ prefix in Kogift URLs
-                        if base_name.lower().startswith('shop_'):
-                            # Store without shop_ prefix
-                            no_shop = base_name[5:]  # Remove 'shop_'
-                            kogift_images[no_shop] = full_path
-                            # Also store with kogift_ but without shop_
-                            kogift_without_shop = f"kogift_{no_shop}"
-                            kogift_images[kogift_without_shop] = full_path
-                        elif 'shop_' in base_name.lower():
-                            # If shop_ is in the middle, add alternative version
-                            alt_version = base_name.lower().replace('shop_', '')
-                            kogift_images[alt_version] = full_path
+                                kogift_images[f"kogift_{hash_val}_nobg.png"] = full_path
+
+
             except Exception as e:
                 logger.error(f"Error scanning directory {dir_path}: {e}")
     

@@ -1364,38 +1364,44 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         logger.info(f"판촉물이 아니므로 판매자 사이트 방문 건너뜀: {product_name}")
 
     # Process image if available
-    image_url = first_item.get('image_url')
-    if image_url:
-        result_data['image_url'] = image_url
-        local_path = await download_naver_image(image_url, naver_image_dir, product_name, config)
+    image_api_url = first_item.get('image') # Prefer 'image' field for direct image URL from Naver API
+    if not image_api_url: # Fallback if 'image' is not present
+        image_api_url = first_item.get('image_url')
+
+    if image_api_url:
+        result_data['image_url'] = image_api_url # Keep this for direct API response if needed elsewhere
+        local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
         if local_path:
             # Ensure absolute path
             abs_local_path = os.path.abspath(local_path)
             result_data['image_path'] = abs_local_path
             
             # Create consistent image data structure
-            image_data = {
-                'url': image_url,
+            image_data_for_df = {
+                'url': image_api_url, # Use the direct image URL from API
                 'local_path': abs_local_path,
                 'original_path': abs_local_path,
                 'source': 'naver',
                 'product_name': product_name,
-                'similarity': similarity,
+                'similarity': similarity, # Keep a reference to the product's similarity
                 'type': 'naver'  # Explicitly mark as Naver image
             }
             
             # Add image data to result
-            result_data['image_data'] = image_data
-            result_data['naver_image_data'] = image_data  # Duplicate for correct column mapping
+            result_data['image_data'] = image_data_for_df # This might be for a general image column
+            result_data['naver_image_data'] = image_data_for_df  # Duplicate for correct column mapping if needed by other parts
             
             # Create a dedicated naver_image entry with the correct structure for '네이버 이미지' column
-            naver_image_entry = {
-                'url': image_url,
+            # This is what integrate_images will primarily use for Naver image data
+            naver_image_column_entry = {
+                'url': image_api_url, # CRITICAL: Ensure this is the actual image URL
                 'local_path': abs_local_path,
                 'source': 'naver',
-                'score': similarity  # Include similarity score for filtering
+                'score': similarity,  # Include similarity score for filtering
+                'product_id': first_item.get('productId'), # Store product ID if available, for potential URL regen
+                'original_path': abs_local_path # Store original downloaded path
             }
-            result_data['네이버 이미지'] = naver_image_entry
+            result_data['네이버 이미지'] = naver_image_column_entry
     
     return result_data
 
