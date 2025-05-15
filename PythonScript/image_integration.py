@@ -1040,110 +1040,79 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 logging.debug(f"Row {idx}: No Koreagift product info exists, removing any image")
                 result_df.loc[idx, target_col_kogift] = '-'
 
-            # 네이버 이미지 column
+            # --- Process Naver Image ---
             target_col_naver = '네이버 이미지'
-            
-            # Check if there's actual Naver product information before trying to match images
-            has_naver_product_info = naver_product_info_exists[idx]  # Use pre-computed value
-            
-            logging.debug(f"Row {idx}: Naver product info exists: {has_naver_product_info}")
-            
-            # Only try to match Naver images if we have Naver product information
-            if has_naver_product_info:
-                if naver_match:
-                    naver_path, naver_score = naver_match
-                    img_path_obj = naver_images.get(naver_path, {}).get('path')
-                    if not img_path_obj:
-                        logging.warning(f"Row {idx}: Naver match found ({naver_path}) but no corresponding image path in metadata. Clearing Naver image and related data for product '{product_names[idx]}'.")
-                        
-                        result_df.at[idx, target_col_naver] = None # Clear the image field
-                        
-                        # Define Naver related columns to clear (consistent with other parts of the function)
-                        naver_related_columns_to_clear = [
-                            '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
-                            '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-                        ]
-                        for col_to_clear in naver_related_columns_to_clear:
-                            if col_to_clear in result_df.columns:
-                                result_df.at[idx, col_to_clear] = None
-                        
-                        logging.info(f"Row {idx}: Cleared all Naver image and data due to invalid primary match path for product '{product_names[idx]}'.")
-                        continue # Skip to next process (effectively, skip further Naver image assignment for this row)
-                        
-                    img_path = str(img_path_obj)
+            # naver_match is the tuple (path, score) from verified_matches[idx] or None
 
-                    # Prioritize URL from existing data if available
-                    existing_naver_data = row_data.get(target_col_naver)
+            if naver_match:
+                naver_path_from_match, naver_score_from_match = naver_match
+
+                # Check if the path from the match exists in our naver_images metadata and is valid
+                img_path_obj = naver_images.get(naver_path_from_match, {}).get('path')
+
+                if not img_path_obj:
+                    logging.warning(f"Row {idx}: Naver image '{naver_path_from_match}' was matched, but its path in naver_images metadata is invalid or missing. Clearing Naver data for product '{product_names[idx]}'.")
+                    result_df.at[idx, target_col_naver] = None
+                    naver_related_columns_to_clear = [
+                        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
+                        '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+                    ]
+                    for col_to_clear in naver_related_columns_to_clear:
+                        if col_to_clear in result_df.columns:
+                            result_df.at[idx, col_to_clear] = None
+                else:
+                    # Matched image path is valid in metadata, proceed to assign it
+                    img_path = str(img_path_obj)
+                    
+                    # Prioritize URL from existing data on the DataFrame if available and valid
+                    existing_naver_data_on_df = result_df.loc[idx].get(target_col_naver)
                     web_url = None
-                    if isinstance(existing_naver_data, dict):
-                        potential_url = existing_naver_data.get('url')
+                    if isinstance(existing_naver_data_on_df, dict):
+                        potential_url = existing_naver_data_on_df.get('url')
                         if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
                             web_url = potential_url
-                            logging.debug(f"Row {idx}: Preserving existing Naver URL: {web_url[:60]}...")
+                            logging.debug(f"Row {idx}: Preserving existing Naver URL from DataFrame: {web_url[:60]}...")
                 
-                    # URL이 없으면 네이버 이미지에 대한 URL 처리
+                    # If no pre-existing valid URL on DataFrame, get from naver_images metadata or generate
                     if not web_url:
-                        # 이미지 메타데이터에서 URL 확인
-                        web_url = naver_images.get(naver_path, {}).get('url')
+                        web_url = naver_images.get(naver_path_from_match, {}).get('url')
                         
-                        # Reject "front" URLs which are unreliable
                         if web_url and "pstatic.net/front/" in web_url:
-                            logging.warning(f"Row {idx}: Rejecting unreliable 'front' URL for Naver image: {web_url}")
-                            web_url = ''  # Clear the URL to prevent using invalid "front" URLs
+                            logging.warning(f"Row {idx}: Rejecting unreliable 'front' URL from metadata for Naver image: {web_url}")
+                            web_url = ''
                         
-                        # URL이 여전히 없으면 product_id에서 추출 시도
-                        if not web_url and 'product_id' in naver_images.get(naver_path, {}):
-                            product_id = naver_images[naver_path]['product_id']
-                            # 여러 확장자 시도
-                            for ext in ['.jpg', '.png', '.gif']:
-                                web_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}{ext}"
-                                # 실제로는 확인 로직 필요
-                                break
+                        # Fallback to generating from product_id if still no URL
+                        if not web_url and 'product_id' in naver_images.get(naver_path_from_match, {}):
+                            product_id = naver_images[naver_path_from_match]['product_id']
+                            for ext_try in ['.jpg', '.png', '.gif']: # Check common extensions
+                                generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}{ext_try}"
+                                web_url = generated_url_candidate 
+                                break 
                         
-                        # URL이 여전히 없으면 빈 문자열 사용
-                        if not web_url:
-                            web_url = ""
-                            logging.warning(f"Row {idx}: Could not find or generate URL for Naver image {img_path}")
+                        if not web_url: 
+                            web_url = "" 
+                            logging.warning(f"Row {idx}: Could not find or generate a valid URL for Naver image {img_path} (matched from {naver_path_from_match})")
 
                     image_data = {
                         'local_path': img_path,
                         'source': 'naver',
-                        'url': web_url, # Use preserved or empty URL
-                        'original_path': str(img_path),
-                        'score': naver_score,
-                        'product_name': product_names[idx] # 상품명 추가
+                        'url': web_url,
+                        'original_path': naver_images.get(naver_path_from_match, {}).get('original_path', img_path),
+                        'score': naver_score_from_match,
+                        'product_name': product_names[idx]
                     }
-                    result_df.at[idx, target_col_naver] = image_data # Use .at for scalar assignment
-                else:
-                    # Naver product info exists but no match was found - try to find a fallback
-                    logging.info(f"Row {idx}: Naver product info exists but no image match found")
-                    
-                    # Clear all Naver related information
-                    result_df.at[idx, target_col_naver] = None
-                    
-                    # Clear all Naver related columns
-                    naver_related_columns = [
-                        '기본수량(3)',
-                        '판매단가(V포함)(3)',
-                        '가격차이(3)',
-                        '가격차이(3)(%)',
-                        '공급사명',
-                        '네이버 쇼핑 링크',
-                        '공급사 상품링크'
-                    ]
-                    
-                    for col in naver_related_columns:
-                        if col in result_df.columns:
-                            result_df.at[idx, col] = None
-                    
-                    logging.info(f"Row {idx}: Cleared all Naver related information for product {product_names[idx]}")
-            else:
-                 if target_col_naver in result_df.columns:
-                     # If no Naver product info or no match found, ensure Naver image is not included
-                     result_df.loc[idx, target_col_naver] = '-'
-                 else:
-                     # This case should theoretically not happen anymore
-                     logging.warning(f"Target column '{target_col_naver}' unexpectedly not found at index {idx} during else block.")
+                    result_df.at[idx, target_col_naver] = image_data
+            
+            else: # naver_match from verified_matches is None (no suitable image found by matching process)
+                logging.info(f"Row {idx}: No Naver image could be matched (verified_match is None for Naver). Clearing Naver image and related data for product '{product_names[idx]}'.")
+                result_df.at[idx, target_col_naver] = None 
+                naver_related_columns_to_clear = [
+                    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
+                    '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
+                ]
+                for col_to_clear in naver_related_columns_to_clear:
+                    if col_to_clear in result_df.columns:
+                        result_df.at[idx, col_to_clear] = None
 
         # Final post-processing: Ensure Koreagift product info and images are properly paired
         kogift_image_col = '고려기프트 이미지'
