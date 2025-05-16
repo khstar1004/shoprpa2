@@ -500,20 +500,23 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                                     
                                     # Try downloading each variant until one succeeds
                                     local_path = None
-                                    for url in found_image_urls:
-                                        logger.info(f"Attempting to download image: {url}")
-                                        local_path = await download_image_to_main(url, keyword, config, max_retries=2)
-                                        if local_path:
-                                            logger.info(f"Successfully downloaded variant: {url}")
-                                            break
+                                    successfully_downloaded_url = None # Variable to store the URL that was successfully downloaded
+                                    for variant_url_to_try in found_image_urls: # Iterate through the URLs found from variants
+                                        logger.info(f"Attempting to download image: {variant_url_to_try}")
+                                        # Call download_image_to_main
+                                        current_local_path = await download_image_to_main(variant_url_to_try, keyword, config, max_retries=2)
+                                        if current_local_path:
+                                            logger.info(f"Successfully downloaded variant: {variant_url_to_try}")
+                                            local_path = current_local_path # Store the path of the successfully downloaded image
+                                            successfully_downloaded_url = variant_url_to_try # Store the URL that worked
+                                            break # Exit loop once a download is successful
                                     
                                     # Close context before returning result
                                     await context.close()
 
-                                    # Return the best result we could find
-                                    found_url = found_image_urls[0] if found_image_urls else None
-                                    if local_path:
-                                        return {"url": found_url, "local_path": local_path, "source": "haereum"}
+                                    # Return the result if a download was successful using the correct URL
+                                    if local_path and successfully_downloaded_url:
+                                        return {"url": successfully_downloaded_url, "local_path": local_path, "source": "haereum"}
                             else:
                                 logger.warning("⚠️ No valid product images found after filtering.")
                                 

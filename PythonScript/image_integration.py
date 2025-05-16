@@ -887,10 +887,10 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         web_url = scraped_url # Use the valid scraped URL
                     else:
                         # If scraped_url is missing or not a valid HTTP/HTTPS URL
-                        logging.error(
-                            f"Row {idx}: CRITICAL - Invalid or missing Haoreum URL in scraped data "
+                        logging.warning(
+                            f"Row {idx}: Invalid or missing Haoreum URL in scraped data "
                             f"('{scraped_haereum_url_col}' column) for product '{product_names[idx]}'. "
-                            f"Value found: '{scraped_url}'. Image path (if matched): {img_path}"
+                            f"Value found: '{scraped_url}'. Image path (if matched): {img_path}. URL will be empty."
                         )
                         # web_url remains "" as initialized above
 
