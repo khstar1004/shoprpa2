@@ -1,5 +1,5 @@
 from playwright.sync_api import sync_playwright, TimeoutError
-from playwright.async_api import async_playwright, TimeoutError, Page, Browser
+from playwright.async_api import async_playwright, TimeoutError, Page, Browser, PlaywrightError
 from bs4 import BeautifulSoup
 import pandas as pd
 import re

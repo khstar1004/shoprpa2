@@ -119,6 +119,28 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
         if browser:
             try:
                 if browser.is_connected():
+                    # Unroute all handlers from all pages before closing the browser
+                    logging.info("Attempting to unroute all handlers from all pages in all contexts...")
+                    for context in browser.contexts:
+                        for page in context.pages:
+                            try:
+                                page_url_for_log = "unknown URL (page might be closed or URL not available)"
+                                try:
+                                    if not page.is_closed(): # Check if page is not already closed
+                                        page_url_for_log = page.url
+                                except Exception: # Broad exception if page.url itself fails or page.is_closed() fails
+                                    pass # Keep the default log message
+                                
+                                if not page.is_closed(): # Attempt unroute only if page is not closed
+                                    logging.info(f"Calling page.unroute_all(behavior='ignoreErrors') for page: {page_url_for_log}")
+                                    await page.unroute_all(behavior='ignoreErrors')
+                                else:
+                                    logging.debug(f"Skipping unroute_all for already closed page: {page_url_for_log}")
+                            except Exception as unroute_ex:
+                                # Log with a warning, but continue to ensure browser close is attempted
+                                logging.warning(f"Error during page.unroute_all() for page ({page_url_for_log}): {unroute_ex}")
+                    logging.info("Finished attempting to unroute all pages.")
+
                     logging.info("Attempting to close shared Playwright browser...")
                     await browser.close()
                     logging.info("Closed shared Playwright browser.")
