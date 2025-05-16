@@ -336,17 +336,36 @@ def is_promotional_supplier(supplier_name):
     return False
 
 async def extract_quantity_prices(page, url: str, target_quantities: List[int] = None) -> Dict[str, Any]:
-    """수량별 가격 정보 추출 - 여러 사이트 구조에 대응하는 지능형 분석 알고리즘"""
+    """
+    가격 테이블, 옵션, 입력 필드 등 다양한 방법으로 특정 수량에 대한 가격 정보를 추출합니다.
+    판촉물 사이트 여부, VAT 포함 여부, CAPTCHA 감지 정보도 반환합니다.
+
+    Args:
+        page: Playwright Page 객체
+        url: 상품 상세 페이지 URL
+        target_quantities: 가격을 조회할 특정 수량 리스트 (옵션)
+
+    Returns:
+        Dict[str, Any]: 수량별 가격 정보, 판촉물 사이트 여부, VAT 포함 여부 등이 담긴 딕셔너리
+                        {
+                            "has_quantity_pricing": bool,  # 수량별 가격 정보 발견 여부
+                            "quantity_prices": {qty: {"price": X, "price_with_vat": Y, "exact_match": bool, "note": str}},
+                            "is_promotional_site": bool, # 판촉물/도매 사이트 여부
+                            "vat_included": bool,        # 가격에 VAT 포함 여부 (True면 포함, False면 별도)
+                            "has_captcha": bool,         # CAPTCHA 감지 여부
+                            "is_sold_out": bool,         # 품절 여부
+                            "price_inquiry_needed": bool # 가격 문의 필요 여부
+                        }
+    """
+    logger.info(f"extract_quantity_prices 호출됨: URL='{url}', Target Quantities='{target_quantities}'")
     result = {
-        "is_promotional_site": False,
         "has_quantity_pricing": False,
         "quantity_prices": {},
-        "price_table": None,
-        "vat_included": False,
-        "supplier_name": "",
-        "error": None,
-        "is_naver_site": False,
-        "has_captcha": False
+        "is_promotional_site": False,
+        "vat_included": False,  # 기본값: VAT 별도
+        "has_captcha": False,
+        "is_sold_out": False,
+        "price_inquiry_needed": False
     }
     
     if not page or not url:
@@ -445,6 +464,46 @@ async def extract_quantity_prices(page, url: str, target_quantities: List[int] =
                 result["has_captcha"] = True
                 return result  # Return immediately if captcha detected
             
+        # 품절(Sold Out) 및 가격 문의(Price Inquiry) 확인
+        sold_out_selectors = [
+            "text=/품절/i",
+            "text=/SOLD OUT/i",
+            "text=/일시품절/i",
+            "*[class*='soldout']",
+            "*[class*='stock_soldout']",
+            "img[alt*='품절']",
+            "img[alt*='sold out']"
+        ]
+        price_inquiry_selectors = [
+            "text=/가격문의/i",
+            "text=/견적문의/i",
+            "text=/전화문의/i",
+            "text=/상담요청/i",
+            "a[href*='javascript:void(0)'][onclick*='price_inquiry']",
+            "button:has-text('견적문의')",
+            "button:has-text('가격문의')"
+        ]
+
+        for selector in sold_out_selectors:
+            try:
+                sold_out_element = page.locator(selector).first
+                if await sold_out_element.count() > 0 and await sold_out_element.is_visible(timeout=1000):
+                    logger.info(f"품절 상품 감지됨 (선택자: {selector}): {url}")
+                    result["is_sold_out"] = True
+                    return result # 품절이면 더 이상 처리하지 않음
+            except PlaywrightError: # Timeout or other Playwright error
+                pass # Element not found or not visible with this selector
+
+        for selector in price_inquiry_selectors:
+            try:
+                inquiry_element = page.locator(selector).first
+                if await inquiry_element.count() > 0 and await inquiry_element.is_visible(timeout=1000):
+                    logger.info(f"가격 문의 필요 상품 감지됨 (선택자: {selector}): {url}")
+                    result["price_inquiry_needed"] = True
+                    return result # 가격 문의 필요하면 더 이상 처리하지 않음
+            except PlaywrightError:
+                pass
+
         # 공급사 정보 수집
         supplier_selectors = [
             'div.basicInfo_mall_title__3IDPK a',

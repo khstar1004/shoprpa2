@@ -1342,8 +1342,22 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                         'quantity_prices': quantity_pricing.get('quantity_prices', {}),
                         'vat_included': quantity_pricing.get('vat_included', False),
                         'is_naver_site': quantity_pricing.get('is_naver_site', False),
-                        'has_captcha': quantity_pricing.get('has_captcha', False)
+                        'has_captcha': quantity_pricing.get('has_captcha', False),
+                        'is_sold_out': quantity_pricing.get('is_sold_out', False), # Add this
+                        'price_inquiry_needed': quantity_pricing.get('price_inquiry_needed', False) # Add this
                     })
+
+                    # If sold out or price inquiry needed, log and potentially return None or a modified result_data
+                    if result_data['is_sold_out']:
+                        logger.info(f"상품 '{product_name}' (URL: {page.url})은 품절 상태입니다. 결과를 반환하지 않습니다.")
+                        # Close page before returning None to avoid resource leaks
+                        if page and not page.is_closed(): await page.close()
+                        return None # Skip this product entirely
+                    
+                    if result_data['price_inquiry_needed']:
+                        logger.info(f"상품 '{product_name}' (URL: {page.url})은 가격 문의가 필요합니다. 결과를 반환하지 않습니다.")
+                        if page and not page.is_closed(): await page.close()
+                        return None # Skip this product entirely
 
                     # Update promotional site status based on quantity pricing
                     if quantity_pricing.get('has_quantity_pricing'):
