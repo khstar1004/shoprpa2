@@ -79,8 +79,8 @@ def _normalize_text(text: str) -> str:
 #     ...
 
 # Updated main scraping function to accept browser and ConfigParser
-async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None) -> Optional[Dict[str, str]]:
-    """Find the first product with an exact name match and return its image URL and local path, using Playwright."""
+async def scrape_haereum_data(browser: Browser, keyword: str, config: configparser.ConfigParser = None, product_code: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """Find the first product with an exact name match or by product_code and return its image URL and local path, using Playwright."""
     # Create a new semaphore for this function call
     max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=2)
     scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows
@@ -165,7 +165,93 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                         await setup_page_optimizations(page)
 
-                    logger.debug(f"🌐 Navigating to {haereum_main_url}")
+                    # --- Try direct navigation if product_code is available ---
+                    if product_code:
+                        direct_url = f"{haereum_main_url}product/product_view.asp?p_idx={product_code}"
+                        logger.info(f"🟢 Attempting direct navigation for product code: {product_code} using URL: {direct_url}")
+                        try:
+                            await page.goto(direct_url, wait_until="domcontentloaded", timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=90000))
+                            await page.wait_for_timeout(config.getint('ScraperSettings', 'wait_after_nav', fallback=3000)) # Wait for page to settle
+
+                            # Check for "상품이 존재하지 않습니다" or similar messages
+                            page_content_check = await page.content()
+                            if "상품이 존재하지 않습니다" in page_content_check or "찾으시는 상품이 없습니다" in page_content_check:
+                                logger.warning(f"🔶 Product code {product_code} not found on Haereum (direct navigation): {direct_url}")
+                                # Proceed to keyword search or retry logic below
+                            else:
+                                # Try to find the main product image on the product page
+                                # Common selectors: '#objImg', '.detail_img img', '.img_box img', 'td.detail_photo img' etc.
+                                # Let's try a few common ones or a more general one.
+                                # Prioritize specific ID if known, e.g., 'img#objImg'
+                                # General selector for product image view area
+                                image_selectors_on_product_page = [
+                                    'img#objImg',  # Often used for main product image
+                                    '//form[@name="order_form"]//img[contains(@src, "/upload/product/")]', # More specific to product images
+                                    '//td[@class="detail_photo"]//img', # Common class for detail photo cell
+                                    '//div[contains(@class, "detail_img")]//img',
+                                    '//div[contains(@class, "img_box")]//img',
+                                    '//div[contains(@class, "cdtl_img_view")]//img', # From previous thought
+                                    '//img[contains(@src, "/upload/product/") and not(contains(@src, "/simg"))]' # Try to get larger image not thumbnail
+                                ]
+                                
+                                found_image_src = None
+                                for selector_idx, img_selector in enumerate(image_selectors_on_product_page):
+                                    try:
+                                        logger.debug(f"Attempting to find image on product page with selector: {img_selector}")
+                                        # Wait for selector with a shorter timeout as the page should be loaded
+                                        img_element = await page.wait_for_selector(img_selector, state="visible", timeout=config.getint('ScraperSettings', 'image_search_timeout', fallback=15000))
+                                        if img_element:
+                                            temp_src = await img_element.get_attribute('src')
+                                            if temp_src and '/upload/product/' in temp_src: # Ensure it's a product image
+                                                found_image_src = temp_src
+                                                logger.info(f"🖼️ Found image on product page (Code: {product_code}) using selector {selector_idx+1}: {found_image_src}")
+                                                break # Found a good image
+                                    except Exception as e_img_sel:
+                                        logger.debug(f"Selector {img_selector} not found or timed out for product code {product_code}: {e_img_sel}")
+                                        if selector_idx == 0 and "objImg" in img_selector : # If #objImg fails, try to evaluate from script if that's how it's loaded
+                                            try:
+                                                obj_img_src_eval = await page.evaluate("() => document.getElementById('objImg') ? document.getElementById('objImg').src : null")
+                                                if obj_img_src_eval and '/upload/product/' in obj_img_src_eval:
+                                                    found_image_src = obj_img_src_eval
+                                                    logger.info(f"🖼️ Found image on product page (Code: {product_code}) using objImg evaluation: {found_image_src}")
+                                                    break
+                                            except Exception as eval_err:
+                                                logger.debug(f"Error evaluating #objImg.src for product code {product_code}: {eval_err}")
+
+
+                                if found_image_src:
+                                    full_image_url = urljoin(haereum_main_url, found_image_src)
+                                    # Download the image
+                                    # Use keyword (original product name) for product_name arg for consistency in naming if code is part of filename
+                                    local_path = await download_image_to_main(full_image_url, keyword, config, product_code=product_code, max_retries=1) 
+                                    if local_path:
+                                        logger.info(f"✅ Successfully downloaded image for product code {product_code}: {full_image_url} -> {local_path}")
+                                        await context.close()
+                                        return {"url": full_image_url, "local_path": local_path, "source": "haereum", "product_code": product_code, "method": "direct_code"}
+                                    else:
+                                        logger.warning(f"🔶 Failed to download image for product code {product_code} from {full_image_url}, will proceed to keyword search if configured.")
+                                else:
+                                    logger.warning(f"🔶 No main image found on product page for code {product_code} ({direct_url}), will proceed to keyword search if configured.")
+                        
+                        except PlaywrightError as nav_err:
+                            logger.warning(f"🔶 Direct navigation failed for product code {product_code} ({direct_url}): {nav_err}. Proceeding to keyword search.")
+                        except Exception as e_direct:
+                            logger.error(f"🔴 Error during direct product code scraping for {product_code}: {e_direct}", exc_info=True)
+                            # Proceed to keyword search as a fallback
+
+                    # --- Fallback to Keyword Search (existing logic) ---
+                    if not keyword: # If only product_code was provided and failed, and no keyword, then we can't search
+                        logger.warning(f"No keyword provided and product code {product_code} search failed. Cannot proceed with keyword search.")
+                        await context.close()
+                        # Potentially return default image if configured and product code search was the primary attempt.
+                        if use_default_image and default_image_path and os.path.exists(default_image_path):
+                            logger.info(f"Using default image as product code search failed and no keyword provided: {default_image_path}")
+                            return {"url": "default", "local_path": default_image_path, "source": "haereum_default", "product_code": product_code, "method": "default_after_code_fail"}
+                        return None
+
+                    logger.info(f"🌐 Proceeding with keyword search for: '{keyword}' (Product Code: {product_code if product_code else 'N/A'})")
+                    # Navigate to main page for keyword search
+                    logger.debug(f"Navigating to {haereum_main_url} for keyword search.")
                     # Add retry logic for the initial navigation
                     for nav_attempt in range(3):
                         try:
@@ -726,8 +812,8 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
 
     return None
 
-async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, max_retries: int = 3) -> Optional[str]:
-    """Download an image to the main folder with target information."""
+async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, product_code: Optional[str] = None, max_retries: int = 3) -> Optional[str]:
+    """Downloads an image from a URL, saves it to the 'Main/Haereum' directory with a structured name, and returns the local path."""
     if not image_url or not image_url.strip():
         logger.warning("Empty image URL provided to download_image_to_main")
         return None
@@ -766,7 +852,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     # Generate a safe filename
     try:
         # Use product name to generate a safe filename
-        safe_name = re.sub(r'[^\w\-_.]', '_', product_name)[:50]  # Limit length
+        safe_name = re.sub(r'[^\\w\\-_.]', '_', product_name)[:50]  # Limit length
         url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
         
         # Get file extension from URL
@@ -788,7 +874,8 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             ext = '.jpg'
             
         # Create final filename
-        filename = f"haereum_{safe_name}_{url_hash}{ext}"
+        code_suffix = f"_CODE{product_code}" if product_code else ""
+        filename = f"haereum_{safe_name}{code_suffix}_{url_hash}{ext}"
         local_path = os.path.join(main_dir, filename)
         final_image_path = local_path
         
@@ -998,7 +1085,10 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     return None
 
 async def try_direct_product_code_fallback(page: Page, keyword: str, config: configparser.ConfigParser, haereum_main_url: str) -> Optional[Dict[str, str]]:
-    """Try to extract product codes and construct image URLs directly from them."""
+    """
+    Fallback: If keyword search yields no good image immediately,
+    try to extract a product code from the first search result and go to its page.
+    """
     logger.info(f"Trying direct product code fallback for keyword: {keyword}")
     
     # Check if search results exist on the page
@@ -1215,15 +1305,16 @@ async def _test_main():
         config.set('Playwright', 'playwright_max_concurrent_windows', '2')  # Limit concurrent windows
         
     # Updated test keywords based on user's request
-    test_keywords = [
-        "타포린백 중형 35-30-15cm",
-        "더카인드 와인오프너",
-        "저소음 Big pan 16cm 접이식 선풍기 휴대용 탁상용 5엽날개 4단계 풍량 대용량 4400mAh 배터리",
-        "플레오맥스 PM-4ONE 4 in 1 접이식 15W 고속 무선 충전기, 애플 + 갤럭시 워치",
-        "헤스티앙 2IN1 듀얼 캠핑 미니 에어건 무선 차량용 청소기"
+    test_product_codes = [
+        "179879",
+        "170480",
+        "169514",
+        "119387",
+        "119386",
+        "119385"
     ]
     
-    logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_keywords)} keywords ---")
+    logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_product_codes)} product codes ---")
     
     async with async_playwright() as p:
         browser = None
@@ -1256,23 +1347,23 @@ async def _test_main():
             # Create tasks for parallel execution with semaphore and chunking
             scraping_semaphore = asyncio.Semaphore(max_windows)
             
-            # Split keywords into smaller batches to avoid overloading the browser
-            batch_size = 2  # Process 2 keywords at a time maximum
+            # Split product codes into smaller batches to avoid overloading the browser
+            batch_size = 2  # Process 2 product codes at a time maximum
             results = []
             
-            for batch_start in range(0, len(test_keywords), batch_size):
-                batch_end = min(batch_start + batch_size, len(test_keywords))
-                batch = test_keywords[batch_start:batch_end]
+            for batch_start in range(0, len(test_product_codes), batch_size):
+                batch_end = min(batch_start + batch_size, len(test_product_codes))
+                batch = test_product_codes[batch_start:batch_end]
                 
-                logger.info(f"Processing batch of {len(batch)} keywords ({batch_start+1}-{batch_end} of {len(test_keywords)})")
+                logger.info(f"Processing batch of {len(batch)} product codes ({batch_start+1}-{batch_end} of {len(test_product_codes)})")
                 
                 # Create tasks for this batch
                 batch_tasks = []
-                for keyword in batch:
-                    async def scrape_with_semaphore(kw):
+                for product_code in batch:
+                    async def scrape_with_semaphore(code):
                         async with scraping_semaphore:
-                            return (kw, await scrape_haereum_data(browser, kw, config))
-                    task = asyncio.create_task(scrape_with_semaphore(keyword))
+                            return (code, await scrape_haereum_data(browser, "", config, product_code=code))
+                    task = asyncio.create_task(scrape_with_semaphore(product_code))
                     batch_tasks.append(task)
                 
                 # Wait for this batch to complete
@@ -1280,7 +1371,7 @@ async def _test_main():
                 results.extend(batch_results)
                 
                 # Add a small delay between batches to avoid resource spikes
-                if batch_end < len(test_keywords):
+                if batch_end < len(test_product_codes):
                     logger.info(f"Batch complete. Waiting before starting next batch...")
                     await asyncio.sleep(3)
             
@@ -1294,23 +1385,23 @@ async def _test_main():
                     error_count += 1
                     print(f"❌ Error: {str(result)}")
                 elif isinstance(result, tuple) and len(result) == 2:
-                    keyword, data = result
+                    product_code, data = result
                     if isinstance(data, Exception):
                         error_count += 1
-                        print(f"❌ Error for '{keyword}': {str(data)}")
+                        print(f"❌ Error for product code '{product_code}': {str(data)}")
                     elif data and data.get("url"):
                         success_count += 1
-                        print(f"✅ Success for '{keyword}':")
+                        print(f"✅ Success for product code '{product_code}':")
                         print(f"  - Image URL: {data.get('url')}")
                         print(f"  - Local path: {data.get('local_path')}")
                         print(f"  - Source: {data.get('source')}")
                     else:
-                        print(f"❌ No results found for '{keyword}'")
+                        print(f"❌ No results found for product code '{product_code}'")
                 else:
                     print(f"❌ Unexpected result format: {result}")
                 print("---------------------------")
             
-            print(f"Summary: {success_count} successes, {error_count} errors out of {len(test_keywords)} keywords")
+            print(f"Summary: {success_count} successes, {error_count} errors out of {len(test_product_codes)} product codes")
                 
         except Exception as e:
             logger.error(f"Error during test: {e}")

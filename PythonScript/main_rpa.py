@@ -215,13 +215,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             # 여기서 해오름 이미지 URL 맵을 안전하게 보관 (원본 데이터로 저장)
             # 이 맵은 엑셀 생성 단계에서 바로 사용됨
             original_haereum_image_urls = haereum_image_url_map.copy() if isinstance(haereum_image_url_map, dict) else {}
-            logging.info(f"원본 해오름 이미지 URL {len(original_haereum_image_urls)}개를 안전하게 보관하였습니다. 엑셀 생성 단계에서 사용 예정.")
+            logging.info(f"원본 해오름 이미지 URL {len(original_haereum_image_urls)}개를 안전하게 보관하였습니다. (키: 상품코드 또는 상품명)")
             
             # 해오름 이미지 URL 디버그 로깅 (최대 5개)
             if debug_mode and original_haereum_image_urls:
                 sample_count = 0
-                for prod_name, url in list(original_haereum_image_urls.items())[:5]:
-                    logging.debug(f"보관된 해오름 이미지 URL 샘플 #{sample_count+1}: {prod_name} -> {url}")
+                for prod_identifier, url_info in list(original_haereum_image_urls.items())[:5]: # Changed variable names
+                    logging.debug(f"보관된 해오름 이미지 URL 샘플 #{sample_count+1}: {prod_identifier} -> {url_info}")
                     sample_count += 1
                 
         except Exception as e:
@@ -755,47 +755,107 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         try:
                             # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
                             if original_haereum_image_urls and not df_to_save.empty:
-                                # '상품명' 컬럼이 있는지 확인
-                                if '상품명' in df_to_save.columns:
+                                # 'Code' 컬럼과 '상품명' 컬럼이 있는지 확인
+                                if 'Code' in df_to_save.columns and '상품명' in df_to_save.columns:
                                     applied_count = 0
-                                    logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작...")
+                                    logging.info(f"원본 해오름 이미지 URL ({len(original_haereum_image_urls)}개) 적용 시작 (키: 상품코드)... ")
                                     
-                                    # 원본 이미지 URL을 저장할 새 컬럼 생성
                                     if '해오름 이미지 URL' not in df_to_save.columns:
-                                        df_to_save['해오름 이미지 URL'] = '-'  # 기본값 설정
+                                        df_to_save['해오름 이미지 URL'] = pd.NA # Use pd.NA for consistency
                                     
-                                    # 각 행에 원본 URL 적용
                                     for idx, row in df_to_save.iterrows():
-                                        product_name = row['상품명']
-                                        if product_name in original_haereum_image_urls:
-                                            orig_url = original_haereum_image_urls[product_name]
+                                        product_code_val = row['Code']
+                                        product_name_val = row['상품명'] # Needed for image_data dict
+
+                                        if pd.notna(product_code_val):
+                                            # Convert product_code to string, remove .0 if it was float/int, handle various types
+                                            if isinstance(product_code_val, float) and product_code_val.is_integer():
+                                                product_code_key = str(int(product_code_val))
+                                            else:
+                                                product_code_key = str(product_code_val).strip()
+                                            
+                                            haereum_img_data = original_haereum_image_urls.get(product_code_key)
+                                            
+                                            # Attempt fallback to product_name if code lookup fails and name is valid
+                                            if not haereum_img_data and pd.notna(product_name_val) and str(product_name_val).strip():
+                                                product_name_key = str(product_name_val).strip()
+                                                haereum_img_data = original_haereum_image_urls.get(product_name_key)
+                                                if haereum_img_data:
+                                                    logging.debug(f"Row {idx}: Haereum image for Code '{product_code_key}' not found. Using fallback to ProductName '{product_name_key}'.")
+
+                                            orig_url = None
+                                            if isinstance(haereum_img_data, dict):
+                                                orig_url = haereum_img_data.get('url')
+                                            elif isinstance(haereum_img_data, str): # Backward compatibility
+                                                orig_url = haereum_img_data
+                                            
                                             if orig_url:
-                                                df_to_save.at[idx, '해오름 이미지 URL'] = orig_url
+                                                # Apply to '해오름 이미지 URL' column
+                                                # Ensure orig_url is a string, not a dict if only URL is needed here
+                                                if isinstance(orig_url, dict): # Should not happen if haereum_img_data was processed correctly
+                                                    actual_url_val = orig_url.get('url', pd.NA)
+                                                else:
+                                                    actual_url_val = str(orig_url) if pd.notna(orig_url) else pd.NA
                                                 
-                                                # 본사 이미지 컬럼이 있으면 해당 컬럼에도 URL 적용 (딕셔너리 형태면 url 키에 적용)
+                                                df_to_save.at[idx, '해오름 이미지 URL'] = actual_url_val
+                                                
+                                                # Update '본사 이미지' column as well
                                                 if '본사 이미지' in df_to_save.columns:
-                                                    current_value = df_to_save.at[idx, '본사 이미지']
-                                                    if isinstance(current_value, dict):
-                                                        current_value['url'] = orig_url
-                                                        df_to_save.at[idx, '본사 이미지'] = current_value
-                                                    else:
-                                                        # 딕셔너리 아닌 경우 새로 생성
-                                                        image_data = {
-                                                            'url': orig_url,
-                                                            'source': 'haereum',
-                                                            'product_name': product_name
-                                                        }
-                                                        df_to_save.at[idx, '본사 이미지'] = image_data
+                                                    current_bosa_image_val = df_to_save.at[idx, '본사 이미지']
+                                                    # Prepare the full image_data dict using the scraped Haereum info
+                                                    new_bosa_image_data = {}
+                                                    if isinstance(haereum_img_data, dict):
+                                                        new_bosa_image_data = haereum_img_data.copy() # Start with the full dict
+                                                        new_bosa_image_data['url'] = actual_url_val # Ensure the final URL is there
+                                                    else: # If only URL string was stored
+                                                        new_bosa_image_data['url'] = actual_url_val
+                                                    
+                                                    # Ensure common fields are present
+                                                    new_bosa_image_data.setdefault('source', 'haereum')
+                                                    new_bosa_image_data.setdefault('product_name', product_name_val)
+                                                    # Add product_code if available and not already there from scraper
+                                                    new_bosa_image_data.setdefault('product_code', product_code_key)
+
+                                                    # If current '본사 이미지' is a dict, update it; otherwise, replace.
+                                                    if isinstance(current_bosa_image_val, dict):
+                                                        current_bosa_image_val.update(new_bosa_image_data)
+                                                        df_to_save.at[idx, '본사 이미지'] = current_bosa_image_val
+                                                    else: # Replace if not a dict or if it's just a placeholder
+                                                        df_to_save.at[idx, '본사 이미지'] = new_bosa_image_data
                                                 applied_count += 1
+                                        else:
+                                            # Product code is missing or NaN
+                                            if pd.notna(product_name_val) and str(product_name_val).strip():
+                                                # Try lookup by product name if code is missing
+                                                product_name_key = str(product_name_val).strip()
+                                                haereum_img_data = original_haereum_image_urls.get(product_name_key)
+                                                if haereum_img_data:
+                                                    logging.debug(f"Row {idx}: ProductCode is missing. Found Haereum image via ProductName '{product_name_key}'.")
+                                                    orig_url = None
+                                                    if isinstance(haereum_img_data, dict):
+                                                        orig_url = haereum_img_data.get('url')
+                                                    elif isinstance(haereum_img_data, str):
+                                                        orig_url = haereum_img_data
+                                                    
+                                                    if orig_url: # Simplified application for name-based fallback
+                                                        actual_url_val = str(orig_url) if pd.notna(orig_url) else pd.NA
+                                                        df_to_save.at[idx, '해오름 이미지 URL'] = actual_url_val
+                                                        # Update '본사 이미지' (simplified for this fallback path)
+                                                        if '본사 이미지' in df_to_save.columns:
+                                                            bosa_img_dict = {
+                                                                'url': actual_url_val, 
+                                                                'source': 'haereum', 
+                                                                'product_name': product_name_val
+                                                            }
+                                                            if isinstance(haereum_img_data, dict):
+                                                                bosa_img_dict.update(haereum_img_data)
+                                                                bosa_img_dict['url'] = actual_url_val # Ensure URL is correct
+                                                            df_to_save.at[idx, '본사 이미지'] = bosa_img_dict
+                                                        applied_count += 1
                                                 
                                     logging.info(f"원본 해오름 이미지 URL {applied_count}개 적용 완료.")
                                 else:
-                                    logging.warning("'상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
-                            else:
-                                if not original_haereum_image_urls:
-                                    logging.warning("적용할 원본 해오름 이미지 URL이 없습니다.")
-                                if df_to_save.empty:
-                                    logging.warning("DataFrame이 비어있어 해오름 이미지 URL을 적용할 수 없습니다.")
+                                    logging.warning("'Code' 또는 '상품명' 컬럼이 DataFrame에 없어 해오름 이미지 URL을 적용할 수 없습니다.")
                         except Exception as url_apply_err:
                             logging.error(f"해오름 이미지 URL 적용 중 오류 발생: {url_apply_err}", exc_info=True)
                             # 이 오류는 치명적이지 않으므로 계속 진행
@@ -832,8 +892,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                         if df_to_save is not None:
                             try:
                                 # Create Excel files (even if df_to_save is empty, to get headers)
-                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}")
-                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path)
+                                logging.info(f"Proceeding to call create_split_excel_outputs. DataFrame shape: {df_to_save.shape}, Using input_filename: {input_filename}")
+                                result_success, upload_success, result_path, upload_path = create_split_excel_outputs(df_to_save, output_path, input_filename)
                                 
                                 # --- Success/Failure Logging for Excel Creation ---
                                 if result_success and upload_success:

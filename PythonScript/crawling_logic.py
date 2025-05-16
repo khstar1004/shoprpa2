@@ -320,107 +320,160 @@ async def _run_single_kogift_scrape(browser, semaphore, keyword1, keyword2, conf
 
 async def crawl_haereum_image_urls(product_rows: pd.DataFrame, browser: Browser, config: configparser.ConfigParser):
     """Crawl Haereum Gift image URLs for given product rows asynchronously using a shared browser instance.
-       Accepts a ConfigParser object.
+       The result dictionary will be keyed by Product Code if available, otherwise by Product Name.
     """
-    if len(product_rows) == 0:  # Changed from product_rows.empty
-        logging.info("🟡 Haereum Image URL crawl: Input product_rows is empty. Skipping.")
+    if len(product_rows) == 0:
+        logging.info("🟡 Haereum URL crawl: Input product_rows is empty. Skipping.")
         return {}
 
     total_rows = len(product_rows)
     logging.info(f"🟡 Starting Haereum Gift image URL scraping for {total_rows} products using shared browser...")
     start_time = time.time()
-
+    
     try:
-        playwright_concurrency = config.getint('Playwright', 'playwright_task_concurrency', fallback=4)
+        playwright_concurrency = config.getint('Playwright', 'playwright_task_concurrency', fallback=3) # Adjusted fallback
     except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-        logging.warning(f"Error reading playwright_task_concurrency from [Playwright]: {e}. Defaulting to 4.")
-        playwright_concurrency = 4
+        logging.warning(f"Error reading playwright_task_concurrency for Haereum: {e}. Defaulting to 3.")
+        playwright_concurrency = 3
         
     semaphore = asyncio.Semaphore(playwright_concurrency)
-
     tasks = []
-    task_to_product_name_map = {}
+    # Store a mapping from task name (unique identifier) to original product info for result processing
+    task_info_map = {}
 
-    for index, row in product_rows.iterrows():
-        original_product_name = row.get('상품명')
-        if original_product_name:
-            original_product_name = str(original_product_name)
-            task_name = f"haereum_image_url_scrape_{index}"
-            task = asyncio.create_task(
-                _run_single_haereum_scrape(browser, semaphore, original_product_name, config),
-                name=task_name
-            )
-            tasks.append(task)
-            task_to_product_name_map[task] = original_product_name
+    # Filter rows that have a product name or product code needed for scraping
+    # Assuming '상품명' for product name and 'Code' for product code columns
+    product_rows_to_scrape = product_rows[
+        product_rows['상품명'].notna() & (product_rows['상품명'] != '') |
+        product_rows['Code'].notna() # Ensure 'Code' column is checked
+    ].copy()
+
+    if len(product_rows_to_scrape) == 0:
+        logging.info("🟡 Haereum URL crawl: No valid products with name or code to scrape. Skipping.")
+        return {}
+    
+    logging.info(f"🟡 Filtered to {len(product_rows_to_scrape)} products for Haereum URL scraping.")
+
+    for idx, row_data in product_rows_to_scrape.iterrows():
+        original_product_name = str(row_data.get('상품명', '')).strip()
+        product_code = row_data.get('Code')
+        if pd.notna(product_code):
+            # Ensure product_code is string, remove .0 if it was float/int
+            product_code = str(product_code).split('.')[0] 
         else:
-            logging.warning(f"🟡 Skipping Haereum image URL scrape for row index {index}: Missing product name.")
+            product_code = None # Explicitly None if missing
 
-    scraped_image_results = {}
+        if not original_product_name and not product_code:
+            logging.debug(f"Skipping row {idx} for Haereum scrape: missing both product name and code.")
+            continue
+
+        # Use product_code as the primary identifier for the task if available, otherwise product_name
+        # This task_key will be used to map results back if needed, but scrape_haereum_image_url now returns product_code in its result
+        task_key = product_code if product_code else original_product_name
+        if not task_key: # Should not happen due to above check, but as a safeguard
+            logging.warning(f"Critical: Task key is empty for row {idx}. Skipping Haereum task.")
+            continue
+        
+        # Ensure task names are unique if multiple rows have same product_code or name (e.g. by appending index)
+        # However, scrape_haereum_image_url is called per row, and results are collected based on input structure.
+        # The `task_name` for asyncio.create_task can be descriptive.
+        async_task_name = f"HaereumScrape_Code:{product_code}_Name:{original_product_name[:20]}"
+
+        task_info_map[async_task_name] = {
+            'original_product_name': original_product_name,
+            'input_product_code': product_code,
+            'original_index': idx # Store original index if needed for direct df update
+        }
+        
+        tasks.append(asyncio.create_task(
+            scrape_haereum_image_url(browser, original_product_name, config, product_code=product_code),
+            name=async_task_name
+        ))
+
+    if not tasks:
+        logging.info("🟡 No Haereum image URL scraping tasks created.")
+        return {}
+
+    logging.info(f"🟡 Created {len(tasks)} Haereum image URL scraping tasks. Awaiting completion...")
+    # Using asyncio.gather to collect results. The order of results will match the order of tasks.
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    logging.info(f"🟡 All {len(tasks)} Haereum image URL scraping tasks finished.")
+
+    scraped_image_results = {} # This will store Product Code -> ImageInfo or ProductName -> ImageInfo
     processed_scrape_count = 0
     total_scrape_tasks = len(tasks)
-    
-    logging.info(f"🟡 Submitting {total_scrape_tasks} Haereum URL scrape tasks with concurrency limit {playwright_concurrency}.")
 
-    results_or_exceptions = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, result_or_exc in enumerate(task_results):
+        # Retrieve corresponding task info using the order (which asyncio.gather preserves)
+        # This requires tasks list to be in the same order as task_results
+        # The `name` attribute of the task can be used if we iterate over tasks directly
+        # For simplicity, assuming tasks[i] corresponds to task_results[i]
+        completed_task = tasks[i]
+        task_name_from_asyncio = completed_task.get_name()
+        original_task_info = task_info_map.get(task_name_from_asyncio)
+        
+        if not original_task_info:
+            logging.error(f"Could not find original task info for completed task: {task_name_from_asyncio}. Skipping result.")
+            continue
 
-    logging.info(f"🟡 Finished processing {len(results_or_exceptions)} Haereum URL scrape tasks.")
-
-    # Process results from gather
-    for i, result_or_exc in enumerate(results_or_exceptions):
-        task = tasks[i]
-        original_product_name = task_to_product_name_map.get(task)
-
-        if not original_product_name:
-             task_name_for_log = task.get_name() if hasattr(task, 'get_name') else f"task_{i}"
-             logging.error(f"🟡 FATAL: Could not find original product name for completed Haereum task (Name: {task_name_for_log}). Skipping result.")
-             continue
-
-        task_name = task.get_name() if hasattr(task, 'get_name') else f"task_{i}"
+        input_product_name = original_task_info['original_product_name']
+        input_code = original_task_info['input_product_code']
 
         if isinstance(result_or_exc, Exception):
-            logging.error(f"🟡 Error scraping Haereum image URL for '{original_product_name}' (Task: {task_name}): {result_or_exc}", exc_info=result_or_exc)
-            scraped_image_results[original_product_name] = None
+            logging.error(f"🟡 Error scraping Haereum image URL for InputName: '{input_product_name}', InputCode: '{input_code}' (Task: {task_name_from_asyncio}): {result_or_exc}", exc_info=result_or_exc)
+            # Decide how to key this error: use input_code if available, else input_product_name
+            error_key = input_code if input_code else input_product_name
+            if error_key:
+                 scraped_image_results[error_key] = None # Mark as failed
         else:
-            result = result_or_exc
-            # Handle new dictionary return format
-            if isinstance(result, dict) and result.get("url") and result.get("url").startswith('http'):
-                scraped_image_results[original_product_name] = {
-                    "url": result.get("url"),
-                    "local_path": result.get("local_path"),
-                    "source": result.get("source", "haereum")
-                }
-                logging.debug(f"🟡 Found Haereum image URL for '{original_product_name}': {result.get('url')}, Local path: {result.get('local_path')}")
-            # Handle string return format (backward compatibility)
-            elif isinstance(result, str) and result.startswith('http'):
-                scraped_image_results[original_product_name] = {
-                    "url": result,
-                    "local_path": None,
-                    "source": "haereum"
-                }
-                logging.debug(f"🟡 Found Haereum image URL for '{original_product_name}': {result}")
+            result = result_or_exc # This is the dict from scrape_haereum_image_url
+            
+            if result and isinstance(result, dict) and result.get("url"):
+                # The result dict should contain 'product_code' if found/used during scraping
+                # Prefer the product_code from the scraping result as the key
+                result_product_code = result.get("product_code")
+                
+                key_for_results = None
+                if result_product_code:
+                    key_for_results = str(result_product_code) # Ensure string key
+                elif input_code: # Fallback to input code if result didn't have one
+                    key_for_results = str(input_code)
+                else: # Fallback to product name if no code at all
+                    key_for_results = input_product_name
+                
+                if key_for_results:
+                    # Ensure source is set
+                    if 'source' not in result:
+                        result['source'] = 'haereum'
+                    scraped_image_results[key_for_results] = result
+                    logging.debug(f"🟡 Found Haereum image for Key: '{key_for_results}' (from InputName: '{input_product_name}', InputCode: '{input_code}'). URL: {result.get('url')}, Method: {result.get('method')}")
+                else:
+                    logging.warning(f"Could not determine a key for Haereum result for InputName: '{input_product_name}'. Result was: {result}")
             else:
-                scraped_image_results[original_product_name] = None 
+                # No successful result, key by input_code or input_product_name
+                null_key = input_code if input_code else input_product_name
+                if null_key:
+                    scraped_image_results[null_key] = None 
+                logging.info(f"🟡 No Haereum image URL found for InputName: '{input_product_name}', InputCode: '{input_code}'. Result: {result}")
 
         processed_scrape_count += 1
-        if processed_scrape_count % 50 == 0 or processed_scrape_count == total_scrape_tasks:
+        if processed_scrape_count % 20 == 0 or processed_scrape_count == total_scrape_tasks: # Log progress every 20 items
             logging.info(f"🟡 Haereum image URL scrape result processing progress: {processed_scrape_count}/{total_scrape_tasks}")
 
-
     end_time = time.time()
-    logging.info(f"🟡 Finished Haereum Gift image URL crawling orchestration in {end_time - start_time:.2f} seconds.")
+    logging.info(f"🟡 Finished Haereum Gift image URL crawling orchestration in {end_time - start_time:.2f} seconds. Found {len(scraped_image_results)} results (some may be null).")
     return scraped_image_results
 
-# Helper coroutine to manage concurrency for single Haereum scrape
-async def _run_single_haereum_scrape(browser, semaphore, product_name, config):
+async def _run_single_haereum_scrape(browser, semaphore, product_name, config, product_code=None): # Added product_code
+    """Helper to run a single Haereum scrape attempt with semaphore."""
     async with semaphore:
-        logging.debug(f"Acquired semaphore for Haereum: '{product_name}'")
         try:
-            result = await scrape_haereum_image_url(browser, product_name, config)
-            logging.debug(f"Released semaphore for Haereum: '{product_name}'")
-            return result
+            # Pass product_code to the actual scraping function
+            return await scrape_haereum_image_url(browser, product_name, config, product_code=product_code)
         except Exception as e:
-             logging.error(f"🟡 Error in _run_single_haereum_scrape for '{product_name}': {e}", exc_info=True)
-             raise
+            # Log and return the exception to be handled by the caller
+            logging.error(f"Exception in _run_single_haereum_scrape for '{product_name}' (Code: {product_code}): {e}", exc_info=True)
+            return e
 
 
 def _process_single_haoreum_image(product_code, image_info, config):
