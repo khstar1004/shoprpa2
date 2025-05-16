@@ -473,10 +473,25 @@ def should_block_request(url: str) -> bool:
 
 async def setup_page_optimizations(page: Page):
     """Applies optimizations like request blocking to a Playwright page."""
+    async def handle_route(route):
+        try:
+            if should_block_request(route.request.url):
+                await route.abort()
+            else:
+                await route.continue_()
+        except Exception as e:
+            logger.error(f"Error in route handler for {route.request.url}: {e}. Attempting to continue request.")
+            try:
+                # Fallback: try to continue the request if abort/continue failed
+                if not route.request.is_navigation_request(): # Avoid continuing navigation requests that might have caused issues
+                    await route.continue_()
+            except Exception as e_continue:
+                logger.error(f"Failed to continue request in fallback: {e_continue}")
+                # If continuing also fails, there's little more we can do here for this specific route.
+                # The main error handler for setup_page_optimizations will catch issues with setting up the route.
+
     try:
-        await page.route("**/*", lambda route:
-            route.abort() if should_block_request(route.request.url) else route.continue_()
-        )
+        await page.route("**/*", handle_route)
         logger.debug("Applied network request blocking rules.")
     except Exception as e:
         logger.warning(f"Failed to set up page optimizations: {e}")
