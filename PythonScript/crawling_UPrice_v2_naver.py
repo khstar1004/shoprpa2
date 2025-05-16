@@ -1,5 +1,5 @@
 from playwright.sync_api import sync_playwright, TimeoutError
-from playwright.async_api import async_playwright, TimeoutError, Page, Browser, PlaywrightError
+from playwright.async_api import async_playwright, TimeoutError, Page, Browser, Error
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
@@ -491,7 +491,7 @@ async def extract_quantity_prices(page, url: str, target_quantities: List[int] =
                     logger.info(f"품절 상품 감지됨 (선택자: {selector}): {url}")
                     result["is_sold_out"] = True
                     return result # 품절이면 더 이상 처리하지 않음
-            except PlaywrightError: # Timeout or other Playwright error
+            except Error: # Timeout or other Playwright error
                 pass # Element not found or not visible with this selector
 
         for selector in price_inquiry_selectors:
@@ -501,7 +501,7 @@ async def extract_quantity_prices(page, url: str, target_quantities: List[int] =
                     logger.info(f"가격 문의 필요 상품 감지됨 (선택자: {selector}): {url}")
                     result["price_inquiry_needed"] = True
                     return result # 가격 문의 필요하면 더 이상 처리하지 않음
-            except PlaywrightError:
+            except Error:
                 pass
 
         # 공급사 정보 수집
