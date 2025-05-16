@@ -1218,9 +1218,9 @@ async def _test_main():
     test_keywords = [
         "타포린백 중형 35-30-15cm",
         "더카인드 와인오프너",
-        "이지링 휴대용",
-        "메모패드",
-        "텀블러"
+        "저소음 Big pan 16cm 접이식 선풍기 휴대용 탁상용 5엽날개 4단계 풍량 대용량 4400mAh 배터리",
+        "플레오맥스 PM-4ONE 4 in 1 접이식 15W 고속 무선 충전기, 애플 + 갤럭시 워치",
+        "헤스티앙 2IN1 듀얼 캠핑 미니 에어건 무선 차량용 청소기"
     ]
     
     logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_keywords)} keywords ---")
