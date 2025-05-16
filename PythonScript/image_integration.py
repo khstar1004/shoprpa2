@@ -1174,10 +1174,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 
             # Get row data
             row_data = result_df.iloc[idx]
+            product_name = product_names[idx] if idx < len(product_names) else "Unknown Product"
             
             # Get Koreagift image data
             kogift_image_data = row_data.get(kogift_image_col)
-            has_kogift_image = isinstance(kogift_image_data, dict)
+            has_kogift_image = isinstance(kogift_image_data, dict) and kogift_image_data.get('local_path') is not None
             
             # Get Koreagift product info
             has_kogift_info = kogift_product_info_exists[idx]  # Use pre-computed value
@@ -1187,11 +1188,25 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 mismatch_count += 1
                 if has_kogift_image and not has_kogift_info:
                     # Remove image if no product info
-                    logging.warning(f"Row {idx}: Found Koreagift image without product info. Removing image.")
+                    logging.warning(f"Row {idx} (Product: '{product_name}'): Found Koreagift image without product info. Removing image.")
                     result_df.at[idx, kogift_image_col] = '-'
                 elif has_kogift_info and not has_kogift_image:
-                    # This case is already handled above, but log for completeness
-                    logging.warning(f"Row {idx}: Found Koreagift product info without image.")
+                    logging.warning(f"Row {idx} (Product: '{product_name}'): Found Koreagift product info without image. Clearing Kogift related information.")
+                    # Clear Kogift image cell (it should already be '-' or None, but ensure it)
+                    result_df.at[idx, kogift_image_col] = '-'
+
+                    # Clear all Kogift related columns
+                    kogift_related_columns_to_clear = [
+                        '고려기프트 상품링크', 
+                        '기본수량(2)', 
+                        '판매가(V포함)(2)', 
+                        '판매단가(V포함)(2)', # Alternative price column
+                        '가격차이(2)', 
+                        '가격차이(2)(%)'
+                    ]
+                    for col_to_clear in kogift_related_columns_to_clear:
+                        if col_to_clear in result_df.columns:
+                            result_df.at[idx, col_to_clear] = None
         
         # Final post-processing: Ensure Naver product info and images are properly paired
         naver_image_col = '네이버 이미지'
@@ -1395,8 +1410,27 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                                 
                                 filtered_count += 1
                                 rows_affected.add(idx)
-                            else: # For Kogift or other potential future image columns
-                                result_df.at[idx, col_name] = '-' # Keep existing behavior for Kogift
+                            elif col_name == '고려기프트 이미지': # Explicitly handle Kogift
+                                logging.info(f"Row {idx}: Kogift image score {score:.3f} is below threshold {effective_threshold}. Clearing Kogift image and related data for product '{row.get('상품명', 'N/A')}'.")
+                                result_df.at[idx, col_name] = '-' # Clear Kogift image cell
+
+                                # Clear related Kogift data columns
+                                kogift_related_columns_to_clear = [
+                                    '고려기프트 상품링크', 
+                                    '기본수량(2)', 
+                                    '판매가(V포함)(2)', 
+                                    '판매단가(V포함)(2)',
+                                    '가격차이(2)', 
+                                    '가격차이(2)(%)'
+                                ]
+                                for rel_col in kogift_related_columns_to_clear:
+                                    if rel_col in result_df.columns:
+                                        result_df.at[idx, rel_col] = None
+                                
+                                filtered_count += 1
+                                rows_affected.add(idx)
+                            else: # For other potential future image columns (not Haoreum, Naver, or Kogift)
+                                result_df.at[idx, col_name] = '-'
                                 filtered_count += 1
                                 rows_affected.add(idx)
                     except (ValueError, TypeError):
