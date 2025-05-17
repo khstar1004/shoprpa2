@@ -14,8 +14,8 @@ import hashlib
 from datetime import datetime
 import glob
 
-# Import for tokenization
-from koSBERT_text_similarity import split_product_name
+# Replace the import with the proper Korean language tokenizer
+from tokenize_product_names import tokenize_product_name, extract_meaningful_keywords
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -179,7 +179,16 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         # 토큰화
         # clean_name_for_tokens이 비어있거나, 대부분이 숫자로만 이루어진 경우(상품 코드로 간주) 일반 토큰화 회피 가능성
         # But, for now, always tokenize. If it's just "CODE123", tokens will be ["CODE123"]
-        tokens = split_product_name(clean_name_for_tokens)
+        try:
+            # Prefer the more advanced Korean-specific tokenizer that handles Korean text better
+            tokens = tokenize_product_name(clean_name_for_tokens)
+            logger.debug(f"Used advanced Korean tokenizer for '{clean_name_for_tokens}'")
+        except Exception as e:
+            # Fallback to simple method if the advanced tokenizer fails
+            logger.warning(f"Advanced tokenizer failed for '{clean_name_for_tokens}': {e}")
+            # Simple fallback tokenization similar to the original split_product_name
+            tokens = [t for t in clean_name_for_tokens.split() if t]
+            logger.debug(f"Using simple fallback tokenization: {tokens}")
         
         # 이미지 파일에 대한 특별 처리: 해쉬값이 포함된 경우 (특히 네이버, 고려기프트 이미지)
         # Special handling for image files with hashes (especially Naver and Kogift images)
@@ -204,6 +213,24 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
                     logger.info(f"[{prefix}] Adding additional token from filename: {part}")
                     tokens.append(part)
             
+            # For very hash-like kogift filenames, add all segments that aren't pure hashes
+            if prefix == 'kogift_' and len(tokens) < 3:
+                # Extract all alphanumeric segments that aren't pure hashes
+                segments = re.findall(r'[a-zA-Z0-9]{1,7}|[a-zA-Z][a-zA-Z0-9]{8,}', original_name)
+                for segment in segments:
+                    if segment and segment not in tokens:
+                        logger.info(f"[{prefix}] Adding alphanumeric segment: {segment}")
+                        tokens.append(segment)
+                        
+                # 3. Also add substrings from the hash itself - might catch product codes embedded in hashes
+                hash_parts = re.findall(r'[0-9a-f]{8,}', original_name)
+                for hash_part in hash_parts:
+                    # Extract 2-4 character segments that might be meaningful
+                    for i in range(len(hash_part)-1):
+                        segment = hash_part[i:i+3]
+                        if segment not in tokens and not segment.isdigit():
+                            tokens.append(segment)
+            
             # 3. For Kogift specifically, handle product name patterns often embedded in filenames
             if prefix == 'kogift_' and len(original_name) > 10:
                 # Look for potential product name patterns (non-hash parts)
@@ -212,15 +239,53 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
                     if part not in tokens:
                         logger.info(f"[{prefix}] Adding Korean/English word token: {part}")
                         tokens.append(part)
+                
+                # Add individual alphanumeric characters that might be abbreviations
+                for char in original_name:
+                    if (char.isalpha() and char not in tokens and 
+                        char.lower() not in ['a', 'b', 'c', 'd', 'e', 'f']):  # Skip hex digits
+                        tokens.append(char)
+        
+        # Special handling for Haereum images
+        if prefix == 'haereum_':
+            # Look for important patterns like CODE numbers
+            code_matches = re.findall(r'CODE\d+', img_name_stem)
+            for code in code_matches:
+                if code not in tokens:
+                    tokens.append(code)
+            
+            # Remove _nobg from tokens if present
+            tokens = [t for t in tokens if t != 'nobg']
+            
+            # Add a special token to identify this is a Haereum image
+            if 'haereum' not in tokens:
+                tokens.append('haereum')
         
         logger.info(f"[{prefix}] Tokens for '{clean_name_for_tokens}': {tokens}")
+
+        # Store the original path (non-nobg) for consistent access later
+        original_path = str(img_path)
+        
+        # For Haereum files, explicitly mark if we have a _nobg variant, but always prefer the non-nobg JPG
+        has_nobg_variant = False
+        nobg_path = None
+        if prefix == 'haereum_' and img_path.suffix.lower() == '.jpg':
+            # Check if a _nobg variant exists
+            possible_nobg = img_path.parent / (img_path.stem + '_nobg.png')
+            if possible_nobg.exists():
+                has_nobg_variant = True
+                nobg_path = str(possible_nobg)
+                logger.debug(f"[{prefix}] Found _nobg variant for {img_path.name}: {possible_nobg.name}")
 
         image_info[str(img_path)] = {
             'original_name': original_name_for_metadata, # This is full stem e.g. haereum_...
             'clean_name': clean_name_for_tokens, # This is the improved name used for matching
             'tokens': tokens,
             'path': img_path,
-            'url': None  # 추출한 URL 저장
+            'url': None,  # 추출한 URL 저장
+            'original_path': original_path,  # Always store the original non-nobg path
+            'has_nobg_variant': has_nobg_variant,  # Flag if a _nobg variant exists
+            'nobg_path': nobg_path  # Path to the _nobg variant if it exists
         }
     
     return image_info
@@ -264,10 +329,23 @@ def tokenize_product_name(product_name: str) -> List[str]:
     Returns:
         토큰 목록
     """
-    # 특수문자를 공백으로 변환하고, 소문자로 변환
-    clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name.lower()])
-    # 2자 이상의 토큰만 추출
-    return [t.lower() for t in clean_product.split() if len(t) > 1]
+    if not product_name:
+        return []
+        
+    try:
+        # Try to use the advanced Korean-specific tokenizer first
+        from PythonScript.tokenize_product_names import tokenize_product_name as advanced_tokenize
+        tokens = advanced_tokenize(product_name)
+        logging.debug(f"Successfully used advanced tokenizer for '{product_name}'")
+        return tokens
+    except Exception as e:
+        logging.warning(f"Advanced tokenizer failed for product name '{product_name}': {e}")
+        
+        # Fallback to the original simple tokenization
+        # 특수문자를 공백으로 변환하고, 소문자로 변환
+        clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name.lower()])
+        # 2자 이상의 토큰만 추출
+        return [t.lower() for t in clean_product.split() if len(t) > 1]
 
 def find_best_image_matches(product_names: List[str], 
                            haereum_images: Dict[str, Dict], 
@@ -360,7 +438,22 @@ def find_best_image_matches(product_names: List[str],
     
     # 모든 이미지 소스를 한번에 처리하여 일관된 매칭 보장
     for product_name in product_names:
+        # Get tokens using both methods for better matching
         product_tokens = tokenize_product_name(product_name)
+        
+        # ENHANCEMENT: Add meaningful keywords for better Korean product matching
+        try:
+            from PythonScript.tokenize_product_names import extract_meaningful_keywords
+            meaningful_keywords = extract_meaningful_keywords(product_name, max_keywords=5)
+            # Add keywords that aren't already in tokens
+            for keyword in meaningful_keywords:
+                if keyword and keyword not in product_tokens:
+                    product_tokens.append(keyword)
+                    logging.debug(f"Added meaningful keyword '{keyword}' for product '{product_name}'")
+        except Exception as e:
+            logging.warning(f"Failed to extract meaningful keywords for '{product_name}': {e}")
+        
+        logging.debug(f"Combined product tokens for '{product_name}': {product_tokens}")
         
         # 각 소스별 최적 매치 찾기
         # For Haoreum and Naver, we still use the 'used' sets to avoid re-using the same image file for different products
@@ -879,7 +972,10 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             similarity_threshold = 0.1 # Default fallback
             logging.warning("Using default similarity_threshold of 0.1 as specific values not found or invalid in config.")
         
-        logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {similarity_threshold}")
+        # Lower the threshold for this run to get more initial matches
+        initial_matching_threshold = max(0.05, similarity_threshold * 0.5)
+        
+        logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {initial_matching_threshold} (초기 매칭용 낮은 임계값)")
         
         # 최적 매치 찾기 (일관성 보장)
         best_matches = find_best_image_matches(
@@ -887,7 +983,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             haereum_images,
             kogift_images,
             naver_images,
-            similarity_threshold=similarity_threshold,
+            similarity_threshold=initial_matching_threshold,  # Use lower threshold for initial matching
             config=config
         )
         
@@ -1770,7 +1866,15 @@ def create_excel_with_images(df, output_file):
                     img_path = None
                     if isinstance(img_data, dict):
                         # excel_utils.py 형식의 딕셔너리 처리
-                        img_path = img_data.get('local_path')
+                        
+                        # IMPORTANT FIX: For Haereum (본사) images, ALWAYS use original_path instead of local_path
+                        # to ensure we use the JPG instead of _nobg version
+                        if col_name == '본사 이미지' and 'original_path' in img_data:
+                            img_path = img_data.get('original_path')
+                            logger.info(f"Using original_path for Haereum image: {img_path}")
+                        else:
+                            img_path = img_data.get('local_path')
+                            
                         if not img_path and 'url' in img_data:
                             # URL만 있는 경우 셀에 URL 표시
                             ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
@@ -1782,6 +1886,14 @@ def create_excel_with_images(df, output_file):
                     
                     if img_path and os.path.exists(img_path):
                         try:
+                            # Check if the path has '_nobg' in it for Haereum images and replace with original JPG if possible
+                            if col_name == '본사 이미지' and '_nobg' in str(img_path):
+                                # Try to find the original JPG version
+                                original_jpg = str(img_path).replace('_nobg.png', '.jpg')
+                                if os.path.exists(original_jpg):
+                                    logger.info(f"Replacing _nobg version with original JPG: {original_jpg}")
+                                    img_path = original_jpg
+                            
                             # 이미지 파일 복사
                             img = Image(img_path)
                             # 이미지 크기 조정 (최대 200x200, doubled from 100x100)
