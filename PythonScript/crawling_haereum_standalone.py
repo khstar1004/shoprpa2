@@ -1081,7 +1081,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
         
     # Safety check - this should never be reached but just in case
     if download_success:
-        return final_image_path
+        return local_path
     return None
 
 async def try_direct_product_code_fallback(page: Page, keyword: str, config: configparser.ConfigParser, haereum_main_url: str) -> Optional[Dict[str, str]]:

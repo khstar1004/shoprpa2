@@ -77,15 +77,29 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
             img_name = img_name[len(prefix):]  # 접두사 제거
         
         # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
-        if '_' in img_name:
+        # Ensure img_name is not empty and is primarily descriptive before attempting hash removal if it's too short
+        # or looks like a hash itself after prefix removal.
+        name_after_prefix = img_name # Save for tokenization if it's mostly a hash
+
+        if '_' in img_name and len(img_name) > 10: # Only attempt splitting if long enough and contains underscore
             parts = img_name.split('_')
             # 마지막 부분이 해시처럼 생겼는지 확인
-            if len(parts[-1]) <= 10 and parts[-1].isalnum():
+            if len(parts) > 1 and len(parts[-1]) <= 10 and parts[-1].isalnum():
                 img_name = '_'.join(parts[:-1])
-        
+            # If after this, img_name is empty, it means the original was prefix_hash, so use name_after_prefix
+            if not img_name.strip(): 
+                img_name = name_after_prefix
+        elif len(img_name) <=10 and img_name.isalnum(): # If short and alphanumeric after prefix, might be just a hash
+            # In this case, we don't want to tokenize it if it was the *only* part of the name.
+            # We let it pass to tokenization, but it will likely result in few/no useful tokens if it's a pure hash.
+            # This is better than making it an empty string.
+            pass # Let short alphanumeric names (potential hashes) pass through
+
         # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
-        clean_name = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-        tokens = [t.lower() for t in clean_name.replace('_', ' ').split() if len(t) > 1]
+        # Use img_name which has had descriptive parts preserved as much as possible
+        # If img_name became empty or is just a hash, tokens might be empty, which is correct in that case.
+        clean_name_for_token = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
+        tokens = [t.lower() for t in clean_name_for_token.replace('_', ' ').split() if len(t) > 1]
         
         # 원본 이미지 URL 추출 시도 (로그에서 추출한 URL 정보)
         original_url = None
@@ -1100,7 +1114,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             ]
             
             # 임계값 설정 (더 엄격하게)
-            naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.45)
+            # naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.45)
+            # Lower this specific threshold for initial integration to be more inclusive.
+            # filter_images_by_similarity will do the stricter filtering later.
+            naver_integration_score_threshold = 0.10
+            logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
                 naver_path_from_match, naver_score_from_match = naver_match
@@ -1109,8 +1127,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
                         result_df.at[idx, col_to_clear] = None
-                elif naver_score_from_match < naver_score_acceptance_threshold:
-                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < threshold {naver_score_acceptance_threshold}. Clearing all Naver data.")
+                elif naver_score_from_match < naver_integration_score_threshold: # Use the new lower threshold here
+                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < integration threshold {naver_integration_score_threshold}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
                         result_df.at[idx, col_to_clear] = None
                 else:
