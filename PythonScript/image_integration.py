@@ -15,7 +15,8 @@ from datetime import datetime
 import glob
 
 # Replace the import with the proper Korean language tokenizer
-from tokenize_product_names import tokenize_product_name, extract_meaningful_keywords
+# Corrected import path to include PythonScript module
+from PythonScript.tokenize_product_names import tokenize_product_name, extract_meaningful_keywords
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -318,34 +319,6 @@ def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> 
             weight += 0.1
     
     return min(similarity * weight, 1.0) # Ensure score doesn't exceed 1.0
-
-def tokenize_product_name(product_name: str) -> List[str]:
-    """
-    상품명을 토큰화합니다.
-    
-    Args:
-        product_name: 상품명
-        
-    Returns:
-        토큰 목록
-    """
-    if not product_name:
-        return []
-        
-    try:
-        # Try to use the advanced Korean-specific tokenizer first
-        from PythonScript.tokenize_product_names import tokenize_product_name as advanced_tokenize
-        tokens = advanced_tokenize(product_name)
-        logging.debug(f"Successfully used advanced tokenizer for '{product_name}'")
-        return tokens
-    except Exception as e:
-        logging.warning(f"Advanced tokenizer failed for product name '{product_name}': {e}")
-        
-        # Fallback to the original simple tokenization
-        # 특수문자를 공백으로 변환하고, 소문자로 변환
-        clean_product = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in product_name.lower()])
-        # 2자 이상의 토큰만 추출
-        return [t.lower() for t in clean_product.split() if len(t) > 1]
 
 def find_best_image_matches(product_names: List[str], 
                            haereum_images: Dict[str, Dict], 
