@@ -15,14 +15,14 @@ from datetime import datetime
 import glob
 
 # Import for tokenization
-from PythonScript.koSBERT_text_similarity import split_product_name
+from koSBERT_text_similarity import split_product_name
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 # Import enhanced image matcher
 try:
-    from PythonScript.enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
+    from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
     ENHANCED_MATCHER_AVAILABLE = True
     logging.info("Enhanced image matcher is available")
 except ImportError:
