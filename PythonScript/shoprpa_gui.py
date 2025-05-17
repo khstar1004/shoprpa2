@@ -17,12 +17,18 @@ from datetime import datetime, timedelta
 import traceback
 import asyncio
 
-# Import your existing modules
-from excel_utils import create_final_output_excel
-from matching_logic import process_matching
-from data_processing import process_input_data, process_input_file
-from utils import setup_logging, load_config
-from main_rpa import main, initialize_environment
+# Add the parent directory of the script to the Python path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# Import local modules
+from .excel_utils import create_final_output_excel
+from .matching_logic import process_matching
+from .data_processing import process_input_data, process_input_file
+from .utils import setup_logging, load_config
+from .main_rpa import main, initialize_environment
 
 class WorkerThread(QThread):
     progress = pyqtSignal(str, str)  # (type, message)

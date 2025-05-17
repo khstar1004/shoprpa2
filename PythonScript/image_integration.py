@@ -14,9 +14,20 @@ import hashlib
 from datetime import datetime
 import glob
 
-# Replace the import with the proper Korean language tokenizer
-# Corrected import path to include PythonScript module
-from PythonScript.tokenize_product_names import tokenize_product_name, extract_meaningful_keywords
+# Add the parent directory to sys.path to allow imports from PythonScript
+import sys
+from pathlib import Path
+
+# Get the absolute path of the current file's directory
+current_dir = Path(__file__).resolve().parent
+
+# Add the parent directory to sys.path if it's not already there
+parent_dir = current_dir.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+
+# Now import the required modules
+from tokenize_product_names import tokenize_product_name, extract_meaningful_keywords
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -27,14 +38,8 @@ try:
     ENHANCED_MATCHER_AVAILABLE = True
     logging.info("Enhanced image matcher is available")
 except ImportError:
-    try:
-        # Try direct import without PythonScript prefix
-        from enhanced_image_matcher import EnhancedImageMatcher, check_gpu_status
-        ENHANCED_MATCHER_AVAILABLE = True
-        logging.info("Enhanced image matcher is available")
-    except ImportError:
-        ENHANCED_MATCHER_AVAILABLE = False
-        logging.warning("Enhanced image matcher is not available, falling back to text-based matching")
+    ENHANCED_MATCHER_AVAILABLE = False
+    logging.warning("Enhanced image matcher is not available, falling back to text-based matching")
 
 def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
@@ -416,7 +421,6 @@ def find_best_image_matches(product_names: List[str],
         
         # ENHANCEMENT: Add meaningful keywords for better Korean product matching
         try:
-            from PythonScript.tokenize_product_names import extract_meaningful_keywords
             meaningful_keywords = extract_meaningful_keywords(product_name, max_keywords=5)
             # Add keywords that aren't already in tokens
             for keyword in meaningful_keywords:

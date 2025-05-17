@@ -14,7 +14,6 @@ import traceback
 import shutil
 from pathlib import Path
 import openpyxl
-from email_sender import validate_email_config, send_excel_by_email
 import warnings
 import gc
 import platform
@@ -22,29 +21,30 @@ import json
 
 # Add the parent directory of the script to the Python path
 script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(script_dir)
+parent_dir = os.path.dirname(script_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-# Change relative import to absolute import
-from path_fix import fix_image_directories, update_env_variables
-
-# --- Import Refactored Modules ---
-from matching_logic import match_products, post_process_matching_results
-from data_processing import process_input_file, filter_results, format_product_data_for_output
-from excel_utils import (
+# Import local modules
+from .email_sender import validate_email_config, send_excel_by_email
+from .path_fix import fix_image_directories, update_env_variables
+from .matching_logic import match_products, post_process_matching_results
+from .data_processing import process_input_file, filter_results, format_product_data_for_output
+from .excel_utils import (
     create_split_excel_outputs,
     find_excel_file,
     finalize_dataframe_for_excel,
     IMAGE_COLUMNS
 )
-from crawling_logic import crawl_all_sources
-from utils import preprocess_and_download_images
-from execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
-from image_integration import integrate_and_filter_images
-from price_highlighter import apply_price_highlighting_to_files
-from upload_filter import apply_filter_to_upload_excel
-from excel_formatter import apply_excel_formatting  # Import the new Excel formatter module
-from fix_kogift_images import fix_excel_kogift_images # Import for Kogift price fix
-from naver_data_cleaner import clean_naver_data, get_invalid_naver_rows # Import for cleaning Naver data
+from .crawling_logic import crawl_all_sources
+from .utils import preprocess_and_download_images
+from .execution_setup import initialize_environment, clear_temp_files, _load_and_validate_config
+from .image_integration import integrate_and_filter_images
+from .price_highlighter import apply_price_highlighting_to_files
+from .upload_filter import apply_filter_to_upload_excel
+from .excel_formatter import apply_excel_formatting
+from .fix_kogift_images import fix_excel_kogift_images
+from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
 
 # Global configuration
 warnings.filterwarnings('ignore')
