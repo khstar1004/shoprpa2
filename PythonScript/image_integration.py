@@ -43,258 +43,78 @@ except ImportError:
 
 def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
-    이미지 메타데이터를 준비합니다.
-    
-    Args:
-        image_dir: 이미지 디렉토리 경로
-        prefix: 이미지 파일명 접두사 (예: 'haereum_', 'kogift_', 'naver_')
-        
-    Returns:
-        이미지 메타데이터 사전
+    Prepare image metadata with improved token generation and stricter product ID handling.
     """
-    image_info = {}
+    logger = logging.getLogger(__name__)
+    result = {}
     
     if not image_dir.exists():
-        logging.warning(f"이미지 디렉토리를 찾을 수 없습니다: {image_dir}")
-        return image_info
-    
-    # JPG와 PNG 파일 모두 찾기 (nobg 파일 제외)
-    images = sorted([f for f in image_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
-             sorted([f for f in image_dir.glob("*.png") if "_nobg" not in f.name])
-    
-    logging.info(f"[{prefix}] Found {len(images)} images in {image_dir}.") # Enhanced log
-    if images:
-        sample_images_log = [img.name for img in images[:min(5, len(images))]] # Log up to 5 samples
-        logging.info(f"[{prefix}] Sample images found: {sample_images_log}")
-    else:
-        logging.warning(f"[{prefix}] No images found in {image_dir}.")
-    
-    logging.info(f"{len(images)}개의 {prefix} 이미지 발견")
-    
-    # 샘플 이미지 몇 개 로깅
-    if images:
-        sample_images = images[:3] if len(images) > 3 else images
-        logging.debug(f"샘플 {prefix} 이미지: {[img.name for img in sample_images]}")
-    
-    for img_path in images:
-        # 이미지 파일명에서 상품명 추출
-        img_name_stem = img_path.stem
-        original_name_for_metadata = img_name_stem # Keep this for 'original_name' field
-        logger.debug(f"[{prefix}] Processing image stem: {img_name_stem}")
-
-        # 접두사 제거
-        current_name_processing = img_name_stem
-        if current_name_processing.startswith(prefix):
-            current_name_processing = current_name_processing[len(prefix):]
-        logger.debug(f"[{prefix}] Name after prefix removal: {current_name_processing}")
-
-        # This will be the 'clean_name' in metadata and used for tokenization
-        clean_name_for_tokens = current_name_processing
-
-        # 1. Remove hash part from the end first
-        name_after_prefix_and_hash_removal = clean_name_for_tokens
-        parts = clean_name_for_tokens.split('_')
-        potential_hash = parts[-1]
-        # A hash is typically alphanumeric, 8-12 chars (increased upper bound slightly), not starting with 'CODE' (case-insensitive)
-        # and the part before it is not just 'nobg' or common image suffixes mistaken for part of the name.
-        is_potential_hash = (
-            len(parts) > 1 and
-            8 <= len(potential_hash) <= 12 and
-            potential_hash.isalnum() and
-            not potential_hash.upper().startswith('CODE') and
-            parts[-2].lower() != 'nobg'
-        )
-        if is_potential_hash:
-            name_after_prefix_and_hash_removal = '_'.join(parts[:-1])
-            # If removing hash results in an empty string or just underscores, it might mean the name was prefix_hash or prefix_underscores_hash
-            if not name_after_prefix_and_hash_removal.replace('_', '').strip():
-                 # In this case, the part before hash was likely not meaningful name content
-                 name_after_prefix_and_hash_removal = potential_hash # Or consider empty, or revert to current_name_processing
-            logger.debug(f"[{prefix}] Name after hash removal attempt ('{potential_hash}'): {name_after_prefix_and_hash_removal}")
-        else:
-            logger.debug(f"[{prefix}] No typical hash detected or removed from '{potential_hash}'")
+        logger.warning(f"Image directory does not exist: {image_dir}")
+        return result
         
-        clean_name_for_tokens = name_after_prefix_and_hash_removal
-
-
-        # 2. Attempt to remove product code part (e.g., "CODE123")
-        # Product code is often "CODE" followed by numbers, or just a sequence of numbers if it's the main part.
-        # Special handling for Haereum: if name is like "____CODE123" after hash removal
-        code_part_cleaned = clean_name_for_tokens
-        if prefix == "haereum_" and clean_name_for_tokens.startswith("________________"): # Check for many underscores
-            # Example: ________________CODE123
-            code_match = re.search(r'(_*)(CODE\d+)', clean_name_for_tokens)
-            if code_match:
-                # For matching purposes, just the code might be better than underscores + code
-                code_part_cleaned = code_match.group(2) # "CODE123"
-                logger.debug(f"[{prefix}] Haereum special: Extracted code part '{code_part_cleaned}' from '{clean_name_for_tokens}'")
-            else: # Mostly underscores, no clear "CODE" part
-                code_part_cleaned = "" # Make it empty to signal low confidence for text match
-                logger.debug(f"[{prefix}] Haereum special: Name '{clean_name_for_tokens}' is mostly underscores without clear CODE, set to empty for matching.")
-
-        elif "CODE" in clean_name_for_tokens.upper(): # General CODE removal
-            # Attempt to remove "CODE<numbers>" pattern, but be careful not to remove actual name parts.
-            # This regex tries to find CODE followed by digits, possibly with underscores around it.
-            # It aims to remove it if it seems like an isolated code identifier.
-            # Example: "ProductName_CODE123" -> "ProductName"
-            # Example: "CODE123_ProductName" -> "ProductName"
-            # Example: "CODE123" -> "" (if it's the only thing left)
+    for img_path in image_dir.glob('*.*'):
+        if not img_path.is_file():
+            continue
             
-            # Simpler approach: if "CODE" is followed by mostly digits and it's a distinct part
-            temp_cleaned = []
-            name_parts = clean_name_for_tokens.split('_')
-            has_code_part = False
-            for part in name_parts:
-                if part.upper().startswith("CODE") and part[4:].isdigit():
-                    has_code_part = True
-                    # if it's the ONLY part, clean_name_for_tokens might become empty.
-                    if len(name_parts) == 1: # Only "CODE123"
-                         code_part_cleaned = "" # Or maybe just the numeric part? For now, empty.
-                    # otherwise, this part is skipped (effectively removed)
-                elif part.isdigit() and len(part) > 4 and has_code_part: # if a numeric part follows a code part, likely also code
-                    pass
-                else:
-                    temp_cleaned.append(part)
+        if img_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif']:
+            continue
             
-            if has_code_part: # Only update if a CODE part was identified and handled
-                code_part_cleaned = '_'.join(temp_cleaned)
-            logger.debug(f"[{prefix}] Name after CODE removal attempt: {code_part_cleaned}")
+        original_name = img_path.stem
+        tokens = []
+        product_id = None
         
-        clean_name_for_tokens = code_part_cleaned.strip('_ ')
-
-
-        # 3. Final cleanup and checks for clean_name_for_tokens
-        # If clean_name_for_tokens becomes empty or too short (e.g., less than 3 chars and not a number)
-        # try to revert to a more complete version.
-        if not clean_name_for_tokens.replace('_', '').strip(): # Empty after stripping underscores
-            clean_name_for_tokens = name_after_prefix_and_hash_removal # Revert to before code removal
-            logger.debug(f"[{prefix}] clean_name empty after code removal, reverted to: {clean_name_for_tokens}")
-
-        if len(clean_name_for_tokens.replace('_', '')) < 3 and not clean_name_for_tokens.isdigit():
-            # If very short and not a number, it might be remnants. Consider reverting.
-            # This threshold is arbitrary and might need tuning.
-            # Reverting to name_after_prefix_and_hash_removal or even current_name_processing (name after prefix only)
-            # For now, let's stick with what we have unless it's completely empty.
-            logger.debug(f"[{prefix}] clean_name '{clean_name_for_tokens}' is very short. Keeping as is for now.")
-
-        # Remove excessive internal underscores
-        clean_name_for_tokens = re.sub(r'_+', '_', clean_name_for_tokens).strip('_')
+        # Remove prefix from filename for token generation
+        name_without_prefix = original_name
+        if prefix and original_name.startswith(prefix):
+            name_without_prefix = original_name[len(prefix):].lstrip('_')
         
-        logger.info(f"[{prefix}] Final clean_name for tokenization: '{clean_name_for_tokens}' (from original stem: '{img_name_stem}')")
-
-        # 토큰화
-        # clean_name_for_tokens이 비어있거나, 대부분이 숫자로만 이루어진 경우(상품 코드로 간주) 일반 토큰화 회피 가능성
-        # But, for now, always tokenize. If it's just "CODE123", tokens will be ["CODE123"]
-        try:
-            # Prefer the more advanced Korean-specific tokenizer that handles Korean text better
-            tokens = tokenize_product_name(clean_name_for_tokens)
-            logger.debug(f"Used advanced Korean tokenizer for '{clean_name_for_tokens}'")
-        except Exception as e:
-            # Fallback to simple method if the advanced tokenizer fails
-            logger.warning(f"Advanced tokenizer failed for '{clean_name_for_tokens}': {e}")
-            # Simple fallback tokenization similar to the original split_product_name
-            tokens = [t for t in clean_name_for_tokens.split() if t]
-            logger.debug(f"Using simple fallback tokenization: {tokens}")
+        # Extract product ID based on source
+        if prefix == 'naver_':
+            # Try to extract Naver product ID using more specific patterns
+            id_match = re.search(r'_([0-9]{10,})(?:_[a-f0-9]{8,})?$', original_name)
+            if id_match:
+                product_id = id_match.group(1)
+                # Remove product ID part from name for better token generation
+                name_without_prefix = re.sub(r'_[0-9]{10,}(?:_[a-f0-9]{8,})?$', '', name_without_prefix)
+        elif prefix == 'kogift_':
+            # Extract Kogift product ID if present (usually numeric)
+            id_match = re.search(r'_([0-9]{5,})(?:_[a-f0-9]{8,})?$', original_name)
+            if id_match:
+                product_id = id_match.group(1)
+                name_without_prefix = re.sub(r'_[0-9]{5,}(?:_[a-f0-9]{8,})?$', '', name_without_prefix)
         
-        # 이미지 파일에 대한 특별 처리: 해쉬값이 포함된 경우 (특히 네이버, 고려기프트 이미지)
-        # Special handling for image files with hashes (especially Naver and Kogift images)
-        if prefix in ['naver_', 'kogift_'] and re.search(r'[0-9a-f]{8,}', clean_name_for_tokens):
-            # 해시 값을 포함하는 파일명에 대해서는 원본 파일명에서 의미 있는 부분도 토큰으로 추가
-            # For filenames with hash values, also extract meaningful parts from original name
-            logger.info(f"[{prefix}] Adding extra tokens for hash-based filename: {img_name_stem}")
-            
-            # 확장된 토큰화: 파일명에서 의미있는 부분 추출 시도
-            # Extended tokenization: attempt to extract meaningful parts from filenames
-            
-            # 1. Get the original filename without prefix for additional processing
-            original_name = img_name_stem
-            if original_name.startswith(prefix):
-                original_name = original_name[len(prefix):]
-                
-            # 2. Split by common separators and add non-hash parts as tokens
-            parts = re.split(r'[_\-\s]', original_name)
-            for part in parts:
-                # Skip pure hash-like parts but include potential product IDs, codes, etc.
-                if part and not re.match(r'^[0-9a-f]{8,}$', part) and part not in tokens:
-                    logger.info(f"[{prefix}] Adding additional token from filename: {part}")
-                    tokens.append(part)
-            
-            # For very hash-like kogift filenames, add all segments that aren't pure hashes
-            if prefix == 'kogift_' and len(tokens) < 3:
-                # Extract all alphanumeric segments that aren't pure hashes
-                segments = re.findall(r'[a-zA-Z0-9]{1,7}|[a-zA-Z][a-zA-Z0-9]{8,}', original_name)
-                for segment in segments:
-                    if segment and segment not in tokens:
-                        logger.info(f"[{prefix}] Adding alphanumeric segment: {segment}")
-                        tokens.append(segment)
-                        
-                # 3. Also add substrings from the hash itself - might catch product codes embedded in hashes
-                hash_parts = re.findall(r'[0-9a-f]{8,}', original_name)
-                for hash_part in hash_parts:
-                    # Extract 2-4 character segments that might be meaningful
-                    for i in range(len(hash_part)-1):
-                        segment = hash_part[i:i+3]
-                        if segment not in tokens and not segment.isdigit():
-                            tokens.append(segment)
-            
-            # 3. For Kogift specifically, handle product name patterns often embedded in filenames
-            if prefix == 'kogift_' and len(original_name) > 10:
-                # Look for potential product name patterns (non-hash parts)
-                potential_product_parts = re.findall(r'[가-힣a-zA-Z]{2,}', original_name)
-                for part in potential_product_parts:
-                    if part not in tokens:
-                        logger.info(f"[{prefix}] Adding Korean/English word token: {part}")
-                        tokens.append(part)
-                
-                # Add individual alphanumeric characters that might be abbreviations
-                for char in original_name:
-                    if (char.isalpha() and char not in tokens and 
-                        char.lower() not in ['a', 'b', 'c', 'd', 'e', 'f']):  # Skip hex digits
-                        tokens.append(char)
+        # Clean the name for token generation
+        cleaned_name = name_without_prefix.replace('_', ' ')
+        cleaned_name = re.sub(r'[^\w\s가-힣]', ' ', cleaned_name)
+        cleaned_name = ' '.join(cleaned_name.split())
         
-        # Special handling for Haereum images
-        if prefix == 'haereum_':
-            # Look for important patterns like CODE numbers
-            code_matches = re.findall(r'CODE\d+', img_name_stem)
-            for code in code_matches:
-                if code not in tokens:
-                    tokens.append(code)
-            
-            # Remove _nobg from tokens if present
-            tokens = [t for t in tokens if t != 'nobg']
-            
-            # Add a special token to identify this is a Haereum image
-            if 'haereum' not in tokens:
-                tokens.append('haereum')
+        # Generate tokens from the cleaned name
+        for part in cleaned_name.split():
+            # Skip very short parts unless they're Korean
+            if len(part) <= 1 and not re.match(r'[가-힣]', part):
+                continue
+            # Skip if it looks like a hash
+            if re.match(r'^[a-f0-9]{6,}$', part):
+                continue
+            if part not in tokens:
+                logger.debug(f"[{prefix}] Adding token: {part}")
+                tokens.append(part)
         
-        logger.info(f"[{prefix}] Tokens for '{clean_name_for_tokens}': {tokens}")
-
-        # Store the original path (non-nobg) for consistent access later
-        original_path = str(img_path)
-        
-        # For Haereum files, explicitly mark if we have a _nobg variant, but always prefer the non-nobg JPG
-        has_nobg_variant = False
-        nobg_path = None
-        if prefix == 'haereum_' and img_path.suffix.lower() == '.jpg':
-            # Check if a _nobg variant exists
-            possible_nobg = img_path.parent / (img_path.stem + '_nobg.png')
-            if possible_nobg.exists():
-                has_nobg_variant = True
-                nobg_path = str(possible_nobg)
-                logger.debug(f"[{prefix}] Found _nobg variant for {img_path.name}: {possible_nobg.name}")
-
-        image_info[str(img_path)] = {
-            'original_name': original_name_for_metadata, # This is full stem e.g. haereum_...
-            'clean_name': clean_name_for_tokens, # This is the improved name used for matching
-            'tokens': tokens,
+        # Store metadata
+        result[str(img_path)] = {
             'path': img_path,
-            'url': None,  # 추출한 URL 저장
-            'original_path': original_path,  # Always store the original non-nobg path
-            'has_nobg_variant': has_nobg_variant,  # Flag if a _nobg variant exists
-            'nobg_path': nobg_path  # Path to the _nobg variant if it exists
+            'original_path': img_path,
+            'tokens': tokens,
+            'product_id': product_id,
+            'original_name': original_name,
+            'clean_name': cleaned_name
         }
-    
-    return image_info
+        
+        if product_id:
+            logger.debug(f"[{prefix}] Extracted product ID '{product_id}' from '{original_name}'")
+        
+    logger.info(f"Prepared metadata for {len(result)} images from {image_dir} with prefix '{prefix}'")
+    return result
 
 def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> float:
     """
@@ -329,23 +149,31 @@ def find_best_image_matches(product_names: List[str],
                            haereum_images: Dict[str, Dict], 
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
-                           similarity_threshold: float = 0.1,
+                           similarity_threshold: float = 0.4,  # Increased from 0.1
                            config: Optional[configparser.ConfigParser] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
-    각 상품에 대해 세 가지 이미지 소스에서 가장 적합한 이미지를 찾습니다.
-    세 이미지가 서로 일관성을 유지하도록 합니다.
-    
-    Args:
-        product_names: 상품명 목록
-        haereum_images: 해오름 이미지 정보
-        kogift_images: 고려기프트 이미지 정보
-        naver_images: 네이버 이미지 정보
-        similarity_threshold: 최소 유사도 점수
-        config: 설정 파일 객체
-        
-    Returns:
-        각 상품별 (해오름 이미지 경로, 고려기프트 이미지 경로, 네이버 이미지 경로) 튜플 목록
+    Find the best matching images for each product name from Haereum, Kogift, and Naver images.
+    Now using stricter thresholds from the start to ensure better quality matches.
     """
+    best_matches = []
+    used_haereum = set()
+    used_kogift = set()
+    used_naver = set()
+    
+    # Get thresholds from config if available
+    if config:
+        try:
+            similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4)  # Use text_threshold as base
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.75)
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.55)
+        except ValueError as e:
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값을 사용합니다.")
+            naver_initial_threshold = 0.75
+            naver_minimum_threshold = 0.55
+    else:
+        naver_initial_threshold = 0.75
+        naver_minimum_threshold = 0.55
+    
     # Log the product names being processed
     logger.info(f"find_best_image_matches: Processing {len(product_names)} products.")
     if product_names:
@@ -538,21 +366,11 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.1,
+                               similarity_threshold: float = 0.4,  # Default threshold if not provided
                                source_name_for_log: str = "UnknownSource") -> Optional[Tuple[str, float]]:
     """
-    상품에 대해 가장 유사한 이미지를 찾습니다.
-    
-    Args:
-        product_tokens: 상품명에서 추출한 토큰 목록
-        image_info: 특정 소스(해오름, 고려, 네이버)의 이미지 메타데이터 사전
-        used_images: 이미 사용된 이미지 경로 집합
-        similarity_threshold: 최소 유사도 점수
-        source_name_for_log: 소스 이름 (기본값: "UnknownSource")
-        
-    Returns:
-        가장 유사한 이미지 경로 또는 None
-        (가장 유사한 이미지 경로, 유사도 점수) 튜플 또는 None
+    Find the best matching image for a product based on text similarity.
+    Now using stricter thresholds from the start to ensure better quality matches.
     """
     # product_tokens: 상품명에서 추출한 토큰 목록
     # image_info: 특정 소스(해오름, 고려, 네이버)의 이미지 메타데이터 사전
@@ -580,6 +398,9 @@ def find_best_match_for_product(product_tokens: List[str],
     available_images = len(image_info) - len(used_images)
     logging.debug(f"사용 가능한 이미지: {available_images}개 (전체: {len(image_info)}개, 사용됨: {len(used_images)}개)")
     
+    # Get similarity threshold from config or use default
+    similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4)
+    
     # 매칭 결과를 추적하기 위한 리스트
     match_scores = [] # Stores (path, score, clean_name) tuples
     
@@ -598,18 +419,17 @@ def find_best_match_for_product(product_tokens: List[str],
         # if similarity > best_score and similarity >= similarity_threshold: # Old logic
         #     best_score = similarity
         #     best_match = img_path
-        if similarity >= similarity_threshold:
-            if similarity > best_score:
-                best_score = similarity
+        if similarity >= similarity_threshold and similarity > best_score:
+            best_score = similarity
+            best_match_path = img_path
+        elif similarity == best_score:
+            # If scores are equal, prefer .jpg over .png 
+            # if current best_match is a .png and new one is .jpg
+            if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
+                # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
                 best_match_path = img_path
-            elif similarity == best_score:
-                # If scores are equal, prefer .jpg over .png 
-                # if current best_match is a .png and new one is .jpg
-                if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
-                    # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
-                    best_match_path = img_path
-                    # best_score remains the same
-                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
+                # best_score remains the same
+                logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
@@ -635,12 +455,12 @@ def find_best_match_with_enhanced_matcher(
     target_images: Dict[str, Dict], 
     used_images: Set[str] = None,
     enhanced_matcher: Any = None
-) -> Optional[str]:
+) -> Optional[Tuple[str, float]]:
     """
-    향상된 이미지 매처를 이용하여 가장 유사한 이미지를 찾습니다.
+    Enhanced image matching with stricter thresholds based on config settings.
     """
     if not enhanced_matcher:
-        logging.warning("향상된 이미지 매처가 없습니다. 기본 텍스트 매칭으로 대체합니다.")
+        logging.warning("Enhanced image matcher not available. Falling back to text-based matching.")
         return None
         
     if used_images is None:
@@ -648,18 +468,16 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    # UPDATED: Use much lower thresholds to match real-world scores
-    high_confidence_threshold = 0.10  # Reduced from 0.40
-    min_confidence_threshold = 0.01   # Reduced from 0.15 to almost accept all matches
     
-    gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
-    logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
-    logging.debug(f"사용 가능한 대상 이미지: {len(target_images) - len(used_images)}개")
+    # Using config-based thresholds instead of hardcoded values
+    high_confidence_threshold = 0.70  # Increased from 0.10 to match MatchQualityThresholds high_quality
+    min_confidence_threshold = 0.35   # Increased from 0.01 to match MatchQualityThresholds low_quality
     
-    # 매칭 결과를 추적하기 위한 리스트
+    gpu_info = "GPU enabled" if getattr(enhanced_matcher, "use_gpu", False) else "CPU mode"
+    logging.info(f"Enhanced image matching attempt - Image: {os.path.basename(source_img_path)} ({gpu_info})")
+    
+    # Track scores for validation
     match_scores = []
-    
-    # UPDATED: Add secondary verification for better matching with stricter criteria
     secondary_matches = []
     
     for img_path, info in target_images.items():
@@ -670,10 +488,10 @@ def find_best_match_with_enhanced_matcher(
             similarity = enhanced_matcher.calculate_similarity(source_img_path, str(info['path']))
             
             if similarity > min_confidence_threshold:  # Only track scores above minimum threshold
-                match_scores.append((img_path, similarity, info['clean_name']))
+                match_scores.append((img_path, similarity, info.get('original_name', '')))
                 
                 if similarity >= high_confidence_threshold:  # Only consider high confidence matches
-                    secondary_matches.append((img_path, similarity, info['clean_name']))
+                    secondary_matches.append((img_path, similarity, info.get('original_name', '')))
                 
             if similarity > best_score:
                 best_score = similarity
@@ -918,41 +736,53 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             sample_products = product_names[:3] if len(product_names) > 3 else product_names
             logging.debug(f"제품 샘플: {sample_products}")
         
-        # Retrieve similarity threshold from config.
-        # 1) Primary key: Matching.image_threshold  (defined in config.ini)
-        # 2) Secondary key: ImageMatching.minimum_match_confidence
-        # 3) Fallback: 0.1  (legacy default)
+        # Retrieve similarity threshold from config with higher quality defaults
+        # 1) Primary key: Matching.text_threshold (higher quality standard)
+        # 2) Secondary key: Matching.image_threshold 
+        # 3) Tertiary key: ImageMatching.minimum_match_confidence
+        # 4) Fallback: 0.4 (high quality default)
         
-        # Revised robust config reading
-        similarity_threshold_main = None
-        similarity_threshold_img_matching = None
+        # Get thresholds in priority order
+        text_threshold = None
+        image_threshold = None
+        min_match_confidence = None
         
         try:
-            if config.has_option('Matching', 'image_threshold'):
-                similarity_threshold_main = config.getfloat('Matching', 'image_threshold')
-                logging.debug(f"Read similarity_threshold_main: {similarity_threshold_main}")
+            if config.has_option('Matching', 'text_threshold'):
+                text_threshold = config.getfloat('Matching', 'text_threshold')
+                logging.debug(f"Read text_threshold: {text_threshold}")
         except (configparser.Error, ValueError) as e:
-            logging.warning(f"Could not read [Matching] image_threshold: {e}. Will check ImageMatching section.")
+            logging.warning(f"Could not read [Matching] text_threshold: {e}")
+            
+        try:
+            if config.has_option('Matching', 'image_threshold'):
+                image_threshold = config.getfloat('Matching', 'image_threshold')
+                logging.debug(f"Read image_threshold: {image_threshold}")
+        except (configparser.Error, ValueError) as e:
+            logging.warning(f"Could not read [Matching] image_threshold: {e}")
 
         try:
             if config.has_option('ImageMatching', 'minimum_match_confidence'):
-                similarity_threshold_img_matching = config.getfloat('ImageMatching', 'minimum_match_confidence')
-                logging.debug(f"Read similarity_threshold_img_matching: {similarity_threshold_img_matching}")
+                min_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence')
+                logging.debug(f"Read minimum_match_confidence: {min_match_confidence}")
         except (configparser.Error, ValueError) as e:
-            logging.warning(f"Could not read [ImageMatching] minimum_match_confidence: {e}.")
+            logging.warning(f"Could not read [ImageMatching] minimum_match_confidence: {e}")
 
-        if similarity_threshold_main is not None:
-            similarity_threshold = similarity_threshold_main
-        elif similarity_threshold_img_matching is not None:
-            similarity_threshold = similarity_threshold_img_matching
+        # Use the first available threshold, with higher defaults
+        if text_threshold is not None:
+            similarity_threshold = text_threshold
+        elif image_threshold is not None:
+            similarity_threshold = image_threshold
+        elif min_match_confidence is not None:
+            similarity_threshold = min_match_confidence
         else:
-            similarity_threshold = 0.1 # Default fallback
-            logging.warning("Using default similarity_threshold of 0.1 as specific values not found or invalid in config.")
+            similarity_threshold = 0.4  # Higher quality default
+            logging.warning(f"Using higher quality default similarity_threshold of {similarity_threshold} as specific values not found or invalid in config.")
         
-        # Lower the threshold for this run to get more initial matches
-        initial_matching_threshold = 0.01  # Use a much lower threshold to get more initial matches
+        # Set the initial matching threshold
+        initial_matching_threshold = similarity_threshold # Use the general similarity_threshold from config or default
         
-        logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {initial_matching_threshold} (초기 매칭용 낮은 임계값)")
+        logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {initial_matching_threshold}")
         
         # 최적 매치 찾기 (일관성 보장)
         best_matches = find_best_image_matches(
@@ -1205,29 +1035,27 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 assign_kogift_image = False
                 if has_kogift_product_info:
                     # Product info exists.
-                    # ID-based matches (score approx 1.0) are always accepted.
-                    # Enhanced matches (typically > 0.1 if good) are accepted.
-                    # Text matches (can be very low, e.g., 0.01-0.05) are accepted but with a warning if very low.
-                    if kogift_score >= 0.99: # Likely ID match or very strong enhanced match
+                    # Using MatchQualityThresholds from config
+                    if kogift_score >= 0.70:  # high_quality threshold
                         assign_kogift_image = True
-                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on high score ({kogift_score:.3f}) with product info present.")
-                    elif kogift_score >= 0.1: # Decent enhanced or text match
+                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on high quality score ({kogift_score:.3f})")
+                    elif kogift_score >= 0.50:  # medium_quality threshold
                         assign_kogift_image = True
-                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on moderate score ({kogift_score:.3f}) with product info present.")
-                    else: # Very low text match (e.g. < 0.1)
-                        assign_kogift_image = True # Still assign as product info exists
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with very low score ({kogift_score:.3f}) because product info is present. Manual review suggested.")
+                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on medium quality score ({kogift_score:.3f})")
+                    elif kogift_score >= 0.35:  # low_quality threshold
+                        assign_kogift_image = True
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with low quality score ({kogift_score:.3f}). Manual review suggested.")
+                    else:  # Below reject_threshold (0.30)
+                        assign_kogift_image = False
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image. Score {kogift_score:.3f} is below minimum quality threshold.")
                 else:
                     # No Kogift product info for this row.
-                    # Only assign if the match is strong (ID-based or high-confidence enhanced).
-                    # Threshold here should be higher, e.g., 0.4 or 0.5 for enhanced, or ~1.0 for ID.
-                    # If it's a text match (find_best_match_for_product), score is likely low.
-                    kogift_no_info_acceptance_threshold = 0.4 
-                    if kogift_score >= kogift_no_info_acceptance_threshold : # Accept if score is reasonably high
+                    # Using high_quality threshold for stricter matching when no product info
+                    if kogift_score >= 0.70:  # Only accept high quality matches
                         assign_kogift_image = True
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with score {kogift_score:.3f} despite MISSING Kogift product info. Match was strong enough.")
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with high quality score {kogift_score:.3f} despite MISSING Kogift product info.")
                     else:
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below threshold {kogift_no_info_acceptance_threshold} AND no Kogift product info exists for this row.")
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below high quality threshold (0.70) AND no Kogift product info exists.")
                         assign_kogift_image = False
 
                 if assign_kogift_image:
@@ -1278,33 +1106,38 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             else: # No kogift_match found by find_best_image_matches
                 product_name_for_log = product_names[idx] if idx < len(product_names) else "Unknown Product"
                 logging.debug(f"Row {idx} (Product: '{product_name_for_log}'): No Kogift image match from find_best_image_matches.")
-                if has_kogift_product_info:
-                    # Product info exists, but no image match. Try to create placeholder from link.
-                    logging.debug(f"Row {idx}: Koreagift product info exists but no image match found (after find_best_image_matches).")
-                    kogift_link_col = '고려기프트 상품링크'
-                    if kogift_link_col in row_data and isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
-                        kogift_url = row_data[kogift_link_col].strip()
-                        img_url_from_product_link = None
-                        if 'koreagift.com' in kogift_url:
-                            product_id_match_kg = re.search(r'p_idx=(\d+)', kogift_url)
-                            if product_id_match_kg:
-                                product_id_kg = product_id_match_kg.group(1)
-                                img_url_from_product_link = f"https://koreagift.com/ez/upload/mall/shop_{product_id_kg}_0.jpg"
-                                logging.debug(f"Row {idx}: Generated Kogift image URL from product link: {img_url_from_product_link}")
+                # if has_kogift_product_info:
+                #     # Product info exists, but no image match. Try to create placeholder from link.
+                #     logging.debug(f"Row {idx}: Koreagift product info exists but no image match found (after find_best_image_matches).")
+                #     kogift_link_col = '고려기프트 상품링크'
+                #     if kogift_link_col in row_data and isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
+                #         kogift_url = row_data[kogift_link_col].strip()
+                #         img_url_from_product_link = None
+                #         if 'koreagift.com' in kogift_url:
+                #             product_id_match_kg = re.search(r'p_idx=(\\d+)', kogift_url)
+                #             if product_id_match_kg:
+                #                 product_id_kg = product_id_match_kg.group(1)
+                #                 img_url_from_product_link = f"https://koreagift.com/ez/upload/mall/shop_{product_id_kg}_0.jpg"
+                #                 logging.debug(f"Row {idx}: Generated Kogift image URL from product link: {img_url_from_product_link}")
                         
-                        if img_url_from_product_link:
-                            img_data = {'source': 'kogift', 'url': img_url_from_product_link, 'score': 0.5, 'product_name': product_name_for_log}
-                            result_df.at[idx, target_col_kogift] = img_data
-                            logging.info(f"Row {idx}: Created Kogift image data with generated URL from product link (no direct image match).")
-                        else:
-                            img_data = {'source': 'kogift', 'url': kogift_url, 'score': 0.3, 'product_name': product_name_for_log, 'is_product_url': True}
-                            result_df.at[idx, target_col_kogift] = img_data
-                            logging.info(f"Row {idx}: Created Kogift image data using product URL as fallback (no direct image match, no generated URL).")
-                    else: # No link to use for generating a URL
-                        if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
-                            result_df.loc[idx, target_col_kogift] = '-'
-                else: # No Kogift product info AND no image match
-                    if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                #         if img_url_from_product_link:
+                #             img_data = {'source': 'kogift', 'url': img_url_from_product_link, 'score': 0.5, 'product_name': product_name_for_log}
+                #             result_df.at[idx, target_col_kogift] = img_data
+                #             logging.info(f"Row {idx}: Created Kogift image data with generated URL from product link (no direct image match).")
+                #         else:
+                #             img_data = {'source': 'kogift', 'url': kogift_url, 'score': 0.3, 'product_name': product_name_for_log, 'is_product_url': True}
+                #             result_df.at[idx, target_col_kogift] = img_data
+                #             logging.info(f"Row {idx}: Created Kogift image data using product URL as fallback (no direct image match, no generated URL).")
+                #     else: # No link to use for generating a URL
+                #         if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                #             result_df.loc[idx, target_col_kogift] = '-'
+                # else: # No Kogift product info AND no image match
+                #     if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                #          result_df.loc[idx, target_col_kogift] = '-'
+                
+                # Fallback logic removed as per user request to only use local images.
+                # Ensure the column is marked appropriately if no match.
+                if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
                          result_df.loc[idx, target_col_kogift] = '-'
 
             # --- Process Naver Image ---
@@ -1325,10 +1158,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             ]
             
             # 임계값 설정 (더 엄격하게)
-            # naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.45)
-            # Lower this specific threshold for initial integration to be more inclusive.
-            # filter_images_by_similarity will do the stricter filtering later.
-            naver_integration_score_threshold = 0.01  # Much lower threshold to include all matches
+            naver_integration_score_threshold = 0.55  # Increased from 0.20 to match config's naver_minimum_similarity
             logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
@@ -1338,7 +1168,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
                         result_df.at[idx, col_to_clear] = None
-                elif naver_score_from_match < naver_integration_score_threshold: # Use the new lower threshold here
+                elif naver_score_from_match < naver_integration_score_threshold:
                     logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < integration threshold {naver_integration_score_threshold}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
                         result_df.at[idx, col_to_clear] = None
@@ -1439,10 +1269,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         # Fallback to metadata URL if product_id based generation failed AND web_url is still not set
                         if not web_url:
                             metadata_url = img_path_obj_dict_entry.get('url') # URL from prepare_image_metadata
+                            has_valid_local_path = img_path_actual_str and Path(img_path_actual_str).exists()
                             if isinstance(metadata_url, str) and metadata_url.startswith('http') and "pstatic.net" in metadata_url:
-                                if "pstatic.net/front/" in metadata_url and not has_valid_local_path: # Check has_valid_local_path from naver_data_cleaner context
+                                if "pstatic.net/front/" in metadata_url and not has_valid_local_path:
                                      logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from prepare_image_metadata: {metadata_url} (no valid local path either)")
-                                elif "pstatic.net/front/" in metadata_url and Path(img_path_actual_str).exists(): # If local path is good, front URL is acceptable
+                                elif "pstatic.net/front/" in metadata_url and has_valid_local_path: # If local path is good, front URL is acceptable
                                     web_url = metadata_url
                                     source_of_url = "prepare_image_metadata_pstatic_front_url_with_local"
                                     logging.debug(f"Row {idx}: Naver - Using pstatic.net/front/ URL from prepare_image_metadata (local file exists): {web_url}")
@@ -1454,32 +1285,31 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         # --- END STRATEGY ---
 
                         if web_url: # Only proceed if we have a pstatic.net URL
-                            final_naver_image_data = {
-                                'local_path': img_path_actual_str, 
-                                'url': web_url, 
-                                'score': naver_score_from_match,
-                                'source': 'naver',
-                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), 
-                                'product_name': naver_product_name_for_log,
-                                'product_id': product_id_for_url, # Use the determined product_id
-                                'url_source_debug': source_of_url 
-                            }
-                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
-                        else: 
-                            logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but FAILED to secure a pstatic.net web_url. Using local file with no web_url.")
-                            final_naver_image_data = {
-                                'local_path': img_path_actual_str,
-                                'url': None, 
-                                'score': naver_score_from_match,
-                                'source': 'naver',
-                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str),
-                                'product_name': naver_product_name_for_log,
-                                'product_id': product_id_for_url, # Store product_id even if URL failed
-                                'url_source_debug': f"failed_to_find_pstatic_url_pid_source_{source_of_id if 'source_of_id' in locals() else 'unknown'}"
-                            }
+                            # Further validation for pstatic.net URL
+                            is_valid_pstatic_url = "pstatic.net" in web_url and "pstatic.net/front/" not in web_url
+                            
+                            if is_valid_pstatic_url:
+                                final_naver_image_data = {
+                                    'local_path': img_path_actual_str, 
+                                    'url': web_url, 
+                                    'score': naver_score_from_match,
+                                    'source': 'naver',
+                                    'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), 
+                                    'product_name': naver_product_name_for_log,
+                                    'product_id': product_id_for_url,
+                                    'url_source_debug': source_of_url 
+                                }
+                                logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
+                            else: 
+                                logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but web_url '{web_url}' is not a valid/preferred pstatic.net URL. Clearing Naver data.")
+                                final_naver_image_data = None # Effectively clears if not set elsewhere
+                                for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                                    result_df.at[idx, col_to_clear] = None
+
                     else: # img_path_actual (local file) does not exist or is invalid
                         logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but its local path '{img_path_actual}' is invalid/missing. Clearing Naver data.")
-                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                            result_df.at[idx, col_to_clear] = None
             else: # No initial naver_match or match was '없음'
                 log_msg = f"Row {idx}: Naver - No valid initial match (match details: {naver_match}). Clearing Naver data for '{naver_product_name_for_log}'."
                 if naver_match and naver_match[0] == '없음': log_msg = f"Row {idx}: Naver - Match explicitly '없음' for '{naver_product_name_for_log}'. Clearing data."
@@ -1609,190 +1439,73 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         result_df = df.copy()
         
-        # UPDATED: Get thresholds from config with lenient defaults
+        # Get thresholds from config with stricter defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.01)
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.40)  # Increased from 0.01
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.40)  # Increased from 0.01
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
-            logging.info(f"통합: 이미지 표시 임계값: {effective_threshold} (낮은 임계값 적용)")
+            logging.info(f"통합: 이미지 표시 임계값 (filter_images_by_similarity): {effective_threshold}")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.01을 사용합니다.")
-            effective_threshold = 0.01
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.40을 사용합니다.")
+            effective_threshold = 0.40  # Increased from 0.01
+        
+        # Get Naver-specific thresholds
+        try:
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.75)
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.55)
+        except ValueError as e:
+            logging.warning(f"네이버 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
+            naver_initial_threshold = 0.75
+            naver_minimum_threshold = 0.55
+            
+        # Get quality thresholds
+        try:
+            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.70)
+            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.50)
+            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.35)
+            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.30)
+        except ValueError as e:
+            logging.warning(f"품질 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
+            high_quality = 0.70
+            medium_quality = 0.50
+            low_quality = 0.35
+            reject_threshold = 0.30
 
-        # -------------------------------------------------------------
-        # 이미지 유사도 필터링
-        # -------------------------------------------------------------
-        # 필터링 기준:
-        #   • '이미지_유사도' 컬럼이 존재하고 수치형 값 < similarity_threshold
-        #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
-        #   • 유사도 정보가 없거나 파싱 실패 → 그대로 둠 (보수적)
-        #   • 이미지 데이터가 딕셔너리 형태인 경우, 'score' 키의 값 < similarity_threshold
-        #   • 해당 행에 대해 고려기프트·네이버 이미지를 '-' 로 치환 (본사 이미지는 유지)
-
-        # 필터링 임계값을 매우 낮게 설정하여 대부분의 매칭을 유지
-        # Remove the redundant filtering block based on the old '이미지_유사도' column.
-        # The filtering is now done based on the 'score' key in the image dictionary below.
-        logging.debug("Skipping obsolete filtering based on '이미지_유사도' column.")
-
-        # 너무 낮은 점수에만 필터링 적용 (대부분 유지)
+        # Initial filtering based on thresholds
         filtered_count = 0
-        rows_affected = set() # Track unique rows affected
-        # Define Haereum column name
-        haoreum_col_name = '본사 이미지'
-        kogift_col_name = '고려기프트 이미지'
-
-        # Double check Koreagift product info and image pairing
-        kogift_mismatch_count = 0
-        for idx, row in result_df.iterrows():
-            # Ensure Koreagift product info and image are paired correctly
-            # First, check if Koreagift product info exists
-            has_kogift_info = False
-            
-            # Check for Koreagift link
-            kogift_link_col = '고려기프트 상품링크'
-            if kogift_link_col in row and row[kogift_link_col]:
-                if isinstance(row[kogift_link_col], str) and row[kogift_link_col].strip() not in ['', '-', 'None', None]:
-                    has_kogift_info = True
-            
-            # Check for Koreagift price
-            if not has_kogift_info:
-                kogift_price_col = '판매가(V포함)(2)'
-                if kogift_price_col in row and pd.notna(row[kogift_price_col]) and row[kogift_price_col] not in [0, '-', '', None]:
-                    has_kogift_info = True
-                    
-            # Check for alternative price column
-            if not has_kogift_info:
-                alt_kogift_price_col = '판매단가(V포함)(2)'
-                if alt_kogift_price_col in row and pd.notna(row[alt_kogift_price_col]) and row[alt_kogift_price_col] not in [0, '-', '', None]:
-                    has_kogift_info = True
-            
-            # Check if Koreagift image exists
-            has_kogift_image = isinstance(row[kogift_col_name], dict) if kogift_col_name in row else False
-            
-            # If mismatch found, fix it by removing the image if no product info exists
-            if has_kogift_image and not has_kogift_info:
-                logging.warning(f"Row {idx}: Found Koreagift image without product info during filtering. Removing image.")
-                result_df.at[idx, kogift_col_name] = '-'
-                kogift_mismatch_count += 1
-                rows_affected.add(idx)
-                filtered_count += 1
-
-        # Now apply similarity filtering on remaining images
-        for idx, row in result_df.iterrows():
-            # Check Naver product info existence first
-            has_naver_info = False
-            
-            # Check all possible Naver info columns
-            naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
-            for link_col in naver_link_cols:
-                if link_col in row and row[link_col]:
-                    if isinstance(row[link_col], str) and row[link_col].strip() not in ['', '-', 'None', None]:
-                        has_naver_info = True
-                        break
-            
-            # Check Naver price columns
-            naver_price_cols = ['판매단가(V포함)(3)', '네이버 판매단가', '판매단가3 (VAT포함)']
-            for price_col in naver_price_cols:
-                if not has_naver_info and price_col in row and pd.notna(row[price_col]) and row[price_col] not in [0, '-', '', None]:
-                    has_naver_info = True
-                    break
-                    
-            # Iterate only through Kogift and Naver columns for filtering
+        for idx in range(len(result_df)):
             for col_name in ['고려기프트 이미지', '네이버 이미지']:
                 if col_name not in result_df.columns:
                     continue
                 
-                # Skip Naver filtering if there's Naver product info
-                if col_name == '네이버 이미지' and has_naver_info:
-                    logging.debug(f"Row {idx}: Skipping Naver image filtering because Naver product info exists")
+                cell_data = result_df.at[idx, col_name]
+                if not isinstance(cell_data, dict):
                     continue
                 
-                # Explicitly skip Haereum column if it somehow gets included here (redundant safety check)
-                if col_name == haoreum_col_name:
-                    logging.debug(f"Skipping Haereum column '{haoreum_col_name}' in similarity filtering loop at index {idx}")
-                    continue
-
-                img_data = row[col_name]
+                score = cell_data.get('score', 0)
+                url = cell_data.get('url')
                 
-                # Check if it's a dictionary and contains a score
-                if isinstance(img_data, dict) and 'score' in img_data:
-                    try:
-                        score = float(img_data['score'])
-                        # 임계값이 매우 낮으므로, 정말 형편없는 매칭만 제거
-                        if score < effective_threshold:
-                            if col_name == '네이버 이미지':
-                                logging.info(f"Row {idx}: Naver image score {score:.3f} is below threshold {effective_threshold}. Clearing Naver image and related data for product '{row.get('상품명', 'N/A')}'.")
-                                result_df.at[idx, col_name] = None # Clear Naver image cell
+                # Special handling for Naver images
+                if col_name == '네이버 이미지':
+                    # Check if URL is valid pstatic.net URL (not front/)
+                    if not url or 'pstatic.net/front/' in str(url).lower():
+                        logging.warning(f"Row {idx}: Naver - Invalid or front/ URL: {url}. Clearing image data.")
+                        result_df.at[idx, col_name] = None
+                        filtered_count += 1
+                        continue
+                        
+                    # Apply Naver-specific thresholds
+                    if score < naver_minimum_threshold:
+                        logging.warning(f"Row {idx}: Naver - Score {score:.3f} below minimum threshold {naver_minimum_threshold}. Clearing image data.")
+                        result_df.at[idx, col_name] = None
+                else:  # Kogift images
+                    if score < effective_threshold:
+                        logging.warning(f"Row {idx}: Kogift - Score {score:.3f} below threshold {effective_threshold}. Clearing image data.")
+                        result_df.at[idx, col_name] = None
 
-                                # Clear related Naver data columns
-                                naver_related_columns_to_clear = [
-                                    '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
-                                    '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-                                ]
-                                for rel_col in naver_related_columns_to_clear:
-                                    if rel_col in result_df.columns:
-                                        result_df.at[idx, rel_col] = None
-                                
-                                filtered_count += 1
-                                rows_affected.add(idx)
-                            elif col_name == '고려기프트 이미지': # Explicitly handle Kogift
-                                logging.info(f"Row {idx}: Kogift image score {score:.3f} is below threshold {effective_threshold}. Clearing Kogift image and related data for product '{row.get('상품명', 'N/A')}'.")
-                                result_df.at[idx, col_name] = '-' # Clear Kogift image cell
-
-                                # Clear related Kogift data columns
-                                kogift_related_columns_to_clear = [
-                                    '고려기프트 상품링크', 
-                                    '기본수량(2)', 
-                                    '판매가(V포함)(2)', 
-                                    '판매단가(V포함)(2)',
-                                    '가격차이(2)', 
-                                    '가격차이(2)(%)'
-                                ]
-                                for rel_col in kogift_related_columns_to_clear:
-                                    if rel_col in result_df.columns:
-                                        result_df.at[idx, rel_col] = None
-                                
-                                filtered_count += 1
-                                rows_affected.add(idx)
-                            else: # For other potential future image columns (not Haoreum, Naver, or Kogift)
-                                result_df.at[idx, col_name] = '-'
-                                filtered_count += 1
-                                rows_affected.add(idx)
-                    except (ValueError, TypeError):
-                        # If score is not a valid number, keep the image data (conservative approach)
-                        logging.warning(f"Invalid score value '{img_data.get('score')}' found in {col_name} at index {idx}. Skipping filtering for this cell.")
-                # If not a dict with score, or already filtered ('-'), leave it as is
-
-        # Log count based on unique rows affected
-        final_filtered_count = len(rows_affected)
-        logging.info(f"통합: 이미지 점수 기준으로 고려/네이버 이미지를 필터링 ({filtered_count}개 셀 수정됨, {final_filtered_count}개 행 영향 받음, 임계값 < {effective_threshold})")
-        if kogift_mismatch_count > 0:
-            logging.info(f"통합: {kogift_mismatch_count}개의 고려기프트 이미지/상품정보 불일치 수정됨")
-        logging.info(f"통합: 해오름 이미지는 점수와 관계없이 유지됩니다.")
-        
-        # 이미지 존재 여부 확인 로깅
-        haereum_count = 0
-        kogift_count = 0
-        naver_count = 0
-        
-        for i in range(len(result_df)):
-            # 이미지 열별 존재 카운트
-            if '본사 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['본사 이미지']) and result_df.iloc[i]['본사 이미지'] not in [None, '-', '']:
-                    haereum_count += 1
-                    
-            if '고려기프트 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['고려기프트 이미지']) and result_df.iloc[i]['고려기프트 이미지'] not in [None, '-', '']:
-                    kogift_count += 1
-                    
-            if '네이버 이미지' in result_df.columns:
-                if pd.notna(result_df.iloc[i]['네이버 이미지']) and result_df.iloc[i]['네이버 이미지'] not in [None, '-', '']:
-                    naver_count += 1
-        
-        logging.info(f"통합: 이미지 현황 (필터링 후) - 해오름: {haereum_count}개, 고려기프트: {kogift_count}개, 네이버: {naver_count}개")
         return result_df
     
     except Exception as e:
@@ -2260,7 +1973,14 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
 def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
                             save_excel_output=False) -> pd.DataFrame:
     """
-    Integrates and filters images from all sources, applying all necessary processing.
+    Integrates and filters images from all sources, applying strict quality controls.
+    
+    This function performs the following steps:
+    1. Integrate images from all sources with higher thresholds
+    2. Improve Kogift image matching
+    3. Apply strict filtering based on similarity scores
+    4. Perform URL validation to reject invalid URLs (especially front/ URLs)
+    5. Final quality control check
     
     Args:
         df: DataFrame with product data
@@ -2268,40 +1988,75 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
         save_excel_output: Whether to save an Excel output file with images
         
     Returns:
-        DataFrame with integrated and filtered images
+        DataFrame with high-quality integrated and filtered images
     """
-    logger.info("Integrating and filtering images from all sources...")
+    logger.info("Integrating and filtering images with enhanced quality controls")
     
-    # Step 1: Integrate images from all sources
+    # Step 1: Integrate images from all sources with higher thresholds
     df_with_images = integrate_images(df, config)
     logger.info(f"Image integration completed. DataFrame shape: {df_with_images.shape}")
     
-    # FIXED: 고려기프트 이미지 매칭 개선 단계를 필터링 전에 실행
-    logger.info("Improving Kogift image matching before filtering...")
+    # Step 2: Improve Kogift image matching
+    logger.info("Improving Kogift image matching with strict quality controls...")
     df_kogift_improved = improved_kogift_image_matching(df_with_images)
     logger.info(f"Kogift image matching improvement completed. DataFrame shape: {df_kogift_improved.shape}")
     
-    # Step 2: Apply image filtering based on similarity
+    # Step 3: Apply image filtering based on similarity and URL validity
     df_filtered = filter_images_by_similarity(df_kogift_improved, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
     
-    # FIXED: 추가로 한번 더 고려기프트 이미지 매칭 개선 실행
-    df_final = improved_kogift_image_matching(df_filtered)
-    logger.info(f"Final Kogift image matching improvement completed. DataFrame shape: {df_final.shape}")
+    # Step 4: Final validation - ensure all URLs are valid and reject any problematic images
+    logger.info("Performing final URL validation and quality check...")
     
-    # Step 3: Save Excel output if requested
+    result_df = df_filtered.copy()
+    for idx in range(len(result_df)):
+        # Check Naver image URLs
+        if '네이버 이미지' in result_df.columns:
+            naver_data = result_df.at[idx, '네이버 이미지']
+            if isinstance(naver_data, dict) and 'url' in naver_data:
+                url = naver_data['url']
+                # Check for invalid URL patterns
+                if not url or not isinstance(url, str) or 'front/' in url.lower() or not url.startswith('http'):
+                    # Clear the problematic Naver image
+                    logger.warning(f"Row {idx}: Invalid Naver URL '{url}' detected in final validation. Clearing Naver data.")
+                    result_df.at[idx, '네이버 이미지'] = None
+                    
+                    # Clear related Naver columns
+                    for col in ['네이버 쇼핑 링크', '공급사 상품링크', '기본수량(3)', '판매단가(V포함)(3)']:
+                        if col in result_df.columns:
+                            result_df.at[idx, col] = None
+        
+        # Check Kogift image URLs if needed
+        if '고려기프트 이미지' in result_df.columns:
+            kogift_data = result_df.at[idx, '고려기프트 이미지']
+            if isinstance(kogift_data, dict):
+                # Check if Kogift image has a valid local path
+                local_path = kogift_data.get('local_path')
+                if local_path and not os.path.exists(str(local_path)):
+                    # Reject Kogift images with missing local files
+                    logger.warning(f"Row {idx}: Missing Kogift local file '{local_path}'. Clearing Kogift data.")
+                    result_df.at[idx, '고려기프트 이미지'] = None
+    
+    # Count images after final validation
+    naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+    kogift_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+    haereum_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '본사 이미지'], dict))
+    
+    logger.info(f"Final image counts after validation: Haereum={haereum_count}, Kogift={kogift_count}, Naver={naver_count}")
+    
+    # Save Excel output if requested
     if save_excel_output:
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             excel_output = f"image_integration_result_{timestamp}.xlsx"
             
             # Create the Excel file with images
-            create_excel_with_images(df_final, excel_output)
+            create_excel_with_images(result_df, excel_output)
             logger.info(f"Created Excel output file with images: {excel_output}")
         except Exception as e:
             logger.error(f"Error creating Excel output: {e}")
     
-    return df_final
+    return result_df
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":
