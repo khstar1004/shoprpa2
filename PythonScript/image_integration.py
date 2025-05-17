@@ -101,12 +101,32 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
                 tokens.append(part)
         
         # Store metadata
+        # Determine the true original path
+        current_img_path_obj = img_path # Path object from glob
+        true_original_path = current_img_path_obj
+
+        if current_img_path_obj.name.endswith('_nobg.png'):
+            base_name_no_ext = current_img_path_obj.stem.replace('_nobg', '')
+            # Try to find .jpg, .jpeg, .png, .gif (in that order of preference for original)
+            possible_original_extensions = ['.jpg', '.jpeg', '.png', '.gif']
+            found_original = False
+            for ext in possible_original_extensions:
+                potential_original_name = base_name_no_ext + ext
+                potential_original_file = current_img_path_obj.with_name(potential_original_name)
+                if potential_original_file.exists():
+                    true_original_path = potential_original_file
+                    logger.debug(f"[{prefix}] For '{current_img_path_obj.name}', found true original: '{true_original_path.name}'")
+                    found_original = True
+                    break
+            if not found_original:
+                 logger.warning(f"[{prefix}] For _nobg file '{current_img_path_obj.name}', could not find a corresponding original. Using it as original_path.")
+
         result[str(img_path)] = {
-            'path': img_path,
-            'original_path': img_path,
+            'path': current_img_path_obj, # The path of the file being processed (could be _nobg.png)
+            'original_path': true_original_path, # Path to the actual source image (e.g., .jpg)
             'tokens': tokens,
             'product_id': product_id,
-            'original_name': original_name,
+            'original_name': original_name, # stem of current_img_path_obj (img_path.stem)
             'clean_name': cleaned_name
         }
         
@@ -262,7 +282,7 @@ def find_best_image_matches(product_names: List[str],
         
         # 각 소스별 최적 매치 찾기
         # For Haoreum and Naver, we still use the 'used' sets to avoid re-using the same image file for different products
-        haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold)
+        haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold, config=config) # config 추가
         if haereum_best:
             used_haereum.add(haereum_best[0]) # Add path to used set
             
@@ -312,7 +332,7 @@ def find_best_image_matches(product_names: List[str],
                         enhanced_matcher
                     )
                 else:
-                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, 0.01) # Pass None for used_images for Kogift
+                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, 0.01, source_name_for_log="Kogift_Fallback", config=config) # Pass None for used_images for Kogift
             
             # 네이버 매칭이 없는 경우에만 기존 방식 시도 (still uses used_naver)
             if not naver_best:
@@ -324,21 +344,18 @@ def find_best_image_matches(product_names: List[str],
                         enhanced_matcher
                     )
                 else:
-                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01) # Pass used_naver for Naver
+                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01, source_name_for_log="Naver_Fallback", config=config) # Pass used_naver for Naver
         else:
             # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
             # Kogift - pass None for used_images
             if not kogift_best: # Check if kogift_best is already found by ID match from an earlier (non-Haoreum) source if logic changes
-                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, 0.01)
+                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, 0.01, source_name_for_log="Kogift_Direct", config=config)
             
             # Naver - pass used_naver
             if not naver_best:
-                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01)
+                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01, source_name_for_log="Naver_Direct", config=config)
         
         # DO NOT add kogift_best to used_kogift set to allow reuse
-        # if kogift_best:
-        #     if isinstance(kogift_best, tuple) and len(kogift_best) > 0:
-        #         used_kogift.add(kogift_best[0]) 
 
         # Naver is still added to its used set if a match is found and it wasn't an ID-based match already added
         if naver_best:
@@ -367,7 +384,8 @@ def find_best_match_for_product(product_tokens: List[str],
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
                                similarity_threshold: float = 0.4,  # Default threshold if not provided
-                               source_name_for_log: str = "UnknownSource") -> Optional[Tuple[str, float]]:
+                               source_name_for_log: str = "UnknownSource",
+                               config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
     Find the best matching image for a product based on text similarity.
     Now using stricter thresholds from the start to ensure better quality matches.
@@ -399,8 +417,13 @@ def find_best_match_for_product(product_tokens: List[str],
     logging.debug(f"사용 가능한 이미지: {available_images}개 (전체: {len(image_info)}개, 사용됨: {len(used_images)}개)")
     
     # Get similarity threshold from config or use default
-    similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4)
-    
+    # similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4) # This line will cause error if config is None
+    if config:
+        similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
+    else:
+        # If config is not provided, use the passed similarity_threshold or its default
+        pass # similarity_threshold is already set
+
     # 매칭 결과를 추적하기 위한 리스트
     match_scores = [] # Stores (path, score, clean_name) tuples
     
@@ -2005,10 +2028,20 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     df_filtered = filter_images_by_similarity(df_kogift_improved, config)
     logger.info(f"Image filtering completed. DataFrame shape: {df_filtered.shape}")
     
+    result_df = df_filtered.copy()
+    
+    # Ensure essential image columns exist in result_df before further processing and counting
+    # This is crucial if any of the upstream functions returned the original df without these columns due to an error.
+    required_image_columns = ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+    for col_name in required_image_columns:
+        if col_name not in result_df.columns:
+            logger.warning(f"Column '{col_name}' missing in result_df before final validation and counting. Adding it with None values.")
+            result_df[col_name] = None
+            
     # Step 4: Final validation - ensure all URLs are valid and reject any problematic images
     logger.info("Performing final URL validation and quality check...")
     
-    result_df = df_filtered.copy()
+    # result_df = df_filtered.copy() # This line is now above the column check
     for idx in range(len(result_df)):
         # Check Naver image URLs
         if '네이버 이미지' in result_df.columns:
