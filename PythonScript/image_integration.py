@@ -14,6 +14,9 @@ import hashlib
 from datetime import datetime
 import glob
 
+# Import for tokenization
+from PythonScript.koSBERT_text_similarity import split_product_name
+
 # Initialize logger
 logger = logging.getLogger(__name__)
 
@@ -176,7 +179,7 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         # 토큰화
         # clean_name_for_tokens이 비어있거나, 대부분이 숫자로만 이루어진 경우(상품 코드로 간주) 일반 토큰화 회피 가능성
         # But, for now, always tokenize. If it's just "CODE123", tokens will be ["CODE123"]
-        tokens = tokenize_korean(clean_name_for_tokens)
+        tokens = split_product_name(clean_name_for_tokens)
         logger.info(f"[{prefix}] Tokens for '{clean_name_for_tokens}': {tokens}")
 
         image_info[str(img_path)] = {
