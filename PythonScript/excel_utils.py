@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Define constants for image source directory names
 HAEREUM_DIR_NAME = 'Haereum'
 KOGIFT_DIR_NAME = 'Kogift' # Changed from kogift_pre / Kogift
-NAVER_DIR_NAME = 'Naver'   # Changed to lowercase 'naver'
+NAVER_DIR_NAME = 'Naver'   # Ensure this is uppercase 'Naver'
 OTHER_DIR_NAME = 'Other'
 
 # Initialize config parser

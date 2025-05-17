@@ -31,15 +31,15 @@ try:
     VERIFY_IMAGE_URLS = config.getboolean('Matching', 'verify_image_urls', fallback=True)
     PREDOWNLOAD_KOGIFT_IMAGES = config.getboolean('Matching', 'predownload_kogift_images', fallback=True)
 
-    # 이미지 저장 경로 - Kogift는 Main/Kogift 사용
+    # 이미지 저장 경로 - 항상 대문자로 시작하는 디렉토리명 사용
     try:
         # 기본 Main 경로를 사용
         image_main_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
-        KOGIFT_IMAGE_DIR = Path(image_main_dir) / 'Kogift' # Use Main/Kogift
+        KOGIFT_IMAGE_DIR = Path(image_main_dir) / 'Kogift'  # Always use 'Kogift' with capital K
         logger.info(f"Using Kogift image directory from config (Main): {KOGIFT_IMAGE_DIR}")
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
         logger.error(f"Error getting image_main_dir from config: {e}. Using default.")
-        # Fallback to default Main/Kogift
+        # Fallback to default Main/Kogift with proper capitalization
         KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Main') / 'Kogift'
         logger.info(f"Using default Kogift image directory (Main): {KOGIFT_IMAGE_DIR}")
 
@@ -50,7 +50,7 @@ except Exception as e:
     VERIFY_SAMPLE_PERCENT = 10
     VERIFY_IMAGE_URLS = True
     PREDOWNLOAD_KOGIFT_IMAGES = True
-    # Default Kogift image directory (Main)
+    # Default Kogift image directory (Main) with proper capitalization
     KOGIFT_IMAGE_DIR = Path('C:\\RPA\\Image\\Main') / 'Kogift' 
     logger.info(f"Using default Kogift image directory (Main): {KOGIFT_IMAGE_DIR}")
 
@@ -63,26 +63,26 @@ try:
         # 대체 경로 사용 - config에서 정의된 경로 사용 (Main 우선)
         try:
             image_main_dir = config.get('Paths', 'image_main_dir') # 대체 경로도 Main으로
-            fallback_dir = Path(image_main_dir) / 'Kogift'
+            fallback_dir = Path(image_main_dir) / 'Kogift'  # Always use 'Kogift' with capital K
             fallback_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"No write permission to {KOGIFT_IMAGE_DIR}, using fallback directory: {fallback_dir}")
             KOGIFT_IMAGE_DIR = fallback_dir
         except (configparser.NoSectionError, configparser.NoOptionError) as e:
             logger.error(f"Error getting image_main_dir from config: {e}. Using default RPA Main path.")
-            fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift' # 기본 대체 경로도 Main
+            fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift'  # Always use 'Kogift' with capital K
             fallback_dir.mkdir(parents=True, exist_ok=True)
             KOGIFT_IMAGE_DIR = fallback_dir
 except Exception as e:
     # 기본 대체 경로 사용 - config에서 정의된 경로 사용 (Main 우선)
     try:
         image_main_dir = config.get('Paths', 'image_main_dir') # 기본 대체 경로도 Main
-        fallback_dir = Path(image_main_dir) / 'Kogift'
+        fallback_dir = Path(image_main_dir) / 'Kogift'  # Always use 'Kogift' with capital K
         fallback_dir.mkdir(parents=True, exist_ok=True)
         logger.error(f"Error creating image directory {KOGIFT_IMAGE_DIR}: {e}, using fallback: {fallback_dir}")
         KOGIFT_IMAGE_DIR = fallback_dir
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
         logger.error(f"Error getting image_main_dir from config: {e}. Using default RPA Main path.")
-        fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift' # 기본 대체 경로도 Main
+        fallback_dir = Path('C:\\RPA\\Image\\Main') / 'Kogift'  # Always use 'Kogift' with capital K
         fallback_dir.mkdir(parents=True, exist_ok=True)
         KOGIFT_IMAGE_DIR = fallback_dir
 
@@ -244,13 +244,13 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     elif "jclgift" in url.lower():
         # Save jclgift images in a haereum directory within Main
         base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
-        haereum_dir = base_main_dir / 'Haereum'
+        haereum_dir = base_main_dir / 'Haereum'  # Always use 'Haereum' with capital H
         haereum_dir.mkdir(parents=True, exist_ok=True)
         save_dir = haereum_dir
     elif "pstatic.net" in url.lower() or "naver" in url.lower():
         # Save Naver images in a naver directory within Main
         base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
-        naver_dir = base_main_dir / 'Naver'
+        naver_dir = base_main_dir / 'Naver'  # Always use 'Naver' with capital N
         naver_dir.mkdir(parents=True, exist_ok=True)
         save_dir = naver_dir
     else:

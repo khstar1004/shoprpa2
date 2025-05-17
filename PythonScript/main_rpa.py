@@ -15,6 +15,13 @@ import shutil
 from pathlib import Path
 import openpyxl
 from email_sender import validate_email_config, send_excel_by_email
+import warnings
+import gc
+import platform
+import json
+
+# Add path_fix import
+from PythonScript.path_fix import fix_image_directories, update_env_variables
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
@@ -35,11 +42,27 @@ from excel_formatter import apply_excel_formatting  # Import the new Excel forma
 from fix_kogift_images import fix_excel_kogift_images # Import for Kogift price fix
 from naver_data_cleaner import clean_naver_data, get_invalid_naver_rows # Import for cleaning Naver data
 
+# Global configuration
+warnings.filterwarnings('ignore')
+
+# Set high DPI awareness for Windows (prevents display scaling issues)
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
+
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
     try:
         main_start_time = time.time()
         logging.info("========= RPA Process Starting ========")
+
+        # Run directory case fix before anything else
+        fix_image_directories()
+        update_env_variables()
+        logging.info("Fixed image directory capitalization issues")
 
         # Add logging here
         logging.info(f"main_rpa.py: Received config. Input file path: {config.get('Paths', 'input_file', fallback='Not Set')}")

@@ -521,7 +521,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             save_dir_normalized = os.path.normpath(save_dir)
             
             if 'Naver' not in save_dir_normalized.split(os.sep):
-                # Create the Naver subdirectory
+                # Create the Naver subdirectory (using proper capitalization)
                 naver_dir = os.path.join(save_dir, 'Naver')
                 os.makedirs(naver_dir, exist_ok=True)
                 save_dir = naver_dir

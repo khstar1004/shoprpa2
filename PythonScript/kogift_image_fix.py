@@ -82,25 +82,29 @@ def scan_kogift_images(base_dirs=None) -> Dict[str, str]:
     config = get_config()
     base_img_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
     
-    # Default Kogift image directory candidates
+    # Default Kogift image directory candidates - Prioritize uppercase 'Kogift' directory
     if base_dirs is None:
         base_dirs = [
-            Path(base_img_dir),
+            # Prioritize correctly capitalized directories first
             Path(base_img_dir) / 'Kogift',
-            Path(base_img_dir) / 'kogift',
-            Path(base_img_dir).parent / 'Kogift',
-            Path(base_img_dir).parent / 'kogift',
-            Path(base_img_dir).parent / 'Target' / 'Kogift',
-            Path(base_img_dir).parent / 'Target' / 'kogift',
             Path('C:\\RPA\\Image\\Main\\Kogift'),
-            Path('C:\\RPA\\Image\\Main\\kogift'),
             Path('C:\\RPA\\Image\\Kogift'),
-            Path('C:\\RPA\\Image\\kogift')
+            Path(base_img_dir).parent / 'Target' / 'Kogift',
+            Path(base_img_dir).parent / 'Kogift',
+            # Fallback to lowercase versions
+            Path(base_img_dir) / 'kogift',
+            Path('C:\\RPA\\Image\\Main\\kogift'),
+            Path('C:\\RPA\\Image\\kogift'),
+            Path(base_img_dir).parent / 'Target' / 'kogift',
+            Path(base_img_dir).parent / 'kogift',
+            # Finally check the base directory as last resort
+            Path(base_img_dir)
         ]
     
     # Dictionary to store all found Kogift images
     kogift_images = {}
     total_images = 0
+    processed_dirs = set()
     
     logger.info("Starting scan of Kogift image directories...")
     
@@ -109,6 +113,13 @@ def scan_kogift_images(base_dirs=None) -> Dict[str, str]:
         if not base_dir.exists():
             logger.debug(f"Directory does not exist: {base_dir}")
             continue
+            
+        # Avoid rescanning the same directory
+        base_dir_str = str(base_dir).lower()
+        if base_dir_str in processed_dirs:
+            logger.debug(f"Directory already scanned: {base_dir}")
+            continue
+        processed_dirs.add(base_dir_str)
         
         logger.info(f"Scanning directory: {base_dir}")
         
