@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 # Default Constants - Optimized for accuracy
 DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
 DEFAULT_FEATURE_MATCH_THRESHOLD = 15  # Increased from 10
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.70  # More strict (was 0.75)
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 40  # More strict (was 50)
-DEFAULT_COMBINED_THRESHOLD = 0.55  # Lower to allow more potential matches
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.80  # More lenient (was 0.70)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 50  # More lenient (was 40)
+DEFAULT_COMBINED_THRESHOLD = 0.05  # Much lower to allow more potential matches (was 0.55)
 DEFAULT_WEIGHTS = {'sift': 0.25, 'akaze': 0.20, 'deep': 0.40, 'orb': 0.15}  # New weights with ORB
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 

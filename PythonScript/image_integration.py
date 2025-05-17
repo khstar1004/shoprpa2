@@ -648,9 +648,9 @@ def find_best_match_with_enhanced_matcher(
         
     best_match = None
     best_score = 0
-    # UPDATED: Use stricter thresholds from config
-    high_confidence_threshold = 0.40  # Increased from 0.40
-    min_confidence_threshold = 0.15   # Increased from 0.15
+    # UPDATED: Use much lower thresholds to match real-world scores
+    high_confidence_threshold = 0.10  # Reduced from 0.40
+    min_confidence_threshold = 0.01   # Reduced from 0.15 to almost accept all matches
     
     gpu_info = "GPU 활성화" if getattr(enhanced_matcher, "use_gpu", False) else "CPU 모드"
     logging.info(f"향상된 이미지 매칭 시도 - 이미지: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -950,7 +950,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             logging.warning("Using default similarity_threshold of 0.1 as specific values not found or invalid in config.")
         
         # Lower the threshold for this run to get more initial matches
-        initial_matching_threshold = max(0.05, similarity_threshold * 0.5)
+        initial_matching_threshold = 0.01  # Use a much lower threshold to get more initial matches
         
         logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {initial_matching_threshold} (초기 매칭용 낮은 임계값)")
         
@@ -1333,7 +1333,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             # naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.45)
             # Lower this specific threshold for initial integration to be more inclusive.
             # filter_images_by_similarity will do the stricter filtering later.
-            naver_integration_score_threshold = 0.10
+            naver_integration_score_threshold = 0.01  # Much lower threshold to include all matches
             logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
@@ -1564,18 +1564,18 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         result_df = df.copy()
         
-        # UPDATED: Get thresholds from config with stricter defaults
+        # UPDATED: Get thresholds from config with lenient defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.10)
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.15)
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.01)
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.01)
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
-            logging.info(f"통합: 이미지 표시 임계값: {effective_threshold} (더 엄격한 기준 적용)")
+            logging.info(f"통합: 이미지 표시 임계값: {effective_threshold} (낮은 임계값 적용)")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.10을 사용합니다.")
-            effective_threshold = 0.10
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.01을 사용합니다.")
+            effective_threshold = 0.01
 
         # -------------------------------------------------------------
         # 이미지 유사도 필터링
