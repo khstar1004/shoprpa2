@@ -1,5 +1,6 @@
 import pandas as pd
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,34 @@ def clean_naver_data(df):
         if not isinstance(cell_value, dict):
             return False
             
-        is_naver = cell_value.get('source') == 'naver'
-        has_no_url = not cell_value.get('url') or not isinstance(cell_value.get('url'), str)
-        is_fallback = cell_value.get('fallback', False)
+        is_naver_source = cell_value.get('source') == 'naver'
+        if not is_naver_source:
+            return False
+
+        has_valid_local_path = False
+        local_path = cell_value.get('local_path')
+        if isinstance(local_path, str) and local_path.strip() and os.path.exists(local_path):
+            has_valid_local_path = True
+
+        has_valid_url = False
+        url = cell_value.get('url')
+        if isinstance(url, str) and url.strip().startswith(('http://', 'https://')):
+            if "pstatic.net/front/" in url and not has_valid_local_path:
+                pass
+            else:
+                has_valid_url = True
         
-        return is_naver and (has_no_url or is_fallback)
+        is_fallback = cell_value.get('fallback', False)
+
+        if not has_valid_local_path and not has_valid_url:
+            logger.debug(f"Invalid Naver image: No valid local path AND no valid URL. Data: {cell_value}")
+            return True
+
+        if is_fallback:
+            logger.debug(f"Invalid Naver image: Marked as fallback. Data: {cell_value}")
+            return True
+            
+        return False
 
     # 네이버 관련 모든 컬럼 정의
     naver_columns = {

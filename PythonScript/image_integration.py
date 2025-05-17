@@ -1429,9 +1429,24 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                 'url_source_debug': source_of_url # For debugging where the URL came from
                             }
                             logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}), Score: {naver_score_from_match:.3f}")
-                        else:
-                            logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but FAILED to secure a pstatic.net web_url. Clearing Naver data.")
-                            for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                        else: # FAILED TO SECURE A PSTANIC.NET WEB_URL
+                            # If we matched a local file, but couldn't get a pstatic.net URL,
+                            # still use the local file. The URL will be None.
+                            logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but FAILED to secure a pstatic.net web_url. Using local file with no web_url.")
+                            final_naver_image_data = {
+                                'local_path': img_path_actual_str,
+                                'url': None, # No pstatic.net URL found
+                                'score': naver_score_from_match,
+                                'source': 'naver',
+                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str),
+                                'product_name': naver_product_name_for_log,
+                                # Try to get product_id from existing cell, otherwise None.
+                                'product_id': existing_naver_cell_data.get('product_id') if isinstance(existing_naver_cell_data, dict) else None,
+                                'url_source_debug': "failed_to_find_pstatic_url"
+                            }
+                            # Previously, this block would clear all NAVER_DATA_COLUMNS_TO_CLEAR
+                            # and final_naver_image_data would effectively be None.
+                            # Now, we construct final_naver_image_data to preserve the local image match.
                     else: # img_path_actual (local file) does not exist or is invalid
                         logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but its local path '{img_path_actual}' is invalid/missing. Clearing Naver data.")
                         for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
