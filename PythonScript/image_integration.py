@@ -180,6 +180,39 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         # clean_name_for_tokens이 비어있거나, 대부분이 숫자로만 이루어진 경우(상품 코드로 간주) 일반 토큰화 회피 가능성
         # But, for now, always tokenize. If it's just "CODE123", tokens will be ["CODE123"]
         tokens = split_product_name(clean_name_for_tokens)
+        
+        # 이미지 파일에 대한 특별 처리: 해쉬값이 포함된 경우 (특히 네이버, 고려기프트 이미지)
+        # Special handling for image files with hashes (especially Naver and Kogift images)
+        if prefix in ['naver_', 'kogift_'] and re.search(r'[0-9a-f]{8,}', clean_name_for_tokens):
+            # 해시 값을 포함하는 파일명에 대해서는 원본 파일명에서 의미 있는 부분도 토큰으로 추가
+            # For filenames with hash values, also extract meaningful parts from original name
+            logger.info(f"[{prefix}] Adding extra tokens for hash-based filename: {img_name_stem}")
+            
+            # 확장된 토큰화: 파일명에서 의미있는 부분 추출 시도
+            # Extended tokenization: attempt to extract meaningful parts from filenames
+            
+            # 1. Get the original filename without prefix for additional processing
+            original_name = img_name_stem
+            if original_name.startswith(prefix):
+                original_name = original_name[len(prefix):]
+                
+            # 2. Split by common separators and add non-hash parts as tokens
+            parts = re.split(r'[_\-\s]', original_name)
+            for part in parts:
+                # Skip pure hash-like parts but include potential product IDs, codes, etc.
+                if part and not re.match(r'^[0-9a-f]{8,}$', part) and part not in tokens:
+                    logger.info(f"[{prefix}] Adding additional token from filename: {part}")
+                    tokens.append(part)
+            
+            # 3. For Kogift specifically, handle product name patterns often embedded in filenames
+            if prefix == 'kogift_' and len(original_name) > 10:
+                # Look for potential product name patterns (non-hash parts)
+                potential_product_parts = re.findall(r'[가-힣a-zA-Z]{2,}', original_name)
+                for part in potential_product_parts:
+                    if part not in tokens:
+                        logger.info(f"[{prefix}] Adding Korean/English word token: {part}")
+                        tokens.append(part)
+        
         logger.info(f"[{prefix}] Tokens for '{clean_name_for_tokens}': {tokens}")
 
         image_info[str(img_path)] = {
