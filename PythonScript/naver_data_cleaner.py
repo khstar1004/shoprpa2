@@ -5,14 +5,13 @@ logger = logging.getLogger(__name__)
 
 def clean_naver_data(df):
     """
-    Clean DataFrame by removing Naver product rows where image URL is missing
-    but local fallback images are used.
+    Clean DataFrame by removing all Naver data (images, prices, quantities) for invalid matches
     
     Args:
         df (pd.DataFrame): Input DataFrame containing product data
         
     Returns:
-        pd.DataFrame: Cleaned DataFrame with invalid Naver entries removed
+        pd.DataFrame: Cleaned DataFrame with invalid Naver data removed
     """
     if df.empty:
         return df
@@ -23,33 +22,56 @@ def clean_naver_data(df):
             return False
             
         is_naver = cell_value.get('source') == 'naver'
-        has_no_url = cell_value.get('url') is None
+        has_no_url = not cell_value.get('url') or not isinstance(cell_value.get('url'), str)
         is_fallback = cell_value.get('fallback', False)
         
-        return is_naver and has_no_url and is_fallback
+        return is_naver and (has_no_url or is_fallback)
 
-    # Find columns containing image data
-    image_columns = []
+    # 네이버 관련 모든 컬럼 정의
+    naver_columns = {
+        'image': ['네이버 이미지', '네이버쇼핑(이미지링크)'],
+        'data': [
+            '네이버 쇼핑 링크',
+            '공급사 상품링크',
+            '기본수량(3)',
+            '판매단가(V포함)(3)',
+            '가격차이(3)',
+            '가격차이(3)(%)',
+            '공급사명'
+        ]
+    }
+    
+    # 네이버 이미지 컬럼 찾기
+    naver_image_col = None
     for col in df.columns:
-        if isinstance(df[col].iloc[0], dict) and 'local_path' in df[col].iloc[0]:
-            image_columns.append(col)
+        if col in naver_columns['image']:
+            naver_image_col = col
+            break
     
-    rows_to_drop = []
+    if not naver_image_col:
+        logger.warning("No Naver image column found in DataFrame")
+        return df
     
+    # 이미지가 유효하지 않은 경우 모든 네이버 데이터 삭제
+    rows_modified = 0
     for idx, row in df.iterrows():
-        for col in image_columns:
-            cell_value = row[col]
-            if _check_invalid_naver_image(cell_value):
-                logger.warning(f"Dropping row {idx} due to invalid Naver image in column {col}")
-                logger.warning(f"Product info: {row.get('상품명', 'Unknown product')}")
-                rows_to_drop.append(idx)
-                break
+        cell_value = row[naver_image_col]
+        if _check_invalid_naver_image(cell_value):
+            logger.info(f"Clearing all Naver data in row {idx} for product: {row.get('상품명', 'Unknown product')}")
+            # 이미지 컬럼 클리어
+            df.at[idx, naver_image_col] = None
+            
+            # 관련 데이터 컬럼들도 클리어
+            for col in naver_columns['data']:
+                if col in df.columns:
+                    df.at[idx, col] = None
+            
+            rows_modified += 1
     
-    if rows_to_drop:
-        df = df.drop(rows_to_drop)
-        logger.info(f"Removed {len(rows_to_drop)} rows with invalid Naver images")
+    if rows_modified:
+        logger.info(f"Cleared all Naver data for {rows_modified} products with invalid images")
         
-    return df.reset_index(drop=True)
+    return df
 
 def get_invalid_naver_rows(df):
     """

@@ -53,6 +53,13 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     images = sorted([f for f in image_dir.glob("*.jpg") if "_nobg" not in f.name]) + \
              sorted([f for f in image_dir.glob("*.png") if "_nobg" not in f.name])
     
+    logging.info(f"[{prefix}] Found {len(images)} images in {image_dir}.") # Enhanced log
+    if images:
+        sample_images_log = [img.name for img in images[:min(5, len(images))]] # Log up to 5 samples
+        logging.info(f"[{prefix}] Sample images found: {sample_images_log}")
+    else:
+        logging.warning(f"[{prefix}] No images found in {image_dir}.")
+    
     logging.info(f"{len(images)}개의 {prefix} 이미지 발견")
     
     # 샘플 이미지 몇 개 로깅
@@ -361,7 +368,7 @@ def find_best_match_for_product(product_tokens: List[str],
         (가장 유사한 이미지 경로, 유사도 점수) 튜플 또는 None
     """
     best_match = None
-    best_score = 0
+    best_score = -1.0 # Initialize with a value lower than any possible score
     
     if used_images is None:
         used_images = set()
@@ -369,6 +376,7 @@ def find_best_match_for_product(product_tokens: List[str],
     # 상품 토큰 정보 로깅
     if product_tokens:
         logging.debug(f"매칭 시도 - 제품 토큰: {product_tokens}")
+    logging.debug(f"Using similarity_threshold: {similarity_threshold} for this product.") # Log threshold being used
     
     # 이미지 수와 사용된 이미지 수 로깅
     available_images = len(image_info) - len(used_images)
@@ -389,9 +397,21 @@ def find_best_match_for_product(product_tokens: List[str],
             # Store path, score, and clean name for logging
             match_scores.append((img_path, similarity, info['clean_name']))
         
-        if similarity > best_score and similarity >= similarity_threshold:
-            best_score = similarity
-            best_match = img_path
+        # if similarity > best_score and similarity >= similarity_threshold: # Old logic
+        #     best_score = similarity
+        #     best_match = img_path
+        if similarity >= similarity_threshold:
+            if similarity > best_score:
+                best_score = similarity
+                best_match = img_path
+            elif similarity == best_score:
+                # If scores are equal, prefer .jpg over .png 
+                # if current best_match is a .png and new one is .jpg
+                if best_match and Path(img_path).suffix.lower() == ".jpg" and Path(best_match).suffix.lower() == ".png":
+                    # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
+                    best_match = img_path
+                    # best_score remains the same
+                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match).name}'.")
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
@@ -704,15 +724,34 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         # 1) Primary key: Matching.image_threshold  (defined in config.ini)
         # 2) Secondary key: ImageMatching.minimum_match_confidence
         # 3) Fallback: 0.1  (legacy default)
+        
+        # Revised robust config reading
+        similarity_threshold_main = None
+        similarity_threshold_img_matching = None
+        
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_threshold',
-                                                  fallback=config.getfloat('ImageMatching', 'minimum_match_confidence',
-                                                                           fallback=0.1))
+            if config.has_option('Matching', 'image_threshold'):
+                similarity_threshold_main = config.getfloat('Matching', 'image_threshold')
+                logging.debug(f"Read similarity_threshold_main: {similarity_threshold_main}")
         except (configparser.Error, ValueError) as e:
-            logging.warning(f"이미지 매칭 임계값 설정 오류: {e}. 기본값 0.1을 사용합니다.")
-            similarity_threshold = 0.1
+            logging.warning(f"Could not read [Matching] image_threshold: {e}. Will check ImageMatching section.")
 
-        logging.info(f"이미지 매칭 유사도 임계값: {similarity_threshold}")
+        try:
+            if config.has_option('ImageMatching', 'minimum_match_confidence'):
+                similarity_threshold_img_matching = config.getfloat('ImageMatching', 'minimum_match_confidence')
+                logging.debug(f"Read similarity_threshold_img_matching: {similarity_threshold_img_matching}")
+        except (configparser.Error, ValueError) as e:
+            logging.warning(f"Could not read [ImageMatching] minimum_match_confidence: {e}.")
+
+        if similarity_threshold_main is not None:
+            similarity_threshold = similarity_threshold_main
+        elif similarity_threshold_img_matching is not None:
+            similarity_threshold = similarity_threshold_img_matching
+        else:
+            similarity_threshold = 0.1 # Default fallback
+            logging.warning("Using default similarity_threshold of 0.1 as specific values not found or invalid in config.")
+        
+        logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {similarity_threshold}")
         
         # 최적 매치 찾기 (일관성 보장)
         best_matches = find_best_image_matches(
@@ -1048,22 +1087,32 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             final_naver_image_data = None
             naver_product_name_for_log = product_names[idx]
 
+            # 네이버 관련 모든 컬럼 정의
             NAVER_DATA_COLUMNS_TO_CLEAR = [
-                target_col_naver, '네이버 쇼핑 링크', '공급사 상품링크',
-                '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', '공급사명'
+                target_col_naver,          # 이미지
+                '네이버 쇼핑 링크',        # 상품 링크
+                '공급사 상품링크',         # 공급사 링크
+                '기본수량(3)',            # 수량 정보
+                '판매단가(V포함)(3)',     # 가격 정보
+                '가격차이(3)',           # 가격 차이
+                '가격차이(3)(%)',        # 가격 차이 비율
+                '공급사명'               # 공급사 정보
             ]
             
-            naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.55)
+            # 임계값 설정 (더 엄격하게)
+            naver_score_acceptance_threshold = config.getfloat('MatcherConfig', 'IMAGE_DISPLAY_THRESHOLD', fallback=0.45)
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
                 naver_path_from_match, naver_score_from_match = naver_match
 
                 if not isinstance(naver_score_from_match, (float, int)) or naver_score_from_match is None:
-                    logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing data.")
-                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                    logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
+                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                        result_df.at[idx, col_to_clear] = None
                 elif naver_score_from_match < naver_score_acceptance_threshold:
-                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < threshold {naver_score_acceptance_threshold}. Clearing data.")
-                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
+                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < threshold {naver_score_acceptance_threshold}. Clearing all Naver data.")
+                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                        result_df.at[idx, col_to_clear] = None
                 else:
                     # naver_path_from_match is the local disk path found by find_best_image_matches
                     # img_path_obj_dict_entry is metadata for this local disk path from prepare_image_metadata

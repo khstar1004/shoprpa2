@@ -698,6 +698,48 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     input_file_image_map=input_file_image_map
                 )
                 
+                # <<< ADDED: Populate '본사이미지URL' in formatted_df before image integration >>>
+                if '본사이미지URL' not in formatted_df.columns:
+                    formatted_df['본사이미지URL'] = pd.NA # Use pd.NA for consistency
+
+                if original_haereum_image_urls and not formatted_df.empty:
+                    logging.info(f"Populating '본사이미지URL' in formatted_df using {len(original_haereum_image_urls)} scraped Haereum URLs...")
+                    applied_count = 0
+                    for idx, row in formatted_df.iterrows():
+                        # Prefer 'Code' for lookup, fallback to '상품명'
+                        product_code_val = row.get('Code')
+                        product_name_val = row.get('상품명')
+                        
+                        scraped_url_data = None
+                        # Try by product code first
+                        if pd.notna(product_code_val):
+                            # Ensure product_code_key is a string
+                            code_key = str(int(product_code_val)) if isinstance(product_code_val, float) and product_code_val.is_integer() else str(product_code_val).strip()
+                            scraped_url_data = original_haereum_image_urls.get(code_key)
+                        
+                        # Fallback to product name if code lookup failed or code was not present
+                        if not scraped_url_data and pd.notna(product_name_val):
+                            name_key = str(product_name_val).strip()
+                            scraped_url_data = original_haereum_image_urls.get(name_key)
+                            if scraped_url_data:
+                                logging.debug(f"Row {idx}: Used product name '{name_key}' for Haereum URL lookup as Code lookup failed or Code was NA.")
+
+                        actual_url = None
+                        if isinstance(scraped_url_data, dict):
+                            actual_url = scraped_url_data.get('url')
+                        elif isinstance(scraped_url_data, str): # backward compatibility for plain URL strings
+                            actual_url = scraped_url_data
+                            
+                        if actual_url and isinstance(actual_url, str) and actual_url.startswith(('http://', 'https://')):
+                            formatted_df.at[idx, '본사이미지URL'] = actual_url
+                            applied_count += 1
+                        # else:
+                            # Optional: Log if no URL found for a row after trying code and name
+                            # logging.debug(f"Row {idx}: No scraped Haereum URL found via Code ('{product_code_val}') or Name ('{product_name_val}').")
+
+                    logging.info(f"Applied {applied_count} scraped Haereum URLs to '본사이미지URL' column in formatted_df.")
+                # <<< END ADDED BLOCK >>>
+                
                 # Create output directory if it doesn't exist
                 output_dir = config.get('Paths', 'output_dir')
                 os.makedirs(output_dir, exist_ok=True)
@@ -844,7 +886,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                                     new_bosa_image_data.setdefault('product_code', product_code_key)
 
                                                     # If current '본사 이미지' is a dict, update it; otherwise, replace.
-                                                    if isinstance(current_bosa_image_val, dict):
+                                                    # Also ensure we don't overwrite a more complete dict from image_integration with a less complete one.
+                                                    if isinstance(current_bosa_image_val, dict) and current_bosa_image_val.get('local_path'):
+                                                        # If current has a local path, it's likely from image_integration. Prioritize its structure.
+                                                        current_bosa_image_val['url'] = new_bosa_image_data.get('url', current_bosa_image_val.get('url'))
+                                                        current_bosa_image_val['original_path'] = new_bosa_image_data.get('original_path', current_bosa_image_val.get('original_path'))
+                                                        current_bosa_image_val['product_code'] = new_bosa_image_data.get('product_code', current_bosa_image_val.get('product_code'))
+                                                        df_to_save.at[idx, '본사 이미지'] = current_bosa_image_val
+                                                    elif isinstance(current_bosa_image_val, dict):
                                                         current_bosa_image_val.update(new_bosa_image_data)
                                                         df_to_save.at[idx, '본사 이미지'] = current_bosa_image_val
                                                     else: # Replace if not a dict or if it's just a placeholder
@@ -875,8 +924,10 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                                                 'product_name': product_name_val
                                                             }
                                                             if isinstance(haereum_img_data, dict):
-                                                                bosa_img_dict.update(haereum_img_data)
-                                                                bosa_img_dict['url'] = actual_url_val # Ensure URL is correct
+                                                                # Merge, ensuring URL is the primary one
+                                                                temp_data = haereum_img_data.copy()
+                                                                temp_data['url'] = actual_url_val
+                                                                bosa_img_dict.update(temp_data)
                                                             df_to_save.at[idx, '본사 이미지'] = bosa_img_dict
                                                         applied_count += 1
                                                 
