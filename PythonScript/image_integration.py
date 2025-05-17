@@ -69,37 +69,99 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     
     for img_path in images:
         # 이미지 파일명에서 상품명 추출
-        img_name = img_path.stem
-        original_img_name = img_name
-        
+        img_name_stem = img_path.stem
+        original_name_for_metadata = img_name_stem # Keep this for 'original_name' field
+
         # 접두사 제거
-        if img_name.startswith(prefix):
-            img_name = img_name[len(prefix):]  # 접두사 제거
+        current_name_processing = img_name_stem
+        if current_name_processing.startswith(prefix):
+            current_name_processing = current_name_processing[len(prefix):] # e.g., "________________CODE123_hash" or "ProductName_CODE123_hash"
+
+        # This will be the 'clean_name' in metadata and used for tokenization
+        clean_name_for_tokens = current_name_processing
+
+        # 1. Remove hash part from the end first
+        # A hash is typically alphanumeric, 8-10 chars, not starting with 'CODE' (case-insensitive)
+        # and the part before it is not just 'nobg'
+        parts = clean_name_for_tokens.split('_')
+        potential_hash = parts[-1]
+        if len(parts) > 1 and 8 <= len(potential_hash) <= 10 and potential_hash.isalnum() and not potential_hash.lower().startswith("code"):
+            # Further check: ensure it's not something like ProductName_CODE_hash
+            # Check part before potential_hash. If it's CODE<something>, then potential_hash is likely part of name.
+            part_before_hash = parts[-2].lower() if len(parts) > 1 else ""
+            if not (part_before_hash.startswith("code") and potential_hash.isdigit()): # Avoid treating CODE123_45 as CODE123 and hash 45
+                 # Avoid removing hash if it results in name ending with _nobg
+                name_without_hash = '_'.join(parts[:-1])
+                if not name_without_hash.lower().endswith("_nobg"):
+                    clean_name_for_tokens = name_without_hash
+                # else: keep hash if removing it exposes _nobg, e.g. naver_product_nobg_hash -> naver_product_nobg
+
+        # 2. Extract meaningful parts: product name (if any) and code (if any)
+        # Example "________________CODE123" or "ProductName_CODE123" or "ProductName"
+        processed_name_part = clean_name_for_tokens
+        extracted_code_str = ""
+
+        # Try to find a _CODE<digits> or _CODE<alphanum> pattern
+        code_search = re.search(r'(?:_|^)(CODE([A-Za-z0-9]+))', processed_name_part) # Looks for _CODE... or CODE... at start
         
-        # 해시 부분 제거 - 파일명 끝에 있는 해시값 (언더스코어 + 알파벳/숫자 10자리 이내)
-        # Ensure img_name is not empty and is primarily descriptive before attempting hash removal if it's too short
-        # or looks like a hash itself after prefix removal.
-        name_after_prefix = img_name # Save for tokenization if it's mostly a hash
+        if code_search:
+            full_code_match_str = code_search.group(1) # e.g., "CODE123" or "CODEA1B2"
+            extracted_code_str = full_code_match_str
+            
+            # Get the part of the name before the full code match
+            # Split by the found full_code_match_str. We need to be careful with regex splitting.
+            # Example: "ProductName_CODE123", full_code_match_str = "CODE123"
+            # We want "ProductName"
+            # Example: "_________________CODE123", we want "_________________"
+            # Find the start index of the code match to split
+            match_start_index = code_search.start(1)
+            if match_start_index > 0 and processed_name_part[match_start_index-1] == '_':
+                 # Include the underscore in the split to remove it from the name part
+                name_part_candidate = processed_name_part[:match_start_index-1]
+            else:
+                name_part_candidate = processed_name_part[:match_start_index]
+            
+            processed_name_part = name_part_candidate
+        # else: no _CODE... found, processed_name_part remains as is (e.g. for Kogift/Naver)
 
-        if '_' in img_name and len(img_name) > 10: # Only attempt splitting if long enough and contains underscore
-            parts = img_name.split('_')
-            # 마지막 부분이 해시처럼 생겼는지 확인
-            if len(parts) > 1 and len(parts[-1]) <= 10 and parts[-1].isalnum():
-                img_name = '_'.join(parts[:-1])
-            # If after this, img_name is empty, it means the original was prefix_hash, so use name_after_prefix
-            if not img_name.strip(): 
-                img_name = name_after_prefix
-        elif len(img_name) <=10 and img_name.isalnum(): # If short and alphanumeric after prefix, might be just a hash
-            # In this case, we don't want to tokenize it if it was the *only* part of the name.
-            # We let it pass to tokenization, but it will likely result in few/no useful tokens if it's a pure hash.
-            # This is better than making it an empty string.
-            pass # Let short alphanumeric names (potential hashes) pass through
+        # Clean up the extracted name_part (remove leading/trailing underscores, replace multiple with single)
+        if processed_name_part: # Only if it's not empty
+            processed_name_part = re.sub(r'^_*|_*$', '', processed_name_part) # Remove leading/trailing underscores
+            processed_name_part = re.sub(r'_+', '_', processed_name_part)    # Replace multiple underscores with one
+            if processed_name_part == '_': # If it became just a single underscore
+                processed_name_part = ""
 
-        # 이미지 이름을 토큰화하여 저장 (공백과 밑줄로 분리)
-        # Use img_name which has had descriptive parts preserved as much as possible
-        # If img_name became empty or is just a hash, tokens might be empty, which is correct in that case.
-        clean_name_for_token = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in img_name.lower()])
-        tokens = [t.lower() for t in clean_name_for_token.replace('_', ' ').split() if len(t) > 1]
+        # Combine cleaned name_part and extracted_code_str
+        if processed_name_part:
+            if extracted_code_str:
+                # If prefix is haereum_, usually product name comes first, then CODE.
+                # For others, the CODE might be embedded. For now, simple space join.
+                clean_name_for_tokens = f"{processed_name_part} {extracted_code_str}"
+            else:
+                clean_name_for_tokens = processed_name_part
+        elif extracted_code_str: # Only code part was found
+            clean_name_for_tokens = extracted_code_str
+        else: # Neither part is useful, fallback
+            # clean_name_for_tokens is already current_name_processing (after prefix, before hash/code logic)
+            # if it's blank or all underscores, fallback further
+            if not re.sub(r'_*', '', clean_name_for_tokens).strip(): # If only underscores or empty
+                 clean_name_for_tokens = img_path.stem # Absolute fallback to original stem (includes prefix)
+
+        # Final safety: if clean_name_for_tokens is empty, use stem.
+        if not clean_name_for_tokens.strip():
+            clean_name_for_tokens = img_path.stem
+            logging.warning(f"Clean name for {img_path.name} became empty, falling back to stem: {clean_name_for_tokens}")
+
+        # Tokenize this 'clean_name_for_tokens'
+        # Replace underscores with spaces for tokenization as well
+        name_for_actual_tokenization = clean_name_for_tokens.replace('_', ' ')
+        final_clean_name_alphanum = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in name_for_actual_tokenization.lower()])
+        tokens = [t for t in final_clean_name_alphanum.split() if len(t) > 1] # Keep single char if it's a digit or key Korean char later? For now >1.
+        
+        if not tokens and len(final_clean_name_alphanum.split()) > 0: # if all tokens were short
+            tokens = [t for t in final_clean_name_alphanum.split() if t] # take all non-empty tokens
+
+        logging.debug(f"Image: {img_path.name}, Prefix: {prefix}, Original stem: {img_name_stem}, After prefix: {current_name_processing}, Derived clean_name: '{clean_name_for_tokens}', Tokens: {tokens}")
         
         # 원본 이미지 URL 추출 시도 (로그에서 추출한 URL 정보)
         original_url = None
@@ -126,8 +188,8 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
                 logging.debug(f"Extracted URL for Haereum image: {original_url}")
         
         image_info[str(img_path)] = {
-            'original_name': original_img_name,
-            'clean_name': img_name,
+            'original_name': original_name_for_metadata, # This is full stem e.g. haereum_...
+            'clean_name': clean_name_for_tokens, # This is the improved name used for matching
             'tokens': tokens,
             'path': img_path,
             'url': original_url  # 추출한 URL 저장
@@ -960,16 +1022,45 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                      # Handle case where no match was found *and* no prior data existed
                      # Check if we have a scraped URL even without a match
                      if scraped_url:
-                          image_data = {
-                              'local_path': None, # No local file matched
-                              'source': 'haereum',
-                              'url': scraped_url, # Use the scraped URL
-                              'original_path': None,
-                              'score': 0.5, # Lower score as no local match
-                              'product_name': product_names[idx]
-                          }
-                          result_df.at[idx, target_col_haereum] = image_data
-                          logging.info(f"Row {idx}: Created Haoreum image data using scraped URL only (no text/image match found).")
+                          # Try to find the original JPG path using the scraped_url's hash
+                          target_local_jpg_path_from_hash = None
+                          calculated_url_hash = hashlib.md5(scraped_url.encode()).hexdigest()[:10]
+                          
+                          for img_file_str_path, meta_info in haereum_images.items():
+                              img_p_obj = meta_info['path']
+                              img_filename = img_p_obj.name
+                              
+                              if calculated_url_hash in img_filename and \
+                                 img_filename.startswith('haereum_') and \
+                                 img_filename.endswith('.jpg') and \
+                                 '_nobg' not in img_filename:
+                                  target_local_jpg_path_from_hash = str(img_p_obj)
+                                  logging.info(f"Row {idx}: Haereum - Found original JPG '{target_local_jpg_path_from_hash}' for scraped URL {scraped_url} via hash {calculated_url_hash}")
+                                  break
+
+                          if target_local_jpg_path_from_hash:
+                              image_data = {
+                                  'local_path': target_local_jpg_path_from_hash,
+                                  'source': 'haereum',
+                                  'url': scraped_url,
+                                  'original_path': target_local_jpg_path_from_hash, # Original JPG path
+                                  'score': 0.55, # Higher than pure fallback, lower than text match
+                                  'product_name': product_names[idx]
+                              }
+                              result_df.at[idx, target_col_haereum] = image_data
+                              logging.info(f"Row {idx}: Haoreum image data created using scraped URL and hash-matched original JPG: {target_local_jpg_path_from_hash}")
+                          else:
+                              # Fallback if local JPG not found via hash
+                              image_data = {
+                                  'local_path': None, # No local file matched by find_best_match_for_product or hash
+                                  'source': 'haereum',
+                                  'url': scraped_url, # Use the scraped URL
+                                  'original_path': None,
+                                  'score': 0.5, # Lower score as no local match confirmed
+                                  'product_name': product_names[idx]
+                              }
+                              result_df.at[idx, target_col_haereum] = image_data
+                              logging.warning(f"Row {idx}: Haoreum image data created using scraped URL only (no text/image match, no hash match to original JPG for hash {calculated_url_hash}).")
                      elif target_col_haereum in result_df.columns:
                          current_val = result_df.loc[idx, target_col_haereum]
                          if not isinstance(current_val, dict): # Avoid overwriting existing dicts
