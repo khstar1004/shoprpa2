@@ -20,8 +20,11 @@ import gc
 import platform
 import json
 
+# Add the parent directory of the script to the Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 # Add path_fix import
-from PythonScript.path_fix import fix_image_directories, update_env_variables
+from .path_fix import fix_image_directories, update_env_variables
 
 # --- Import Refactored Modules ---
 from matching_logic import match_products, post_process_matching_results
