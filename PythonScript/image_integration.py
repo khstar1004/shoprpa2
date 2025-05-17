@@ -1195,122 +1195,117 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
             # --- Process Kogift Image ---
             target_col_kogift = '고려기프트 이미지'
-            
-            # Check if there's actual Kogift product information before trying to match images
             has_kogift_product_info = kogift_product_info_exists[idx]  # Use pre-computed value
-            
             logging.debug(f"Row {idx}: Kogift product info exists: {has_kogift_product_info}")
-            
-            # Only process Koreagift image if product info exists
-            if has_kogift_product_info:
-                if kogift_match:
-                    kogift_path, kogift_score = kogift_match
+
+            if kogift_match:
+                kogift_path, kogift_score = kogift_match
+                product_name_for_log = product_names[idx] if idx < len(product_names) else "Unknown Product"
+
+                assign_kogift_image = False
+                if has_kogift_product_info:
+                    # Product info exists.
+                    # ID-based matches (score approx 1.0) are always accepted.
+                    # Enhanced matches (typically > 0.1 if good) are accepted.
+                    # Text matches (can be very low, e.g., 0.01-0.05) are accepted but with a warning if very low.
+                    if kogift_score >= 0.99: # Likely ID match or very strong enhanced match
+                        assign_kogift_image = True
+                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on high score ({kogift_score:.3f}) with product info present.")
+                    elif kogift_score >= 0.1: # Decent enhanced or text match
+                        assign_kogift_image = True
+                        logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on moderate score ({kogift_score:.3f}) with product info present.")
+                    else: # Very low text match (e.g. < 0.1)
+                        assign_kogift_image = True # Still assign as product info exists
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with very low score ({kogift_score:.3f}) because product info is present. Manual review suggested.")
+                else:
+                    # No Kogift product info for this row.
+                    # Only assign if the match is strong (ID-based or high-confidence enhanced).
+                    # Threshold here should be higher, e.g., 0.4 or 0.5 for enhanced, or ~1.0 for ID.
+                    # If it's a text match (find_best_match_for_product), score is likely low.
+                    kogift_no_info_acceptance_threshold = 0.4 
+                    if kogift_score >= kogift_no_info_acceptance_threshold : # Accept if score is reasonably high
+                        assign_kogift_image = True
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with score {kogift_score:.3f} despite MISSING Kogift product info. Match was strong enough.")
+                    else:
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below threshold {kogift_no_info_acceptance_threshold} AND no Kogift product info exists for this row.")
+                        assign_kogift_image = False
+
+                if assign_kogift_image:
                     img_path_obj = kogift_images.get(kogift_path, {}).get('path')
                     if not img_path_obj:
                         logging.warning(f"Row {idx}: Kogift match found ({kogift_path}) but no corresponding image path in metadata.")
-                        # Check existing data before setting to '-'
-                        existing_kogift_data = row_data.get(target_col_kogift)
-                        if not isinstance(existing_kogift_data, dict):
+                        if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
                              result_df.at[idx, target_col_kogift] = '-'
-                        continue # Skip Kogift if path is missing
+                        # continue # Skip Kogift if path is missing - NO, go to Naver section
+                    else:
+                        img_path = str(img_path_obj)
+                        existing_kogift_data = row_data.get(target_col_kogift)
+                        web_url = None
+                        if isinstance(existing_kogift_data, dict):
+                            potential_url = existing_kogift_data.get('url')
+                            if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
+                                web_url = potential_url
+                                logging.debug(f"Row {idx}: Preserving existing Kogift URL: {web_url[:60]}...")
                         
-                    img_path = str(img_path_obj)
-                    
-                    # Prioritize URL from existing data if available
-                    existing_kogift_data = row_data.get(target_col_kogift)
-                    web_url = None
-                    if isinstance(existing_kogift_data, dict):
-                        potential_url = existing_kogift_data.get('url')
-                        if isinstance(potential_url, str) and potential_url.startswith(('http://', 'https://')):
-                            web_url = potential_url
-                            logging.debug(f"Row {idx}: Preserving existing Kogift URL: {web_url[:60]}...")
-                    
-                    # URL이 없으면 Kogift 이미지에 대한 URL 처리
-                    if not web_url:
-                        # 이미지 메타데이터에서 URL 확인
-                        web_url = kogift_images.get(kogift_path, {}).get('url')
-                        
-                        # URL이 여전히 없으면 original_path에서 추출 시도
-                        if not web_url and 'original_path' in kogift_images.get(kogift_path, {}):
-                            orig_path = kogift_images[kogift_path]['original_path']
-                            if isinstance(orig_path, str) and 'upload' in orig_path:
-                                parts = str(orig_path).split('upload/')
-                                if len(parts) > 1:
-                                    # 여러 확장자 시도
-                                    for ext in ['.jpg', '.png', '.gif']:
-                                        if ext in parts[1]:
-                                            web_url = f"https://koreagift.com/ez/upload/{parts[1]}"
-                                            break
-                            
-                        # URL이 여전히 없으면 빈 문자열 사용
                         if not web_url:
-                            web_url = ""
-                            logging.warning(f"Row {idx}: Could not find or generate URL for Kogift image {img_path}")
+                            web_url = kogift_images.get(kogift_path, {}).get('url')
+                            if not web_url and 'original_path' in kogift_images.get(kogift_path, {}):
+                                orig_path = kogift_images[kogift_path]['original_path']
+                                if isinstance(orig_path, str) and 'upload' in orig_path:
+                                    parts = str(orig_path).split('upload/')
+                                    if len(parts) > 1:
+                                        for ext in ['.jpg', '.png', '.gif']:
+                                            if ext in parts[1]:
+                                                web_url = f"https://koreagift.com/ez/upload/{parts[1]}"
+                                                break
+                            if not web_url:
+                                web_url = ""
+                                logging.warning(f"Row {idx}: Could not find or generate URL for Kogift image {img_path}")
 
-                    image_data = {
-                        'local_path': img_path,
-                        'source': 'kogift',
-                        'url': web_url, # Use preserved or empty URL
-                        'original_path': str(img_path),
-                        'score': kogift_score,
-                        'product_name': product_names[idx] # 상품명 추가
-                    }
-                    result_df.at[idx, target_col_kogift] = image_data # Use .at for scalar assignment
-                else:
-                    # If Koreagift product info exists but no matching image was found
-                    logging.debug(f"Row {idx}: Koreagift product info exists but no image match found")
-                    
-                    # IMPORTANT FIX: Check if there's a URL from the link column that we can use
-                    # to create a proper image dictionary instead of just using '-'
+                        image_data = {
+                            'local_path': img_path,
+                            'source': 'kogift',
+                            'url': web_url,
+                            'original_path': str(img_path),
+                            'score': kogift_score,
+                            'product_name': product_name_for_log
+                        }
+                        result_df.at[idx, target_col_kogift] = image_data
+                else: # assign_kogift_image is False
+                    if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                        result_df.at[idx, target_col_kogift] = '-'
+            
+            else: # No kogift_match found by find_best_image_matches
+                product_name_for_log = product_names[idx] if idx < len(product_names) else "Unknown Product"
+                logging.debug(f"Row {idx} (Product: '{product_name_for_log}'): No Kogift image match from find_best_image_matches.")
+                if has_kogift_product_info:
+                    # Product info exists, but no image match. Try to create placeholder from link.
+                    logging.debug(f"Row {idx}: Koreagift product info exists but no image match found (after find_best_image_matches).")
                     kogift_link_col = '고려기프트 상품링크'
                     if kogift_link_col in row_data and isinstance(row_data[kogift_link_col], str) and row_data[kogift_link_col].strip() not in ['', '-', 'None', None]:
                         kogift_url = row_data[kogift_link_col].strip()
-                        
-                        # Try to extract image URL from product URL
-                        img_url = None
-                        
-                        # Common patterns for Kogift images
+                        img_url_from_product_link = None
                         if 'koreagift.com' in kogift_url:
-                            # Extract product ID from the URL
-                            product_id_match = re.search(r'p_idx=(\d+)', kogift_url)
-                            if product_id_match:
-                                product_id = product_id_match.group(1)
-                                # Construct a probable image URL based on common patterns
-                                img_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}_0.jpg"
-                                logging.debug(f"Row {idx}: Generated Kogift image URL from product link: {img_url}")
+                            product_id_match_kg = re.search(r'p_idx=(\d+)', kogift_url)
+                            if product_id_match_kg:
+                                product_id_kg = product_id_match_kg.group(1)
+                                img_url_from_product_link = f"https://koreagift.com/ez/upload/mall/shop_{product_id_kg}_0.jpg"
+                                logging.debug(f"Row {idx}: Generated Kogift image URL from product link: {img_url_from_product_link}")
                         
-                        if img_url:
-                            # Create a minimal image data dictionary with the URL
-                            # This doesn't have a local_path but at least has a URL that can be used later
-                            img_data = {
-                                'source': 'kogift',
-                                'url': img_url,
-                                'score': 0.5,  # Lower confidence score since this is a generated URL
-                                'product_name': product_names[idx]
-                            }
+                        if img_url_from_product_link:
+                            img_data = {'source': 'kogift', 'url': img_url_from_product_link, 'score': 0.5, 'product_name': product_name_for_log}
                             result_df.at[idx, target_col_kogift] = img_data
-                            logging.info(f"Row {idx}: Created Kogift image data with generated URL")
+                            logging.info(f"Row {idx}: Created Kogift image data with generated URL from product link (no direct image match).")
                         else:
-                            # 상품 링크 자체를 URL로 사용하는 방법 추가
-                            img_data = {
-                                'source': 'kogift',
-                                'url': kogift_url,  # 이미지 URL이 생성되지 않으면 상품 링크 자체를 사용
-                                'score': 0.3,  # 더 낮은 신뢰도 점수
-                                'product_name': product_names[idx],
-                                'is_product_url': True  # 이것이 실제 이미지 URL이 아닌 상품 URL임을 표시
-                            }
+                            img_data = {'source': 'kogift', 'url': kogift_url, 'score': 0.3, 'product_name': product_name_for_log, 'is_product_url': True}
                             result_df.at[idx, target_col_kogift] = img_data
-                            logging.info(f"Row {idx}: Created Kogift image data using product URL as fallback")
-                    else:
-                        # No link to use for generating a URL, use '-'
-                        if target_col_kogift in result_df.columns:
-                            current_val = result_df.loc[idx, target_col_kogift]
-                            if not isinstance(current_val, dict):
-                                result_df.loc[idx, target_col_kogift] = '-'
-            else:
-                # If no Koreagift product info exists, ensure no image is assigned
-                logging.debug(f"Row {idx}: No Koreagift product info exists, removing any image")
-                result_df.loc[idx, target_col_kogift] = '-'
+                            logging.info(f"Row {idx}: Created Kogift image data using product URL as fallback (no direct image match, no generated URL).")
+                    else: # No link to use for generating a URL
+                        if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                            result_df.loc[idx, target_col_kogift] = '-'
+                else: # No Kogift product info AND no image match
+                    if target_col_kogift in result_df.columns and not isinstance(result_df.at[idx, target_col_kogift], dict):
+                         result_df.loc[idx, target_col_kogift] = '-'
 
             # --- Process Naver Image ---
             target_col_naver = '네이버 이미지'
@@ -1374,79 +1369,114 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                     source_of_url = "dataframe_cell_pstatic_url"
                                     logging.debug(f"Row {idx}: Naver - Using pstatic.net URL from DataFrame cell: {web_url}")
 
-                        # Priority 2: If not found above, try product_id from existing_naver_cell_data to generate URL
-                        if not web_url and isinstance(existing_naver_cell_data, dict):
-                            product_id_from_df_cell = existing_naver_cell_data.get('product_id')
-                            if product_id_from_df_cell:
-                                # Attempt to get original extension if available from the cell's URL
-                                original_extension = ".jpg" # Default
-                                cell_url_for_ext = existing_naver_cell_data.get('url')
-                                if isinstance(cell_url_for_ext, str) and '.' in cell_url_for_ext.split('/')[-1]:
-                                    ext_part = cell_url_for_ext.split('.')[-1].split('?')[0]
-                                    if ext_part.lower() in ['jpg', 'jpeg', 'png', 'gif']:
-                                        original_extension = '.' + ext_part.lower()
-                                
-                                generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_from_df_cell}/{product_id_from_df_cell}{original_extension}"
-                                web_url = generated_url_candidate
-                                source_of_url = "generated_from_df_cell_product_id"
-                                logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from DataFrame cell product_id {product_id_from_df_cell}: {web_url}")
+                        # Determine product_id for URL construction
+                        product_id_for_url = None
+                        if isinstance(existing_naver_cell_data, dict) and existing_naver_cell_data.get('product_id'):
+                            product_id_for_url = existing_naver_cell_data.get('product_id')
+                            source_of_id = "dataframe_cell"
+                        elif img_path_obj_dict_entry.get('product_id'):
+                            product_id_for_url = img_path_obj_dict_entry.get('product_id')
+                            source_of_id = "prepare_image_metadata"
+                        else:
+                            # Try to parse product_id from filename if not found elsewhere
+                            # Example Naver filename pattern: naver_somechars_PRODUCTID_somehash.jpg
+                            # Or from crawl_naver_api.py: naver_PRODUCTID_hash.jpg (if product_name was short)
+                            # Or naver_PRODNAMEHASH_APIHASH.jpg
+                            filename_stem = Path(img_path_actual_str).stem
+                            # Pattern: naver_ (optional initial hash part) _ (product_id) _ (final hash)
+                            # Or more simply, if it's naver_productid_hash
+                            match_simple_id = re.match(r"naver_([a-zA-Z0-9]+)_([a-f0-9]{8,})", filename_stem)
+                            if match_simple_id:
+                                # Check if the first group looks like a product ID (often numeric or alphanumeric)
+                                potential_pid = match_simple_id.group(1)
+                                # Heuristic: Naver product IDs are often numeric and long, or mixed with few letters.
+                                if len(potential_pid) > 5 and (potential_pid.isdigit() or sum(c.isdigit() for c in potential_pid) > len(potential_pid) / 2):
+                                    product_id_for_url = potential_pid
+                                    source_of_id = "filename_parsed_simple"
+                                    logging.debug(f"Row {idx}: Naver - Parsed product_id '{product_id_for_url}' from simple filename pattern.")
+                            if not product_id_for_url:
+                                # Try complex pattern naver_namehash_PRODUCTID_apihash
+                                match_complex_id = re.match(r"naver_[a-f0-9]+_([a-zA-Z0-9]+)_[a-f0-9]{8,}", filename_stem)
+                                if match_complex_id:
+                                    potential_pid_complex = match_complex_id.group(1)
+                                    if len(potential_pid_complex) > 5 and (potential_pid_complex.isdigit() or sum(c.isdigit() for c in potential_pid_complex) > len(potential_pid_complex) / 2):
+                                        product_id_for_url = potential_pid_complex
+                                        source_of_id = "filename_parsed_complex"
+                                        logging.debug(f"Row {idx}: Naver - Parsed product_id '{product_id_for_url}' from complex filename pattern.")
+                        
+                        if product_id_for_url:
+                            logging.info(f"Row {idx}: Naver - Determined product_id '{product_id_for_url}' (source: {source_of_id}) for URL construction.")
+                        else:
+                            logging.warning(f"Row {idx}: Naver - Could not determine product_id for URL construction from any source for local file '{os.path.basename(img_path_actual_str)}'.")
 
-                        # Priority 3: If not found above, try direct image URL from crawled naver_images metadata (from prepare_image_metadata)
+
+                        # Priority 2: If not found above, try product_id to generate URL
+                        if not web_url and product_id_for_url:
+                            original_extension = ".jpg" # Default
+                            # Try to get extension from existing URL in cell, or from local file
+                            url_for_ext_source = existing_naver_cell_data.get('url') if isinstance(existing_naver_cell_data, dict) else None
+                            if not url_for_ext_source and img_path_obj_dict_entry.get('url'): # from prepare_image_metadata
+                                url_for_ext_source = img_path_obj_dict_entry.get('url')
+
+                            if url_for_ext_source and isinstance(url_for_ext_source, str) and '.' in url_for_ext_source.split('/')[-1]:
+                                ext_part = url_for_ext_source.split('.')[-1].split('?')[0].lower()
+                                if ext_part in ['jpg', 'jpeg', 'png', 'gif']:
+                                    original_extension = '.' + ext_part
+                            elif img_path_actual_str: # Fallback to local file extension
+                                _, local_ext = os.path.splitext(img_path_actual_str)
+                                if local_ext.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+                                    original_extension = local_ext.lower()
+                            
+                            generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_for_url}/{product_id_for_url}{original_extension}"
+                            if "pstatic.net/front/" in generated_url_candidate: # Should not happen with this construction
+                                 logging.warning(f"Row {idx}: Naver - Generated URL '{generated_url_candidate}' still contains 'front/'. Rejecting.")
+                            else:
+                                web_url = generated_url_candidate
+                                source_of_url = f"generated_from_product_id_{source_of_id}"
+                                logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_for_url}: {web_url}")
+                        
+                        # Priority 3 & 4 combined (URL from metadata or generated from metadata PID) are now covered by the above logic
+                        # Fallback to metadata URL if product_id based generation failed AND web_url is still not set
                         if not web_url:
                             metadata_url = img_path_obj_dict_entry.get('url') # URL from prepare_image_metadata
                             if isinstance(metadata_url, str) and metadata_url.startswith('http') and "pstatic.net" in metadata_url:
-                                if "pstatic.net/front/" in metadata_url:
-                                     logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from prepare_image_metadata: {metadata_url}")
-                                else:
+                                if "pstatic.net/front/" in metadata_url and not has_valid_local_path: # Check has_valid_local_path from naver_data_cleaner context
+                                     logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from prepare_image_metadata: {metadata_url} (no valid local path either)")
+                                elif "pstatic.net/front/" in metadata_url and Path(img_path_actual_str).exists(): # If local path is good, front URL is acceptable
+                                    web_url = metadata_url
+                                    source_of_url = "prepare_image_metadata_pstatic_front_url_with_local"
+                                    logging.debug(f"Row {idx}: Naver - Using pstatic.net/front/ URL from prepare_image_metadata (local file exists): {web_url}")
+                                else: # Not a front URL or front URL with valid local path
                                     web_url = metadata_url
                                     source_of_url = "prepare_image_metadata_pstatic_url"
                                     logging.debug(f"Row {idx}: Naver - Using pstatic.net URL from prepare_image_metadata: {web_url}")
-                        
-                        # Priority 4: Fallback to product_id from prepare_image_metadata (less likely to be populated for Naver correctly here)
-                        if not web_url:
-                            product_id_from_meta = img_path_obj_dict_entry.get('product_id')
-                            if product_id_from_meta:
-                                # Attempt to get original extension from the local file name if possible
-                                local_file_name = os.path.basename(img_path_actual_str)
-                                _, local_ext = os.path.splitext(local_file_name)
-                                if local_ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif']:
-                                    local_ext = '.jpg' # default if local extension is weird
-                                generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_from_meta}/{product_id_from_meta}{local_ext}"
-                                web_url = generated_url_candidate
-                                source_of_url = "generated_from_prepare_metadata_product_id"
-                                logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from prepare_image_metadata product_id {product_id_from_meta} with ext {local_ext}: {web_url}")
+
                         # --- END STRATEGY ---
 
                         if web_url: # Only proceed if we have a pstatic.net URL
                             final_naver_image_data = {
-                                'local_path': img_path_actual_str, # This is the matched local file
-                                'url': web_url, # This should now be a pstatic.net URL
+                                'local_path': img_path_actual_str, 
+                                'url': web_url, 
                                 'score': naver_score_from_match,
                                 'source': 'naver',
-                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), # from prepare_image_metadata
+                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), 
                                 'product_name': naver_product_name_for_log,
-                                'product_id': existing_naver_cell_data.get('product_id') if isinstance(existing_naver_cell_data, dict) else img_path_obj_dict_entry.get('product_id'), # Preserve product_id
-                                'url_source_debug': source_of_url # For debugging where the URL came from
+                                'product_id': product_id_for_url, # Use the determined product_id
+                                'url_source_debug': source_of_url 
                             }
-                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}), Score: {naver_score_from_match:.3f}")
-                        else: # FAILED TO SECURE A PSTANIC.NET WEB_URL
-                            # If we matched a local file, but couldn't get a pstatic.net URL,
-                            # still use the local file. The URL will be None.
+                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
+                        else: 
                             logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but FAILED to secure a pstatic.net web_url. Using local file with no web_url.")
                             final_naver_image_data = {
                                 'local_path': img_path_actual_str,
-                                'url': None, # No pstatic.net URL found
+                                'url': None, 
                                 'score': naver_score_from_match,
                                 'source': 'naver',
                                 'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str),
                                 'product_name': naver_product_name_for_log,
-                                # Try to get product_id from existing cell, otherwise None.
-                                'product_id': existing_naver_cell_data.get('product_id') if isinstance(existing_naver_cell_data, dict) else None,
-                                'url_source_debug': "failed_to_find_pstatic_url"
+                                'product_id': product_id_for_url, # Store product_id even if URL failed
+                                'url_source_debug': f"failed_to_find_pstatic_url_pid_source_{source_of_id if 'source_of_id' in locals() else 'unknown'}"
                             }
-                            # Previously, this block would clear all NAVER_DATA_COLUMNS_TO_CLEAR
-                            # and final_naver_image_data would effectively be None.
-                            # Now, we construct final_naver_image_data to preserve the local image match.
                     else: # img_path_actual (local file) does not exist or is invalid
                         logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but its local path '{img_path_actual}' is invalid/missing. Clearing Naver data.")
                         for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
