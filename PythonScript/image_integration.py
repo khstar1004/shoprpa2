@@ -71,128 +71,120 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         # 이미지 파일명에서 상품명 추출
         img_name_stem = img_path.stem
         original_name_for_metadata = img_name_stem # Keep this for 'original_name' field
+        logger.debug(f"[{prefix}] Processing image stem: {img_name_stem}")
 
         # 접두사 제거
         current_name_processing = img_name_stem
         if current_name_processing.startswith(prefix):
-            current_name_processing = current_name_processing[len(prefix):] # e.g., "________________CODE123_hash" or "ProductName_CODE123_hash"
+            current_name_processing = current_name_processing[len(prefix):]
+        logger.debug(f"[{prefix}] Name after prefix removal: {current_name_processing}")
 
         # This will be the 'clean_name' in metadata and used for tokenization
         clean_name_for_tokens = current_name_processing
 
         # 1. Remove hash part from the end first
-        # A hash is typically alphanumeric, 8-10 chars, not starting with 'CODE' (case-insensitive)
-        # and the part before it is not just 'nobg'
+        name_after_prefix_and_hash_removal = clean_name_for_tokens
         parts = clean_name_for_tokens.split('_')
         potential_hash = parts[-1]
-        if len(parts) > 1 and 8 <= len(potential_hash) <= 10 and potential_hash.isalnum() and not potential_hash.lower().startswith("code"):
-            # Further check: ensure it's not something like ProductName_CODE_hash
-            # Check part before potential_hash. If it's CODE<something>, then potential_hash is likely part of name.
-            part_before_hash = parts[-2].lower() if len(parts) > 1 else ""
-            if not (part_before_hash.startswith("code") and potential_hash.isdigit()): # Avoid treating CODE123_45 as CODE123 and hash 45
-                 # Avoid removing hash if it results in name ending with _nobg
-                name_without_hash = '_'.join(parts[:-1])
-                if not name_without_hash.lower().endswith("_nobg"):
-                    clean_name_for_tokens = name_without_hash
-                # else: keep hash if removing it exposes _nobg, e.g. naver_product_nobg_hash -> naver_product_nobg
-
-        # 2. Extract meaningful parts: product name (if any) and code (if any)
-        # Example "________________CODE123" or "ProductName_CODE123" or "ProductName"
-        processed_name_part = clean_name_for_tokens
-        extracted_code_str = ""
-
-        # Try to find a _CODE<digits> or _CODE<alphanum> pattern
-        code_search = re.search(r'(?:_|^)(CODE([A-Za-z0-9]+))', processed_name_part) # Looks for _CODE... or CODE... at start
+        # A hash is typically alphanumeric, 8-12 chars (increased upper bound slightly), not starting with 'CODE' (case-insensitive)
+        # and the part before it is not just 'nobg' or common image suffixes mistaken for part of the name.
+        is_potential_hash = (
+            len(parts) > 1 and
+            8 <= len(potential_hash) <= 12 and
+            potential_hash.isalnum() and
+            not potential_hash.upper().startswith('CODE') and
+            parts[-2].lower() != 'nobg'
+        )
+        if is_potential_hash:
+            name_after_prefix_and_hash_removal = '_'.join(parts[:-1])
+            # If removing hash results in an empty string or just underscores, it might mean the name was prefix_hash or prefix_underscores_hash
+            if not name_after_prefix_and_hash_removal.replace('_', '').strip():
+                 # In this case, the part before hash was likely not meaningful name content
+                 name_after_prefix_and_hash_removal = potential_hash # Or consider empty, or revert to current_name_processing
+            logger.debug(f"[{prefix}] Name after hash removal attempt ('{potential_hash}'): {name_after_prefix_and_hash_removal}")
+        else:
+            logger.debug(f"[{prefix}] No typical hash detected or removed from '{potential_hash}'")
         
-        if code_search:
-            full_code_match_str = code_search.group(1) # e.g., "CODE123" or "CODEA1B2"
-            extracted_code_str = full_code_match_str
+        clean_name_for_tokens = name_after_prefix_and_hash_removal
+
+
+        # 2. Attempt to remove product code part (e.g., "CODE123")
+        # Product code is often "CODE" followed by numbers, or just a sequence of numbers if it's the main part.
+        # Special handling for Haereum: if name is like "____CODE123" after hash removal
+        code_part_cleaned = clean_name_for_tokens
+        if prefix == "haereum_" and clean_name_for_tokens.startswith("________________"): # Check for many underscores
+            # Example: ________________CODE123
+            code_match = re.search(r'(_*)(CODE\d+)', clean_name_for_tokens)
+            if code_match:
+                # For matching purposes, just the code might be better than underscores + code
+                code_part_cleaned = code_match.group(2) # "CODE123"
+                logger.debug(f"[{prefix}] Haereum special: Extracted code part '{code_part_cleaned}' from '{clean_name_for_tokens}'")
+            else: # Mostly underscores, no clear "CODE" part
+                code_part_cleaned = "" # Make it empty to signal low confidence for text match
+                logger.debug(f"[{prefix}] Haereum special: Name '{clean_name_for_tokens}' is mostly underscores without clear CODE, set to empty for matching.")
+
+        elif "CODE" in clean_name_for_tokens.upper(): # General CODE removal
+            # Attempt to remove "CODE<numbers>" pattern, but be careful not to remove actual name parts.
+            # This regex tries to find CODE followed by digits, possibly with underscores around it.
+            # It aims to remove it if it seems like an isolated code identifier.
+            # Example: "ProductName_CODE123" -> "ProductName"
+            # Example: "CODE123_ProductName" -> "ProductName"
+            # Example: "CODE123" -> "" (if it's the only thing left)
             
-            # Get the part of the name before the full code match
-            # Split by the found full_code_match_str. We need to be careful with regex splitting.
-            # Example: "ProductName_CODE123", full_code_match_str = "CODE123"
-            # We want "ProductName"
-            # Example: "_________________CODE123", we want "_________________"
-            # Find the start index of the code match to split
-            match_start_index = code_search.start(1)
-            if match_start_index > 0 and processed_name_part[match_start_index-1] == '_':
-                 # Include the underscore in the split to remove it from the name part
-                name_part_candidate = processed_name_part[:match_start_index-1]
-            else:
-                name_part_candidate = processed_name_part[:match_start_index]
+            # Simpler approach: if "CODE" is followed by mostly digits and it's a distinct part
+            temp_cleaned = []
+            name_parts = clean_name_for_tokens.split('_')
+            has_code_part = False
+            for part in name_parts:
+                if part.upper().startswith("CODE") and part[4:].isdigit():
+                    has_code_part = True
+                    # if it's the ONLY part, clean_name_for_tokens might become empty.
+                    if len(name_parts) == 1: # Only "CODE123"
+                         code_part_cleaned = "" # Or maybe just the numeric part? For now, empty.
+                    # otherwise, this part is skipped (effectively removed)
+                elif part.isdigit() and len(part) > 4 and has_code_part: # if a numeric part follows a code part, likely also code
+                    pass
+                else:
+                    temp_cleaned.append(part)
             
-            processed_name_part = name_part_candidate
-        # else: no _CODE... found, processed_name_part remains as is (e.g. for Kogift/Naver)
-
-        # Clean up the extracted name_part (remove leading/trailing underscores, replace multiple with single)
-        if processed_name_part: # Only if it's not empty
-            processed_name_part = re.sub(r'^_*|_*$', '', processed_name_part) # Remove leading/trailing underscores
-            processed_name_part = re.sub(r'_+', '_', processed_name_part)    # Replace multiple underscores with one
-            if processed_name_part == '_': # If it became just a single underscore
-                processed_name_part = ""
-
-        # Combine cleaned name_part and extracted_code_str
-        if processed_name_part:
-            if extracted_code_str:
-                # If prefix is haereum_, usually product name comes first, then CODE.
-                # For others, the CODE might be embedded. For now, simple space join.
-                clean_name_for_tokens = f"{processed_name_part} {extracted_code_str}"
-            else:
-                clean_name_for_tokens = processed_name_part
-        elif extracted_code_str: # Only code part was found
-            clean_name_for_tokens = extracted_code_str
-        else: # Neither part is useful, fallback
-            # clean_name_for_tokens is already current_name_processing (after prefix, before hash/code logic)
-            # if it's blank or all underscores, fallback further
-            if not re.sub(r'_*', '', clean_name_for_tokens).strip(): # If only underscores or empty
-                 clean_name_for_tokens = img_path.stem # Absolute fallback to original stem (includes prefix)
-
-        # Final safety: if clean_name_for_tokens is empty, use stem.
-        if not clean_name_for_tokens.strip():
-            clean_name_for_tokens = img_path.stem
-            logging.warning(f"Clean name for {img_path.name} became empty, falling back to stem: {clean_name_for_tokens}")
-
-        # Tokenize this 'clean_name_for_tokens'
-        # Replace underscores with spaces for tokenization as well
-        name_for_actual_tokenization = clean_name_for_tokens.replace('_', ' ')
-        final_clean_name_alphanum = ''.join([c if c.isalnum() or c.isspace() else ' ' for c in name_for_actual_tokenization.lower()])
-        tokens = [t for t in final_clean_name_alphanum.split() if len(t) > 1] # Keep single char if it's a digit or key Korean char later? For now >1.
+            if has_code_part: # Only update if a CODE part was identified and handled
+                code_part_cleaned = '_'.join(temp_cleaned)
+            logger.debug(f"[{prefix}] Name after CODE removal attempt: {code_part_cleaned}")
         
-        if not tokens and len(final_clean_name_alphanum.split()) > 0: # if all tokens were short
-            tokens = [t for t in final_clean_name_alphanum.split() if t] # take all non-empty tokens
+        clean_name_for_tokens = code_part_cleaned.strip('_ ')
 
-        logging.debug(f"Image: {img_path.name}, Prefix: {prefix}, Original stem: {img_name_stem}, After prefix: {current_name_processing}, Derived clean_name: '{clean_name_for_tokens}', Tokens: {tokens}")
+
+        # 3. Final cleanup and checks for clean_name_for_tokens
+        # If clean_name_for_tokens becomes empty or too short (e.g., less than 3 chars and not a number)
+        # try to revert to a more complete version.
+        if not clean_name_for_tokens.replace('_', '').strip(): # Empty after stripping underscores
+            clean_name_for_tokens = name_after_prefix_and_hash_removal # Revert to before code removal
+            logger.debug(f"[{prefix}] clean_name empty after code removal, reverted to: {clean_name_for_tokens}")
+
+        if len(clean_name_for_tokens.replace('_', '')) < 3 and not clean_name_for_tokens.isdigit():
+            # If very short and not a number, it might be remnants. Consider reverting.
+            # This threshold is arbitrary and might need tuning.
+            # Reverting to name_after_prefix_and_hash_removal or even current_name_processing (name after prefix only)
+            # For now, let's stick with what we have unless it's completely empty.
+            logger.debug(f"[{prefix}] clean_name '{clean_name_for_tokens}' is very short. Keeping as is for now.")
+
+        # Remove excessive internal underscores
+        clean_name_for_tokens = re.sub(r'_+', '_', clean_name_for_tokens).strip('_')
         
-        # 원본 이미지 URL 추출 시도 (로그에서 추출한 URL 정보)
-        original_url = None
-        # 해오름 이미지인 경우 URL 패턴 추출
-        if prefix == 'haereum_':
-            # 로그에서 실제 URL을 추출하기 위한 코드 추가
-            # 파일명에서 제품 코드 추출 시도 (예: BBCA0009349, CCBK0001873 등)
-            product_code_match = re.search(r'([A-Z]{4}\d{7})', str(img_path))
-            if product_code_match:
-                product_code = product_code_match.group(1)
-                # 파일 확장자 확인 (실제 확장자와 일치)
-                url_extension = os.path.splitext(str(img_path))[1].lower()
-                if not url_extension:
-                    url_extension = '.jpg'  # 기본값
-                
-                # 파일명에서 접미사 추출 시도 (예: s, _3 등)
-                suffix_match = re.search(r'([A-Z]{4}\d{7})(.*?)(\.[a-z]+)$', str(img_path))
-                suffix = 's'
-                if suffix_match and suffix_match.group(2):
-                    suffix = suffix_match.group(2)
-                
-                # 실제 URL 생성
-                original_url = f"https://www.jclgift.com/upload/product/simg3/{product_code}{suffix}{url_extension}"
-                logging.debug(f"Extracted URL for Haereum image: {original_url}")
-        
+        logger.info(f"[{prefix}] Final clean_name for tokenization: '{clean_name_for_tokens}' (from original stem: '{img_name_stem}')")
+
+        # 토큰화
+        # clean_name_for_tokens이 비어있거나, 대부분이 숫자로만 이루어진 경우(상품 코드로 간주) 일반 토큰화 회피 가능성
+        # But, for now, always tokenize. If it's just "CODE123", tokens will be ["CODE123"]
+        tokens = tokenize_korean(clean_name_for_tokens)
+        logger.info(f"[{prefix}] Tokens for '{clean_name_for_tokens}': {tokens}")
+
         image_info[str(img_path)] = {
             'original_name': original_name_for_metadata, # This is full stem e.g. haereum_...
             'clean_name': clean_name_for_tokens, # This is the improved name used for matching
             'tokens': tokens,
             'path': img_path,
-            'url': original_url  # 추출한 URL 저장
+            'url': None  # 추출한 URL 저장
         }
     
     return image_info
@@ -262,6 +254,17 @@ def find_best_image_matches(product_names: List[str],
     Returns:
         각 상품별 (해오름 이미지 경로, 고려기프트 이미지 경로, 네이버 이미지 경로) 튜플 목록
     """
+    # Log the product names being processed
+    logger.info(f"find_best_image_matches: Processing {len(product_names)} products.")
+    if product_names:
+        logger.info(f"Sample product names: {product_names[:min(3, len(product_names))]}")
+
+    # Log image dictionary sizes
+    logger.info(f"Haereum images count: {len(haereum_images)}")
+    logger.info(f"Kogift images count: {len(kogift_images)}")
+    logger.info(f"Naver images count: {len(naver_images)}")
+    logger.info(f"Using similarity_threshold for find_best_match_for_product: {similarity_threshold}")
+
     results = []
     
     # 이미지 매칭 시 이미 사용한 이미지 추적
@@ -429,21 +432,34 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.1) -> Optional[Tuple[str, float]]:
+                               similarity_threshold: float = 0.1,
+                               source_name_for_log: str = "UnknownSource") -> Optional[Tuple[str, float]]:
     """
     상품에 대해 가장 유사한 이미지를 찾습니다.
     
     Args:
-        product_tokens: 상품명 토큰
-        image_info: 이미지 정보 사전
+        product_tokens: 상품명에서 추출한 토큰 목록
+        image_info: 특정 소스(해오름, 고려, 네이버)의 이미지 메타데이터 사전
         used_images: 이미 사용된 이미지 경로 집합
         similarity_threshold: 최소 유사도 점수
+        source_name_for_log: 소스 이름 (기본값: "UnknownSource")
         
     Returns:
         가장 유사한 이미지 경로 또는 None
         (가장 유사한 이미지 경로, 유사도 점수) 튜플 또는 None
     """
-    best_match = None
+    # product_tokens: 상품명에서 추출한 토큰 목록
+    # image_info: 특정 소스(해오름, 고려, 네이버)의 이미지 메타데이터 사전
+    # used_images: 이미 사용된 이미지 경로 집합
+    # similarity_threshold: 최소 유사도 점수
+    if not product_tokens:
+        logger.warning(f"[{source_name_for_log}] Product tokens are empty, cannot find match.")
+        return None
+    if not image_info:
+        logger.warning(f"[{source_name_for_log}] Image info is empty, cannot find match.")
+        return None
+
+    best_match_path = None
     best_score = -1.0 # Initialize with a value lower than any possible score
     
     if used_images is None:
@@ -479,15 +495,15 @@ def find_best_match_for_product(product_tokens: List[str],
         if similarity >= similarity_threshold:
             if similarity > best_score:
                 best_score = similarity
-                best_match = img_path
+                best_match_path = img_path
             elif similarity == best_score:
                 # If scores are equal, prefer .jpg over .png 
                 # if current best_match is a .png and new one is .jpg
-                if best_match and Path(img_path).suffix.lower() == ".jpg" and Path(best_match).suffix.lower() == ".png":
+                if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
                     # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
-                    best_match = img_path
+                    best_match_path = img_path
                     # best_score remains the same
-                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match).name}'.")
+                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
@@ -498,15 +514,15 @@ def find_best_match_for_product(product_tokens: List[str],
         logging.debug(f"  Top 3 candidates (text-based): {top_log}")
     
     # 최종 매칭 결과 로깅
-    if best_match:
-        best_match_name = image_info[best_match]['clean_name']
+    if best_match_path:
+        best_match_name = image_info[best_match_path]['clean_name']
         logging.info(f"  --> Best Match Selected (text-based): {best_match_name} (Score: {best_score:.3f})")
-        return best_match, best_score
+        return best_match_path, best_score
     else:
         logging.debug(f"매치 없음 (임계값: {similarity_threshold})")
         return None
     
-    return best_match
+    return best_match_path
 
 def find_best_match_with_enhanced_matcher(
     source_img_path: str, 

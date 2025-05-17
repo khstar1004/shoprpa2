@@ -285,7 +285,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
         sheet = workbook.active
         
         # 고려기프트 이미지 디렉토리 경로 확인
-        kogift_image_dir = os.path.join('C:', 'RPA', 'Image', 'Main', 'Kogift')
+        kogift_image_dir = os.path.join('C:\\\\', 'RPA', 'Image', 'Main', 'Kogift')
         if not os.path.exists(kogift_image_dir):
             logger.warning(f"고려기프트 이미지 디렉토리가 없습니다: {kogift_image_dir}")
             kogift_image_dir = None
