@@ -1382,41 +1382,49 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     if not image_api_url: # Fallback if 'image' is not present
         image_api_url = first_item.get('image_url')
 
+    # Initialize paths and image data structures
+    local_path = None
+    abs_local_path = None
+    
     if image_api_url:
         result_data['image_url'] = image_api_url # Keep this for direct API response if needed elsewhere
         local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
         if local_path:
             # Ensure absolute path
             abs_local_path = os.path.abspath(local_path)
-            result_data['image_path'] = abs_local_path
-            
-            # Create consistent image data structure
-            image_data_for_df = {
-                'url': image_api_url, # Use the direct image URL from API
-                'local_path': abs_local_path,
-                'original_path': abs_local_path,
-                'source': 'naver',
-                'product_name': product_name,
-                'similarity': similarity, # Keep a reference to the product's similarity
-                'type': 'naver',  # Explicitly mark as Naver image
-                'product_id': first_item.get('productId') # Ensure productId is here
-            }
-            
-            # Add image data to result
-            result_data['image_data'] = image_data_for_df # This might be for a general image column
-            result_data['naver_image_data'] = image_data_for_df  # Duplicate for correct column mapping if needed by other parts
-            
-            # Create a dedicated naver_image entry with the correct structure for '네이버 이미지' column
-            # This is what integrate_images will primarily use for Naver image data
-            naver_image_column_entry = {
-                'url': image_api_url, # CRITICAL: Ensure this is the actual image URL
-                'local_path': abs_local_path,
-                'source': 'naver',
-                'score': similarity,  # Include similarity score for filtering
-                'product_id': first_item.get('productId'), # Store product ID if available, for potential URL regen
-                'original_path': abs_local_path # Store original downloaded path
-            }
-            result_data['네이버 이미지'] = naver_image_column_entry
+            result_data['image_path'] = abs_local_path # This is a general image path for the row
+    
+    # Always create the '네이버 이미지' entry, even if image download failed or no URL
+    naver_image_column_entry = {
+        'url': image_api_url if image_api_url else None, 
+        'local_path': abs_local_path, # Will be None if download failed or no URL
+        'source': 'naver',
+        'score': similarity, # Text similarity of the Naver product
+        'product_id': first_item.get('productId'), 
+        'original_path': abs_local_path # Will be None if download failed or no URL
+    }
+    result_data['네이버 이미지'] = naver_image_column_entry
+
+    # Consistently populate 'image_data' and 'naver_image_data' if they are used elsewhere
+    # Based on whether an image was successfully downloaded (abs_local_path is not None)
+    if abs_local_path:
+        image_data_for_df = {
+            'url': image_api_url,
+            'local_path': abs_local_path,
+            'original_path': abs_local_path,
+            'source': 'naver',
+            'product_name': product_name,
+            'similarity': similarity, 
+            'type': 'naver',
+            'product_id': first_item.get('productId')
+        }
+        result_data['image_data'] = image_data_for_df
+        result_data['naver_image_data'] = image_data_for_df
+    else:
+        # If no image, set to None or a default empty structure as expected by downstream code
+        # Setting to None if they are optional; if a dict structure is always needed, adjust accordingly.
+        result_data['image_data'] = None 
+        result_data['naver_image_data'] = None
     
     # Add productId to the main result_data as well, if available
     if first_item.get('productId'):
