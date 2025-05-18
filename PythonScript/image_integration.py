@@ -699,12 +699,20 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
         # 해오름 매칭 검증
         if haereum_match:
             # Ensure haereum_match is actually a tuple with path and score
-            if isinstance(haereum_match, tuple) and len(haereum_match) >= 2:
+            if isinstance(haereum_match, tuple) and len(haereum_match) == 2:
                 haereum_path, haereum_score = haereum_match
             else:
-                logging.warning(f"Unexpected format for haereum_match: {haereum_match}. Using default values.")
-                haereum_path = haereum_match if isinstance(haereum_match, str) else None
-                haereum_score = 0.5  # Default score
+                # If it's a string, it's likely a file path directly
+                if isinstance(haereum_match, str) and os.path.exists(haereum_match):
+                    haereum_path = haereum_match
+                    haereum_score = 0.5  # Default score
+                    # Create a proper tuple for consistent handling later
+                    match_quality['haereum']['match'] = (haereum_path, haereum_score)
+                    logging.debug(f"Converted string haereum_match to tuple: ({haereum_path}, {haereum_score})")
+                else:
+                    logging.warning(f"Unexpected format for haereum_match: {haereum_match}. Using default values.")
+                    haereum_path = haereum_match if isinstance(haereum_match, str) else None
+                    haereum_score = 0.5  # Default score
                 
             if haereum_path and haereum_path in haereum_images:
                 haereum_filename = os.path.basename(haereum_path)
@@ -733,12 +741,20 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
         # 고려기프트 매칭 검증
         if kogift_match:
             # Ensure kogift_match is actually a tuple with path and score
-            if isinstance(kogift_match, tuple) and len(kogift_match) >= 2:
+            if isinstance(kogift_match, tuple) and len(kogift_match) == 2:
                 kogift_path, kogift_score = kogift_match
             else:
-                logging.warning(f"Unexpected format for kogift_match: {kogift_match}. Using default values.")
-                kogift_path = kogift_match if isinstance(kogift_match, str) else None
-                kogift_score = 0.5  # Default score
+                # If it's a string, it's likely a file path directly
+                if isinstance(kogift_match, str) and os.path.exists(kogift_match):
+                    kogift_path = kogift_match
+                    kogift_score = 0.5  # Default score
+                    # Create a proper tuple for consistent handling later
+                    match_quality['kogift']['match'] = (kogift_path, kogift_score)
+                    logging.debug(f"Converted string kogift_match to tuple: ({kogift_path}, {kogift_score})")
+                else:
+                    logging.warning(f"Unexpected format for kogift_match: {kogift_match}. Using default values.")
+                    kogift_path = kogift_match if isinstance(kogift_match, str) else None
+                    kogift_score = 0.5  # Default score
                 
             if kogift_path and kogift_path in kogift_images:
                 kogift_filename = os.path.basename(kogift_path)
@@ -772,12 +788,20 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
         # 네이버 매칭 검증
         if naver_match:
             # Ensure naver_match is actually a tuple with path and score
-            if isinstance(naver_match, tuple) and len(naver_match) >= 2:
+            if isinstance(naver_match, tuple) and len(naver_match) == 2:
                 naver_path, naver_score = naver_match
             else:
-                logging.warning(f"Unexpected format for naver_match: {naver_match}. Using default values.")
-                naver_path = naver_match if isinstance(naver_match, str) else None
-                naver_score = 0.5  # Default score
+                # If it's a string, it's likely a file path directly
+                if isinstance(naver_match, str) and os.path.exists(naver_match):
+                    naver_path = naver_match
+                    naver_score = 0.5  # Default score
+                    # Create a proper tuple for consistent handling later
+                    match_quality['naver']['match'] = (naver_path, naver_score)
+                    logging.debug(f"Converted string naver_match to tuple: ({naver_path}, {naver_score})")
+                else:
+                    logging.warning(f"Unexpected format for naver_match: {naver_match}. Using default values.")
+                    naver_path = naver_match if isinstance(naver_match, str) else None
+                    naver_score = 0.5  # Default score
                 
             if naver_path and naver_path in naver_images:
                 naver_filename = os.path.basename(naver_path)
@@ -1205,7 +1229,19 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             logging.debug(f"Row {idx}: Kogift product info exists: {has_kogift_product_info}")
 
             if kogift_match:
-                kogift_path, kogift_score = kogift_match
+                # Handle kogift_match safely to prevent unpacking errors
+                if isinstance(kogift_match, tuple) and len(kogift_match) == 2:
+                    kogift_path, kogift_score = kogift_match
+                elif isinstance(kogift_match, str) and os.path.exists(kogift_match):
+                    # It's a direct file path string
+                    kogift_path = kogift_match
+                    kogift_score = 0.5  # Default score when not provided
+                    logging.info(f"Row {idx}: Converting string kogift_match to path/score: {kogift_path}, {kogift_score}")
+                else:
+                    # Handle unexpected format (string or other)
+                    logging.warning(f"Row {idx}: Unexpected format for kogift_match: {kogift_match}. Using default values.")
+                    kogift_path = kogift_match if isinstance(kogift_match, str) else None
+                    kogift_score = 0.5  # Default score
                 product_name_for_log = product_names[idx] if idx < len(product_names) else "Unknown Product"
 
                 assign_kogift_image = False
@@ -1323,7 +1359,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             # --- Process Naver Image ---
             target_col_naver = '네이버 이미지'
             final_naver_image_data = None
-            naver_product_name_for_log = product_names[idx]
+            naver_product_name_for_log = product_names[idx] if idx < len(product_names) else "Unknown Product"
 
             # 네이버 관련 모든 컬럼 정의
             NAVER_DATA_COLUMNS_TO_CLEAR = [
@@ -1341,8 +1377,20 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             naver_integration_score_threshold = 0.20  # Reduced from 0.55 to 0.20
             logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
 
-            if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
-                naver_path_from_match, naver_score_from_match = naver_match
+            if naver_match and (isinstance(naver_match, tuple) or (isinstance(naver_match, str) and naver_match != '없음' and naver_match is not None)):
+                # Handle both tuple and string formats
+                if isinstance(naver_match, tuple) and len(naver_match) == 2:
+                    naver_path_from_match, naver_score_from_match = naver_match
+                elif isinstance(naver_match, str) and os.path.exists(naver_match):
+                    # It's a direct file path string
+                    naver_path_from_match = naver_match
+                    naver_score_from_match = 0.5  # Default score when not provided
+                    logging.info(f"Row {idx}: Converting string naver_match to path/score: {naver_path_from_match}, {naver_score_from_match}")
+                else:
+                    # Unexpected format
+                    logging.warning(f"Row {idx}: Unexpected format for naver_match in integrate_images: {naver_match}")
+                    naver_path_from_match = None if naver_match == '없음' else naver_match
+                    naver_score_from_match = 0
 
                 if not isinstance(naver_score_from_match, (float, int)) or naver_score_from_match is None:
                     logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
@@ -1488,7 +1536,17 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 logging.info(log_msg)
                 for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: result_df.at[idx, col_to_clear] = None
             
-            result_df.at[idx, target_col_naver] = final_naver_image_data # This will be None if data was cleared
+            # Always assign something to the target column
+            if final_naver_image_data:
+                result_df.at[idx, target_col_naver] = final_naver_image_data
+            else:
+                # Make sure we're not leaving it as None - use '-' to indicate no data
+                if target_col_naver in result_df.columns and (
+                    result_df.at[idx, target_col_naver] is None or 
+                    not isinstance(result_df.at[idx, target_col_naver], dict)
+                ):
+                    result_df.at[idx, target_col_naver] = '-'
+                    logging.debug(f"Row {idx}: Setting empty Naver image cell to '-' placeholder.")
 
         # Final post-processing: Ensure Koreagift product info and images are properly paired
         kogift_image_col = '고려기프트 이미지'
