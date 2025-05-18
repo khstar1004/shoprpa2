@@ -886,25 +886,22 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             logger.info(f"Image already exists: {local_path}")
             
-            # Check for existing background-removed version
+            # Still create background-removed version if needed, but always return original JPG
             if use_bg_removal:
-                nobg_path = local_path.replace('.jpg', '_nobg.png', 1)  # Ensure background-removed version is PNG
-                if os.path.exists(nobg_path) and os.path.getsize(nobg_path) > 0:
-                    logger.debug(f"Using existing background-removed image: {nobg_path}")
-                    final_image_path = nobg_path
-                else:
+                nobg_path = local_path.replace('.jpg', '_nobg.png', 1)
+                if not os.path.exists(nobg_path) or os.path.getsize(nobg_path) <= 0:
                     # Try to remove background if no-bg version doesn't exist
                     try:
                         from image_utils import remove_background
                         if remove_background(local_path, nobg_path):
                             logger.debug(f"Background removed for existing Haereum image: {nobg_path}")
-                            final_image_path = nobg_path
                         else:
-                            logger.warning(f"Failed to remove background for Haereum image {local_path}. Using original.")
+                            logger.warning(f"Failed to remove background for Haereum image {local_path}")
                     except Exception as bg_err:
-                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                        logger.warning(f"Error during background removal: {bg_err}")
             
-            return final_image_path
+            # Always return the original JPG path
+            return local_path
             
     except Exception as e:
         logger.error(f"Error generating filename: {e}")
@@ -1026,20 +1023,20 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                         logger.info(f"Successfully downloaded image: {local_path}")
                                         download_success = True
                                         
-                                        # Remove background if requested
+                                        # Generate background-removed version if requested, but always return original JPG
                                         if use_bg_removal:
                                             try:
                                                 from image_utils import remove_background
-                                                nobg_path = local_path.replace('.jpg', '_nobg.png', 1)  # Make background-removed version PNG
+                                                nobg_path = local_path.replace('.jpg', '_nobg.png', 1)
                                                 if remove_background(local_path, nobg_path):
                                                     logger.info(f"Background removed for Haereum image: {nobg_path}")
-                                                    final_image_path = nobg_path
                                                 else:
-                                                    logger.warning(f"Failed to remove background for Haereum image {local_path}. Using original.")
+                                                    logger.warning(f"Failed to remove background for Haereum image {local_path}")
                                             except Exception as bg_err:
-                                                logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                                                logger.warning(f"Error during background removal: {bg_err}")
                                         
-                                        return final_image_path
+                                        # Always return the original JPG path
+                                        return local_path
                                     except Exception as img_err:
                                         logger.error(f"Downloaded file is not a valid image: {img_err} from URL: {current_url}")
                                         if os.path.exists(temp_path):

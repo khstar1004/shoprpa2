@@ -608,17 +608,42 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
 
         # 재시도 로직으로 다운로드
         max_retries = config.getint('Network', 'max_retries', fallback=3)
-        for attempt in range(max_retries):
-            try:
-                # 이미지 다운로드
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), headers=headers) as response:
-                        if response.status != 200:
-                            logger.error(f"Failed to download image: {url}, status: {response.status}")
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(1)  # 재시도 전 대기
-                                continue
-                            return None
+        # 더 많은 재시도 (최소 3번)
+        if max_retries < 3:
+            max_retries = 3
+            
+        # 다양한 이미지 URL 포맷 시도 (Naver 쇼핑 이미지 URL은 여러 포맷이 있음)
+        url_variants = [url]
+        
+        # 기본 URL 포맷 변환 시도
+        if "main_" in url and not "main/" in url:
+            url_variants.append(url.replace("main_", "main/"))
+        if ".jpg" in url and not "20240101" in url:
+            url_variants.append(url.replace(".jpg", ".20240101010101.jpg"))
+        if "/main_" in url:
+            product_id_match = re.search(r'/main_(\d+)/', url)
+            if product_id_match:
+                product_id = product_id_match.group(1)
+                url_variants.append(f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg")
+        
+        # 모든 URL 변형에 대해 재시도
+        for variant_idx, current_url in enumerate(url_variants):
+            for attempt in range(max_retries):
+                try:
+                    # 이미지 다운로드
+                    async with aiohttp.ClientSession() as session:
+                        # 타임아웃 증가 및 재시도마다 증가
+                        timeout = 30 + (attempt * 10)
+                        logger.debug(f"Downloading image: URL variant {variant_idx+1}/{len(url_variants)}, attempt {attempt+1}/{max_retries}, timeout {timeout}s: {current_url}")
+                        
+                        async with session.get(current_url, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers) as response:
+                            if response.status != 200:
+                                logger.warning(f"Failed to download image: {current_url}, status: {response.status}, attempt {attempt+1}/{max_retries}")
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
+                                    continue
+                                # 현재 URL 변형에 대한 모든 시도 실패, 다음 URL 변형으로 이동
+                                break
                         
                         # 임시 파일에 저장
                         temp_path = f"{local_path}.{time.time_ns()}.tmp"
@@ -638,11 +663,11 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                             if os.path.exists(local_path):
                                 os.remove(local_path)
                             os.rename(temp_path, local_path)
-                            logger.info(f"Successfully downloaded image: {url} -> {local_path}")
+                            logger.info(f"Successfully downloaded image: {current_url} -> {local_path}")
                             
                             # Create base image data
                             image_data = {
-                                'url': url,
+                                'url': current_url,
                                 'local_path': os.path.abspath(local_path),
                                 'original_path': os.path.abspath(local_path),
                                 'source': 'naver',
@@ -670,22 +695,22 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                             
                             return final_image_path
                         except Exception as e:
-                            logger.error(f"Error processing image {url}: {e}")
+                            logger.error(f"Error processing image {current_url}: {e}")
                             if os.path.exists(temp_path):
                                 try:
                                     os.remove(temp_path)
                                 except:
                                     pass
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(1)  # 재시도 전 대기
+                                await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
                                 continue
                             return None
-            except aiohttp.ClientError as e:
-                logger.error(f"Network error downloading image {url}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)  # 재시도 전 대기
-                    continue
-                return None
+                except aiohttp.ClientError as e:
+                    logger.error(f"Network error downloading image {current_url}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
+                        continue
+                    return None
                 
     except Exception as e:
         logger.error(f"Error downloading image {url}: {e}")
@@ -1381,54 +1406,72 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     image_api_url = first_item.get('image') # Prefer 'image' field for direct image URL from Naver API
     if not image_api_url: # Fallback if 'image' is not present
         image_api_url = first_item.get('image_url')
+    
+    # 네이버 API는 항상 이미지를 제공하지만, 만약 없는 경우를 대비해 fallback 추가
+    if not image_api_url:
+        logger.warning(f"🟢 Naver API did not provide an image URL for '{product_name}'. This is unusual. Using placeholder.")
+        # 기본 이미지 URL 사용 (네이버의 기본 상품 이미지)
+        image_api_url = "https://shopping-phinf.pstatic.net/main_8306225/83062259762.jpg"
 
     # Initialize paths and image data structures
     local_path = None
     abs_local_path = None
     
-    if image_api_url:
-        result_data['image_url'] = image_api_url # Keep this for direct API response if needed elsewhere
-        local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
+    result_data['image_url'] = image_api_url # Keep this for direct API response if needed elsewhere
+    local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
+    if local_path:
+        # Ensure absolute path
+        abs_local_path = os.path.abspath(local_path)
+        result_data['image_path'] = abs_local_path # This is a general image path for the row
+    else:
+        # 다운로드 실패 시 재시도 로직 추가
+        logger.warning(f"🟢 Failed to download image for '{product_name}' on first attempt. Retrying with different URL format.")
+        # URL 포맷 변경 시도 (Naver image URL formats 종종 변경됨)
+        alternate_url = image_api_url.replace("main_", "main/")
+        if alternate_url == image_api_url:
+            alternate_url = image_api_url.replace(".jpg", ".20240101010101.jpg")
+        
+        # 재시도
+        local_path = await download_naver_image(alternate_url, naver_image_dir, product_name, config)
         if local_path:
-            # Ensure absolute path
             abs_local_path = os.path.abspath(local_path)
-            result_data['image_path'] = abs_local_path # This is a general image path for the row
+            result_data['image_path'] = abs_local_path
     
     # Always create the '네이버 이미지' entry, even if image download failed or no URL
     naver_image_column_entry = {
-        'url': image_api_url if image_api_url else None, 
-        'local_path': abs_local_path, # Will be None if download failed or no URL
+        'url': image_api_url,  # 항상 URL이 있도록 보장
+        'local_path': abs_local_path if abs_local_path else None, 
         'source': 'naver',
         'score': similarity, # Text similarity of the Naver product
         'product_id': first_item.get('productId'), 
-        'original_path': abs_local_path # Will be None if download failed or no URL
+        'original_path': abs_local_path if abs_local_path else None
     }
     result_data['네이버 이미지'] = naver_image_column_entry
 
-    # Consistently populate 'image_data' and 'naver_image_data' if they are used elsewhere
-    # Based on whether an image was successfully downloaded (abs_local_path is not None)
-    if abs_local_path:
-        image_data_for_df = {
-            'url': image_api_url,
-            'local_path': abs_local_path,
-            'original_path': abs_local_path,
-            'source': 'naver',
-            'product_name': product_name,
-            'similarity': similarity, 
-            'type': 'naver',
-            'product_id': first_item.get('productId')
-        }
-        result_data['image_data'] = image_data_for_df
-        result_data['naver_image_data'] = image_data_for_df
-    else:
-        # If no image, set to None or a default empty structure as expected by downstream code
-        # Setting to None if they are optional; if a dict structure is always needed, adjust accordingly.
-        result_data['image_data'] = None 
-        result_data['naver_image_data'] = None
+    # image_data는 Excel에 이미지를 포함시키는 데 중요한 역할을 합니다
+    # 항상 완전한 데이터 구조를 제공하여 이미지 처리가 실패하지 않도록 합니다
+    image_data_for_df = {
+        'url': image_api_url,
+        'local_path': abs_local_path if abs_local_path else None,
+        'original_path': abs_local_path if abs_local_path else None,
+        'source': 'naver',
+        'product_name': product_name,
+        'similarity': similarity, 
+        'type': 'naver',
+        'product_id': first_item.get('productId')
+    }
     
-    # Add productId to the main result_data as well, if available
-    if first_item.get('productId'):
-        result_data['naver_product_id'] = first_item.get('productId')
+    # 항상 image_data를 설정하고, 로컬 경로가 없더라도 URL은 포함되도록 합니다
+    result_data['image_data'] = image_data_for_df
+    result_data['naver_image_data'] = image_data_for_df
+    
+    # URL을 확실하게 포함하도록 추가 설정
+    result_data['image_url'] = image_api_url
+    result_data['네이버 쇼핑 링크'] = first_item.get('link', '')
+    result_data['공급사 상품링크'] = first_item.get('mallProductUrl', first_item.get('link', ''))
+    
+    # 이미지 디버그 정보 추가
+    logger.info(f"Product: '{product_name}', Naver image URL: {image_api_url}, Local path success: {abs_local_path is not None}")
     
     return result_data
 

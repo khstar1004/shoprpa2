@@ -204,17 +204,18 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                 
                 # Create metadata entry
                 image_info[img_path] = {
-                    'path': img_path,  # Store the absolute path for direct access
-                    'original_path': original_jpg_path or original_png_path or img_path,  # Prefer JPG for original path
+                    'path': str(img_path),  # Store the absolute path as string for direct access
+                    'original_path': str(original_jpg_path or original_png_path or img_path),  # Prefer JPG for original path
                     'original_name': filename,
-                    'nobg_png_path': nobg_png_path,
-                    'nobg_jpg_path': nobg_jpg_path,
+                    'nobg_png_path': str(nobg_png_path) if nobg_png_path else None,
+                    'nobg_jpg_path': str(nobg_jpg_path) if nobg_jpg_path else None,
                     'has_nobg': nobg_png_path is not None or nobg_jpg_path is not None,
                     'name_for_matching': name_for_matching,
                     'clean_name': clean_name,
                     'source': prefix,
                     'is_jpg': file_ext.lower() in ['.jpg', '.jpeg'],
-                    'is_original': not file_root.endswith('_nobg')
+                    'is_original': not file_root.endswith('_nobg'),
+                    'url': None  # Initialize URL field, will be populated later if needed
                 }
                 
                 # Debug some sample entries
@@ -760,8 +761,13 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                     match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
             else:
-                logging.warning(f"Kogift path not found in kogift_images: {kogift_path}")
-                match_quality['kogift']['match'] = None
+                # This is a plain string path that's not in kogift_images dictionary
+                # We need to create a tuple that matches the expected format (path, score)
+                logging.warning(f"Kogift path not found in kogift_images dictionary: {kogift_path}")
+                if isinstance(kogift_path, str) and os.path.exists(kogift_path):
+                    match_quality['kogift']['match'] = (kogift_path, kogift_score)
+                else:
+                    match_quality['kogift']['match'] = None
         
         # 네이버 매칭 검증
         if naver_match:
@@ -794,8 +800,13 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                     match_quality['naver']['score'] = naver_score * (1 + token_ratio)
             else:
-                logging.warning(f"Naver path not found in naver_images: {naver_path}")
-                match_quality['naver']['match'] = None
+                # This is a plain string path that's not in naver_images dictionary
+                # We need to create a tuple that matches the expected format (path, score)
+                logging.warning(f"Naver path not found in naver_images dictionary: {naver_path}")
+                if isinstance(naver_path, str) and os.path.exists(naver_path):
+                    match_quality['naver']['match'] = (naver_path, naver_score)
+                else:
+                    match_quality['naver']['match'] = None
         
         # 검증 결과를 로그로 출력
         logging.debug(f"Product: '{product_name}' - Verification scores: Haereum={match_quality['haereum']['score']:.2f}, Kogift={match_quality['kogift']['score']:.2f}, Naver={match_quality['naver']['score']:.2f}")
@@ -1117,6 +1128,13 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         'score': haereum_score,
                         'product_name': product_names[idx]
                     }
+                    
+                    # Always use original JPG file instead of _nobg.png versions
+                    if '_nobg.png' in img_path and original_file_path and os.path.exists(original_file_path):
+                        # Replace the local_path with original_path to ensure JPG is used
+                        image_data['local_path'] = original_file_path
+                        logging.info(f"Row {idx}: Forcing use of original JPG '{original_file_path}' instead of _nobg version '{img_path}'")
+                    
                     result_df.at[idx, target_col_haereum] = image_data
                 else:
                      # Handle case where no match was found *and* no prior data existed
@@ -1128,7 +1146,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                           
                           for img_file_str_path, meta_info in haereum_images.items():
                               img_p_obj = meta_info['path']
-                              img_filename = img_p_obj.name
+                              # Fix: Check if img_p_obj is a string or Path object and handle accordingly
+                              if isinstance(img_p_obj, str):
+                                  img_filename = os.path.basename(img_p_obj)
+                              else:
+                                  img_filename = img_p_obj.name
                               
                               if calculated_url_hash in img_filename and \
                                  img_filename.startswith('haereum_') and \
@@ -1147,6 +1169,15 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                   'score': 0.55, # Higher than pure fallback, lower than text match
                                   'product_name': product_names[idx]
                               }
+                              
+                              # Extra check to ensure we're using original JPG, not _nobg version
+                              if '_nobg.png' in target_local_jpg_path_from_hash:
+                                  original_jpg = target_local_jpg_path_from_hash.replace('_nobg.png', '.jpg')
+                                  if os.path.exists(original_jpg):
+                                      image_data['local_path'] = original_jpg
+                                      image_data['original_path'] = original_jpg
+                                      logging.info(f"Row {idx}: Replacing _nobg version with original JPG: {original_jpg}")
+                              
                               result_df.at[idx, target_col_haereum] = image_data
                               logging.info(f"Row {idx}: Haoreum image data created using scraped URL and hash-matched original JPG: {target_local_jpg_path_from_hash}")
                           else:
@@ -1405,11 +1436,20 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                 if local_ext.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
                                     original_extension = local_ext.lower()
                             
-                            generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_for_url}/{product_id_for_url}{original_extension}"
-                            web_url = generated_url_candidate
+                            # Try different URL formats for Naver
+                            web_url_candidates = [
+                                f"https://shopping-phinf.pstatic.net/main_{product_id_for_url}/{product_id_for_url}{original_extension}",
+                                f"https://shopping-phinf.pstatic.net/front/{product_id_for_url}/{product_id_for_url}{original_extension}",
+                                f"https://shopping-phinf.pstatic.net/main_{product_id_for_url}/{product_id_for_url}.20240101010101{original_extension}",
+                                f"https://shopping-phinf.pstatic.net/main_{product_id_for_url[0:4]}/{product_id_for_url}/{product_id_for_url}{original_extension}"
+                            ]
+                            
+                            # Use the first candidate by default
+                            web_url = web_url_candidates[0]
                             source_of_url = f"generated_from_product_id_{source_of_id}"
-                            logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_for_url}: {web_url}")
-                        
+                            logging.debug(f"Row {idx}: Naver - Generated pstatic.net URLs from product_id {product_id_for_url}. Using: {web_url}")
+                            logging.debug(f"Row {idx}: Naver - Alternative URL candidates: {web_url_candidates[1:]}")
+                            
                         # Fallback: Use ANY metadata URL or local file if we failed to get a web URL
                         if not web_url:
                             metadata_url = img_path_obj_dict_entry.get('url') # URL from prepare_image_metadata
@@ -1419,13 +1459,16 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                 logging.debug(f"Row {idx}: Naver - Using any URL from prepare_image_metadata: {web_url}")
                             elif img_path_actual_str:
                                 # Last resort: URL is completely missing but we have a local file
-                                web_url = f"file://{img_path_actual_str}"
-                                source_of_url = "local_file_fallback"
-                                logging.warning(f"Row {idx}: Naver - No URL found. Using local file reference: {web_url}")
+                                # Instead of using file:// protocol, just use an empty string for URL
+                                # but still keep the local file reference
+                                web_url = ""  # Empty string instead of file:// protocol
+                                source_of_url = "local_file_only"
+                                logging.warning(f"Row {idx}: Naver - No URL found. Using local file only without URL: {img_path_actual_str}")
 
                         # --- END STRATEGY ---
 
-                        if web_url: # Only proceed if we have any URL
+                        # Even if web_url is empty, always create the image data object if we have a local file
+                        if img_path_actual_str and os.path.exists(img_path_actual_str):
                             final_naver_image_data = {
                                 'local_path': img_path_actual_str, 
                                 'url': web_url, 
@@ -1436,13 +1479,9 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                 'product_id': product_id_for_url,
                                 'url_source_debug': source_of_url 
                             }
-                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
+                            logging.info(f"Row {idx}: Naver - Prepared data with local file. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
                         else: 
-                            logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but couldn't find or generate any URL. Clearing Naver data.")
-                            final_naver_image_data = None # Effectively clears if not set elsewhere
-                            for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
-                                if col_to_clear in result_df.columns:
-                                    result_df.at[idx, col_to_clear] = None
+                            logging.warning(f"Row {idx}: Naver - Could not find a valid local file. Clearing Naver data.")
             else: # No initial naver_match or match was '없음'
                 log_msg = f"Row {idx}: Naver - No valid initial match (match details: {naver_match}). Clearing Naver data for '{naver_product_name_for_log}'."
                 if naver_match and naver_match[0] == '없음': log_msg = f"Row {idx}: Naver - Match explicitly '없음' for '{naver_product_name_for_log}'. Clearing data."
@@ -1685,10 +1724,11 @@ def create_excel_with_images(df, output_file):
                         # IMPORTANT: For Haereum (본사) images, ALWAYS use original_path instead of local_path
                         # to ensure we use the JPG instead of _nobg version
                         if col_name == '본사 이미지':
+                            # First try original_path, then local_path
                             if 'original_path' in img_data and img_data.get('original_path') and os.path.exists(img_data.get('original_path')):
                                 img_path = img_data.get('original_path')
                                 logger.info(f"Using original_path for Haereum image: {img_path}")
-                            elif 'local_path' in img_data:
+                            elif 'local_path' in img_data and img_data.get('local_path'):
                                 original_jpg_path = None
                                 local_path = img_data.get('local_path', '')
                                 
@@ -1702,20 +1742,40 @@ def create_excel_with_images(df, output_file):
                                         img_path = local_path  # Fallback to _nobg.png if JPG not found
                                 else:
                                     img_path = local_path  # Use local_path as is
-                            else:
-                                # No valid path found
+                            # If still no path but URL exists, try to use URL for local download
+                            elif 'url' in img_data and img_data.get('url'):
+                                img_url = img_data.get('url')
+                                # Just set img_path to None here, we'll handle URL in the next section
                                 img_path = None
-                        else:  # For non-Haereum images
-                            img_path = img_data.get('local_path')
+                        else:  # For non-Haereum images (Kogift and Naver)
+                            # Try local_path first, then path, then url
+                            if 'local_path' in img_data and img_data.get('local_path') and os.path.exists(img_data.get('local_path')):
+                                img_path = img_data.get('local_path')
+                            elif 'path' in img_data and img_data.get('path') and os.path.exists(str(img_data.get('path'))):
+                                img_path = str(img_data.get('path'))
+                            elif 'original_path' in img_data and img_data.get('original_path') and os.path.exists(img_data.get('original_path')):
+                                img_path = img_data.get('original_path')
                             
+                        # If still no valid path but URL exists, set to URL for later display
                         if not img_path and 'url' in img_data:
                             # URL만 있는 경우 셀에 URL 표시
                             ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
                             col_idx += 1
                             continue
                     elif isinstance(img_data, str):
-                        # 문자열 경로 처리
-                        img_path = img_data
+                        # String could be a direct path or URL
+                        if os.path.exists(img_data):
+                            img_path = img_data
+                        elif img_data.startswith(('http://', 'https://')):
+                            # It's a URL, display it as text
+                            ws.cell(row=row_idx, column=col_idx, value=img_data)
+                            col_idx += 1
+                            continue
+                        else:
+                            # Not a valid path or URL
+                            ws.cell(row=row_idx, column=col_idx, value=img_data)
+                            col_idx += 1
+                            continue
                     
                     if img_path and os.path.exists(img_path):
                         try:
