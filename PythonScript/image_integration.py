@@ -52,6 +52,17 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         logger.warning(f"Image directory does not exist: {image_dir}")
         return result
         
+    # Determine source from prefix
+    source = None
+    if prefix == 'haereum_':
+        source = 'haereum'
+    elif prefix == 'kogift_':
+        source = 'kogift'
+    elif prefix == 'naver_':
+        source = 'naver'
+    else:
+        source = prefix.rstrip('_')  # Fallback: use prefix without underscore
+    
     for img_path in image_dir.glob('*.*'):
         if not img_path.is_file():
             continue
@@ -127,7 +138,8 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
             'tokens': tokens,
             'product_id': product_id,
             'original_name': original_name, # stem of current_img_path_obj (img_path.stem)
-            'clean_name': cleaned_name
+            'clean_name': cleaned_name,
+            'source': source  # Explicitly set the source
         }
         
         if product_id:
@@ -421,21 +433,26 @@ def find_best_match_for_product(product_tokens: List[str],
     
     # Get config thresholds or use defaults
     # Use passed similarity_threshold as default if not provided in config
+    effective_threshold = similarity_threshold
     if config:
         try:
             # For kogift, use the image_threshold which is typically more lenient (0.01)
             if source_name_for_log.lower().startswith("kogift"):
-                similarity_threshold = config.getfloat('Matching', 'image_threshold', fallback=similarity_threshold)
+                effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=similarity_threshold)
+                # Make it even more lenient for Kogift, using 1/10th of the configured value but not less than 0.001
+                effective_threshold = max(effective_threshold / 10, 0.001)
             # For naver, use the naver_minimum_similarity which might be stricter
             elif source_name_for_log.lower().startswith("naver"):
-                similarity_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=similarity_threshold)
+                effective_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=similarity_threshold)
+                # Make Naver slightly more lenient
+                effective_threshold = effective_threshold * 0.8
             # For other sources, use the general text_threshold
             else:
-                similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
+                effective_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
         except (configparser.Error, ValueError) as e:
             logging.warning(f"Config threshold read error: {e}. Using default: {similarity_threshold}")
     
-    logging.debug(f"Using similarity_threshold: {similarity_threshold} for source: {source_name_for_log}")
+    logging.debug(f"Using similarity_threshold: {effective_threshold} for source: {source_name_for_log}")
     
     # 이미지 수와 사용된 이미지 수 로깅
     available_images = len(image_info) - len(used_images)
@@ -462,7 +479,7 @@ def find_best_match_for_product(product_tokens: List[str],
                 match_scores.append((img_path, similarity, info['clean_name']))
             
             # Find the best match above threshold
-            if similarity >= similarity_threshold and similarity > best_score:
+            if similarity >= effective_threshold and similarity > best_score:
                 best_score = similarity
                 best_match_path = img_path
             elif similarity == best_score:
@@ -478,26 +495,47 @@ def find_best_match_for_product(product_tokens: List[str],
             continue
     
     # If no match found but we have at least one image, consider using a fallback approach
-    if not best_match_path and image_info and source_name_for_log.lower().startswith("kogift"):
-        # For Kogift only, if no match found, try more basic token matching
-        logging.info(f"No match found above threshold {similarity_threshold} for {source_name_for_log}. Trying basic token matching.")
+    if not best_match_path and image_info:
+        # First check if source_name refers to Kogift
+        if source_name_for_log.lower().startswith("kogift"):
+            logging.info(f"No match found above threshold {effective_threshold} for {source_name_for_log}. Trying basic token matching.")
+            
+            # Try to find any token overlap, even if small
+            best_fallback_path = None
+            best_fallback_score = 0
+            
+            for img_path, info in image_info.items():
+                if img_path in used_images:
+                    continue
+                    
+                # Very basic token check - any overlap at all
+                if 'tokens' in info and info['tokens']:
+                    common_tokens = set(product_tokens) & set(info['tokens'])
+                    overlap_score = len(common_tokens) / max(1, min(len(product_tokens), len(info['tokens'])))
+                    
+                    if common_tokens and overlap_score > best_fallback_score:
+                        best_fallback_path = img_path
+                        best_fallback_score = overlap_score
+            
+            if best_fallback_path:
+                best_match_path = best_fallback_path
+                best_score = max(0.01, best_fallback_score)  # Ensure at least 0.01 score
+                logging.warning(f"Using fallback match with overlap score: {best_fallback_score:.3f} for '{image_info[best_fallback_path]['clean_name']}'")
+            elif match_scores:  # If still nothing, use the best score we found even if below threshold
+                match_scores.sort(key=lambda x: x[1], reverse=True)
+                best_match_path = match_scores[0][0]
+                best_score = match_scores[0][1]
+                logging.warning(f"Last resort: Using best available match despite low score: {image_info[best_match_path]['clean_name']} (Score: {best_score:.3f})")
         
-        # Try to find some token overlap, even if small
-        for img_path, info in image_info.items():
-            if img_path in used_images:
-                continue
-                
-            # Very basic token check - any overlap at all
-            if 'tokens' in info and info['tokens']:
-                common_tokens = set(product_tokens) & set(info['tokens'])
-                if common_tokens:
-                    # Use the best match from our earlier search
-                    if match_scores:
-                        match_scores.sort(key=lambda x: x[1], reverse=True)
-                        best_match_path = match_scores[0][0]
-                        best_score = match_scores[0][1]
-                        logging.warning(f"Using best available match despite low score: {info['clean_name']} (Score: {best_score:.3f})")
-                        break
+        # Special handling for Naver
+        elif source_name_for_log.lower().startswith("naver"):
+            if match_scores:
+                match_scores.sort(key=lambda x: x[1], reverse=True)
+                # Only take the top match if score is at least 0.01
+                if match_scores[0][1] >= 0.01:
+                    best_match_path = match_scores[0][0]
+                    best_score = match_scores[0][1]
+                    logging.warning(f"Using best Naver match despite low score: {image_info[best_match_path]['clean_name']} (Score: {best_score:.3f})")
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
@@ -511,9 +549,17 @@ def find_best_match_for_product(product_tokens: List[str],
     if best_match_path:
         best_match_name = image_info[best_match_path]['clean_name']
         logging.info(f"  --> Best Match Selected (text-based): {best_match_name} (Score: {best_score:.3f})")
+        # Ensure the source is properly set for the selected match
+        if 'source' not in image_info[best_match_path] or not image_info[best_match_path]['source']:
+            source_name = source_name_for_log.lower().split('_')[0] if '_' in source_name_for_log else source_name_for_log.lower()
+            if source_name in ['haereum', 'kogift', 'naver']:
+                image_info[best_match_path]['source'] = source_name
+                logging.info(f"  Added missing 'source' field to matched image: {source_name}")
+            else:
+                logging.warning(f"  Could not determine source from {source_name_for_log} for matched image")
         return best_match_path, best_score
     else:
-        logging.debug(f"매치 없음 (임계값: {similarity_threshold})")
+        logging.debug(f"매치 없음 (임계값: {effective_threshold})")
         return None
 
 def find_best_match_with_enhanced_matcher(
@@ -1110,7 +1156,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.60) if config else 0.60
                     medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.40) if config else 0.40
                     low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.30) if config else 0.30
-                    reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.20) if config else 0.20
+                    reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.10) if config else 0.10
                     
                     # Always accept kogift image with ANY score if product info exists
                     assign_kogift_image = True
@@ -1125,12 +1171,12 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image despite very low score {kogift_score:.3f}. Manual review required.")
                 else:
                     # No Kogift product info for this row.
-                    # Using high_quality threshold for stricter matching when no product info
-                    if kogift_score >= 0.70:  # Only accept high quality matches
+                    # Using lowered high_quality threshold for when no product info
+                    if kogift_score >= 0.30:  # Reduced from 0.70
                         assign_kogift_image = True
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with high quality score {kogift_score:.3f} despite MISSING Kogift product info.")
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with score {kogift_score:.3f} despite MISSING Kogift product info.")
                     else:
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below high quality threshold (0.70) AND no Kogift product info exists.")
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below threshold (0.30) AND no Kogift product info exists.")
                         assign_kogift_image = False
 
                 if assign_kogift_image:
@@ -1232,8 +1278,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 '공급사명'               # 공급사 정보
             ]
             
-            # 임계값 설정 (더 엄격하게)
-            naver_integration_score_threshold = 0.55  # Increased from 0.20 to match config's naver_minimum_similarity
+            # 임계값 설정 (더 낮게 조정)
+            naver_integration_score_threshold = 0.20  # Reduced from 0.55 to 0.20
             logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
 
             if naver_match and naver_match[0] != '없음' and naver_match[0] is not None:
@@ -1242,11 +1288,13 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 if not isinstance(naver_score_from_match, (float, int)) or naver_score_from_match is None:
                     logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
-                        result_df.at[idx, col_to_clear] = None
+                        if col_to_clear in result_df.columns:
+                            result_df.at[idx, col_to_clear] = None
                 elif naver_score_from_match < naver_integration_score_threshold:
                     logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < integration threshold {naver_integration_score_threshold}. Clearing all Naver data.")
                     for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
-                        result_df.at[idx, col_to_clear] = None
+                        if col_to_clear in result_df.columns:
+                            result_df.at[idx, col_to_clear] = None
                 else:
                     # naver_path_from_match is the local disk path found by find_best_image_matches
                     # img_path_obj_dict_entry is metadata for this local disk path from prepare_image_metadata
@@ -1266,13 +1314,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         # Priority 1: Use URL from existing_naver_cell_data if it's a valid pstatic.net URL
                         if isinstance(existing_naver_cell_data, dict):
                             potential_url = existing_naver_cell_data.get('url')
-                            if isinstance(potential_url, str) and potential_url.startswith('http') and "pstatic.net" in potential_url:
-                                if "pstatic.net/front/" in potential_url:
-                                    logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from existing DataFrame cell: {potential_url}")
-                                else:
-                                    web_url = potential_url
-                                    source_of_url = "dataframe_cell_pstatic_url"
-                                    logging.debug(f"Row {idx}: Naver - Using pstatic.net URL from DataFrame cell: {web_url}")
+                            if isinstance(potential_url, str) and potential_url.startswith('http'):
+                                # Be more permissive with URL validation - accept front/ URLs if that's all we have
+                                web_url = potential_url
+                                source_of_url = "dataframe_cell_url"
+                                logging.debug(f"Row {idx}: Naver - Using URL from DataFrame cell: {web_url}")
 
                         # Determine product_id for URL construction
                         product_id_for_url = None
@@ -1333,58 +1379,43 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                     original_extension = local_ext.lower()
                             
                             generated_url_candidate = f"https://shopping-phinf.pstatic.net/main_{product_id_for_url}/{product_id_for_url}{original_extension}"
-                            if "pstatic.net/front/" in generated_url_candidate: # Should not happen with this construction
-                                 logging.warning(f"Row {idx}: Naver - Generated URL '{generated_url_candidate}' still contains 'front/'. Rejecting.")
-                            else:
-                                web_url = generated_url_candidate
-                                source_of_url = f"generated_from_product_id_{source_of_id}"
-                                logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_for_url}: {web_url}")
+                            web_url = generated_url_candidate
+                            source_of_url = f"generated_from_product_id_{source_of_id}"
+                            logging.debug(f"Row {idx}: Naver - Generated pstatic.net URL from product_id {product_id_for_url}: {web_url}")
                         
-                        # Priority 3 & 4 combined (URL from metadata or generated from metadata PID) are now covered by the above logic
-                        # Fallback to metadata URL if product_id based generation failed AND web_url is still not set
+                        # Fallback: Use ANY metadata URL or local file if we failed to get a web URL
                         if not web_url:
                             metadata_url = img_path_obj_dict_entry.get('url') # URL from prepare_image_metadata
-                            has_valid_local_path = img_path_actual_str and Path(img_path_actual_str).exists()
-                            if isinstance(metadata_url, str) and metadata_url.startswith('http') and "pstatic.net" in metadata_url:
-                                if "pstatic.net/front/" in metadata_url and not has_valid_local_path:
-                                     logging.warning(f"Row {idx}: Naver - Rejecting unreliable 'front' URL from prepare_image_metadata: {metadata_url} (no valid local path either)")
-                                elif "pstatic.net/front/" in metadata_url and has_valid_local_path: # If local path is good, front URL is acceptable
-                                    web_url = metadata_url
-                                    source_of_url = "prepare_image_metadata_pstatic_front_url_with_local"
-                                    logging.debug(f"Row {idx}: Naver - Using pstatic.net/front/ URL from prepare_image_metadata (local file exists): {web_url}")
-                                else: # Not a front URL or front URL with valid local path
-                                    web_url = metadata_url
-                                    source_of_url = "prepare_image_metadata_pstatic_url"
-                                    logging.debug(f"Row {idx}: Naver - Using pstatic.net URL from prepare_image_metadata: {web_url}")
+                            if isinstance(metadata_url, str) and metadata_url.startswith('http'):
+                                web_url = metadata_url
+                                source_of_url = "prepare_image_metadata_any_url"
+                                logging.debug(f"Row {idx}: Naver - Using any URL from prepare_image_metadata: {web_url}")
+                            elif img_path_actual_str:
+                                # Last resort: URL is completely missing but we have a local file
+                                web_url = f"file://{img_path_actual_str}"
+                                source_of_url = "local_file_fallback"
+                                logging.warning(f"Row {idx}: Naver - No URL found. Using local file reference: {web_url}")
 
                         # --- END STRATEGY ---
 
-                        if web_url: # Only proceed if we have a pstatic.net URL
-                            # Further validation for pstatic.net URL
-                            is_valid_pstatic_url = "pstatic.net" in web_url and "pstatic.net/front/" not in web_url
-                            
-                            if is_valid_pstatic_url:
-                                final_naver_image_data = {
-                                    'local_path': img_path_actual_str, 
-                                    'url': web_url, 
-                                    'score': naver_score_from_match,
-                                    'source': 'naver',
-                                    'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), 
-                                    'product_name': naver_product_name_for_log,
-                                    'product_id': product_id_for_url,
-                                    'url_source_debug': source_of_url 
-                                }
-                                logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
-                            else: 
-                                logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but web_url '{web_url}' is not a valid/preferred pstatic.net URL. Clearing Naver data.")
-                                final_naver_image_data = None # Effectively clears if not set elsewhere
-                                for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                        if web_url: # Only proceed if we have any URL
+                            final_naver_image_data = {
+                                'local_path': img_path_actual_str, 
+                                'url': web_url, 
+                                'score': naver_score_from_match,
+                                'source': 'naver',
+                                'original_path': img_path_obj_dict_entry.get('original_path', img_path_actual_str), 
+                                'product_name': naver_product_name_for_log,
+                                'product_id': product_id_for_url,
+                                'url_source_debug': source_of_url 
+                            }
+                            logging.info(f"Row {idx}: Naver - Prepared data. Image: '{os.path.basename(img_path_actual_str)}', URL: '{web_url}' (Source: {source_of_url}, PID: {product_id_for_url}), Score: {naver_score_from_match:.3f}")
+                        else: 
+                            logging.warning(f"Row {idx}: Naver - Matched image '{os.path.basename(img_path_actual_str)}' (Score: {naver_score_from_match:.3f}) but couldn't find or generate any URL. Clearing Naver data.")
+                            final_naver_image_data = None # Effectively clears if not set elsewhere
+                            for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                                if col_to_clear in result_df.columns:
                                     result_df.at[idx, col_to_clear] = None
-
-                    else: # img_path_actual (local file) does not exist or is invalid
-                        logging.warning(f"Row {idx}: Naver - Matched '{naver_path_from_match}' (Score: {naver_score_from_match:.3f}) but its local path '{img_path_actual}' is invalid/missing. Clearing Naver data.")
-                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
-                            result_df.at[idx, col_to_clear] = None
             else: # No initial naver_match or match was '없음'
                 log_msg = f"Row {idx}: Naver - No valid initial match (match details: {naver_match}). Clearing Naver data for '{naver_product_name_for_log}'."
                 if naver_match and naver_match[0] == '없음': log_msg = f"Row {idx}: Naver - Match explicitly '없음' for '{naver_product_name_for_log}'. Clearing data."
@@ -1514,42 +1545,42 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         result_df = df.copy()
         
-        # Get thresholds from config with more lenient defaults
+        # Get thresholds from config with MUCH more lenient defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.30)  # Reduced from 0.40
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.30)  # Reduced from 0.40
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.10)  # Reduced from 0.30 to 0.10
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.10)  # Reduced from 0.30 to 0.10
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
             logging.info(f"통합: 이미지 표시 임계값 (filter_images_by_similarity): {effective_threshold}")
-        except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.30을 사용합니다.")
-            effective_threshold = 0.30  # Reduced from 0.40
+        except (configparser.Error, ValueError) as e:
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.10을 사용합니다.")
+            effective_threshold = 0.10  # Reduced from 0.30 to 0.10
         
-        # Get Naver-specific thresholds with more lenient values
+        # Get Naver-specific thresholds with much more lenient values
         try:
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.65)  # Reduced from 0.75
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45)  # Reduced from 0.55
-        except ValueError as e:
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.45)  # Reduced from 0.65 to 0.45
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.15)  # Reduced from 0.45 to 0.15
+        except (configparser.Error, ValueError) as e:
             logging.warning(f"네이버 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.65  # Reduced from 0.75
-            naver_minimum_threshold = 0.45  # Reduced from 0.55
+            naver_initial_threshold = 0.45  # Reduced from 0.65 to 0.45
+            naver_minimum_threshold = 0.15  # Reduced from 0.45 to 0.15
             
-        # Get quality thresholds with more lenient values
+        # Get quality thresholds with much more lenient values
         try:
-            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.60)  # Reduced from 0.70
-            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.40)  # Reduced from 0.50
-            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.30)  # Reduced from 0.35
-            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.20)  # Reduced from 0.30
-        except ValueError as e:
+            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.40)  # Reduced from 0.60 to 0.40
+            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.25)  # Reduced from 0.40 to 0.25
+            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.15)  # Reduced from 0.30 to 0.15
+            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.05)  # Reduced from 0.20 to 0.05
+        except (configparser.Error, ValueError) as e:
             logging.warning(f"품질 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            high_quality = 0.60  # Reduced from 0.70
-            medium_quality = 0.40  # Reduced from 0.50
-            low_quality = 0.30  # Reduced from 0.35
-            reject_threshold = 0.20  # Reduced from 0.30
+            high_quality = 0.40  # Reduced from 0.60 to 0.40
+            medium_quality = 0.25  # Reduced from 0.40 to 0.25
+            low_quality = 0.15  # Reduced from 0.30 to 0.15
+            reject_threshold = 0.05  # Reduced from 0.20 to 0.05
 
-        # Initial filtering based on thresholds
+        # Initial filtering based on thresholds - be very permissive
         filtered_count = 0
         for idx in range(len(result_df)):
             for col_name in ['고려기프트 이미지', '네이버 이미지']:
@@ -1563,22 +1594,23 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 score = cell_data.get('score', 0)
                 url = cell_data.get('url')
                 
-                # Special handling for Naver images
+                # Special handling for Naver images - be more permissive about URLs
                 if col_name == '네이버 이미지':
-                    # Check if URL is valid pstatic.net URL (not front/)
-                    if not url or 'pstatic.net/front/' in str(url).lower():
-                        logging.warning(f"Row {idx}: Naver - Invalid or front/ URL: {url}. Clearing image data.")
+                    # Check if URL exists at all - accept any URL
+                    if not url:
+                        logging.warning(f"Row {idx}: Naver - Missing URL. Clearing image data.")
                         result_df.at[idx, col_name] = None
                         filtered_count += 1
                         continue
                         
-                    # Apply Naver-specific thresholds
-                    if score < naver_minimum_threshold:
-                        logging.warning(f"Row {idx}: Naver - Score {score:.3f} below minimum threshold {naver_minimum_threshold}. Clearing image data.")
+                    # Apply extremely lenient Naver threshold
+                    if score < 0.01:  # Only filter out extremely low scores
+                        logging.warning(f"Row {idx}: Naver - Score {score:.3f} below extreme minimum threshold 0.01. Clearing image data.")
                         result_df.at[idx, col_name] = None
                 else:  # Kogift images
-                    if score < effective_threshold:
-                        logging.warning(f"Row {idx}: Kogift - Score {score:.3f} below threshold {effective_threshold}. Clearing image data.")
+                    # For Kogift, accept ANY match with a positive score
+                    if score <= 0:
+                        logging.warning(f"Row {idx}: Kogift - Score {score:.3f} is zero or negative. Clearing image data.")
                         result_df.at[idx, col_name] = None
 
         # Log how many images were kept after filtering
