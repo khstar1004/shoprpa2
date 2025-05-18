@@ -29,17 +29,25 @@ from pathlib import Path
 import hashlib
 import pandas as pd
 
+# Import TensorFlow for deep learning features
+try:
+    import tensorflow as tf
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    TENSORFLOW_AVAILABLE = False
+    logging.warning("TensorFlow not available. Deep learning features will be disabled.")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Default Constants - Optimized for accuracy
 DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
-DEFAULT_FEATURE_MATCH_THRESHOLD = 15  # Increased from 10
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.80  # More lenient (was 0.70)
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 50  # More lenient (was 40)
-DEFAULT_COMBINED_THRESHOLD = 0.05  # Much lower to allow more potential matches (was 0.55)
-DEFAULT_WEIGHTS = {'sift': 0.25, 'akaze': 0.20, 'deep': 0.40, 'orb': 0.15}  # New weights with ORB
+DEFAULT_FEATURE_MATCH_THRESHOLD = 10  # Reduced to be more lenient
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.85  # Even more lenient (was 0.80)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 60  # Even more lenient (was 50)
+DEFAULT_COMBINED_THRESHOLD = 0.001  # Extremely low threshold to catch any potential match
+DEFAULT_WEIGHTS = {'sift': 0.40, 'akaze': 0.40, 'deep': 0.05, 'orb': 0.15}  # Reduced deep weight further, increased SIFT/AKAZE
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 
 # Enhanced parameters
@@ -236,15 +244,6 @@ else:
     logger.info("Configuring TensorFlow to use CPU only (by configuration)")
     # Force TensorFlow to use CPU only
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
-# Import TensorFlow after environment variable settings
-import tensorflow as tf
-
-# For debugging
-logger.info(f"TensorFlow version: {tf.__version__}")
-
-# Check for CUDA support in TensorFlow
-logger.info(f"TensorFlow built with CUDA: {tf.test.is_built_with_cuda()}")
 
 # Complete GPU status check after TensorFlow initialization
 def check_tf_gpu_status():
@@ -519,6 +518,13 @@ class EnhancedImageMatcher:
     def _initialize_deep_models(self):
         """Initialize deep learning models for feature extraction with GPU if available"""
         try:
+            # Check if TensorFlow is available
+            if not TENSORFLOW_AVAILABLE:
+                logger.warning("TensorFlow is not available. Deep learning features will be disabled.")
+                self.model = None
+                self.models = []
+                return
+
             # Configure GPU usage
             if self.use_gpu:
                 # Ensure the global settings are applied
@@ -648,7 +654,7 @@ class EnhancedImageMatcher:
             return None, None
                 
     def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate SIFT feature similarity with geometric verification"""
+        """Calculate SIFT feature similarity with more lenient geometric verification"""
         try:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
@@ -672,7 +678,7 @@ class EnhancedImageMatcher:
             # Match features
             matches = self.flann.knnMatch(des1, des2, k=2)
             
-            # Store good matches using Lowe's ratio test
+            # Store good matches using Lowe's ratio test with more lenient threshold
             good_matches = []
             for m, n in matches:
                 if m.distance < SETTINGS['SIFT_RATIO_THRESHOLD'] * n.distance:
@@ -686,14 +692,15 @@ class EnhancedImageMatcher:
             match_score = len(good_matches) / max(1, max_possible_matches)
             
             # Apply geometric verification if we have enough matches
+            # Reduced min_match_count to 5 (was previously self.min_match_count which is typically 10)
             inlier_score = 0.0
-            if num_good_matches >= self.min_match_count:
+            if num_good_matches >= 5:
                 # Get matched keypoints
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # Find homography matrix
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                # Find homography matrix with higher ransacReprojThreshold
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 10.0)  # Increased from self.inlier_threshold (5.0)
                 
                 if H is not None:
                     # Count inliers
@@ -701,11 +708,11 @@ class EnhancedImageMatcher:
                     inlier_score = inliers / max(1, num_good_matches)
                     logger.debug(f"SIFT: Homography inliers: {inliers}/{num_good_matches}")
                     
-                    # Combine raw match score with inlier ratio
-                    match_score = 0.4 * match_score + 0.6 * inlier_score
+                    # Combine raw match score with inlier ratio with higher weight for raw matches
+                    match_score = 0.6 * match_score + 0.4 * inlier_score  # Changed from 0.4/0.6 to 0.6/0.4
             
-            # Normalize and scale the final score
-            final_score = min(1.0, match_score * 1.5)  # Scale up to better differentiate
+            # Normalize and scale the final score with higher multiplier
+            final_score = min(1.0, match_score * 2.0)  # Increased from 1.5 to 2.0
             
             # Cache the result
             self.feature_cache.put(f"{img_path1}|{img_path2}", "sift_similarity", final_score)
@@ -717,7 +724,7 @@ class EnhancedImageMatcher:
             return 0.0
     
     def calculate_akaze_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate AKAZE feature similarity with geometric verification"""
+        """Calculate AKAZE feature similarity with more lenient geometric verification"""
         try:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
@@ -741,7 +748,7 @@ class EnhancedImageMatcher:
             # Match features
             matches = self.bf_akaze.knnMatch(des1, des2, k=2)
             
-            # Filter matches
+            # Filter matches with more lenient threshold
             good_matches = []
             for match in matches:
                 if len(match) == 2:
@@ -757,14 +764,15 @@ class EnhancedImageMatcher:
             match_score = len(good_matches) / max(1, max_possible_matches)
             
             # Apply geometric verification if we have enough matches
+            # Reduced min_match_count to 5 (was previously self.min_match_count which is typically 10)
             inlier_score = 0.0
-            if num_good_matches >= self.min_match_count:
+            if num_good_matches >= 5:
                 # Get matched keypoints
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # Find homography matrix
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                # Find homography matrix with higher ransacReprojThreshold
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 10.0)  # Increased from self.inlier_threshold (5.0)
                 
                 if H is not None:
                     # Count inliers
@@ -772,11 +780,11 @@ class EnhancedImageMatcher:
                     inlier_score = inliers / max(1, num_good_matches)
                     logger.debug(f"AKAZE: Homography inliers: {inliers}/{num_good_matches}")
                     
-                    # Combine raw match score with inlier ratio
-                    match_score = 0.4 * match_score + 0.6 * inlier_score
+                    # Combine raw match score with inlier ratio with higher weight for raw matches
+                    match_score = 0.6 * match_score + 0.4 * inlier_score  # Changed from 0.4/0.6 to 0.6/0.4
             
-            # Normalize and scale
-            final_score = min(1.0, match_score * 1.5)
+            # Normalize and scale with higher multiplier
+            final_score = min(1.0, match_score * 2.0)  # Increased from 1.5 to 2.0
             
             # Cache the result
             self.feature_cache.put(f"{img_path1}|{img_path2}", "akaze_similarity", final_score)
@@ -788,7 +796,7 @@ class EnhancedImageMatcher:
             return 0.0
             
     def calculate_orb_similarity(self, img_path1: str, img_path2: str) -> float:
-        """Calculate ORB feature similarity with geometric verification"""
+        """Calculate ORB feature similarity with more lenient matching criteria"""
         try:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "orb_similarity")
@@ -812,12 +820,12 @@ class EnhancedImageMatcher:
             # Match features
             matches = self.bf_orb.knnMatch(des1, des2, k=2)
             
-            # Filter matches
+            # Filter matches with more lenient ratio
             good_matches = []
             for match in matches:
                 if len(match) == 2:
                     m, n = match
-                    if m.distance < 0.75 * n.distance:  # Standard ratio for ORB
+                    if m.distance < 0.85 * n.distance:  # More lenient ratio for ORB (was 0.75)
                         good_matches.append(m)
                         
             num_good_matches = len(good_matches)
@@ -827,15 +835,15 @@ class EnhancedImageMatcher:
             max_possible_matches = min(len(kp1), len(kp2))
             match_score = len(good_matches) / max(1, max_possible_matches)
             
-            # Apply geometric verification if we have enough matches
+            # Apply geometric verification if we have enough matches (reduced threshold)
             inlier_score = 0.0
-            if num_good_matches >= self.min_match_count:
+            if num_good_matches >= 5:  # Reduced from self.min_match_count (10)
                 # Get matched keypoints
                 src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # Find homography matrix
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, self.inlier_threshold)
+                # Find homography matrix with more lenient threshold
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 10.0)  # Increased from self.inlier_threshold
                 
                 if H is not None:
                     # Count inliers
@@ -843,11 +851,11 @@ class EnhancedImageMatcher:
                     inlier_score = inliers / max(1, num_good_matches)
                     logger.debug(f"ORB: Homography inliers: {inliers}/{num_good_matches}")
                     
-                    # Combine raw match score with inlier ratio
-                    match_score = 0.4 * match_score + 0.6 * inlier_score
+                    # Combine raw match score with inlier ratio with higher weight for raw matches
+                    match_score = 0.6 * match_score + 0.4 * inlier_score  # Changed from 0.4/0.6 to 0.6/0.4
             
-            # Normalize and scale
-            final_score = min(1.0, match_score * 1.5)
+            # Normalize and scale with higher multiplier
+            final_score = min(1.0, match_score * 2.0)  # Increased scaling factor from 1.5 to 2.0
             
             # Cache the result
             self.feature_cache.put(f"{img_path1}|{img_path2}", "orb_similarity", final_score)
@@ -863,6 +871,11 @@ class EnhancedImageMatcher:
         Calculate deep learning feature similarity using ensemble of models
         """
         try:
+            # Check if TensorFlow is available
+            if not TENSORFLOW_AVAILABLE:
+                logger.warning("Deep similarity calculation skipped - TensorFlow not available")
+                return 0.0
+                
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
             if cached_result is not None:
@@ -925,6 +938,16 @@ class EnhancedImageMatcher:
     def _extract_deep_features(self, img_path: str) -> Optional[Dict[str, np.ndarray]]:
         """Extract deep features from image using ensemble of models"""
         try:
+            # Check if TensorFlow is available
+            if not TENSORFLOW_AVAILABLE:
+                logger.warning("Deep feature extraction skipped - TensorFlow not available")
+                return None
+                
+            # Check if model is available
+            if self.model is None:
+                logger.warning("Deep model not available for feature extraction")
+                return None
+            
             # Check if image exists
             if not os.path.exists(img_path):
                 logger.warning(f"Image does not exist: {img_path}")
@@ -1008,13 +1031,30 @@ class EnhancedImageMatcher:
         Returns the weighted score and individual scores
         """
         if not weights:
-            weights = SETTINGS['WEIGHTS']
+            weights = SETTINGS['WEIGHTS'].copy()  # Make a copy to avoid modifying the original
             
         # Calculate similarities
         sift_score = self.calculate_sift_similarity(img_path1, img_path2)
         akaze_score = self.calculate_akaze_similarity(img_path1, img_path2)
-        deep_score = self.calculate_deep_similarity(img_path1, img_path2)
         orb_score = self.calculate_orb_similarity(img_path1, img_path2)
+        
+        # Only calculate deep score if TensorFlow is available
+        if TENSORFLOW_AVAILABLE and self.model is not None:
+            deep_score = self.calculate_deep_similarity(img_path1, img_path2)
+        else:
+            deep_score = 0.0
+            # Adjust weights if deep features are not available
+            if 'deep' in weights and weights['deep'] > 0:
+                remaining_weight = weights.pop('deep')
+                # Distribute the deep weight to other methods
+                if sum(weights.values()) > 0:
+                    for k in weights:
+                        weights[k] += remaining_weight * (weights[k] / sum(weights.values()))
+                else:
+                    # If all other weights are 0, distribute evenly
+                    remaining_keys = list(weights.keys())
+                    for k in remaining_keys:
+                        weights[k] = remaining_weight / len(remaining_keys)
         
         # Store individual scores
         scores = {
@@ -1041,12 +1081,22 @@ class EnhancedImageMatcher:
         if weight_sum > 0:
             combined_score /= weight_sum
             
-        # Boost score if multiple methods agree
-        high_scores = sum(1 for score in scores.values() if score > 0.65)
+        # Boost score if any methods have high scores - much more aggressive boosting
+        max_score = max(scores.values())
+        if max_score > 0.6:  # If any method has a high score, boost the combined score
+            combined_score = max(combined_score, 0.7 * max_score)  # Take at least 70% of the best method's score
+            
+        # Count methods with decent scores
+        high_scores = sum(1 for score in scores.values() if score > 0.5)  # Reduced threshold from 0.65
+        medium_scores = sum(1 for score in scores.values() if 0.3 <= score <= 0.5)  # Count medium scores too
+        
+        # Boost score based on how many methods agree
         if high_scores >= 3:
-            combined_score = min(1.0, combined_score * 1.1)  # +10% boost if 3+ methods agree
+            combined_score = min(1.0, combined_score * 1.3)  # +30% boost if 3+ methods strongly agree (was 10%)
         elif high_scores >= 2:
-            combined_score = min(1.0, combined_score * 1.05)  # +5% boost if 2+ methods agree
+            combined_score = min(1.0, combined_score * 1.2)  # +20% boost if 2+ methods strongly agree (was 5%)
+        elif high_scores >= 1 and medium_scores >= 1:
+            combined_score = min(1.0, combined_score * 1.1)  # +10% boost if 1 high and 1+ medium scores
             
         logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
         
@@ -1083,13 +1133,14 @@ class EnhancedImageMatcher:
         Args:
             img_path1: Path to first image
             img_path2: Path to second image
-            threshold: Similarity threshold (default: from config)
+            threshold: Similarity threshold (default: from config, extremely low)
             
         Returns:
             Tuple of (is_match, similarity_score, individual_scores)
         """
         if threshold is None:
-            threshold = SETTINGS['COMBINED_THRESHOLD']
+            # Use an extremely low threshold to find any potential matches
+            threshold = SETTINGS.get('COMBINED_THRESHOLD', 0.0001)
             
         try:
             # Calculate combined similarity
@@ -1097,6 +1148,10 @@ class EnhancedImageMatcher:
             
             # Determine if it's a match
             is_match = similarity >= threshold
+            
+            # Log match information for debugging
+            if similarity > 0.01:
+                logger.info(f"Potential match found: {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
             
             return is_match, similarity, scores
         except Exception as e:

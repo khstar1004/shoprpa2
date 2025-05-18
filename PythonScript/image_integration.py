@@ -13,6 +13,7 @@ import re
 import hashlib
 from datetime import datetime
 import glob
+import time
 
 # Add the parent directory to sys.path to allow imports from PythonScript
 import sys
@@ -181,11 +182,11 @@ def find_best_image_matches(product_names: List[str],
                            haereum_images: Dict[str, Dict], 
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
-                           similarity_threshold: float = 0.4,  # Increased from 0.1
+                           similarity_threshold: float = 0.2,  # Lowered from 0.4 to find more matches
                            config: Optional[configparser.ConfigParser] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
     Find the best matching images for each product name from Haereum, Kogift, and Naver images.
-    Now using stricter thresholds from the start to ensure better quality matches.
+    Now using lower thresholds to ensure more matches are found.
     """
     best_matches = []
     used_haereum = set()
@@ -195,16 +196,16 @@ def find_best_image_matches(product_names: List[str],
     # Get thresholds from config if available
     if config:
         try:
-            similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4)  # Use text_threshold as base
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.75)
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.55)
+            similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.2)  # Use text_threshold as base
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.55)
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.35)
         except ValueError as e:
             logging.warning(f"임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.75
-            naver_minimum_threshold = 0.55
+            naver_initial_threshold = 0.55
+            naver_minimum_threshold = 0.35
     else:
-        naver_initial_threshold = 0.75
-        naver_minimum_threshold = 0.55
+        naver_initial_threshold = 0.55
+        naver_minimum_threshold = 0.35
     
     # Log the product names being processed
     logger.info(f"find_best_image_matches: Processing {len(product_names)} products.")
@@ -403,33 +404,37 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.4,  # Default threshold if not provided
+                               similarity_threshold: float = 0.2,  # Lowered from 0.4
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
-    Find the best matching image for a product based on text similarity.
-    Now using stricter thresholds from the start to ensure better quality matches.
+    Find the best matching image for a product.
+    Now using lower thresholds to find more potential matches.
+    Returns a tuple of (image_path, similarity_score) or None if no match found.
     """
-    # product_tokens: 상품명에서 추출한 토큰 목록
-    # image_info: 특정 소스(해오름, 고려, 네이버)의 이미지 메타데이터 사전
-    # used_images: 이미 사용된 이미지 경로 집합
-    # similarity_threshold: 최소 유사도 점수
     if not product_tokens:
-        logger.warning(f"[{source_name_for_log}] Product tokens are empty, cannot find match.")
         return None
-    if not image_info:
-        logger.warning(f"[{source_name_for_log}] Image info is empty, cannot find match.")
-        return None
-
-    best_match_path = None
-    best_score = -1.0 # Initialize with a value lower than any possible score
-    
+        
     if used_images is None:
         used_images = set()
+        
+    best_match_path = None
+    best_score = 0.0
     
-    # 상품 토큰 정보 로깅
-    if product_tokens:
-        logging.debug(f"매칭 시도 - 제품 토큰: {product_tokens}")
+    # Track all scores for fallback matching
+    match_scores = []
+    
+    # Get minimum threshold from config
+    if config:
+        try:
+            min_threshold = config.getfloat('Matching', 'minimum_similarity', fallback=0.001)
+        except:
+            min_threshold = 0.001
+    else:
+        min_threshold = 0.001  # Very low fallback threshold
+        
+    # Use effective threshold: either the provided one or config-based
+    effective_threshold = min_threshold
     
     # Get config thresholds or use defaults
     # Use much lower thresholds for Kogift and Naver
@@ -529,7 +534,7 @@ def find_best_match_with_enhanced_matcher(
     enhanced_matcher: Any = None
 ) -> Optional[Tuple[str, float]]:
     """
-    Enhanced image matching with stricter thresholds based on config settings.
+    Enhanced image matching with extremely low thresholds to find any potential match.
     """
     if not enhanced_matcher:
         logging.warning("Enhanced image matcher not available. Falling back to text-based matching.")
@@ -541,96 +546,68 @@ def find_best_match_with_enhanced_matcher(
     best_match = None
     best_score = 0
     
-    # Using config-based thresholds instead of hardcoded values
-    high_confidence_threshold = 0.70  # Increased from 0.10 to match MatchQualityThresholds high_quality
-    min_confidence_threshold = 0.35   # Increased from 0.01 to match MatchQualityThresholds low_quality
+    # Using extremely reduced thresholds to find more potential matches
+    high_confidence_threshold = 0.2   # Reduced from 0.40
+    min_confidence_threshold = 0.0001  # Essentially accept any match
     
-    gpu_info = "GPU enabled" if getattr(enhanced_matcher, "use_gpu", False) else "CPU mode"
-    logging.info(f"Enhanced image matching attempt - Image: {os.path.basename(source_img_path)} ({gpu_info})")
+    gpu_info = "GPU enabled" if getattr(enhanced_matcher, 'use_gpu', False) else "CPU mode"
+    logging.debug(f"Running enhanced matching on {len(target_images)} images ({gpu_info})")
     
-    # Track scores for validation
-    match_scores = []
-    secondary_matches = []
+    # Track timing for performance analysis
+    start_time = time.time()
+    matches_checked = 0
+    high_conf_matches = 0
     
-    for img_path, info in target_images.items():
-        if img_path in used_images:
+    for image_path, image_info in target_images.items():
+        # Skip if already used
+        if image_path in used_images:
             continue
             
+        # Check if image exists
+        if not os.path.exists(image_path):
+            logging.warning(f"Image doesn't exist: {image_path}")
+            continue
+        
         try:
-            similarity = enhanced_matcher.calculate_similarity(source_img_path, str(info['path']))
+            is_match, similarity, scores = enhanced_matcher.is_match(
+                source_img_path, 
+                image_path, 
+                min_confidence_threshold  # Use the minimum threshold
+            )
             
-            if similarity > min_confidence_threshold:  # Only track scores above minimum threshold
-                match_scores.append((img_path, similarity, info.get('original_name', '')))
-                
-                if similarity >= high_confidence_threshold:  # Only consider high confidence matches
-                    secondary_matches.append((img_path, similarity, info.get('original_name', '')))
+            matches_checked += 1
+            
+            if similarity > high_confidence_threshold:
+                high_conf_matches += 1
+                logging.debug(f"High confidence match: {os.path.basename(image_path)} = {similarity:.4f}")
                 
             if similarity > best_score:
                 best_score = similarity
-                best_match = img_path
-        except Exception as e:
-            logging.warning(f"이미지 유사도 계산 중 오류 발생: {e}")
-    
-    # UPDATED: More strict verification for close matches
-    if len(secondary_matches) >= 2:
-        secondary_matches.sort(key=lambda x: x[1], reverse=True)
-        if len(secondary_matches) >= 2:
-            best_score = secondary_matches[0][1]
-            second_best_score = secondary_matches[1][1]
-            score_ratio = second_best_score / best_score if best_score > 0 else 0
-            
-            # UPDATED: Stricter ambiguity check
-            if score_ratio > 0.98 and best_score < high_confidence_threshold:
-                logging.warning(f"Ambiguous image matching: Best={secondary_matches[0][2]} ({best_score:.3f}), Second={secondary_matches[1][2]} ({second_best_score:.3f})")
+                best_match = image_path
                 
-                from Levenshtein import ratio as text_similarity
-                name_sim = text_similarity(secondary_matches[0][2], secondary_matches[1][2])
-                
-                if name_sim < 0.3:  # Reduced threshold for name similarity to allow more matches
-                    logging.warning(f"Product names are very different between top matches (sim={name_sim:.2f})")
+                # Early exit for very high confidence matches to save processing time
+                if similarity > 0.75:
+                    logging.debug(f"Found very high confidence match ({similarity:.4f}), early exit")
+                    break
                     
-                    if best_score < high_confidence_threshold * 1.1:  # Reduced required confidence multiplier
-                        logging.warning(f"Rejecting ambiguous match due to insufficient confidence")
-                        return None
-    
-    # 최종 매칭 결과 로깅
-    if best_match:
-        best_match_name = target_images[best_match]['clean_name']
-        logging.info(f"  --> Best Match Selected: {best_match_name} (Score: {best_score:.3f})")
-        
-        # UPDATED: More lenient thresholds to avoid rejecting matches
-        if best_score < min_confidence_threshold:
-            logging.warning(f"매칭 점수가 최소 임계값({min_confidence_threshold})보다 낮아 매칭을 거부합니다: {best_match_name} (점수: {best_score:.3f})")
-            return None
-        elif best_score < high_confidence_threshold:
-            logging.warning(f"낮은 신뢰도로 매칭되었습니다: {best_match_name} (점수: {best_score:.3f})")
+        except Exception as e:
+            logging.error(f"Error comparing images: {e}")
             
-            # UPDATED: More lenient checks for low confidence matches
-            try:
-                from Levenshtein import ratio as text_similarity
-                source_name = os.path.basename(source_img_path).split('_', 1)[1] if '_' in os.path.basename(source_img_path) else ''
-                target_name = best_match_name
-                
-                # Clean up names for comparison (remove file extensions and common prefixes)
-                source_name = re.sub(r'\.(jpg|png|jpeg)$', '', source_name)
-                source_name = re.sub(r'_[a-f0-9]{8,}$', '', source_name)  # Remove hash suffixes
-                
-                # Calculate text similarity between product names
-                name_sim = text_similarity(source_name, target_name)
-                logging.debug(f"Name similarity check: '{source_name}' vs '{target_name}' = {name_sim:.3f}")
-                
-                # UPDATED: Made threshold much more lenient to return more matches
-                if best_score < high_confidence_threshold * 0.5 and name_sim < 0.2:
-                    logging.warning(f"이미지 유사도({best_score:.3f})와 이름 유사도({name_sim:.3f})가 모두 매우 낮아 매칭을 거부합니다")
-                    return None
-            except Exception as e:
-                logging.warning(f"이름 유사도 확인 중 오류 발생: {e}")
-        
-        # Return the match with score
-        return best_match, best_score
-    else:
-        logging.debug("이미지 매치 없음")
+    # Compute time spent
+    elapsed = time.time() - start_time
+    
+    # Don't return matches below the absolute minimum threshold
+    if best_match and best_score < min_confidence_threshold:
+        logging.debug(f"Best match score ({best_score:.4f}) below min threshold ({min_confidence_threshold})")
         return None
+        
+    # Log summary of matching results for debugging
+    if best_match:
+        logging.info(f"Best image match: {os.path.basename(best_match)} ({best_score:.4f}) [checked {matches_checked} images in {elapsed:.2f}s, {high_conf_matches} high confidence]")
+    else:
+        logging.info(f"No image match found after checking {matches_checked} images in {elapsed:.2f}s")
+    
+    return (best_match, best_score) if best_match else None
 
 def verify_image_matches(best_matches, product_names, haereum_images, kogift_images, naver_images):
     """
@@ -1500,96 +1477,24 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
+    현재는 필터링을 비활성화하여 모든 이미지를 유지합니다.
     """
     try:
         result_df = df.copy()
         
-        # Get thresholds from config with MUCH more lenient defaults
-        try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.05)  # Even more lenient
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)  # Even more lenient
-            
-            # Use the higher of the two thresholds
-            effective_threshold = max(similarity_threshold, minimum_match_confidence)
-            
-            logging.info(f"통합: 이미지 표시 임계값 (filter_images_by_similarity): {effective_threshold}")
-        except (configparser.Error, ValueError) as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.05을 사용합니다.")
-            effective_threshold = 0.05  # Even more lenient default
+        # Disable all filtering and keep all images
+        logging.info("필터링 비활성화: 모든 이미지를 유지합니다.")
         
-        # Get Naver-specific thresholds with much more lenient values
-        try:
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.10)  # More lenient
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.05)  # More lenient
-        except (configparser.Error, ValueError) as e:
-            logging.warning(f"네이버 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.10  # More lenient
-            naver_minimum_threshold = 0.05  # More lenient
-
-        # Count before filtering
-        kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-        naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        logging.info(f"필터링 전 이미지 수: 고려기프트={kogift_before}, 네이버={naver_before}")
-
-        # Filter counter
-        filtered_count = 0
-        
-        for idx in range(len(result_df)):
-            for col_name in ['고려기프트 이미지', '네이버 이미지']:
-                if col_name not in result_df.columns:
-                    continue
-                
-                cell_data = result_df.at[idx, col_name]
-                if not isinstance(cell_data, dict):
-                    continue
-                
-                score = cell_data.get('score', 0)
-                url = cell_data.get('url')
-                
-                # Special handling for Naver images - be more permissive about URLs
-                if col_name == '네이버 이미지':
-                    # Check if URL exists at all - accept any URL
-                    if not url:
-                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
-                        logging.warning(f"Row {idx} (Product: '{product_name}'): Naver - Missing URL. Will try to keep anyway.")
-                        
-                        # Instead of clearing, try to find local_path
-                        local_path = cell_data.get('local_path')
-                        if local_path and os.path.exists(local_path):
-                            # Keep it if we have a valid local path
-                            logging.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver data with valid local path despite missing URL.")
-                            continue
-                        
-                        # Only clear if both URL and local path are invalid
-                        result_df.at[idx, col_name] = None
-                        filtered_count += 1
-                        continue
-                        
-                    # Only filter out with extremely low or negative scores
-                    if score < 0:
-                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
-                        logging.warning(f"Row {idx} (Product: '{product_name}'): Naver - Score {score:.3f} is negative. Clearing image data.")
-                        result_df.at[idx, col_name] = None
-                        filtered_count += 1
-                else:  # Kogift images
-                    # For Kogift, only filter out negative scores
-                    if score < 0:
-                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
-                        logging.warning(f"Row {idx} (Product: '{product_name}'): Kogift - Score {score:.3f} is negative. Clearing image data.")
-                        result_df.at[idx, col_name] = None
-                        filtered_count += 1
-
-        # Log how many images were kept after filtering
-        kept_kogift = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-        kept_naver = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        
-        logging.info(f"필터링 후 이미지 수: 고려기프트={kept_kogift} (제거: {kogift_before-kept_kogift}), 네이버={kept_naver} (제거: {naver_before-kept_naver})")
-        logging.info(f"총 {filtered_count}개 이미지 필터링됨")
+        # Count images for logging
+        kogift_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+        naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+        logging.info(f"필터링 후 이미지 수: 고려기프트={kogift_count}, 네이버={naver_count} (필터링 비활성화됨)")
         
         return result_df
+        
     except Exception as e:
         logging.error(f"이미지 필터링 중 오류 발생: {e}", exc_info=True)
-        return df  # Return original dataframe on error
+        return df
 
 def create_excel_with_images(df, output_file):
     """이미지가 포함된 엑셀 파일 생성"""
