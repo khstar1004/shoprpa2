@@ -282,7 +282,7 @@ def find_best_image_matches(product_names: List[str],
         
         # 각 소스별 최적 매치 찾기
         # For Haoreum and Naver, we still use the 'used' sets to avoid re-using the same image file for different products
-        haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold, config=config) # config 추가
+        haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold, source_name_for_log="Haereum", config=config)
         if haereum_best:
             used_haereum.add(haereum_best[0]) # Add path to used set
             
@@ -332,7 +332,9 @@ def find_best_image_matches(product_names: List[str],
                         enhanced_matcher
                     )
                 else:
-                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, 0.01, source_name_for_log="Kogift_Fallback", config=config) # Pass None for used_images for Kogift
+                    # Use image_threshold from config (0.01 by default) for Kogift
+                    kogift_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.01) if config else 0.01
+                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, kogift_threshold, source_name_for_log="Kogift_Fallback", config=config) # Pass None for used_images for Kogift
             
             # 네이버 매칭이 없는 경우에만 기존 방식 시도 (still uses used_naver)
             if not naver_best:
@@ -344,16 +346,22 @@ def find_best_image_matches(product_names: List[str],
                         enhanced_matcher
                     )
                 else:
-                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, 0.01, source_name_for_log="Naver_Fallback", config=config) # Pass used_naver for Naver
+                    # Use a more lenient threshold for Naver
+                    naver_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45) if config else 0.45
+                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, naver_threshold, source_name_for_log="Naver_Fallback", config=config) # Pass used_naver for Naver
         else:
             # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
             # Kogift - pass None for used_images
             if not kogift_best: # Check if kogift_best is already found by ID match from an earlier (non-Haoreum) source if logic changes
-                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, 0.01, source_name_for_log="Kogift_Direct", config=config)
+                # Use image_threshold from config (0.01 by default) for Kogift direct matching
+                kogift_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.01) if config else 0.01
+                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, kogift_threshold, source_name_for_log="Kogift_Direct", config=config)
             
             # Naver - pass used_naver
             if not naver_best:
-                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, 0.01, source_name_for_log="Naver_Direct", config=config)
+                # Use naver_minimum_similarity from config (0.45 by default) for Naver direct matching
+                naver_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45) if config else 0.45
+                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, naver_threshold, source_name_for_log="Naver_Direct", config=config)
         
         # DO NOT add kogift_best to used_kogift set to allow reuse
 
@@ -410,20 +418,29 @@ def find_best_match_for_product(product_tokens: List[str],
     # 상품 토큰 정보 로깅
     if product_tokens:
         logging.debug(f"매칭 시도 - 제품 토큰: {product_tokens}")
-    logging.debug(f"Using similarity_threshold: {similarity_threshold} for this product.") # Log threshold being used
+    
+    # Get config thresholds or use defaults
+    # Use passed similarity_threshold as default if not provided in config
+    if config:
+        try:
+            # For kogift, use the image_threshold which is typically more lenient (0.01)
+            if source_name_for_log.lower().startswith("kogift"):
+                similarity_threshold = config.getfloat('Matching', 'image_threshold', fallback=similarity_threshold)
+            # For naver, use the naver_minimum_similarity which might be stricter
+            elif source_name_for_log.lower().startswith("naver"):
+                similarity_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=similarity_threshold)
+            # For other sources, use the general text_threshold
+            else:
+                similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
+        except (configparser.Error, ValueError) as e:
+            logging.warning(f"Config threshold read error: {e}. Using default: {similarity_threshold}")
+    
+    logging.debug(f"Using similarity_threshold: {similarity_threshold} for source: {source_name_for_log}")
     
     # 이미지 수와 사용된 이미지 수 로깅
     available_images = len(image_info) - len(used_images)
     logging.debug(f"사용 가능한 이미지: {available_images}개 (전체: {len(image_info)}개, 사용됨: {len(used_images)}개)")
     
-    # Get similarity threshold from config or use default
-    # similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.4) # This line will cause error if config is None
-    if config:
-        similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
-    else:
-        # If config is not provided, use the passed similarity_threshold or its default
-        pass # similarity_threshold is already set
-
     # 매칭 결과를 추적하기 위한 리스트
     match_scores = [] # Stores (path, score, clean_name) tuples
     
@@ -431,28 +448,56 @@ def find_best_match_for_product(product_tokens: List[str],
         # 이미 사용된 이미지는 건너뜀
         if img_path in used_images:
             continue
+        
+        # Skip if tokens are missing
+        if 'tokens' not in info or not info['tokens']:
+            continue
             
-        similarity = calculate_similarity(product_tokens, info['tokens'])
-        
-        # 모든 매칭 점수 추적
-        if similarity > 0:
-            # Store path, score, and clean name for logging
-            match_scores.append((img_path, similarity, info['clean_name']))
-        
-        # if similarity > best_score and similarity >= similarity_threshold: # Old logic
-        #     best_score = similarity
-        #     best_match = img_path
-        if similarity >= similarity_threshold and similarity > best_score:
-            best_score = similarity
-            best_match_path = img_path
-        elif similarity == best_score:
-            # If scores are equal, prefer .jpg over .png 
-            # if current best_match is a .png and new one is .jpg
-            if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
-                # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
+        try:    
+            similarity = calculate_similarity(product_tokens, info['tokens'])
+            
+            # 모든 매칭 점수 추적
+            if similarity > 0:
+                # Store path, score, and clean name for logging
+                match_scores.append((img_path, similarity, info['clean_name']))
+            
+            # Find the best match above threshold
+            if similarity >= similarity_threshold and similarity > best_score:
+                best_score = similarity
                 best_match_path = img_path
-                # best_score remains the same
-                logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
+            elif similarity == best_score:
+                # If scores are equal, prefer .jpg over .png 
+                # if current best_match is a .png and new one is .jpg
+                if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
+                    # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
+                    best_match_path = img_path
+                    # best_score remains the same
+                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
+        except Exception as e:
+            logging.warning(f"[{source_name_for_log}] Error calculating similarity for {img_path}: {e}")
+            continue
+    
+    # If no match found but we have at least one image, consider using a fallback approach
+    if not best_match_path and image_info and source_name_for_log.lower().startswith("kogift"):
+        # For Kogift only, if no match found, try more basic token matching
+        logging.info(f"No match found above threshold {similarity_threshold} for {source_name_for_log}. Trying basic token matching.")
+        
+        # Try to find some token overlap, even if small
+        for img_path, info in image_info.items():
+            if img_path in used_images:
+                continue
+                
+            # Very basic token check - any overlap at all
+            if 'tokens' in info and info['tokens']:
+                common_tokens = set(product_tokens) & set(info['tokens'])
+                if common_tokens:
+                    # Use the best match from our earlier search
+                    if match_scores:
+                        match_scores.sort(key=lambda x: x[1], reverse=True)
+                        best_match_path = match_scores[0][0]
+                        best_score = match_scores[0][1]
+                        logging.warning(f"Using best available match despite low score: {info['clean_name']} (Score: {best_score:.3f})")
+                        break
     
     # 상위 3개 매칭 점수 로깅
     if match_scores:
@@ -470,8 +515,6 @@ def find_best_match_for_product(product_tokens: List[str],
     else:
         logging.debug(f"매치 없음 (임계값: {similarity_threshold})")
         return None
-    
-    return best_match_path
 
 def find_best_match_with_enhanced_matcher(
     source_img_path: str, 
@@ -916,6 +959,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             # Check if data already exists and has a valid URL (placed by format_product_data_for_output or previous run)
             # Also prioritize the URL scraped directly if it exists in the input df
             scraped_url = row_data.get(scraped_haereum_url_col) if scraped_haereum_url_col in row_data else None
+            
+            # Handle NA values properly to avoid boolean ambiguity error
+            if pd.isna(scraped_url) or scraped_url is None or (isinstance(scraped_url, str) and scraped_url.strip() in ['', 'None', 'NA', 'nan']):
+                scraped_url = None
+                logging.warning(f"Row {idx}: Missing or invalid scraped Haereum URL for product '{product_names[idx]}'. Attempting fallback.")
 
             if isinstance(existing_haereum_data, dict) and \
                existing_haereum_data.get('url') and \
@@ -1057,20 +1105,24 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
                 assign_kogift_image = False
                 if has_kogift_product_info:
-                    # Product info exists.
-                    # Using MatchQualityThresholds from config
-                    if kogift_score >= 0.70:  # high_quality threshold
-                        assign_kogift_image = True
+                    # Product info exists - use more lenient thresholds from config
+                    # Get thresholds from config with more lenient defaults
+                    high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.60) if config else 0.60
+                    medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.40) if config else 0.40
+                    low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.30) if config else 0.30
+                    reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.20) if config else 0.20
+                    
+                    # Always accept kogift image with ANY score if product info exists
+                    assign_kogift_image = True
+                    
+                    if kogift_score >= high_quality:  # high_quality threshold
                         logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on high quality score ({kogift_score:.3f})")
-                    elif kogift_score >= 0.50:  # medium_quality threshold
-                        assign_kogift_image = True
+                    elif kogift_score >= medium_quality:  # medium_quality threshold
                         logging.info(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image based on medium quality score ({kogift_score:.3f})")
-                    elif kogift_score >= 0.35:  # low_quality threshold
-                        assign_kogift_image = True
+                    elif kogift_score >= low_quality:  # low_quality threshold
                         logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with low quality score ({kogift_score:.3f}). Manual review suggested.")
-                    else:  # Below reject_threshold (0.30)
-                        assign_kogift_image = False
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image. Score {kogift_score:.3f} is below minimum quality threshold.")
+                    else:  # even below reject_threshold, still assign
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image despite very low score {kogift_score:.3f}. Manual review required.")
                 else:
                     # No Kogift product info for this row.
                     # Using high_quality threshold for stricter matching when no product info
@@ -1462,40 +1514,40 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         result_df = df.copy()
         
-        # Get thresholds from config with stricter defaults
+        # Get thresholds from config with more lenient defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.40)  # Increased from 0.01
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.40)  # Increased from 0.01
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.30)  # Reduced from 0.40
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.30)  # Reduced from 0.40
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
             logging.info(f"통합: 이미지 표시 임계값 (filter_images_by_similarity): {effective_threshold}")
         except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.40을 사용합니다.")
-            effective_threshold = 0.40  # Increased from 0.01
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.30을 사용합니다.")
+            effective_threshold = 0.30  # Reduced from 0.40
         
-        # Get Naver-specific thresholds
+        # Get Naver-specific thresholds with more lenient values
         try:
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.75)
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.55)
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.65)  # Reduced from 0.75
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45)  # Reduced from 0.55
         except ValueError as e:
             logging.warning(f"네이버 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.75
-            naver_minimum_threshold = 0.55
+            naver_initial_threshold = 0.65  # Reduced from 0.75
+            naver_minimum_threshold = 0.45  # Reduced from 0.55
             
-        # Get quality thresholds
+        # Get quality thresholds with more lenient values
         try:
-            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.70)
-            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.50)
-            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.35)
-            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.30)
+            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.60)  # Reduced from 0.70
+            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.40)  # Reduced from 0.50
+            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.30)  # Reduced from 0.35
+            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.20)  # Reduced from 0.30
         except ValueError as e:
             logging.warning(f"품질 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            high_quality = 0.70
-            medium_quality = 0.50
-            low_quality = 0.35
-            reject_threshold = 0.30
+            high_quality = 0.60  # Reduced from 0.70
+            medium_quality = 0.40  # Reduced from 0.50
+            low_quality = 0.30  # Reduced from 0.35
+            reject_threshold = 0.20  # Reduced from 0.30
 
         # Initial filtering based on thresholds
         filtered_count = 0
@@ -1528,6 +1580,11 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                     if score < effective_threshold:
                         logging.warning(f"Row {idx}: Kogift - Score {score:.3f} below threshold {effective_threshold}. Clearing image data.")
                         result_df.at[idx, col_name] = None
+
+        # Log how many images were kept after filtering
+        kept_kogift = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+        kept_naver = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+        logging.info(f"After filtering: Kept {kept_kogift} Kogift images and {kept_naver} Naver images")
 
         return result_df
     
@@ -1625,12 +1682,30 @@ def create_excel_with_images(df, output_file):
                     if isinstance(img_data, dict):
                         # excel_utils.py 형식의 딕셔너리 처리
                         
-                        # IMPORTANT FIX: For Haereum (본사) images, ALWAYS use original_path instead of local_path
+                        # IMPORTANT: For Haereum (본사) images, ALWAYS use original_path instead of local_path
                         # to ensure we use the JPG instead of _nobg version
-                        if col_name == '본사 이미지' and 'original_path' in img_data:
-                            img_path = img_data.get('original_path')
-                            logger.info(f"Using original_path for Haereum image: {img_path}")
-                        else:
+                        if col_name == '본사 이미지':
+                            if 'original_path' in img_data and img_data.get('original_path') and os.path.exists(img_data.get('original_path')):
+                                img_path = img_data.get('original_path')
+                                logger.info(f"Using original_path for Haereum image: {img_path}")
+                            elif 'local_path' in img_data:
+                                original_jpg_path = None
+                                local_path = img_data.get('local_path', '')
+                                
+                                # If local_path is a _nobg.png file, try to find the corresponding JPG
+                                if local_path and '_nobg.png' in local_path:
+                                    original_jpg_path = local_path.replace('_nobg.png', '.jpg')
+                                    if os.path.exists(original_jpg_path):
+                                        img_path = original_jpg_path
+                                        logger.info(f"Found original JPG from _nobg.png path: {img_path}")
+                                    else:
+                                        img_path = local_path  # Fallback to _nobg.png if JPG not found
+                                else:
+                                    img_path = local_path  # Use local_path as is
+                            else:
+                                # No valid path found
+                                img_path = None
+                        else:  # For non-Haereum images
                             img_path = img_data.get('local_path')
                             
                         if not img_path and 'url' in img_data:
@@ -1644,9 +1719,8 @@ def create_excel_with_images(df, output_file):
                     
                     if img_path and os.path.exists(img_path):
                         try:
-                            # Check if the path has '_nobg' in it for Haereum images and replace with original JPG if possible
+                            # Additional check for Haereum images to replace _nobg with JPG
                             if col_name == '본사 이미지' and '_nobg' in str(img_path):
-                                # Try to find the original JPG version
                                 original_jpg = str(img_path).replace('_nobg.png', '.jpg')
                                 if os.path.exists(original_jpg):
                                     logger.info(f"Replacing _nobg version with original JPG: {original_jpg}")
