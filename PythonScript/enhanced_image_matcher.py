@@ -453,6 +453,9 @@ class EnhancedImageMatcher:
         # Log GPU usage setting
         logger.info(f"EnhancedImageMatcher initialized with GPU usage set to: {self.use_gpu}")
         
+        # Add USE_BACKGROUND_REMOVAL attribute 
+        self.USE_BACKGROUND_REMOVAL = SETTINGS.get('USE_BACKGROUND_REMOVAL', True)
+        
         self.sift_features = SETTINGS['SIFT_FEATURES']
         self.akaze_features = SETTINGS['AKAZE_FEATURES']
         self.orb_features = SETTINGS['ORB_FEATURES']
