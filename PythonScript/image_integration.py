@@ -294,6 +294,31 @@ def find_best_image_matches(product_names: List[str],
         except (configparser.Error, ValueError):
             logging.warning(f"Cannot read similarity_threshold from config, using default: {similarity_threshold}")
     
+    # Default thresholds if not found in config
+    # These are for the fallback text-based matching in find_best_match_for_product
+    default_text_threshold_naver = 0.35 
+    default_text_threshold_kogift = 0.30
+
+    # Get specific thresholds from config for text-based fallback matching
+    if config:
+        try:
+            # For Naver
+            naver_text_sim_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', 
+                                                      fallback=default_text_threshold_naver)
+            # For Kogift
+            kogift_text_sim_threshold = config.getfloat('Matching', 'kogift_initial_similarity_threshold',
+                                                       fallback=default_text_threshold_kogift)
+        except (configparser.Error, ValueError) as e:
+            logging.warning(f"Cannot read initial similarity thresholds from config: {e}. Using defaults.")
+            naver_text_sim_threshold = default_text_threshold_naver
+            kogift_text_sim_threshold = default_text_threshold_kogift
+    else:
+        naver_text_sim_threshold = default_text_threshold_naver
+        kogift_text_sim_threshold = default_text_threshold_kogift
+
+    logging.info(f"Using Naver text similarity threshold for fallback: {naver_text_sim_threshold} (from config: naver_initial_similarity_threshold)")
+    logging.info(f"Using Kogift text similarity threshold for fallback: {kogift_text_sim_threshold} (from config: kogift_initial_similarity_threshold)")
+    
     # Print counts for debugging
     logging.info(f"Haereum images count: {len(haereum_images)}")
     logging.info(f"Kogift images count: {len(kogift_images)}")
@@ -414,7 +439,7 @@ def find_best_image_matches(product_names: List[str],
             logging.info(f"Trying fallback text-based matching for Kogift images for '{product_name}'")
             kogift_result = find_best_match_for_product(
                 product_tokens, kogift_images, used_kogift, 
-                similarity_threshold, "Kogift_Direct", config)
+                kogift_text_sim_threshold, "Kogift_Direct", config) # Use Kogift specific threshold
                 
             if kogift_result:
                 kogift_match, kogift_score = kogift_result
@@ -425,7 +450,7 @@ def find_best_image_matches(product_names: List[str],
             logging.info(f"Trying fallback text-based matching for Naver images for '{product_name}'")
             naver_result = find_best_match_for_product(
                 product_tokens, naver_images, used_naver, 
-                similarity_threshold, "Naver_Direct", config)
+                naver_text_sim_threshold, "Naver_Direct", config) # Use Naver specific threshold
                 
             if naver_result:
                 naver_match, naver_score = naver_result
@@ -465,18 +490,17 @@ def find_best_match_for_product(product_tokens: List[str],
     best_match_path = None
     best_match_score = 0
     
-    # Check if config specifies a custom threshold
-    if config:
-        try:
-            min_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=similarity_threshold)
-            similarity_threshold = min(similarity_threshold, min_threshold)  # Use the lower of the two
-        except Exception as e:
-            logging.warning(f"Error reading threshold from config: {e}")
+    # Use the similarity_threshold passed as argument directly.
+    # This threshold is expected to be set by the caller (find_best_image_matches)
+    # and should be appropriate for text-based similarity.
+    effective_similarity_threshold = similarity_threshold
+
+    # Log which threshold is being used.
+    logging.info(f"[{source_name_for_log}] Using text similarity threshold: {effective_similarity_threshold} (passed from caller)")
     
-    # Lower threshold for matching - extreme lenience
-    min_threshold = 0.001  # Effectively accept any match with non-zero similarity
-    
-    # Process each image
+    # Log the number of images we're searching through
+    logging.info(f"[{source_name_for_log}] Searching through {len(image_info)} images for a match")
+
     for img_path, img_data in image_info.items():
         # Skip if already used
         if img_path in used_images:
@@ -502,14 +526,17 @@ def find_best_match_for_product(product_tokens: List[str],
             best_match_path = img_path
     
     # Check threshold - use the minimum threshold for extreme lenience
-    if best_match_score >= min_threshold:
+    if best_match_score >= effective_similarity_threshold:
         if best_match_path:
             img_name = image_info[best_match_path].get('original_name', os.path.basename(best_match_path))
-            logging.debug(f"{source_name_for_log}: Best match for '{' '.join(product_tokens)}': '{img_name}' with score {best_match_score:.3f}")
+            logging.info(f"{source_name_for_log}: Best match for '{' '.join(product_tokens)}': '{img_name}' with score {best_match_score:.3f}")
             return best_match_path, best_match_score
+    elif best_match_path:  # We found a match but score is below threshold
+        img_name = image_info[best_match_path].get('original_name', os.path.basename(best_match_path))
+        logging.info(f"{source_name_for_log}: Found match below threshold. Product: '{' '.join(product_tokens)}', Image: '{img_name}', Score: {best_match_score:.3f} (threshold: {effective_similarity_threshold})")
     
     # No match found with sufficient similarity
-    logging.info(f"No match found above threshold {min_threshold} for {source_name_for_log}. Trying basic token matching.")
+    logging.info(f"No match found above threshold {effective_similarity_threshold} for {source_name_for_log}. Trying basic token matching.")
     
     # Try more basic matching as fallback
     for img_path, img_data in image_info.items():
@@ -1336,28 +1363,30 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 '공급사명'               # 공급사 정보
             ]
             
-            # 임계값 설정: config.ini의 naver_initial_similarity_threshold 값을 사용
-            # 기본값은 text_threshold 또는 0.35로 설정 (이전에 0.20으로 하드코딩됨)
-            default_naver_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.35)
+                        # 임계값 설정: config.ini의 naver_initial_similarity_threshold 값을 사용
+            # 기본값은 text_threshold 또는 0.20으로 설정
+            default_naver_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.20)
             naver_integration_score_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', 
-                                                              fallback=default_naver_threshold)
+                                                               fallback=default_naver_threshold)
             
-            logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold} (from config: naver_initial_similarity_threshold or fallback)")
+            logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold} (from config)")
 
             if naver_match and (isinstance(naver_match, tuple) or (isinstance(naver_match, str) and naver_match != '없음' and naver_match is not None)):
                 # Handle both tuple and string formats
                 if isinstance(naver_match, tuple) and len(naver_match) == 2:
                     naver_path_from_match, naver_score_from_match = naver_match
+                    logging.info(f"Row {idx}: Using tuple naver_match with score {naver_score_from_match}")
                 elif isinstance(naver_match, str) and os.path.exists(naver_match):
                     # It's a direct file path string
                     naver_path_from_match = naver_match
-                    naver_score_from_match = 0.5  # Default score when not provided
-                    logging.info(f"Row {idx}: Converting string naver_match to path/score: {naver_path_from_match}, {naver_score_from_match}")
+                    # 더 낮은 기본 점수 사용
+                    naver_score_from_match = 0.3  # Lower default score when not provided
+                    logging.info(f"Row {idx}: Using string naver_match path: {naver_path_from_match}")
                 else:
                     # Unexpected format
-                    logging.warning(f"Row {idx}: Unexpected format for naver_match in integrate_images: {naver_match}")
+                    logging.warning(f"Row {idx}: Unexpected naver_match format: {naver_match}")
                     naver_path_from_match = None if naver_match == '없음' else naver_match
-                    naver_score_from_match = 0
+                    naver_score_from_match = 0.0
 
                 if not isinstance(naver_score_from_match, (float, int)) or naver_score_from_match is None:
                     logging.warning(f"Row {idx}: Naver - Invalid/missing score for '{naver_product_name_for_log}': {naver_score_from_match}. Clearing all Naver data.")
