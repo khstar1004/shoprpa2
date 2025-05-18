@@ -1892,7 +1892,35 @@ def create_excel_with_images(df, output_file):
                                 img_url = img_data.get('url')
                                 # Just set img_path to None here, we'll handle URL in the next section
                                 img_path = None
-                        else:  # For non-Haereum images (Kogift and Naver)
+                        elif col_name == '네이버 이미지':
+                            # 네이버 이미지 처리 로직 개선
+                            img_path = None
+                            img_url = None
+                            
+                            # 1. URL 정보 저장 (필요한 경우 표시용)
+                            if 'url' in img_data and img_data.get('url'):
+                                img_url = img_data.get('url')
+                            
+                            # 2. 다운로드된 이미지 파일 찾기: 우선순위 순으로 여러 필드 검사
+                            path_fields = ['local_path', 'path', 'original_path']
+                            for field in path_fields:
+                                if field in img_data and img_data.get(field) and os.path.exists(img_data.get(field)):
+                                    img_path = img_data.get(field)
+                                    logger.info(f"네이버 이미지 {field} 찾음: {img_path}")
+                                    break
+                            
+                            # 3. 이미지를 찾지 못했으면 URL 표시하고 계속 진행
+                            if not img_path and img_url:
+                                logger.warning(f"네이버 이미지 로컬 파일을 찾지 못함. URL 표시: {img_url}")
+                                ws.cell(row=row_idx, column=col_idx, value=img_url)
+                                col_idx += 1
+                                continue
+                            elif not img_path:
+                                # URL도 없고 이미지도 없음 - 빈 셀
+                                ws.cell(row=row_idx, column=col_idx, value="")
+                                col_idx += 1
+                                continue
+                        else:  # For Kogift images
                             # Try local_path first, then path, then url
                             if 'local_path' in img_data and img_data.get('local_path') and os.path.exists(img_data.get('local_path')):
                                 img_path = img_data.get('local_path')
