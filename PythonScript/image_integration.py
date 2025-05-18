@@ -42,13 +42,15 @@ except ImportError:
     ENHANCED_MATCHER_AVAILABLE = False
     logging.warning("Enhanced image matcher is not available, falling back to text-based matching")
 
-def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
+def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool = True, prefer_jpg: bool = True) -> Dict[str, Dict]:
     """
     이미지 디렉토리에서 메타데이터를 추출해 인덱스를 생성합니다.
     
     Args:
         image_dir: 이미지 디렉토리 경로
         prefix: 이미지 소스 구분용 접두사 (예: 'haereum', 'kogift', 'naver')
+        prefer_original: _nobg가 아닌 원본 이미지를 우선시할지 여부
+        prefer_jpg: PNG보다 JPG 파일을 우선시할지 여부
         
     Returns:
         이미지 경로를 키로, 이미지 메타데이터를 값으로 하는 딕셔너리
@@ -57,7 +59,7 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     
     # This is critical - make sure image_dir is an absolute path
     abs_image_dir = os.path.abspath(str(image_dir))
-    logging.info(f"Preparing image metadata from directory: {abs_image_dir} (prefix: {prefix})")
+    logging.info(f"Preparing image metadata from directory: {abs_image_dir} (prefix: {prefix}, prefer_original: {prefer_original}, prefer_jpg: {prefer_jpg})")
     
     # Handle case where directory doesn't exist
     if not os.path.exists(abs_image_dir):
@@ -68,30 +70,123 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     image_dir_str = str(abs_image_dir)
     
     # First look for image files in the directory
-    image_files = []
+    all_image_files = []
     valid_extensions = ('.jpg', '.jpeg', '.png', '.gif')
     
     try:
-        # Get all image files (excluding _nobg versions for now)
+        # Get all image files
         for root, _, files in os.walk(image_dir_str):
             for file in files:
-                if file.lower().endswith(valid_extensions) and '_nobg' not in file:
+                if file.lower().endswith(valid_extensions):
                     full_path = os.path.join(root, file)
-                    image_files.append(full_path)
+                    all_image_files.append(full_path)
         
-        logging.info(f"Found {len(image_files)} images in {image_dir_str}")
+        logging.info(f"Found {len(all_image_files)} total images in {image_dir_str}")
         
-        # Process each image file
-        for img_path in image_files:
+        # Group images by base name (without _nobg suffix)
+        image_groups = {}
+        
+        for img_path in all_image_files:
+            filename = os.path.basename(img_path)
+            file_root, file_ext = os.path.splitext(filename)
+            
+            # Handle _nobg suffix
+            base_name = file_root
+            is_nobg = False
+            if file_root.endswith('_nobg'):
+                base_name = file_root[:-5]  # Remove _nobg suffix
+                is_nobg = True
+                
+            # Group by base name
+            if base_name not in image_groups:
+                image_groups[base_name] = {'original_jpg': None, 'original_png': None, 'nobg_png': None, 'nobg_jpg': None}
+                
+            # Store the path based on type and extension
+            if is_nobg:
+                if file_ext.lower() in ['.jpg', '.jpeg']:
+                    image_groups[base_name]['nobg_jpg'] = img_path
+                else:
+                    image_groups[base_name]['nobg_png'] = img_path
+            else:
+                if file_ext.lower() in ['.jpg', '.jpeg']:
+                    image_groups[base_name]['original_jpg'] = img_path
+                else:
+                    image_groups[base_name]['original_png'] = img_path
+        
+        # Process each group and prioritize files according to preferences
+        for base_name, paths in image_groups.items():
             try:
+                # Select the best path based on preferences
+                img_path = None
+                
+                # Priority order based on preferences:
+                if prefer_original and prefer_jpg:
+                    # 1. Original JPG
+                    # 2. Original PNG
+                    # 3. Nobg JPG
+                    # 4. Nobg PNG
+                    if paths['original_jpg']:
+                        img_path = paths['original_jpg']
+                    elif paths['original_png']:
+                        img_path = paths['original_png']
+                    elif paths['nobg_jpg']:
+                        img_path = paths['nobg_jpg']
+                    elif paths['nobg_png']:
+                        img_path = paths['nobg_png']
+                elif prefer_original and not prefer_jpg:
+                    # 1. Original PNG
+                    # 2. Original JPG
+                    # 3. Nobg PNG
+                    # 4. Nobg JPG
+                    if paths['original_png']:
+                        img_path = paths['original_png']
+                    elif paths['original_jpg']:
+                        img_path = paths['original_jpg']
+                    elif paths['nobg_png']:
+                        img_path = paths['nobg_png']
+                    elif paths['nobg_jpg']:
+                        img_path = paths['nobg_jpg']
+                elif not prefer_original and prefer_jpg:
+                    # 1. Nobg JPG
+                    # 2. Original JPG
+                    # 3. Nobg PNG
+                    # 4. Original PNG
+                    if paths['nobg_jpg']:
+                        img_path = paths['nobg_jpg']
+                    elif paths['original_jpg']:
+                        img_path = paths['original_jpg']
+                    elif paths['nobg_png']:
+                        img_path = paths['nobg_png']
+                    elif paths['original_png']:
+                        img_path = paths['original_png']
+                else:
+                    # not prefer_original and not prefer_jpg
+                    # 1. Nobg PNG
+                    # 2. Original PNG
+                    # 3. Nobg JPG
+                    # 4. Original JPG
+                    if paths['nobg_png']:
+                        img_path = paths['nobg_png']
+                    elif paths['original_png']:
+                        img_path = paths['original_png']
+                    elif paths['nobg_jpg']:
+                        img_path = paths['nobg_jpg']
+                    elif paths['original_jpg']:
+                        img_path = paths['original_jpg']
+                
+                # Skip if no image found
+                if not img_path:
+                    continue
+                
+                # Always store all available paths for reference
+                original_jpg_path = paths['original_jpg']
+                original_png_path = paths['original_png']
+                nobg_png_path = paths['nobg_png']
+                nobg_jpg_path = paths['nobg_jpg']
+                
                 # Extract metadata
                 filename = os.path.basename(img_path)
                 file_root, file_ext = os.path.splitext(filename)
-                
-                # Find _nobg version if it exists
-                nobg_filename = f"{file_root}_nobg.png"
-                nobg_path = os.path.join(os.path.dirname(img_path), nobg_filename)
-                has_nobg = os.path.exists(nobg_path)
                 
                 # Use filename as unique key for matching purposes
                 # Remove prefix (haereum_, kogift_, naver_) if present
@@ -100,14 +195,22 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
                 else:
                     name_for_matching = file_root
                 
+                # Remove _nobg suffix for matching
+                if name_for_matching.endswith('_nobg'):
+                    name_for_matching = name_for_matching[:-5]
+                
+                # Prepare a clean name for display and matching
                 # Create metadata entry
                 image_info[img_path] = {
                     'path': img_path,  # Store the absolute path for direct access
+                    'original_path': img_path,  # Keep the original path (JPG version)
                     'original_name': filename,
-                    'nobg_path': nobg_path if has_nobg else None,
-                    'has_nobg': has_nobg,
+                    'nobg_path': nobg_path,
+                    'has_nobg': nobg_path is not None,
                     'name_for_matching': name_for_matching,
-                    'source': prefix
+                    'source': prefix,
+                    'use_jpg': file_ext.lower() in ['.jpg', '.jpeg'],  # Flag to prioritize JPG
+                    'use_original': True  # Flag to use original file, not _nobg version
                 }
                 
                 # Debug some sample entries
@@ -116,7 +219,7 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
             
             except Exception as e:
                 logging.error(f"Error processing image file {img_path}: {e}")
-                
+        
         # Log summary
         logging.info(f"Processed {len(image_info)} {prefix} images")
         
@@ -551,7 +654,13 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
     id_pattern = re.compile(r'_([a-f0-9]{10})(?:\.jpg|\.png|_nobg\.png)?$')
     
     for idx, (product_name, match_set) in enumerate(zip(product_names, best_matches)):
-        haereum_match, kogift_match, naver_match = match_set
+        # Handle cases where match_set may not have exactly 3 elements
+        if not match_set or len(match_set) < 3:
+            logging.warning(f"Invalid match_set for product '{product_name}': {match_set}. Using None values.")
+            haereum_match, kogift_match, naver_match = None, None, None
+        else:
+            haereum_match, kogift_match, naver_match = match_set
+        
         product_tokens = set(tokenize_product_name(product_name))
         
         # 매칭 품질 기록
@@ -563,69 +672,108 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
         
         # 해오름 매칭 검증
         if haereum_match:
-            haereum_path, haereum_score = haereum_match
-            haereum_filename = os.path.basename(haereum_path)
-            
-            # 파일명에서 ID 추출
-            haereum_id = None
-            id_match = id_pattern.search(haereum_filename)
-            if id_match:
-                haereum_id = id_match.group(1)
-            
-            # 파일명에서 토큰 추출
-            haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path]['clean_name']))
-            
-            # 토큰 중복 확인
-            common_tokens = product_tokens & haereum_tokens
-            token_ratio = len(common_tokens) / max(len(product_tokens), 1)
-            
-            # 품질 점수 계산
-            match_quality['haereum']['score'] = haereum_score * (1 + token_ratio)
-            match_quality['haereum']['id'] = haereum_id
+            # Ensure haereum_match is actually a tuple with path and score
+            if isinstance(haereum_match, tuple) and len(haereum_match) >= 2:
+                haereum_path, haereum_score = haereum_match
+            else:
+                logging.warning(f"Unexpected format for haereum_match: {haereum_match}. Using default values.")
+                haereum_path = haereum_match if isinstance(haereum_match, str) else None
+                haereum_score = 0.5  # Default score
+                
+            if haereum_path and haereum_path in haereum_images:
+                haereum_filename = os.path.basename(haereum_path)
+                
+                # 파일명에서 ID 추출
+                haereum_id = None
+                id_match = id_pattern.search(haereum_filename)
+                if id_match:
+                    haereum_id = id_match.group(1)
+                
+                # 파일명에서 토큰 추출
+                haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path]['clean_name'] 
+                                                         if 'clean_name' in haereum_images[haereum_path] 
+                                                         else haereum_images[haereum_path].get('name_for_matching', '')))
+                
+                # 토큰 중복 확인
+                common_tokens = product_tokens & haereum_tokens
+                token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+                
+                # 품질 점수 계산
+                match_quality['haereum']['score'] = haereum_score * (1 + token_ratio)
+                match_quality['haereum']['id'] = haereum_id
+            else:
+                logging.warning(f"Haereum path not found in haereum_images: {haereum_path}")
+                match_quality['haereum']['match'] = None
         
         # 고려기프트 매칭 검증
         if kogift_match:
-            kogift_path, kogift_score = kogift_match
-            kogift_filename = os.path.basename(kogift_path)
-            
-            # 파일명에서 ID 추출
-            kogift_id = None
-            id_match = id_pattern.search(kogift_filename)
-            if id_match:
-                kogift_id = id_match.group(1)
-            
-            # 해오름 ID와 비교
-            if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == kogift_id:
-                # ID가 일치하면 점수 증가
-                match_quality['kogift']['score'] = max(kogift_score, 0.8) * 1.5
+            # Ensure kogift_match is actually a tuple with path and score
+            if isinstance(kogift_match, tuple) and len(kogift_match) >= 2:
+                kogift_path, kogift_score = kogift_match
             else:
-                # 토큰 비교
-                kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path]['clean_name']))
-                common_tokens = product_tokens & kogift_tokens
-                token_ratio = len(common_tokens) / max(len(product_tokens), 1)
-                match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
+                logging.warning(f"Unexpected format for kogift_match: {kogift_match}. Using default values.")
+                kogift_path = kogift_match if isinstance(kogift_match, str) else None
+                kogift_score = 0.5  # Default score
+                
+            if kogift_path and kogift_path in kogift_images:
+                kogift_filename = os.path.basename(kogift_path)
+                
+                # 파일명에서 ID 추출
+                kogift_id = None
+                id_match = id_pattern.search(kogift_filename)
+                if id_match:
+                    kogift_id = id_match.group(1)
+                
+                # 해오름 ID와 비교
+                if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == kogift_id:
+                    # ID가 일치하면 점수 증가
+                    match_quality['kogift']['score'] = max(kogift_score, 0.8) * 1.5
+                else:
+                    # 토큰 비교
+                    kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path]['clean_name'] 
+                                                            if 'clean_name' in kogift_images[kogift_path] 
+                                                            else kogift_images[kogift_path].get('name_for_matching', '')))
+                    common_tokens = product_tokens & kogift_tokens
+                    token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+                    match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
+            else:
+                logging.warning(f"Kogift path not found in kogift_images: {kogift_path}")
+                match_quality['kogift']['match'] = None
         
         # 네이버 매칭 검증
         if naver_match:
-            naver_path, naver_score = naver_match
-            naver_filename = os.path.basename(naver_path)
-            
-            # 파일명에서 ID 추출
-            naver_id = None
-            id_match = id_pattern.search(naver_filename)
-            if id_match:
-                naver_id = id_match.group(1)
-            
-            # 해오름 ID와 비교
-            if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == naver_id:
-                # ID가 일치하면 점수 증가
-                match_quality['naver']['score'] = max(naver_score, 0.8) * 1.5
+            # Ensure naver_match is actually a tuple with path and score
+            if isinstance(naver_match, tuple) and len(naver_match) >= 2:
+                naver_path, naver_score = naver_match
             else:
-                # 토큰 비교
-                naver_tokens = set(tokenize_product_name(naver_images[naver_path]['clean_name']))
-                common_tokens = product_tokens & naver_tokens
-                token_ratio = len(common_tokens) / max(len(product_tokens), 1)
-                match_quality['naver']['score'] = naver_score * (1 + token_ratio)
+                logging.warning(f"Unexpected format for naver_match: {naver_match}. Using default values.")
+                naver_path = naver_match if isinstance(naver_match, str) else None
+                naver_score = 0.5  # Default score
+                
+            if naver_path and naver_path in naver_images:
+                naver_filename = os.path.basename(naver_path)
+                
+                # 파일명에서 ID 추출
+                naver_id = None
+                id_match = id_pattern.search(naver_filename)
+                if id_match:
+                    naver_id = id_match.group(1)
+                
+                # 해오름 ID와 비교
+                if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == naver_id:
+                    # ID가 일치하면 점수 증가
+                    match_quality['naver']['score'] = max(naver_score, 0.8) * 1.5
+                else:
+                    # 토큰 비교
+                    naver_tokens = set(tokenize_product_name(naver_images[naver_path]['clean_name'] 
+                                                          if 'clean_name' in naver_images[naver_path] 
+                                                          else naver_images[naver_path].get('name_for_matching', '')))
+                    common_tokens = product_tokens & naver_tokens
+                    token_ratio = len(common_tokens) / max(len(product_tokens), 1)
+                    match_quality['naver']['score'] = naver_score * (1 + token_ratio)
+            else:
+                logging.warning(f"Naver path not found in naver_images: {naver_path}")
+                match_quality['naver']['match'] = None
         
         # 검증 결과를 로그로 출력
         logging.debug(f"Product: '{product_name}' - Verification scores: Haereum={match_quality['haereum']['score']:.2f}, Kogift={match_quality['kogift']['score']:.2f}, Naver={match_quality['naver']['score']:.2f}")
@@ -670,9 +818,9 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             logging.warning(f"네이버 이미지 디렉토리가 존재하지 않습니다: {naver_dir}")
         
         # 이미지 메타데이터 준비
-        haereum_images = prepare_image_metadata(haereum_dir, 'haereum_')
-        kogift_images = prepare_image_metadata(kogift_dir, 'kogift_')
-        naver_images = prepare_image_metadata(naver_dir, 'naver_')
+        haereum_images = prepare_image_metadata(haereum_dir, 'haereum_', prefer_original=True, prefer_jpg=True)
+        kogift_images = prepare_image_metadata(kogift_dir, 'kogift_', prefer_original=True, prefer_jpg=True)
+        naver_images = prepare_image_metadata(naver_dir, 'naver_', prefer_original=True, prefer_jpg=True)
         
         # 필요한 열 추가
         if '본사 이미지' not in result_df.columns:
@@ -1319,20 +1467,20 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                     # Clear all Kogift related columns
                     kogift_related_columns_to_clear = [
                         '고려기프트 상품링크', 
-                        '기본수량(2)', 
-                        '판매가(V포함)(2)', 
-                        '판매단가(V포함)(2)', # Alternative price column
-                        '가격차이(2)', 
-                        '가격차이(2)(%)'
+                        '판매가(V포함)(2)',
+                        '판매단가(V포함)(2)',
+                        '가격차이(2)',
+                        '가격차이(2)(%)',
+                        '기본수량(2)'
                     ]
-                    for col_to_clear in kogift_related_columns_to_clear:
-                        if col_to_clear in result_df.columns:
-                            result_df.at[idx, col_to_clear] = None
+                    
+                    for col in kogift_related_columns_to_clear:
+                        if col in result_df.columns:
+                            result_df.at[idx, col] = '-'
         
-        # Final post-processing: Ensure Naver product info and images are properly paired
+        # Similar check for Naver images and product info
         naver_image_col = '네이버 이미지'
-        naver_link_cols = ['네이버 쇼핑 링크', '네이버 링크']
-        naver_price_cols = ['판매단가(V포함)(3)', '네이버 판매단가', '판매단가3 (VAT포함)']
+        naver_link_col = '네이버 쇼핑 링크'
         
         naver_mismatch_count = 0
         for idx in range(len(result_df)):
@@ -1342,47 +1490,53 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 
             # Get row data
             row_data = result_df.iloc[idx]
+            product_name = product_names[idx] if idx < len(product_names) else "Unknown Product"
             
             # Get Naver image data
             naver_image_data = row_data.get(naver_image_col)
-            has_naver_image = isinstance(naver_image_data, dict)
+            has_naver_image = isinstance(naver_image_data, dict) and naver_image_data.get('local_path') is not None
             
-            # Check if there's Naver product info
+            # Get Naver product info
             has_naver_info = naver_product_info_exists[idx]  # Use pre-computed value
             
-            # Check for mismatch: Product info without image (the critical issue)
-            if has_naver_info and not has_naver_image:
+            # Less restrictive check for Naver: only remove image if no product info
+            # But don't remove product info if no image (as Naver product info might be valuable)
+            if has_naver_image and not has_naver_info:
                 naver_mismatch_count += 1
-                logging.warning(f"Row {idx}: Found Naver product info without image. Clearing all Naver related information.")
-                
-                # Clear Naver image
-                result_df.at[idx, naver_image_col] = None
-                
-                # Clear all Naver related columns
-                naver_related_columns = [
-                    '기본수량(3)',
-                    '판매단가(V포함)(3)',
-                    '가격차이(3)',
-                    '가격차이(3)(%)',
-                    '공급사명',
-                    '네이버 쇼핑 링크',
-                    '공급사 상품링크'
-                ]
-                
-                for col in naver_related_columns:
-                    if col in result_df.columns:
-                        result_df.at[idx, col] = None
+                logging.warning(f"Row {idx} (Product: '{product_name}'): Found Naver image without product info.")
+                # Keep the image anyway as it might be useful
+                # result_df.at[idx, naver_image_col] = '-'
+            
+            # If Naver data exists but image doesn't appear, check that the local file actually exists
+            if has_naver_info and isinstance(naver_image_data, dict) and naver_image_data.get('local_path'):
+                local_path = naver_image_data.get('local_path')
+                if not os.path.exists(str(local_path)):
+                    logging.warning(f"Row {idx} (Product: '{product_name}'): Naver image local path doesn't exist: {local_path}")
+                    # Try to fix the path - check if it's a case issue or missing extension
+                    directory = os.path.dirname(str(local_path))
+                    basename = os.path.basename(str(local_path))
+                    base_without_ext, ext = os.path.splitext(basename)
+                    
+                    # Look for similar files in the directory
+                    if os.path.exists(directory):
+                        found_match = False
+                        for filename in os.listdir(directory):
+                            if filename.lower().startswith(base_without_ext.lower()):
+                                correct_path = os.path.join(directory, filename)
+                                logging.info(f"Row {idx}: Found similar Naver image file: {correct_path}")
+                                # Update the local_path
+                                naver_image_data['local_path'] = correct_path
+                                result_df.at[idx, naver_image_col] = naver_image_data
+                                found_match = True
+                                break
                         
-                logging.info(f"Row {idx}: Cleared all Naver related information for product {product_names[idx]}")
+                        if not found_match:
+                            logging.warning(f"Row {idx}: Could not find similar Naver image in directory: {directory}")
         
-        if mismatch_count > 0:
-            logging.info(f"Fixed {mismatch_count} mismatches between Koreagift product info and images")
+        logging.info(f"Found {mismatch_count} mismatches between Koreagift product info and images.")
+        logging.info(f"Found {naver_mismatch_count} mismatches between Naver product info and images.")
         
-        if naver_mismatch_count > 0:
-            logging.info(f"Attempted to fix {naver_mismatch_count} mismatches between Naver product info and images")
-
-        # 매칭 결과 요약 - Use new target column names
-        # These checks are now safer as columns are guaranteed to exist
+        # Count final images
         haereum_count = result_df['본사 이미지'].apply(lambda x: isinstance(x, dict)).sum()
         kogift_count = result_df['고려기프트 이미지'].apply(lambda x: isinstance(x, dict)).sum()
         naver_count = result_df['네이버 이미지'].apply(lambda x: isinstance(x, dict)).sum()
