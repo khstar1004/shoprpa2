@@ -14,6 +14,8 @@ import hashlib
 from datetime import datetime
 import glob
 import time
+import json
+import numpy as np
 
 # Add the parent directory to sys.path to allow imports from PythonScript
 import sys
@@ -277,10 +279,23 @@ def find_best_image_matches(product_names: List[str],
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
                            similarity_threshold: float = 0.2,  # Lowered from 0.4 to find more matches
-                           config: Optional[configparser.ConfigParser] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
+                           config: Optional[configparser.ConfigParser] = None,
+                           df: Optional[pd.DataFrame] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
     Find the best matching images for each product name from Haereum, Kogift, and Naver images.
     Now using lower thresholds to ensure more matches are found.
+    
+    Args:
+        product_names: List of product names to match
+        haereum_images: Dictionary of Haereum images metadata
+        kogift_images: Dictionary of Kogift images metadata
+        naver_images: Dictionary of Naver images metadata
+        similarity_threshold: Minimum similarity score for matching
+        config: Configuration object for retrieving settings
+        df: Optional DataFrame containing product information
+        
+    Returns:
+        List of tuples containing (haereum_match, kogift_match, naver_match) for each product
     """
     best_matches = []
     used_haereum = set()
@@ -370,7 +385,34 @@ def find_best_image_matches(product_names: List[str],
             # This assumes haereum images might have product names in the file name
             haereum_candidates = {}
             for h_path, h_info in haereum_images.items():
-                if any(token.lower() in h_info.get('name_for_matching', '').lower() for token in product_tokens if len(token) > 2):
+                # Improved candidate selection - use product code if available
+                product_code = None
+                
+                # First check for product code in the file name
+                file_name = os.path.basename(h_path)
+                code_match = re.search(r'CODE(\d+)', file_name)
+                if code_match:
+                    product_code = code_match.group(1)
+                
+                # Also check product_code in the image info
+                if not product_code and 'product_code' in h_info:
+                    product_code = str(h_info['product_code'])
+                
+                # First check for exact product code match with row data if available
+                if product_code and df is not None and 'Code' in df.columns:
+                    try:
+                        row_idx = product_names.index(product_name)
+                        row_code = str(df.iloc[row_idx]['Code']) if row_idx < len(df) else None
+                        if row_code and product_code == row_code:
+                            # Found exact product code match - this should be the correct image
+                            logging.info(f"Found exact product code match for '{product_name}': Code={product_code}")
+                            haereum_candidates = {h_path: h_info}  # Use only this candidate
+                            break
+                    except (ValueError, IndexError, KeyError) as e:
+                        logging.debug(f"Error checking product code match: {e}")
+
+                # If we haven't found an exact code match, use the text similarity method
+                if not haereum_candidates and any(token.lower() in h_info.get('name_for_matching', '').lower() for token in product_tokens if len(token) > 2):
                     haereum_candidates[h_path] = h_info
             
             logging.debug(f"Found {len(haereum_candidates)} potential Haereum matches for '{product_name}'")
@@ -511,6 +553,75 @@ def find_best_image_matches(product_names: List[str],
                     haereum_match, haereum_score = haereum_result
                     used_haereum.add(haereum_match)
                     logging.info(f"Found Haereum match using reverse {source_name} matching: {os.path.basename(haereum_match)} ({haereum_score:.3f})")
+        
+        # Now, try reverse matching
+        if not haereum_match and (kogift_match or naver_match):
+            # Try to find Haereum match using reverse image matching from either Kogift or Naver
+            reverse_source = None
+            reverse_source_name = None
+            
+            # Prefer Kogift for reverse matching (usually better quality)
+            if kogift_match and kogift_score > 0.01:
+                reverse_source = kogift_match
+                reverse_source_name = "Kogift"
+            elif naver_match and naver_score > 0.01:
+                reverse_source = naver_match
+                reverse_source_name = "Naver"
+                
+            if reverse_source and enhanced_matcher:
+                # Get actual path for the source image
+                source_path = None
+                if reverse_source_name == "Kogift" and reverse_source in kogift_images:
+                    source_path = kogift_images[reverse_source].get('path', reverse_source)
+                elif reverse_source_name == "Naver" and reverse_source in naver_images:
+                    source_path = naver_images[reverse_source].get('path', reverse_source)
+                
+                if source_path and os.path.exists(source_path):
+                    # Filter Haereum targets - try to prioritize product code matches
+                    filtered_haereum = {}
+                    
+                    # Try to extract product code from source or DataFrame
+                    row_idx = product_names.index(product_name) if product_name in product_names else -1
+                    row_code = None
+                    if row_idx >= 0 and row_idx < len(df) and 'Code' in df.columns:
+                        row_code = str(df.iloc[row_idx]['Code']) if not pd.isna(df.iloc[row_idx]['Code']) else None
+                    
+                    if row_code:
+                        # Filter by product code first
+                        for h_path, h_info in haereum_images.items():
+                            if h_path in used_haereum:
+                                continue
+                                
+                            # Check product code in file name
+                            file_name = os.path.basename(h_path)
+                            code_match = re.search(r'CODE(\d+)', file_name)
+                            file_code = code_match.group(1) if code_match else None
+                            
+                            # Check product code in image info
+                            info_code = str(h_info.get('product_code', '')) if 'product_code' in h_info else None
+                            
+                            # If we have a code match, only use this target
+                            if (file_code and file_code == row_code) or (info_code and info_code == row_code):
+                                filtered_haereum = {h_path: h_info}  # Use only this candidate
+                                logging.info(f"Reverse matching: Found exact product code match for '{product_name}': Code={row_code}")
+                                break
+                    
+                    # If no code matches, use all available Haereum images for matching
+                    if not filtered_haereum:
+                        filtered_haereum = {h_path: h_info for h_path, h_info in haereum_images.items() 
+                                          if h_path not in used_haereum}
+                    
+                    logging.info(f"Trying reverse matching from {reverse_source_name} to find Haereum image for '{product_name}'")
+                    reverse_result = find_best_match_with_enhanced_matcher(
+                        source_path, filtered_haereum, used_haereum, enhanced_matcher
+                    )
+                    
+                    if reverse_result:
+                        haereum_match, haereum_score = reverse_result
+                        used_haereum.add(haereum_match)
+                        logging.info(f"Found Haereum match using reverse {reverse_source_name} matching: {os.path.basename(haereum_match)} ({haereum_score:.3f})")
+                    else:
+                        logging.info(f"No Haereum match found using reverse {reverse_source_name} matching")
         
         # Log final match set
         h_text = '없음' if not haereum_match else os.path.basename(haereum_match)
@@ -1034,7 +1145,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
             kogift_images,
             naver_images,
             similarity_threshold=initial_matching_threshold,  # Use lower threshold for initial matching
-            config=config
+            config=config,
+            df=result_df  # Pass DataFrame for product code matching
         )
         
         # 매칭 결과 검증

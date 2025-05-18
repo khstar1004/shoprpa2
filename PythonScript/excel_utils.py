@@ -20,6 +20,8 @@ import json
 from copy import copy
 from decimal import Decimal
 from typing import Optional
+import hashlib
+import glob
 
 
 # Check Python/PIL version for proper resampling constant
@@ -459,10 +461,6 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     Args:
         worksheet: The worksheet to add images to
         df: DataFrame containing the data with image columns
-        
-    TODO: This function needs refactoring due to its length (500+ lines) and complexity.
-    Consider breaking it down into smaller, more focused functions for each image source type
-    (Haereum, Kogift, Naver) and separating the URL extraction logic from image embedding logic.
     """
     import openpyxl
     from openpyxl.drawing.image import Image
@@ -497,27 +495,164 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     from PIL import Image as PILImage
     
     # Function to safely load and resize an image for Excel
-    def safe_load_image(path, max_height=150, max_width=150):
-        try:
-            img = PILImage.open(path)
-            # Calculate new dimensions preserving aspect ratio
-            width, height = img.size
-            if width > max_width or height > max_height:
-                ratio = min(max_width / width, max_height / height)
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                img = img.resize((new_width, new_height), PILImage.LANCZOS)
-                
-                # Save temporary resized version
-                temp_dir = os.environ.get('TEMP_DIR', os.path.join(os.path.dirname(path), 'temp'))
-                os.makedirs(temp_dir, exist_ok=True)
-                temp_path = os.path.join(temp_dir, f"resized_{os.path.basename(path)}")
-                img.save(temp_path)
-                return temp_path
-            return path
-        except Exception as e:
-            logger.warning(f"Error loading/resizing image {path}: {e}")
+    def safe_load_image(path, max_height=150, max_width=150, retry_count=2):
+        """Safely load and resize an image, with error handling and retry logic"""
+        if path is None or not isinstance(path, str):
+            logger.warning(f"Invalid image path: {path}")
             return None
+            
+        # Handle file:// protocol
+        if path.startswith('file:///'):
+            path = path.replace('file:///', '')
+            # Normalize slashes for Windows
+            path = path.replace('/', os.sep)
+
+        # Skip URLs - we need local files
+        if path.startswith(('http://', 'https://')):
+            logger.debug(f"Skipping URL path (need local file): {path}")
+            return None
+            
+        # Verify file exists
+        if not os.path.exists(path):
+            logger.warning(f"Image file does not exist: {path}")
+            return None
+            
+        # Attempt to open and resize the image
+        for attempt in range(retry_count + 1):
+            try:
+                img = PILImage.open(path)
+                
+                # Check if image is valid
+                img.verify()  # Verify image integrity
+                
+                # Re-open after verify (verify closes the file)
+                img = PILImage.open(path)
+                
+                # Calculate new dimensions preserving aspect ratio
+                width, height = img.size
+                if width > max_width or height > max_height:
+                    ratio = min(max_width / width, max_height / height)
+                    new_width = int(width * ratio)
+                    new_height = int(height * ratio)
+                    
+                    # Improved resizing with error handling
+                    try:
+                        # Use LANCZOS resampling for better quality
+                        img = img.resize((new_width, new_height), RESAMPLING_FILTER)
+                    except Exception as resize_err:
+                        logger.warning(f"Error during image resize, trying simpler method: {resize_err}")
+                        # Fallback to simpler resize
+                        img = img.resize((new_width, new_height))
+                
+                # Save temporary resized version with proper error handling
+                try:
+                    temp_dir = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', '')), 'rpa_temp_images')
+                    if not os.path.exists(temp_dir):
+                        os.makedirs(temp_dir, exist_ok=True)
+                    
+                    # Add hash to filename to avoid collisions
+                    file_hash = hashlib.md5(path.encode()).hexdigest()[:8]
+                    filename = os.path.basename(path)
+                    temp_path = os.path.join(temp_dir, f"resized_{file_hash}_{filename}")
+                    
+                    # Get correct format for saving
+                    img_format = os.path.splitext(path)[1].replace('.', '').upper()
+                    if img_format not in ['JPEG', 'JPG', 'PNG', 'GIF']:
+                        img_format = 'PNG'  # Default to PNG for unsupported formats
+                    
+                    # Save the image - use original format if possible
+                    if img_format == 'JPG':
+                        img_format = 'JPEG'  # PIL uses 'JPEG' not 'JPG'
+                    
+                    img.save(temp_path, format=img_format)
+                    logger.debug(f"Successfully resized image to {temp_path}")
+                    return temp_path
+                except Exception as save_error:
+                    logger.warning(f"Error saving resized image: {save_error}")
+                    # If temp save fails, return original path
+                    return path
+                    
+            except Exception as e:
+                logger.warning(f"Error loading image {path} (attempt {attempt+1}/{retry_count+1}): {e}")
+                if attempt == retry_count:
+                    logger.error(f"Failed to load image after {retry_count+1} attempts: {path}")
+                    return None
+                time.sleep(0.5)  # Small delay before retry
+        
+        return None  # Should not reach here, but just in case
+    
+    # Helper function to find Naver image file using hash patterns
+    def find_naver_image_from_url(url):
+        """Find local Naver image file from URL using hash patterns and intelligent matching"""
+        if not url or not isinstance(url, str):
+            return None
+            
+        # Naver image directory
+        naver_dir = os.path.join(IMAGE_MAIN_DIR, 'Naver')
+        if not os.path.exists(naver_dir):
+            logger.warning(f"Naver image directory not found: {naver_dir}")
+            return None
+            
+        # Extract hash patterns from URL
+        hash_pattern1 = re.search(r'([a-f0-9]{16})[^a-f0-9]?([a-f0-9]{8})', url)
+        hash_pattern2 = re.findall(r'[a-f0-9]{8,}', url)
+        
+        # List all Naver image files
+        naver_files = glob.glob(os.path.join(naver_dir, "naver_*.jpg")) + glob.glob(os.path.join(naver_dir, "naver_*.png"))
+        
+        if not naver_files:
+            logger.warning(f"No Naver image files found in directory: {naver_dir}")
+            return None
+            
+        # Try exact hash match first (most reliable)
+        if hash_pattern1:
+            hash1, hash2 = hash_pattern1.groups()
+            hash_combined = f"{hash1}_{hash2}"
+            
+            # Look for exact pattern match
+            for file_path in naver_files:
+                filename = os.path.basename(file_path)
+                if hash_combined in filename:
+                    # Prefer _nobg.png files if available
+                    if '_nobg.png' in filename:
+                        logger.debug(f"Found exact Naver hash match (nobg): {filename}")
+                        return file_path
+                
+            # Second pass for non-nobg version if nobg not found
+            for file_path in naver_files:
+                filename = os.path.basename(file_path)
+                if hash_combined in filename:
+                    logger.debug(f"Found exact Naver hash match: {filename}")
+                    return file_path
+                    
+            # Try individual hashes
+            for file_path in naver_files:
+                filename = os.path.basename(file_path)
+                if hash1 in filename or hash2 in filename:
+                    logger.debug(f"Found partial Naver hash match: {filename}")
+                    return file_path
+        
+        # Try pattern match with individual hashes found in URL
+        if hash_pattern2:
+            for hash_segment in hash_pattern2:
+                if len(hash_segment) >= 8:  # Only use reasonably long hashes
+                    for file_path in naver_files:
+                        filename = os.path.basename(file_path)
+                        if hash_segment in filename:
+                            logger.debug(f"Found Naver hash segment match: {filename}")
+                            return file_path
+        
+        # Last resort - use URL hash
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        for file_path in naver_files:
+            filename = os.path.basename(file_path)
+            # Look for similar patterns
+            if any(segment in filename for segment in url_hash.split('_')):
+                logger.debug(f"Found Naver URL hash match: {filename}")
+                return file_path
+                
+        logger.warning(f"No matching Naver image file found for URL: {url[:50]}...")
+        return None
     
     # Track the count of images per column
     img_counts = {col: 0 for col in columns_to_process}
@@ -548,11 +683,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             
             # Handle dictionary format (most complete info)
             if isinstance(cell_value, dict):
+                # Log for debugging which is very useful for Naver images
+                if is_naver_image:
+                    logger.debug(f"Processing Naver image data: {str(cell_value)[:100]}...")
+                
                 # Try local path first, then URL
                 if 'local_path' in cell_value and cell_value['local_path']:
                     img_path = cell_value['local_path']
                     
-                    # FIXED: Special handling for Naver images - log and verify paths
+                    # IMPROVED: Special handling for Naver images - log and verify paths
                     if is_naver_image:
                         logger.debug(f"Found Naver local_path: {img_path}")
                         
@@ -562,420 +701,132 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             logger.debug(f"Converting relative Naver path to absolute: {img_path} -> {abs_path}")
                             img_path = abs_path
                         
-                        # Verify the file exists
+                        # Verify the file exists - if not, try more alternatives
                         if not os.path.exists(img_path):
                             logger.warning(f"Naver image path doesn't exist: {img_path}")
                             
-                            # Try alternative extensions
-                            base_path = os.path.splitext(img_path)[0]
-                            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                alt_path = f"{base_path}{ext}"
-                                if os.path.exists(alt_path):
-                                    logger.info(f"Found alternative Naver image path: {alt_path}")
+                            # IMPROVED: More comprehensive fallback strategy
+                            url_to_try = cell_value.get('url')
+                            if url_to_try:
+                                # Try to find alternative file based on URL hash pattern
+                                alt_path = find_naver_image_from_url(url_to_try)
+                                if alt_path:
+                                    logger.info(f"Found alternative Naver image from URL: {alt_path}")
                                     img_path = alt_path
-                                    break
-                            else:
-                                # If no alternative found, try looking for _nobg version
-                                nobg_path = f"{base_path}_nobg.png"
-                                if os.path.exists(nobg_path):
-                                    logger.info(f"Found _nobg version of Naver image: {nobg_path}")
-                                    img_path = nobg_path
-                    elif is_kogift_image:
-                        logger.debug(f"Found Kogift local_path: {img_path}")
-                elif 'url' in cell_value and cell_value['url'] and cell_value['url'].startswith(('http', 'https', 'file:')):
-                    # For URLs, we need to find corresponding downloaded file
-                    url = cell_value['url']
-                    # Try to use URL as path directly
-                    if url.startswith('file:///'):
-                        # Convert file URL to actual path
-                        img_path = url.replace('file:///', '').replace('/', os.sep)
-                        if is_kogift_image:
-                            logger.debug(f"Converted Kogift file URL to path: {img_path}")
-                    else:
-                        # Try to deduce local path from related data
-                        if is_kogift_image:
-                            logger.debug(f"Kogift URL-only image data, attempting to find local file: {url[:50]}...")
-                        
-                        # Recognize standard image paths based on domain
-                        if 'jclgift.com' in url:
-                            # Try to find corresponding downloaded file
-                            filename = os.path.basename(url)
-                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                                    # Update the cell value with correct path for future use
+                                    cell_value['local_path'] = alt_path
+                                    df.at[row_idx, column] = cell_value
                             
-                            # Common image locations
-                            possible_locations = [
-                                os.path.join(base_img_dir, 'Main', 'Haereum', filename),
-                                os.path.join(base_img_dir, 'Main', 'Haereum', f"haereum_{filename}"),
-                                os.path.join(base_img_dir, 'Target', 'Haereum', filename),
-                                os.path.join(base_img_dir, 'Target', 'Haereum', f"haereum_{filename}")
-                            ]
-                            
-                            for loc in possible_locations:
-                                if os.path.exists(loc):
-                                    img_path = loc
-                                    logger.debug(f"Found local file for URL: {img_path}")
-                                    break
-                        elif 'koreagift.com' in url or 'kogift.com' in url or 'adpanchok.co.kr' in url:  # FIXED: Added full domain list
-                            # Similar pattern for Kogift
-                            filename = os.path.basename(url)
-                            base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-                            
-                            # FIXED: More extensive search patterns for Kogift images
-                            possible_locations = [
-                                os.path.join(base_img_dir, 'Main', 'Kogift', filename),
-                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename}"),
-                                os.path.join(base_img_dir, 'Main', 'kogift', filename),
-                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename}"),
-                                # Add more variations - lowercased directory
-                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url.split('/')[-1]}"),
-                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url.split('/')[-1]}"),
-                                # Check in the root image directories too
-                                os.path.join(base_img_dir, 'Kogift', filename),
-                                os.path.join(base_img_dir, 'Kogift', f"kogift_{filename}"),
-                                os.path.join(base_img_dir, 'kogift', filename),
-                                os.path.join(base_img_dir, 'kogift', f"kogift_{filename}"),
-                                # Check in Shop_* variations
-                                os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{filename.replace('shop_', '')}"),
-                                os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{filename.replace('shop_', '')}")
-                            ]
-                            
-                            # Add MD5 hash pattern searches for kogift URLs
-                            if 'koreagift.com' in url or 'kogift.com' in url or 'adpanchok.co.kr' in url:
-                                import hashlib
-                                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-                                # Add hash-based patterns
-                                possible_locations.extend([
-                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.jpg"),
-                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.jpg"),
-                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}.png"),
-                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}.png"),
-                                    os.path.join(base_img_dir, 'Main', 'Kogift', f"kogift_{url_hash}_nobg.png"),
-                                    os.path.join(base_img_dir, 'Main', 'kogift', f"kogift_{url_hash}_nobg.png")
-                                ])
-                            
-                            # ADDED: Additional _nobg pattern search
-                            # Extract base filename and check for _nobg variants
-                            if '_nobg' not in filename.lower():
-                                base_name = os.path.splitext(filename)[0]
-                                nobg_variant = f"{base_name}_nobg.png"
-                                possible_locations.extend([
-                                    os.path.join(base_img_dir, 'Main', 'Kogift', nobg_variant),
-                                    os.path.join(base_img_dir, 'Main', 'kogift', nobg_variant),
-                                    os.path.join(base_img_dir, 'Kogift', nobg_variant),
-                                    os.path.join(base_img_dir, 'kogift', nobg_variant)
-                                ])
-                                
-                                # If filename doesn't start with kogift_, also try with prefix
-                                if not base_name.lower().startswith('kogift_'):
-                                    prefixed_nobg = f"kogift_{base_name}_nobg.png"
-                                    possible_locations.extend([
-                                        os.path.join(base_img_dir, 'Main', 'Kogift', prefixed_nobg),
-                                        os.path.join(base_img_dir, 'Main', 'kogift', prefixed_nobg),
-                                        os.path.join(base_img_dir, 'Kogift', prefixed_nobg),
-                                        os.path.join(base_img_dir, 'kogift', prefixed_nobg)
-                                    ])
-                            
-                            for loc in possible_locations:
-                                if os.path.exists(loc):
-                                    img_path = loc
-                                    logger.debug(f"Found local Kogift file for URL: {img_path}")
-                                    break
-                                    
-                            # If still not found, try broader search
-                            if not img_path and is_kogift_image:
-                                logger.debug("Performing broader search for Kogift image...")
-                                for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
-                                    if os.path.exists(root_dir):
-                                        for subdir, _, files in os.walk(root_dir):
-                                            if 'kogift' in subdir.lower():
-                                                for file in files:
-                                                    # Check for partial filename match
-                                                    # Look for similarity in both the URL's filename part and the full basename
-                                                    url_part = url.split('/')[-1].lower()
-                                                    if url_part in file.lower() or (
-                                                        file.lower().startswith('kogift_') and 
-                                                        any(hashed_part in file.lower() for hashed_part in [
-                                                            url_hash[:8] if 'url_hash' in locals() else "", 
-                                                            filename[:8] if len(filename) > 8 else filename
-                                                        ])
-                                                    ):
-                                                        img_path = os.path.join(subdir, file)
-                                                        logger.debug(f"Found Kogift file via broad search: {img_path}")
-                                                        break
-                                            if img_path:
-                                                break
-                                    if img_path:
+                            if not os.path.exists(img_path):
+                                # Try alternative extensions
+                                base_path = os.path.splitext(img_path)[0]
+                                for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                                    alt_path = f"{base_path}{ext}"
+                                    if os.path.exists(alt_path):
+                                        logger.info(f"Found alternative Naver image path: {alt_path}")
+                                        img_path = alt_path
                                         break
-                                        
-                # FIXED: Try 'original_path' for Kogift images if local_path and URL don't work
-                elif is_kogift_image and 'original_path' in cell_value and cell_value['original_path']:
-                    orig_path = cell_value['original_path']
-                    logger.debug(f"Checking Kogift original_path: {orig_path}")
-                    
-                    if os.path.exists(orig_path):
-                        img_path = orig_path
-                        logger.debug(f"Using Kogift original_path directly: {img_path}")
-                    else:
-                        # Try to find the file by basename
-                        base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-                        filename = os.path.basename(orig_path)
-                        
-                        # FIXED: Search for the file in Kogift directories
-                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
-                            if os.path.exists(root_dir):
-                                for subdir, _, files in os.walk(root_dir):
-                                    if 'kogift' in subdir.lower():
-                                        for file in files:
-                                            if filename.lower() in file.lower():
-                                                img_path = os.path.join(subdir, file)
-                                                logger.debug(f"Found Kogift file from original_path: {img_path}")
-                                                break
-                                    if img_path:
-                                        break
-                            if img_path:
-                                break
-            
-            # Handle string path
-            elif isinstance(cell_value, str) and cell_value not in ['-', '']:
-                if cell_value.startswith(('http://', 'https://')):
-                    # Web URL - we would need a downloaded version
-                    if is_kogift_image:
-                        logger.debug(f"Kogift string URL (needs downloaded version): {cell_value[:50]}...")
-                    # For Kogift, try to find downloaded version
-                    if is_kogift_image and ('koreagift.com' in cell_value or 'kogift.com' in cell_value):
-                        filename = os.path.basename(cell_value)
-                        base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-                        
-                        # Look for downloaded versions
-                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
-                            if os.path.exists(root_dir):
-                                for subdir, _, files in os.walk(root_dir):
-                                    if 'kogift' in subdir.lower():
-                                        for file in files:
-                                            if filename.lower() in file.lower():
-                                                img_path = os.path.join(subdir, file)
-                                                logger.debug(f"Found Kogift downloaded file: {img_path}")
-                                                break
-                                    if img_path:
-                                        break
-                            if img_path:
-                                break
-                elif cell_value.startswith('file:///'):
-                    # Local file URL
-                    img_path = cell_value.replace('file:///', '').replace('/', os.sep)
-                    if is_kogift_image:
-                        logger.debug(f"Converted Kogift file URL to path: {img_path}")
-                elif os.path.exists(cell_value):
-                    # Direct file path
-                    img_path = cell_value
-                    if is_kogift_image:
-                        logger.debug(f"Using direct Kogift file path: {img_path}")
-                elif '\\' in cell_value or '/' in cell_value:
-                    # Looks like a path but might not exist
-                    if is_kogift_image:
-                        logger.debug(f"Kogift path-like string but file not found: {cell_value[:50]}...")
-                    
-                    # Try to find similar file by name
-                    filename = os.path.basename(cell_value)
-                    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-                    
-                    # Special handling for Kogift
-                    if is_kogift_image:
-                        # FIXED: More extensive search for Kogift images
-                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target'), base_img_dir]:
-                            if os.path.exists(root_dir):
-                                for subdir, _, files in os.walk(root_dir):
-                                    if 'kogift' in subdir.lower():
-                                        for file in files:
-                                            # ENHANCED: Check for both exact matches and _nobg variants
-                                            filename_to_check = os.path.basename(cell_value)
-                                            
-                                            # Direct match
-                                            if filename_to_check.lower() in file.lower():
-                                                img_path = os.path.join(subdir, file)
-                                                logger.debug(f"Found Kogift file via path search: {img_path}")
-                                                break
-                                                
-                                            # Check if this could be a _nobg variant of our target
-                                            if '_nobg' in file.lower() and filename_to_check.lower().endswith(('.jpg', '.png', '.jpeg')):
-                                                # Extract the base part of our filename (remove extension)
-                                                base_filename = os.path.splitext(filename_to_check)[0]
-                                                # Check if this file is the _nobg variant
-                                                if f"{base_filename}_nobg" in file.lower():
-                                                    img_path = os.path.join(subdir, file)
-                                                    logger.debug(f"Found Kogift _nobg variant via path search: {img_path}")
-                                                    break
-                                                    
-                                            # Check if this is a regular file that has a matching _nobg variant
-                                            if not '_nobg' in file.lower() and file.lower() == filename_to_check.lower():
-                                                # Check if there's a corresponding _nobg file
-                                                base_file = os.path.splitext(file)[0]
-                                                nobg_variant = f"{base_file}_nobg.png"
-                                                nobg_path = os.path.join(subdir, nobg_variant)
-                                                if os.path.exists(nobg_path):
-                                                    img_path = nobg_path  # Use the _nobg version instead
-                                                    logger.debug(f"Found and using Kogift _nobg variant for regular file: {img_path}")
-                                                    break
-                                                else:
-                                                    # Still use the regular file if no _nobg exists
-                                                    img_path = os.path.join(subdir, file)
-                                                    logger.debug(f"Found Kogift regular file (no _nobg variant): {img_path}")
-                                                    break
-                                    if img_path:
-                                        break
-                            if img_path:
-                                break
-                    
-                    # General search if not found yet
-                    if not img_path:
-                        found = False
-                        for root_dir in [os.path.join(base_img_dir, 'Main'), os.path.join(base_img_dir, 'Target')]:
-                            if os.path.exists(root_dir):
-                                for subdir, _, files in os.walk(root_dir):
-                                    for file in files:
-                                        if filename in file:
-                                            img_path = os.path.join(subdir, file)
-                                            found = True
-                                            logger.debug(f"Found similar file by name: {img_path}")
-                                            break
-                                    if found:
-                                        break
-                            if found:
-                                break
-            
-            # If no image path could be determined, use fallback
-            if not img_path and fallback_img_path:
-                img_path = fallback_img_path
-                if is_kogift_image:
-                    logger.debug(f"Using fallback image for Kogift row {row_idx}")
-            
-            # Skip if no valid path was found
-            if not img_path:
-                if is_kogift_image:
-                    logger.debug(f"No valid image path found for Kogift row {row_idx}")
-                continue
-            
-            # Add image to worksheet if file exists and has content
-            try:
-                attempted_embeddings += 1
-                if is_kogift_image:
-                    kogift_attempted += 1
-                if is_naver_image:
-                    naver_attempted += 1
+                                else:
+                                    # If no alternative found, try looking for _nobg version
+                                    nobg_path = f"{base_path}_nobg.png"
+                                    if os.path.exists(nobg_path):
+                                        logger.info(f"Found _nobg version of Naver image: {nobg_path}")
+                                        img_path = nobg_path
                 
-                # Verify file exists and is not empty
-                if not os.path.exists(img_path):
-                    if is_kogift_image:
-                        logger.warning(f"Kogift image file not found: {img_path}")
-                    elif is_naver_image:
-                        logger.warning(f"Naver image file not found: {img_path}")
-                    else:
-                        logger.warning(f"Image file not found: {img_path}")
-                    continue
-                
-                if os.path.getsize(img_path) == 0:
-                    if is_kogift_image:
-                        logger.warning(f"Kogift image file is empty: {img_path}")
-                    elif is_naver_image:
-                        logger.warning(f"Naver image file is empty: {img_path}")
-                    else:
-                        logger.warning(f"Image file is empty: {img_path}")
-                    continue
-                
-                # Create and resize the image
+                # IMPROVED: If local_path failed, try URL-based approach for all image types
+                if not img_path or not os.path.exists(img_path):
+                    url = cell_value.get('url')
+                    if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                        logger.debug(f"Local path failed or missing, trying URL-based approach: {url[:50]}...")
+                        
+                        if is_naver_image:
+                            # For Naver images, use the hash-based lookup function
+                            alt_path = find_naver_image_from_url(url)
+                            if alt_path:
+                                logger.info(f"Found Naver image via URL hash: {alt_path}")
+                                img_path = alt_path
+                                # Update the cell value with correct path for future reference
+                                cell_value['local_path'] = alt_path
+                                df.at[row_idx, column] = cell_value
+                        elif is_kogift_image:
+                            # Similar for Kogift but with their patterns
+                            # We could add a similar function for Kogift if needed
+                            pass
+            
+            # If we've found a potentially valid path, try to load the image
+            if img_path and os.path.exists(img_path):
                 try:
-                    img = openpyxl.drawing.image.Image(img_path)
-                    
-                    # FIXED: Set larger image size for better visibility
-                    img.width = 360  # pixels - increased from 240
-                    img.height = 360  # pixels - increased from 240
-                    
-                    # Position image in the cell
-                    img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
-                    
-                    # Add image to worksheet
-                    worksheet.add_image(img)
-                    
-                    # Clear text in cell to avoid showing both image and text
-                    cell = worksheet.cell(row=row_idx, column=col_idx)
-                    cell.value = ""
-                    
-                    successful_embeddings += 1
-                    if is_kogift_image:
-                        kogift_successful += 1
-                        logger.debug(f"Successfully added Kogift image at row {row_idx}, column {col_idx}")
+                    attempted_embeddings += 1
                     if is_naver_image:
-                        naver_successful += 1
-                        logger.debug(f"Successfully added Naver image at row {row_idx}, column {col_idx}")
+                        naver_attempted += 1
+                    elif is_kogift_image:
+                        kogift_attempted += 1
                     
-                except Exception as img_err:
-                    if is_kogift_image:
-                        logger.warning(f"Failed to add Kogift image at row {row_idx}, column {col_idx}: {img_err}")
-                    elif is_naver_image:
-                        logger.warning(f"Failed to add Naver image at row {row_idx}, column {col_idx}: {img_err}")
+                    # Process the image safely - resize for Excel
+                    processed_img_path = safe_load_image(img_path, 
+                                                         max_height=IMAGE_STANDARD_SIZE[1], 
+                                                         max_width=IMAGE_STANDARD_SIZE[0])
+                    
+                    if processed_img_path and os.path.exists(processed_img_path):
+                        # Calculate Excel cell position (1-indexed for openpyxl)
+                        cell_position = f"{excel_col}{row_idx + 2}"  # +2 for header row and 1-indexing
+                        
+                        try:
+                            # Create the openpyxl image object
+                            img_obj = Image(processed_img_path)
+                            
+                            # Default anchor is cell top-left with row/col offsets at 0
+                            img_obj.anchor = cell_position
+                            
+                            # Add image to worksheet
+                            worksheet.add_image(img_obj)
+                            
+                            # Update success counts
+                            successful_embeddings += 1
+                            img_counts[column] += 1
+                            
+                            if is_naver_image:
+                                naver_successful += 1
+                                logger.debug(f"Successfully added Naver image at {cell_position}: {img_path}")
+                            elif is_kogift_image:
+                                kogift_successful += 1
+                                logger.debug(f"Successfully added Kogift image at {cell_position}: {img_path}")
+                            else:
+                                logger.debug(f"Successfully added image at {cell_position}: {img_path}")
+                                
+                        except Exception as img_err:
+                            logger.error(f"Error adding image to worksheet at {cell_position}: {str(img_err)}")
+                            err_counts[column] += 1
+                            
+                            # Try one more time with the original image (unprocessed)
+                            try:
+                                img_obj = Image(img_path)
+                                img_obj.anchor = cell_position
+                                worksheet.add_image(img_obj)
+                                logger.info(f"Successfully added original image as fallback at {cell_position}")
+                                successful_embeddings += 1
+                                img_counts[column] += 1
+                            except Exception as orig_err:
+                                logger.error(f"Error adding original image: {str(orig_err)}")
                     else:
-                        logger.warning(f"Failed to add image at row {row_idx}, column {col_idx}: {img_err}")
-                    # Don't clear the cell value here - keep text as fallback
-                    
-            except Exception as e:
-                if is_kogift_image:
-                    logger.warning(f"Error processing Kogift image at row {row_idx}, column {col_idx}: {e}")
-                elif is_naver_image:
-                    logger.warning(f"Error processing Naver image at row {row_idx}, column {col_idx}: {e}")
-                else:
-                    logger.warning(f"Error processing image at row {row_idx}, column {col_idx}: {e}")
-                # Keep cell value as is for reference
+                        logger.warning(f"Failed to process image at {img_path}")
+                        err_counts[column] += 1
+                except Exception as e:
+                    logger.error(f"Error processing image at {img_path}: {str(e)}")
+                    err_counts[column] += 1
+            elif img_path:
+                logger.warning(f"Image path not found: {img_path}")
+                err_counts[column] += 1
     
-    logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
-    if kogift_attempted > 0:
-        logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
-    if naver_attempted > 0:
-        logger.info(f"Naver image processing: {naver_successful}/{naver_attempted} images embedded successfully.")
+    # Log success/error statistics
+    logger.info(f"Image embedding complete: {successful_embeddings}/{attempted_embeddings} successful")
+    logger.info(f"Naver images: {naver_successful}/{naver_attempted} successful")
+    logger.info(f"Kogift images: {kogift_successful}/{kogift_attempted} successful")
     
-    # Track image columns for dimension adjustment
-    image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
+    for col in columns_to_process:
+        logger.info(f"Column '{col}': {img_counts[col]} images added, {err_counts[col]} errors")
     
-    # Adjust row heights where images are embedded
-    for row_idx in range(2, worksheet.max_row + 1):
-        has_image = False
-        for col_idx, _ in image_cols:
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            if cell.value == "": # Cell was cleared for image
-                has_image = True
-                break
-        
-        if has_image:
-            # FIXED: Set taller row height to accommodate larger images
-            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
-
-        logger.info(f"Image processing complete. Embedded {successful_embeddings}/{attempted_embeddings} images.")
-    if kogift_attempted > 0:
-        logger.info(f"Kogift image processing: {kogift_successful}/{kogift_attempted} images embedded successfully.")
-    if naver_attempted > 0:
-        logger.info(f"Naver image processing: {naver_successful}/{naver_attempted} images embedded successfully.")
-    
-    # Track image columns for dimension adjustment
-    image_cols = [(df.columns.get_loc(col) + 1, col) for col in columns_to_process]
-    
-    # Adjust row heights where images are embedded
-    for row_idx in range(2, worksheet.max_row + 1):
-        has_image = False
-        for col_idx, _ in image_cols:
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            if cell.value == "": # Cell was cleared for image
-                has_image = True
-                break
-        
-        if has_image:
-            # FIXED: Set taller row height to accommodate larger images
-            worksheet.row_dimensions[row_idx].height = 380  # Increased from 280
-    
-    # == 여기부터 추가 ==
-    clean_naver_images_and_data(worksheet, df) # 네이버 이미지 정리 함수 호출
-    # == 여기까지 추가 ==
-
     return successful_embeddings
-    
 
 def _apply_conditional_formatting(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Applies conditional formatting (e.g., yellow fill for price difference < -1)."""
