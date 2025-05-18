@@ -651,7 +651,43 @@ class ProductMatcher:
             # Check if image exists
             if not os.path.exists(image_path):
                 logging.error(f"Image does not exist: {image_path}")
-                return None
+                
+                # Try to fix the path - look for the file in standard directories
+                base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
+                filename = os.path.basename(image_path)
+                
+                # Common image locations to check
+                possible_paths = []
+                
+                # Check if this is a Haereum, Kogift or Naver image based on filename
+                if 'haereum' in filename.lower():
+                    possible_paths = [
+                        os.path.join(base_img_dir, 'Main', 'Haereum', filename),
+                        os.path.join(base_img_dir, 'Target', 'Haereum', filename)
+                    ]
+                elif 'kogift' in filename.lower():
+                    possible_paths = [
+                        os.path.join(base_img_dir, 'Main', 'Kogift', filename),
+                        os.path.join(base_img_dir, 'Main', 'kogift', filename),
+                        os.path.join(base_img_dir, 'Target', 'Kogift', filename),
+                        os.path.join(base_img_dir, 'Target', 'kogift', filename)
+                    ]
+                elif 'naver' in filename.lower():
+                    possible_paths = [
+                        os.path.join(base_img_dir, 'Main', 'Naver', filename),
+                        os.path.join(base_img_dir, 'Target', 'Naver', filename)
+                    ]
+                
+                # Check each possible path
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        logging.info(f"Found image at alternative path: {path}")
+                        image_path = path
+                        break
+                
+                # If still not found, return None
+                if not os.path.exists(image_path):
+                    return None
             
             # Open and resize image
             img = Image.open(image_path).convert('RGB')

@@ -1506,41 +1506,34 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         
         # Get thresholds from config with MUCH more lenient defaults
         try:
-            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.10)  # Reduced from 0.30 to 0.10
-            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.10)  # Reduced from 0.30 to 0.10
+            similarity_threshold = config.getfloat('Matching', 'image_display_threshold', fallback=0.05)  # Even more lenient
+            minimum_match_confidence = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)  # Even more lenient
             
             # Use the higher of the two thresholds
             effective_threshold = max(similarity_threshold, minimum_match_confidence)
             
             logging.info(f"통합: 이미지 표시 임계값 (filter_images_by_similarity): {effective_threshold}")
         except (configparser.Error, ValueError) as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.10을 사용합니다.")
-            effective_threshold = 0.10  # Reduced from 0.30 to 0.10
+            logging.warning(f"임계값 읽기 오류: {e}. 기본값 0.05을 사용합니다.")
+            effective_threshold = 0.05  # Even more lenient default
         
         # Get Naver-specific thresholds with much more lenient values
         try:
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.45)  # Reduced from 0.65 to 0.45
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.15)  # Reduced from 0.45 to 0.15
+            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.10)  # More lenient
+            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.05)  # More lenient
         except (configparser.Error, ValueError) as e:
             logging.warning(f"네이버 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.45  # Reduced from 0.65 to 0.45
-            naver_minimum_threshold = 0.15  # Reduced from 0.45 to 0.15
-            
-        # Get quality thresholds with much more lenient values
-        try:
-            high_quality = config.getfloat('MatchQualityThresholds', 'high_quality', fallback=0.40)  # Reduced from 0.60 to 0.40
-            medium_quality = config.getfloat('MatchQualityThresholds', 'medium_quality', fallback=0.25)  # Reduced from 0.40 to 0.25
-            low_quality = config.getfloat('MatchQualityThresholds', 'low_quality', fallback=0.15)  # Reduced from 0.30 to 0.15
-            reject_threshold = config.getfloat('MatchQualityThresholds', 'reject_threshold', fallback=0.05)  # Reduced from 0.20 to 0.05
-        except (configparser.Error, ValueError) as e:
-            logging.warning(f"품질 임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            high_quality = 0.40  # Reduced from 0.60 to 0.40
-            medium_quality = 0.25  # Reduced from 0.40 to 0.25
-            low_quality = 0.15  # Reduced from 0.30 to 0.15
-            reject_threshold = 0.05  # Reduced from 0.20 to 0.05
+            naver_initial_threshold = 0.10  # More lenient
+            naver_minimum_threshold = 0.05  # More lenient
 
-        # Initial filtering based on thresholds - be very permissive
+        # Count before filtering
+        kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+        naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+        logging.info(f"필터링 전 이미지 수: 고려기프트={kogift_before}, 네이버={naver_before}")
+
+        # Filter counter
         filtered_count = 0
+        
         for idx in range(len(result_df)):
             for col_name in ['고려기프트 이미지', '네이버 이미지']:
                 if col_name not in result_df.columns:
@@ -1557,32 +1550,46 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 if col_name == '네이버 이미지':
                     # Check if URL exists at all - accept any URL
                     if not url:
-                        logging.warning(f"Row {idx}: Naver - Missing URL. Clearing image data.")
+                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+                        logging.warning(f"Row {idx} (Product: '{product_name}'): Naver - Missing URL. Will try to keep anyway.")
+                        
+                        # Instead of clearing, try to find local_path
+                        local_path = cell_data.get('local_path')
+                        if local_path and os.path.exists(local_path):
+                            # Keep it if we have a valid local path
+                            logging.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver data with valid local path despite missing URL.")
+                            continue
+                        
+                        # Only clear if both URL and local path are invalid
                         result_df.at[idx, col_name] = None
                         filtered_count += 1
                         continue
                         
-                    # Apply extremely lenient Naver threshold
-                    if score < 0.01:  # Only filter out extremely low scores
-                        logging.warning(f"Row {idx}: Naver - Score {score:.3f} below extreme minimum threshold 0.01. Clearing image data.")
+                    # Only filter out with extremely low or negative scores
+                    if score < 0:
+                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+                        logging.warning(f"Row {idx} (Product: '{product_name}'): Naver - Score {score:.3f} is negative. Clearing image data.")
                         result_df.at[idx, col_name] = None
+                        filtered_count += 1
                 else:  # Kogift images
-                    # For Kogift, accept ANY match with a positive score
-                    if score <= 0:
-                        logging.warning(f"Row {idx}: Kogift - Score {score:.3f} is zero or negative. Clearing image data.")
+                    # For Kogift, only filter out negative scores
+                    if score < 0:
+                        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+                        logging.warning(f"Row {idx} (Product: '{product_name}'): Kogift - Score {score:.3f} is negative. Clearing image data.")
                         result_df.at[idx, col_name] = None
+                        filtered_count += 1
 
         # Log how many images were kept after filtering
         kept_kogift = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
         kept_naver = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        logging.info(f"After filtering: Kept {kept_kogift} Kogift images and {kept_naver} Naver images")
-
+        
+        logging.info(f"필터링 후 이미지 수: 고려기프트={kept_kogift} (제거: {kogift_before-kept_kogift}), 네이버={kept_naver} (제거: {naver_before-kept_naver})")
+        logging.info(f"총 {filtered_count}개 이미지 필터링됨")
+        
         return result_df
-    
     except Exception as e:
-        logging.error(f"통합: 이미지 유사도 필터링 중 오류 발생: {e}", exc_info=True)
-        # 오류 발생 시 원본 DataFrame 반환
-        return df
+        logging.error(f"이미지 필터링 중 오류 발생: {e}", exc_info=True)
+        return df  # Return original dataframe on error
 
 def create_excel_with_images(df, output_file):
     """이미지가 포함된 엑셀 파일 생성"""
@@ -2104,36 +2111,50 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
             result_df[col_name] = None
             
     # Step 4: Final validation - ensure all URLs are valid and reject any problematic images
+    # Now with less strict validation
     logger.info("Performing final URL validation and quality check...")
     
-    # result_df = df_filtered.copy() # This line is now above the column check
     for idx in range(len(result_df)):
-        # Check Naver image URLs
+        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+        
+        # Check Naver image URLs - only reject if image clearly invalid
         if '네이버 이미지' in result_df.columns:
             naver_data = result_df.at[idx, '네이버 이미지']
             if isinstance(naver_data, dict) and 'url' in naver_data:
                 url = naver_data['url']
-                # Check for invalid URL patterns
-                if not url or not isinstance(url, str) or 'front/' in url.lower() or not url.startswith('http'):
-                    # Clear the problematic Naver image
-                    logger.warning(f"Row {idx}: Invalid Naver URL '{url}' detected in final validation. Clearing Naver data.")
-                    result_df.at[idx, '네이버 이미지'] = None
-                    
-                    # Clear related Naver columns
-                    for col in ['네이버 쇼핑 링크', '공급사 상품링크', '기본수량(3)', '판매단가(V포함)(3)']:
-                        if col in result_df.columns:
-                            result_df.at[idx, col] = None
+                # Check for obviously invalid URL patterns
+                if not url or not isinstance(url, str) or 'front/' in url.lower():
+                    # Check if there's a valid local_path before clearing
+                    local_path = naver_data.get('local_path')
+                    if local_path and os.path.exists(str(local_path)):
+                        logger.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver image with invalid URL but valid local path.")
+                        # Update the URL with a placeholder to avoid further validation failures
+                        if not url or not isinstance(url, str):
+                            naver_data['url'] = f"http://placeholder.url/for/{idx}.jpg"
+                            result_df.at[idx, '네이버 이미지'] = naver_data
+                    else:
+                        # Only clear if both URL is invalid and local file doesn't exist
+                        logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Naver URL '{url}' and no valid local path. Clearing Naver data.")
+                        result_df.at[idx, '네이버 이미지'] = None
         
-        # Check Kogift image URLs if needed
+        # Check Kogift image URLs - only reject if both URL and local file are invalid
         if '고려기프트 이미지' in result_df.columns:
             kogift_data = result_df.at[idx, '고려기프트 이미지']
             if isinstance(kogift_data, dict):
                 # Check if Kogift image has a valid local path
                 local_path = kogift_data.get('local_path')
-                if local_path and not os.path.exists(str(local_path)):
-                    # Reject Kogift images with missing local files
-                    logger.warning(f"Row {idx}: Missing Kogift local file '{local_path}'. Clearing Kogift data.")
+                url = kogift_data.get('url')
+                
+                # Only clear if both URL and local path are invalid
+                if (not url or not isinstance(url, str) or not url.startswith('http')) and (not local_path or not os.path.exists(str(local_path))):
+                    logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Kogift URL and missing local file. Clearing Kogift data.")
                     result_df.at[idx, '고려기프트 이미지'] = None
+                elif not url or not isinstance(url, str):
+                    # Fix the URL with a placeholder if local path is valid
+                    if local_path and os.path.exists(str(local_path)):
+                        logger.info(f"Row {idx} (Product: '{product_name}'): Setting placeholder URL for valid Kogift local file.")
+                        kogift_data['url'] = f"http://placeholder.url/kogift_{idx}.jpg"
+                        result_df.at[idx, '고려기프트 이미지'] = kogift_data
     
     # Count images after final validation
     naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))

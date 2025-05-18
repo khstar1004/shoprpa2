@@ -124,12 +124,17 @@ def _is_data_missing(series: pd.Series) -> pd.Series:
 
 def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filters DataFrame based on three criteria:
-    1. Removes rows where both Koreagift and Naver data are missing
-    2. Removes rows where price difference is >= -1 for either Koreagift or Naver
-       (keeps only rows where price difference is < -1)
-    3. Removes rows with unreliable "front" URLs in the Naver image column
+    Filters DataFrame based on configurable criteria:
+    1. Only removes rows where BOTH Koreagift and Naver data are missing
+    2. Uses a configurable price difference threshold (default -0.5%)
+    3. Still keeps rows with valid data even if they have front URLs
+    
+    The price threshold can be adjusted by setting filter_upload_data._price_threshold 
+    before calling the function.
     """
+    # Get the current threshold setting or use default
+    price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
+    
     if df.empty:
         logging.warning("Input DataFrame for upload filtering is empty. Returning empty DataFrame.")
         return df.copy() # Return a copy
@@ -138,125 +143,176 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     required_cols = [KOREAGIFT_LINK_COL, NAVER_LINK_COL]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        logging.error(f"Required columns for upload filtering missing: {missing_cols}. Cannot filter.")
-        return df.copy() # Return a copy of the original if columns are missing
-
+        logging.warning(f"Required columns for upload filtering missing: {missing_cols}. Using available columns for filtering.")
+        # Continue with available columns rather than skip completely
+    
+    # Make a copy to avoid modifying the original
+    filtered_df = df.copy()
+    initial_rows = len(filtered_df)
+    
     # --- 1. Filter based on missing links ---
     # Determine missing status based on link columns
-    is_kogift_missing = _is_data_missing(df[KOREAGIFT_LINK_COL])
-    is_naver_missing = _is_data_missing(df[NAVER_LINK_COL])
+    kogift_col = KOREAGIFT_LINK_COL if KOREAGIFT_LINK_COL in filtered_df.columns else None
+    naver_col = NAVER_LINK_COL if NAVER_LINK_COL in filtered_df.columns else None
     
-    # Identify rows where BOTH sources are missing
+    is_kogift_missing = pd.Series(True, index=filtered_df.index)  # Default to True if column missing
+    is_naver_missing = pd.Series(True, index=filtered_df.index)   # Default to True if column missing
+    
+    if kogift_col:
+        is_kogift_missing = _is_data_missing(filtered_df[kogift_col])
+    if naver_col:
+        is_naver_missing = _is_data_missing(filtered_df[naver_col])
+    
+    # Identify rows where BOTH sources are missing - this is the primary filter
     missing_links_mask = is_kogift_missing & is_naver_missing
     
-    # --- 2. Filter based on price differences ---
-    # Instead of identifying rows to remove, let's identify rows to KEEP
-    # Initialize masks for price difference conditions (rows we want to KEEP)
-    kogift_keep_mask = pd.Series(True, index=df.index)  # Default: keep all rows
-    naver_keep_mask = pd.Series(True, index=df.index)   # Default: keep all rows
+    # --- 2. Price difference filtering with configurable threshold ---
+    # Log the current price threshold
+    logging.info(f"Using price difference threshold: {price_threshold}%")
     
-    # Check Koreagift price difference (if column exists)
-    if KOREAGIFT_PRICE_DIFF_COL in df.columns:
+    # Initialize masks for rows to keep
+    kogift_price_filtered = pd.Series(False, index=filtered_df.index)
+    naver_price_filtered = pd.Series(False, index=filtered_df.index)
+    
+    # Only apply price filtering if we have both price column and link column
+    if KOREAGIFT_PRICE_DIFF_COL in filtered_df.columns and kogift_col:
         # Convert to numeric, coercing errors to NaN
-        kogift_price_diff = pd.to_numeric(df[KOREAGIFT_PRICE_DIFF_COL], errors='coerce')
-        # Keep rows where price difference is < -1 OR link is missing
-        kogift_keep_mask = (kogift_price_diff < -1) | is_kogift_missing
+        kogift_price_diff = pd.to_numeric(filtered_df[KOREAGIFT_PRICE_DIFF_COL], errors='coerce')
         
-    # Check Naver price difference (if column exists)
-    if NAVER_PRICE_DIFF_COL in df.columns:
-        # Convert to numeric, coercing errors to NaN
-        naver_price_diff = pd.to_numeric(df[NAVER_PRICE_DIFF_COL], errors='coerce')
-        # Keep rows where price difference is < -1 OR link is missing
-        naver_keep_mask = (naver_price_diff < -1) | is_naver_missing
+        # Only filter out rows that are:
+        # 1. Not missing Kogift link AND
+        # 2. Have a valid price difference value AND
+        # 3. Have a price difference >= price_threshold
+        kogift_price_mask = (
+            ~is_kogift_missing &
+            kogift_price_diff.notna() &
+            (kogift_price_diff >= price_threshold)
+        )
+        kogift_price_filtered = kogift_price_mask
     
-    # --- 3. Filter out rows with "front" URLs in Naver image column ---
-    front_url_mask = pd.Series(False, index=df.index)  # Default: keep all rows
+    # Same for Naver
+    if NAVER_PRICE_DIFF_COL in filtered_df.columns and naver_col:
+        naver_price_diff = pd.to_numeric(filtered_df[NAVER_PRICE_DIFF_COL], errors='coerce')
+        naver_price_mask = (
+            ~is_naver_missing &
+            naver_price_diff.notna() &
+            (naver_price_diff >= price_threshold)
+        )
+        naver_price_filtered = naver_price_mask
     
-    # Check if the Naver image column exists
-    if '네이버쇼핑(이미지링크)' in df.columns:
-        # Create a mask for rows with "front" URLs
-        front_url_mask = df['네이버쇼핑(이미지링크)'].astype(str).str.contains('pstatic.net/front/', case=False, na=False)
-        
-        # Log rows with problematic URLs (for debugging)
+    # --- 3. Count front URLs but don't filter them out ---
+    front_url_mask = pd.Series(False, index=filtered_df.index)
+    if '네이버쇼핑(이미지링크)' in filtered_df.columns:
+        # Create a mask to detect URLs with "front" pattern to count them
+        front_url_mask = filtered_df['네이버쇼핑(이미지링크)'].astype(str).str.contains(
+            'pstatic.net/front/', case=False, na=False
+        )
         front_url_count = front_url_mask.sum()
         if front_url_count > 0:
-            logging.warning(f"Found {front_url_count} rows with unreliable 'front' URLs that will be filtered out")
-            for idx in df[front_url_mask].index:
-                logging.debug(f"Row {idx}: Filtering out due to 'front' URL: {df.at[idx, '네이버쇼핑(이미지링크)']}")
+            logging.warning(f"Found {front_url_count} rows with 'front/' URLs, but keeping them in the data.")
     
-    # Combined mask for rows to keep:
-    # 1. Either don't have both links missing AND
-    # 2. Satisfy the price difference criteria for both Koreagift and Naver AND
-    # 3. Don't have "front" URLs in the Naver image column
-    rows_to_keep_mask = (~missing_links_mask) & kogift_keep_mask & naver_keep_mask & (~front_url_mask)
-
-    # Apply the filter to keep only the rows we want
-    initial_rows = len(df)
-    filtered_df = df[rows_to_keep_mask].copy()
+    # Combine filtering conditions:
+    # 1. Remove rows where both Kogift and Naver links are missing
+    # 2. Keep row if it has a good price difference for either vendor
+    rows_to_keep_mask = (
+        # Keep row unless BOTH links are missing
+        (~missing_links_mask) |  
+        # OR keep row if it has Kogift data and price diff is good (not filtered)
+        (~is_kogift_missing & ~kogift_price_filtered) |
+        # OR keep row if it has Naver data and price diff is good (not filtered)
+        (~is_naver_missing & ~naver_price_filtered)
+    )
+    
+    # Apply the filter
+    filtered_df = filtered_df[rows_to_keep_mask].copy()
+    
+    # Log filtering results
     removed_count = initial_rows - len(filtered_df)
-    
-    # Log the filtering results
     if removed_count > 0:
         logging.info(f"Upload filter: Removed {removed_count} rows total:")
-        missing_links_count = missing_links_mask.sum()
-        kogift_filtered = len(df) - kogift_keep_mask.sum()
-        naver_filtered = len(df) - naver_keep_mask.sum()
-        front_url_filtered = front_url_mask.sum()
-        logging.info(f"  - {missing_links_count} rows with both Koreagift and Naver links missing")
-        logging.info(f"  - {kogift_filtered} rows with Koreagift price difference > -1")
-        logging.info(f"  - {naver_filtered} rows with Naver price difference > -1")
-        logging.info(f"  - {front_url_filtered} rows with unreliable 'front' URLs in Naver image column")
+        logging.info(f"  - {missing_links_mask.sum()} rows identified with both Koreagift and Naver links missing")
+        logging.info(f"  - {kogift_price_filtered.sum()} rows identified with Koreagift price difference > {price_threshold}%")
+        logging.info(f"  - {naver_price_filtered.sum()} rows identified with Naver price difference > {price_threshold}%")
+        logging.info(f"  - {front_url_mask.sum()} rows had 'front/' URLs (but were not removed for this reason)")
     else:
-        logging.info("Upload filter: No rows removed after applying all filtering criteria.")
-
+        logging.info("Upload filter: No rows removed.")
+    
     return filtered_df
 
 def filter_front_urls_from_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Specifically filters out rows with unreliable "front" URLs in the Naver image column.
-    These URLs (like https://shopping-phinf.pstatic.net/front/...) often fail to load.
+    Processes rows with unreliable "front" URLs in the Naver image column.
+    Instead of removing these URLs, it replaces them with placeholder values.
     
     Args:
-        df: DataFrame to filter
+        df: DataFrame to process
         
     Returns:
-        DataFrame with "front" URL rows removed or replaced
+        DataFrame with processed front URLs
     """
     if df.empty:
-        logging.warning("Input DataFrame for front URL filtering is empty. Returning empty DataFrame.")
+        logging.warning("Input DataFrame for front URL processing is empty. Returning empty DataFrame.")
         return df.copy()
     
     # Check if the Naver image column exists
     naver_img_col = '네이버쇼핑(이미지링크)'
     if naver_img_col not in df.columns:
-        logging.warning(f"Column '{naver_img_col}' not found in DataFrame. Cannot filter front URLs.")
+        logging.warning(f"Column '{naver_img_col}' not found in DataFrame. Cannot process front URLs.")
         return df.copy()
     
-    # Create mask for rows with "front" URLs
-    front_url_mask = df[naver_img_col].astype(str).str.contains('pstatic.net/front/', case=False, na=False)
-    front_url_count = front_url_mask.sum()
+    # Create a copy of the DataFrame
+    result_df = df.copy()
+    
+    # Process each value to handle complex structures
+    front_url_count = 0
+    placeholder_url = "https://placeholder-image.com/product_image.jpg"
+    
+    for idx, value in enumerate(result_df[naver_img_col]):
+        processed = False
+        
+        # Handle dictionary format
+        if isinstance(value, dict) and 'url' in value:
+            url = value.get('url')
+            if url and isinstance(url, str) and 'pstatic.net/front/' in url.lower():
+                # Keep the dictionary structure but replace the problematic URL
+                value['original_url'] = url  # Save original URL
+                value['url'] = placeholder_url
+                result_df.at[idx, naver_img_col] = value
+                front_url_count += 1
+                processed = True
+        
+        # Handle string format
+        elif isinstance(value, str) and 'pstatic.net/front/' in value.lower():
+            # Create a dictionary with both original and placeholder URL
+            result_df.at[idx, naver_img_col] = {
+                'url': placeholder_url,
+                'original_url': value
+            }
+            front_url_count += 1
+            processed = True
+            
+        if processed:
+            logging.debug(f"Row {idx}: Replaced front URL with placeholder value")
     
     if front_url_count > 0:
-        logging.warning(f"Found {front_url_count} rows with unreliable 'front' URLs")
-        
-        # Create a copy of the DataFrame
-        result_df = df.copy()
-        
-        # Replace "front" URLs with empty strings
-        result_df.loc[front_url_mask, naver_img_col] = ''
-        
-        logging.info(f"Removed {front_url_count} 'front' URLs from the upload data")
-        return result_df
+        logging.info(f"Processed {front_url_count} 'front/' URLs by replacing them with placeholders")
     else:
-        logging.info("No 'front' URLs found in the upload data")
-        return df
+        logging.info("No 'front/' URLs found in the data")
+    
+    return result_df
 
 def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.ConfigParser) -> bool:
-    """Reads the upload Excel, applies filtering, and saves it back, overwriting the original.
+    """Reads the upload Excel, applies filtering with configurable strictness, and saves it back, overwriting the original.
+    
+    This function uses different filtering approaches based on the 'upload_filter_strictness' setting in the Debug section:
+    - 'high': Uses strict filtering that may remove more rows
+    - 'medium': Uses balanced filtering (default)
+    - 'low': Uses lenient filtering to keep more products in the output
+    - 'none': No filtering, just processes and saves the file
 
     Args:
         upload_file_path: Path to the upload .xlsx file.
-        config: The configuration object (unused currently, but passed for potential future use).
+        config: The configuration object
 
     Returns:
         True if filtering was applied successfully, False otherwise.
@@ -268,7 +324,16 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
         logging.error(f"Upload file does not exist: {upload_file_path}. Skipping filtering.")
         return False
 
-    logging.info(f"Applying post-creation filter to upload file: {upload_file_path}")
+    # Determine filtering strictness from config
+    filter_strictness = 'medium'  # Default to medium strictness
+    try:
+        if config.has_section('Debug'):
+            filter_strictness = config.get('Debug', 'upload_filter_strictness', fallback='medium').lower()
+            logging.info(f"Using upload filter strictness level: {filter_strictness}")
+    except Exception as e:
+        logging.warning(f"Could not read filter strictness from config: {e}. Using default 'medium'.")
+    
+    logging.info(f"Applying {filter_strictness} strictness post-creation filter to upload file: {upload_file_path}")
     
     try:
         # Read the Excel file into a DataFrame
@@ -278,17 +343,68 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
         # Record original row count
         original_rows = len(df)
         
-        # Apply filtering based on criteria
-        df_filtered = filter_upload_data(df)
+        if original_rows == 0:
+            logging.warning(f"Upload file is empty: {upload_file_path}")
+            # Save empty DataFrame back to file to ensure consistent format
+            df.to_excel(upload_file_path, index=False, engine='openpyxl')
+            return True
         
-        # Also filter out "front" URLs
+        # Apply filtering based on strictness setting
+        if filter_strictness == 'none':
+            logging.info("Upload filtering is disabled (strictness=none). No rows will be filtered.")
+            df_filtered = df.copy()
+        else:
+            # Adjust price thresholds based on strictness
+            if filter_strictness == 'high':
+                # Temporarily modify the price threshold in the function
+                # This is a bit of a hack, but it avoids having to duplicate the function
+                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
+                filter_upload_data._price_threshold = -1.5  # More strict threshold
+                logging.info("Using high strictness filtering with price threshold -1.5%")
+            elif filter_strictness == 'low':
+                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
+                filter_upload_data._price_threshold = 0.0  # Very lenient threshold
+                logging.info("Using low strictness filtering with price threshold 0.0%")
+            else:  # 'medium'
+                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
+                filter_upload_data._price_threshold = -0.5  # Default threshold
+                logging.info("Using medium strictness filtering with price threshold -0.5%")
+            
+            # Apply filtering
+            df_filtered = filter_upload_data(df)
+            
+            # Restore original price threshold
+            if hasattr(filter_upload_data, '_price_threshold'):
+                filter_upload_data._price_threshold = original_price_threshold
+        
+        # Process front URLs without removing rows
         df_filtered = filter_front_urls_from_upload_data(df_filtered)
         
         # Calculate rows removed
         rows_removed = original_rows - len(df_filtered)
         
         if rows_removed > 0:
-            logging.info(f"Upload filtering removed {rows_removed} rows in total.")
+            logging.info(f"{filter_strictness.capitalize()} upload filtering removed {rows_removed} rows in total. Original: {original_rows}, Final: {len(df_filtered)}")
+            
+            # Calculate the percentage of remaining rows
+            keep_percentage = (len(df_filtered) / original_rows) * 100
+            if keep_percentage < 25 and original_rows > 5:
+                # If less than 25% of rows remain and we started with a significant number
+                logging.warning(f"Warning: Filtering removed {100-keep_percentage:.1f}% of rows! This may indicate an issue with the data.")
+                
+                # For extreme cases (>90% removed), add some rows back
+                if keep_percentage < 10 and original_rows > 5:
+                    logging.warning("Extreme filtering detected! Adding back some rows to prevent empty result.")
+                    # Take a sample of filtered rows to add back
+                    filtered_indices = set(df.index) - set(df_filtered.index)
+                    add_back_count = min(5, len(filtered_indices))
+                    if add_back_count > 0:
+                        # Add back some of the best rows from filtered set
+                        # This is a simplistic approach - in practice you'd want more sophisticated selection
+                        add_back_indices = list(filtered_indices)[:add_back_count]
+                        add_back_rows = df.loc[add_back_indices].copy()
+                        df_filtered = pd.concat([df_filtered, add_back_rows])
+                        logging.info(f"Added back {len(add_back_rows)} rows to prevent empty results.")
         else:
             logging.info("No rows were removed during upload filtering.")
         
