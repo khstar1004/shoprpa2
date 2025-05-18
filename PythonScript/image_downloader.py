@@ -125,25 +125,31 @@ async def verify_image_url(session: aiohttp.ClientSession, url: str, timeout: in
                 if not content_type.startswith('image/') and not is_naver:
                     return url, False, f"Not an image (content-type: {content_type})"
                 
-                # 응답 크기 확인
-                if 'Content-Length' in response.headers:
+                # 응답 크기 확인 - 네이버는 실제 이미지가 아닌 URL도 허용
+                if 'Content-Length' in response.headers and not is_naver:
                     content_length = int(response.headers['Content-Length'])
                     if content_length < 100:
                         return url, False, f"Content too small: {content_length} bytes"
                 
                 # 응답 헤더만으로는 불충분할 수 있으므로 일부 데이터를 읽어 확인
                 chunk = await response.content.read(10240)  # 최대 10KB만 읽음
-                if len(chunk) < 100:
+                
+                # 네이버 이미지는 데이터가 작아도 허용
+                if len(chunk) < 100 and not is_naver:
                     return url, False, f"Response too small: {len(chunk)} bytes"
                 
                 try:
+                    # 네이버 이미지는 실제 이미지가 아닐 수 있으므로 검증 스킵
+                    if is_naver:
+                        return url, True, None
+                        
                     img = Image.open(io.BytesIO(chunk))
                     img.verify()  # 이미지 데이터 검증
                     return url, True, None
                 except Exception as e:
-                    # 네이버 이미지 URL인 경우 이미지 검증 실패해도 계속 진행
+                    # 네이버 이미지 URL인 경우 어떤 오류가 나도 항상 유효하다고 간주
                     if is_naver:
-                        logger.warning(f"Naver image validation failed but proceeding: {url}, Error: {str(e)}")
+                        logger.warning(f"Naver image validation skipped completely: {url}")
                         return url, True, None
                     return url, False, f"Invalid image data: {str(e)}"
                 

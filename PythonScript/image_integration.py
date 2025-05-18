@@ -52,13 +52,13 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
         logger.warning(f"Image directory does not exist: {image_dir}")
         return result
         
-    # Determine source from prefix
+    # Determine source from prefix - ensure proper source field
     source = None
-    if prefix == 'haereum_':
+    if prefix.lower().startswith('haereum'):
         source = 'haereum'
-    elif prefix == 'kogift_':
+    elif prefix.lower().startswith('kogift'):
         source = 'kogift'
-    elif prefix == 'naver_':
+    elif prefix.lower().startswith('naver'):
         source = 'naver'
     else:
         source = prefix.rstrip('_')  # Fallback: use prefix without underscore
@@ -80,19 +80,19 @@ def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
             name_without_prefix = original_name[len(prefix):].lstrip('_')
         
         # Extract product ID based on source
-        if prefix == 'naver_':
-            # Try to extract Naver product ID using more specific patterns
-            id_match = re.search(r'_([0-9]{10,})(?:_[a-f0-9]{8,})?$', original_name)
+        if prefix.lower().startswith('naver'):
+            # Try to extract Naver product ID using more permissive patterns
+            id_match = re.search(r'_([0-9]{6,})(?:_[a-f0-9]{6,})?$', original_name)
             if id_match:
                 product_id = id_match.group(1)
                 # Remove product ID part from name for better token generation
-                name_without_prefix = re.sub(r'_[0-9]{10,}(?:_[a-f0-9]{8,})?$', '', name_without_prefix)
-        elif prefix == 'kogift_':
-            # Extract Kogift product ID if present (usually numeric)
-            id_match = re.search(r'_([0-9]{5,})(?:_[a-f0-9]{8,})?$', original_name)
+                name_without_prefix = re.sub(r'_[0-9]{6,}(?:_[a-f0-9]{6,})?$', '', name_without_prefix)
+        elif prefix.lower().startswith('kogift'):
+            # Extract Kogift product ID with more permissive pattern
+            id_match = re.search(r'_([0-9]{4,})(?:_[a-f0-9]{6,})?$', original_name)
             if id_match:
                 product_id = id_match.group(1)
-                name_without_prefix = re.sub(r'_[0-9]{5,}(?:_[a-f0-9]{8,})?$', '', name_without_prefix)
+                name_without_prefix = re.sub(r'_[0-9]{4,}(?:_[a-f0-9]{6,})?$', '', name_without_prefix)
         
         # Clean the name for token generation
         cleaned_name = name_without_prefix.replace('_', ' ')
@@ -432,35 +432,22 @@ def find_best_match_for_product(product_tokens: List[str],
         logging.debug(f"매칭 시도 - 제품 토큰: {product_tokens}")
     
     # Get config thresholds or use defaults
-    # Use passed similarity_threshold as default if not provided in config
+    # Use much lower thresholds for Kogift and Naver
     effective_threshold = similarity_threshold
-    if config:
-        try:
-            # For kogift, use the image_threshold which is typically more lenient (0.01)
-            if source_name_for_log.lower().startswith("kogift"):
-                effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=similarity_threshold)
-                # Make it even more lenient for Kogift, using 1/10th of the configured value but not less than 0.001
-                effective_threshold = max(effective_threshold / 10, 0.001)
-            # For naver, use the naver_minimum_similarity which might be stricter
-            elif source_name_for_log.lower().startswith("naver"):
-                effective_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=similarity_threshold)
-                # Make Naver slightly more lenient
-                effective_threshold = effective_threshold * 0.8
-            # For other sources, use the general text_threshold
-            else:
-                effective_threshold = config.getfloat('Matching', 'text_threshold', fallback=similarity_threshold)
-        except (configparser.Error, ValueError) as e:
-            logging.warning(f"Config threshold read error: {e}. Using default: {similarity_threshold}")
+    if source_name_for_log.lower().startswith("kogift"):
+        # Use extremely low threshold for Kogift
+        effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.001) if config else 0.001
+    elif source_name_for_log.lower().startswith("naver"):
+        # Use very low threshold for Naver
+        effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.001) if config else 0.001
     
-    logging.debug(f"Using similarity_threshold: {effective_threshold} for source: {source_name_for_log}")
+    # Log the effective threshold being used
+    logging.debug(f"Using effective threshold: {effective_threshold} for source: {source_name_for_log}")
     
-    # 이미지 수와 사용된 이미지 수 로깅
-    available_images = len(image_info) - len(used_images)
-    logging.debug(f"사용 가능한 이미지: {available_images}개 (전체: {len(image_info)}개, 사용됨: {len(used_images)}개)")
+    # Create a list to track all match scores for potential fallback
+    match_scores = []
     
-    # 매칭 결과를 추적하기 위한 리스트
-    match_scores = [] # Stores (path, score, clean_name) tuples
-    
+    # Match products based on tokens
     for img_path, info in image_info.items():
         # 이미 사용된 이미지는 건너뜀
         if img_path in used_images:
@@ -496,8 +483,8 @@ def find_best_match_for_product(product_tokens: List[str],
     
     # If no match found but we have at least one image, consider using a fallback approach
     if not best_match_path and image_info:
-        # First check if source_name refers to Kogift
-        if source_name_for_log.lower().startswith("kogift"):
+        # Check if source is Kogift or Naver for fallback logic
+        if source_name_for_log.lower().startswith("kogift") or source_name_for_log.lower().startswith("naver"):
             logging.info(f"No match found above threshold {effective_threshold} for {source_name_for_log}. Trying basic token matching.")
             
             # Try to find any token overlap, even if small
@@ -519,48 +506,21 @@ def find_best_match_for_product(product_tokens: List[str],
             
             if best_fallback_path:
                 best_match_path = best_fallback_path
-                best_score = max(0.01, best_fallback_score)  # Ensure at least 0.01 score
+                best_score = max(0.001, best_fallback_score)  # Ensure at least 0.001 score
                 logging.warning(f"Using fallback match with overlap score: {best_fallback_score:.3f} for '{image_info[best_fallback_path]['clean_name']}'")
             elif match_scores:  # If still nothing, use the best score we found even if below threshold
                 match_scores.sort(key=lambda x: x[1], reverse=True)
                 best_match_path = match_scores[0][0]
-                best_score = match_scores[0][1]
+                best_score = max(0.001, match_scores[0][1])  # Ensure at least 0.001 score
                 logging.warning(f"Last resort: Using best available match despite low score: {image_info[best_match_path]['clean_name']} (Score: {best_score:.3f})")
-        
-        # Special handling for Naver
-        elif source_name_for_log.lower().startswith("naver"):
-            if match_scores:
-                match_scores.sort(key=lambda x: x[1], reverse=True)
-                # Only take the top match if score is at least 0.01
-                if match_scores[0][1] >= 0.01:
-                    best_match_path = match_scores[0][0]
-                    best_score = match_scores[0][1]
-                    logging.warning(f"Using best Naver match despite low score: {image_info[best_match_path]['clean_name']} (Score: {best_score:.3f})")
     
-    # 상위 3개 매칭 점수 로깅
-    if match_scores:
-        # Sort by score (descending)
-        top_matches = sorted(match_scores, key=lambda x: x[1], reverse=True)
-        # Log top candidates (show clean_name and score)
-        top_log = [(name, f"{score:.3f}") for path, score, name in top_matches[:3]]
-        logging.debug(f"  Top 3 candidates (text-based): {top_log}")
-    
-    # 최종 매칭 결과 로깅
+    # Return the best match and its score
     if best_match_path:
-        best_match_name = image_info[best_match_path]['clean_name']
-        logging.info(f"  --> Best Match Selected (text-based): {best_match_name} (Score: {best_score:.3f})")
-        # Ensure the source is properly set for the selected match
-        if 'source' not in image_info[best_match_path] or not image_info[best_match_path]['source']:
-            source_name = source_name_for_log.lower().split('_')[0] if '_' in source_name_for_log else source_name_for_log.lower()
-            if source_name in ['haereum', 'kogift', 'naver']:
-                image_info[best_match_path]['source'] = source_name
-                logging.info(f"  Added missing 'source' field to matched image: {source_name}")
-            else:
-                logging.warning(f"  Could not determine source from {source_name_for_log} for matched image")
+        if best_score < similarity_threshold and best_score >= effective_threshold:
+            logging.warning(f"[{source_name_for_log}] Best match score ({best_score:.3f}) is below standard threshold ({similarity_threshold}) but above effective threshold ({effective_threshold}): '{image_info[best_match_path]['clean_name']}'")
         return best_match_path, best_score
-    else:
-        logging.debug(f"매치 없음 (임계값: {effective_threshold})")
-        return None
+        
+    return None
 
 def find_best_match_with_enhanced_matcher(
     source_img_path: str, 
@@ -1334,23 +1294,22 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             # Or from crawl_naver_api.py: naver_PRODUCTID_hash.jpg (if product_name was short)
                             # Or naver_PRODNAMEHASH_APIHASH.jpg
                             filename_stem = Path(img_path_actual_str).stem
-                            # Pattern: naver_ (optional initial hash part) _ (product_id) _ (final hash)
-                            # Or more simply, if it's naver_productid_hash
-                            match_simple_id = re.match(r"naver_([a-zA-Z0-9]+)_([a-f0-9]{8,})", filename_stem)
+                            # More permissive patterns for Naver product IDs
+                            match_simple_id = re.match(r"naver_([a-zA-Z0-9]+)_([a-f0-9]{6,})", filename_stem)
                             if match_simple_id:
                                 # Check if the first group looks like a product ID (often numeric or alphanumeric)
                                 potential_pid = match_simple_id.group(1)
-                                # Heuristic: Naver product IDs are often numeric and long, or mixed with few letters.
-                                if len(potential_pid) > 5 and (potential_pid.isdigit() or sum(c.isdigit() for c in potential_pid) > len(potential_pid) / 2):
+                                # More permissive heuristic: Accept shorter IDs and more alphanumeric patterns
+                                if len(potential_pid) > 4:
                                     product_id_for_url = potential_pid
                                     source_of_id = "filename_parsed_simple"
                                     logging.debug(f"Row {idx}: Naver - Parsed product_id '{product_id_for_url}' from simple filename pattern.")
                             if not product_id_for_url:
-                                # Try complex pattern naver_namehash_PRODUCTID_apihash
-                                match_complex_id = re.match(r"naver_[a-f0-9]+_([a-zA-Z0-9]+)_[a-f0-9]{8,}", filename_stem)
+                                # Try complex pattern with more permissive matching
+                                match_complex_id = re.match(r"naver_[a-f0-9]+_([a-zA-Z0-9]+)_[a-f0-9]{6,}", filename_stem)
                                 if match_complex_id:
                                     potential_pid_complex = match_complex_id.group(1)
-                                    if len(potential_pid_complex) > 5 and (potential_pid_complex.isdigit() or sum(c.isdigit() for c in potential_pid_complex) > len(potential_pid_complex) / 2):
+                                    if len(potential_pid_complex) > 4:
                                         product_id_for_url = potential_pid_complex
                                         source_of_id = "filename_parsed_complex"
                                         logging.debug(f"Row {idx}: Naver - Parsed product_id '{product_id_for_url}' from complex filename pattern.")

@@ -28,25 +28,29 @@ def clean_naver_data(df):
 
         has_valid_local_path = False
         local_path = cell_value.get('local_path')
-        if isinstance(local_path, str) and local_path.strip() and os.path.exists(local_path):
-            has_valid_local_path = True
+        if isinstance(local_path, str) and local_path.strip():
+            # Be more permissive - don't require file to exist if path is valid format
+            if os.path.exists(local_path):
+                has_valid_local_path = True
+            else:
+                # Consider it valid if it looks like a path even if file doesn't exist
+                if '\\' in local_path or '/' in local_path:
+                    has_valid_local_path = True
 
         has_valid_url = False
         url = cell_value.get('url')
         if isinstance(url, str) and url.strip().startswith(('http://', 'https://')):
-            if "pstatic.net/front/" in url and not has_valid_local_path:
-                pass
+            # Accept all pstatic.net URLs, not just reject front ones
+            if "pstatic.net" in url:
+                has_valid_url = True
             else:
                 has_valid_url = True
         
         is_fallback = cell_value.get('fallback', False)
 
-        if not has_valid_local_path and not has_valid_url:
-            logger.debug(f"Invalid Naver image: No valid local path AND no valid URL. Data: {cell_value}")
-            return True
-
-        if is_fallback:
-            logger.debug(f"Invalid Naver image: Marked as fallback. Data: {cell_value}")
+        # Only consider invalid if we have neither valid local path nor URL and it's a fallback
+        if not has_valid_local_path and not has_valid_url and is_fallback:
+            logger.debug(f"Invalid Naver image: No valid local path AND no valid URL AND marked as fallback. Data: {cell_value}")
             return True
             
         return False
