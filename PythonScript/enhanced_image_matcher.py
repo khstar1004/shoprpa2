@@ -460,7 +460,6 @@ class EnhancedImageMatcher:
         self.inlier_threshold = SETTINGS['INLIER_THRESHOLD']
         self.apply_clahe = SETTINGS['APPLY_CLAHE']
         self.use_multiple_models = SETTINGS['USE_MULTIPLE_MODELS']
-        self.USE_BACKGROUND_REMOVAL = SETTINGS['USE_BACKGROUND_REMOVAL']
         
         # Initialize feature cache
         self.feature_cache = FeatureCache()
