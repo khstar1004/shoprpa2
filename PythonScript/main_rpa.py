@@ -349,10 +349,16 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
                             if img_url:
                                 # Update the item's image data to dictionary format for excel_utils.py
+                                # Safely handle missing 'image_path' key
+                                if 'image_path' not in item:
+                                    logging.warning(f"Missing image_path for Naver item with URL: {img_url}")
+                                    # Try to use the image_url as a fallback or set to None
+                                    item['image_path'] = img_url if img_url.startswith('http') else None
+                                
                                 image_data = {
                                     'url': img_url,
-                                    'local_path': item['image_path'], # Use corrected path
-                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
+                                    'local_path': item.get('image_path'), # Safely get image_path
+                                    'original_path': item.get('original_path', item.get('image_path')), # Keep original if available
                                     'source': 'naver'
                                 }
                                 item['image_data'] = image_data
@@ -520,14 +526,20 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             # Ensure the item has both 'url' and 'local_path' structure for excel_utils.py
                             if img_url:
                                 # Update the item's image data to dictionary format for excel_utils.py
+                                # Safely handle missing 'image_path' key
+                                if 'image_path' not in item:
+                                    logging.warning(f"Missing image_path for Naver item with URL: {img_url}")
+                                    # Try to use the image_url as a fallback or set to None
+                                    item['image_path'] = img_url if img_url.startswith('http') else None
+                                
                                 image_data = {
                                     'url': img_url,
-                                    'local_path': item['image_path'], # Use corrected path
-                                    'original_path': item.get('original_path', item['image_path']), # Keep original if available
+                                    'local_path': item.get('image_path'), # Safely get image_path
+                                    'original_path': item.get('original_path', item.get('image_path')), # Keep original if available
                                     'source': 'naver'
                                 }
                                 item['image_data'] = image_data
-                
+                    
                 if img_fix_count > 0:
                     logging.info(f"Fixed {img_fix_count} Naver image paths to ensure correct directory")
             except Exception as e:

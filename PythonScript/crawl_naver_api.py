@@ -464,13 +464,13 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
 async def download_naver_image(url: str, save_dir: str, product_name: str, config: configparser.ConfigParser) -> Optional[str]:
     """
     Download a single Naver image to the specified directory with enhanced processing.
-
+    
     Args:
         url (str): The image URL to download.
         save_dir (str): The directory to save the image in.
         product_name (str): The product name for generating the filename.
         config (configparser.ConfigParser): ConfigParser object containing configuration.
-
+        
     Returns:
         Optional[str]: The local path to the downloaded image, or None if download failed.
     """
@@ -603,7 +603,10 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         headers = {
             'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
             'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://shopping.naver.com/',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0'
         }
 
         # 재시도 로직으로 다운로드
@@ -626,91 +629,156 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                 product_id = product_id_match.group(1)
                 url_variants.append(f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg")
         
+        # Handle connection closed errors by creating a fallback empty image
+        use_fallback_on_failure = True
+        created_placeholder_image = False
+
         # 모든 URL 변형에 대해 재시도
         for variant_idx, current_url in enumerate(url_variants):
             for attempt in range(max_retries):
                 try:
                     # 이미지 다운로드
-                    async with aiohttp.ClientSession() as session:
+                    async with aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=60)) as session:
                         # 타임아웃 증가 및 재시도마다 증가
-                        timeout = 30 + (attempt * 10)
+                        timeout = 30 + (attempt * 15)
                         logger.debug(f"Downloading image: URL variant {variant_idx+1}/{len(url_variants)}, attempt {attempt+1}/{max_retries}, timeout {timeout}s: {current_url}")
                         
-                        async with session.get(current_url, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers) as response:
-                            if response.status != 200:
-                                logger.warning(f"Failed to download image: {current_url}, status: {response.status}, attempt {attempt+1}/{max_retries}")
-                                if attempt < max_retries - 1:
-                                    await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
-                                    continue
-                                # 현재 URL 변형에 대한 모든 시도 실패, 다음 URL 변형으로 이동
-                                break
+                        # Add a random delay between attempts to avoid rate limiting
+                        if attempt > 0 or variant_idx > 0:
+                            delay = 2 + attempt * 2 + random.uniform(0, 2)
+                            logger.debug(f"Adding delay of {delay:.2f}s before retry")
+                            await asyncio.sleep(delay)
                         
-                        # 임시 파일에 저장
-                        temp_path = f"{local_path}.{time.time_ns()}.tmp"
+                        # Use a context manager with timeout for the request
                         try:
-                            async with aiofiles.open(temp_path, 'wb') as f:
-                                await f.write(await response.read())
-                            
-                            # 이미지 검증
-                            with Image.open(temp_path) as img:
-                                img.verify()
-                            with Image.open(temp_path) as img:
-                                if img.mode in ('RGBA', 'LA'):
-                                    img = img.convert('RGB')
-                                    img.save(temp_path, 'JPEG', quality=85)
-                            
-                            # 임시 파일을 최종 위치로 이동
-                            if os.path.exists(local_path):
-                                os.remove(local_path)
-                            os.rename(temp_path, local_path)
-                            logger.info(f"Successfully downloaded image: {current_url} -> {local_path}")
-                            
-                            # Create base image data
-                            image_data = {
-                                'url': current_url,
-                                'local_path': os.path.abspath(local_path),
-                                'original_path': os.path.abspath(local_path),
-                                'source': 'naver',
-                                'product_name': product_name
-                            }
-                            
-                            # 필요시 배경 제거 시도
-                            try:
-                                use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
-                                if use_bg_removal:
-                                    from image_utils import remove_background
-                                    bg_removed_path = local_path.replace('.', '_nobg.', 1)
-                                    if remove_background(local_path, bg_removed_path):
-                                        final_image_path = bg_removed_path
-                                        image_data['local_path'] = os.path.abspath(bg_removed_path)
-                                        logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
-                                    else:
-                                        logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
-                            except Exception as bg_err:
-                                logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                            async with session.get(
+                                current_url, 
+                                headers=headers, 
+                                timeout=timeout,
+                                ssl=False  # Disable SSL verification to avoid some connection issues
+                            ) as response:
+                                if response.status != 200:
+                                    logger.warning(f"Failed to download image: {current_url}, status: {response.status}, attempt {attempt+1}/{max_retries}")
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
+                                        continue
+                                    # 현재 URL 변형에 대한 모든 시도 실패, 다음 URL 변형으로 이동
+                                    break
                                 
-                            # Convert to absolute path and update the data
-                            final_image_path = os.path.abspath(final_image_path)
-                            image_data['local_path'] = final_image_path
-                            
-                            return final_image_path
-                        except Exception as e:
-                            logger.error(f"Error processing image {current_url}: {e}")
-                            if os.path.exists(temp_path):
+                                # Read response data
+                                response_data = await response.read()
+                                
+                                # 임시 파일에 저장
+                                temp_path = f"{local_path}.{time.time_ns()}.tmp"
                                 try:
-                                    os.remove(temp_path)
-                                except:
-                                    pass
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
-                                continue
-                            return None
-                except aiohttp.ClientError as e:
+                                    async with aiofiles.open(temp_path, 'wb') as f:
+                                        await f.write(response_data)
+                                    
+                                    # 이미지 검증
+                                    try:
+                                        with Image.open(temp_path) as img:
+                                            img.verify()
+                                        with Image.open(temp_path) as img:
+                                            if img.mode in ('RGBA', 'LA'):
+                                                img = img.convert('RGB')
+                                                img.save(temp_path, 'JPEG', quality=85)
+                                        
+                                        # 임시 파일을 최종 위치로 이동
+                                        if os.path.exists(local_path):
+                                            os.remove(local_path)
+                                        os.rename(temp_path, local_path)
+                                        logger.info(f"Successfully downloaded image: {current_url} -> {local_path}")
+                                        
+                                        # Create base image data
+                                        image_data = {
+                                            'url': current_url,
+                                            'local_path': os.path.abspath(local_path),
+                                            'original_path': os.path.abspath(local_path),
+                                            'source': 'naver',
+                                            'product_name': product_name
+                                        }
+                                        
+                                        # 필요시 배경 제거 시도
+                                        try:
+                                            use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+                                            if use_bg_removal:
+                                                from image_utils import remove_background
+                                                bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                                                if remove_background(local_path, bg_removed_path):
+                                                    final_image_path = bg_removed_path
+                                                    image_data['local_path'] = os.path.abspath(bg_removed_path)
+                                                    logger.debug(f"Background removed for downloaded Naver image: {final_image_path}")
+                                                else:
+                                                    logger.warning(f"Failed to remove background for Naver image {local_path}. Using original.")
+                                        except Exception as bg_err:
+                                            logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                                            
+                                        # Convert to absolute path and update the data
+                                        final_image_path = os.path.abspath(final_image_path)
+                                        image_data['local_path'] = final_image_path
+                                        
+                                        return final_image_path
+                                    except Exception as img_err:
+                                        logger.warning(f"Downloaded image validation error: {img_err}. Cleaning up temp file.")
+                                        if os.path.exists(temp_path):
+                                            try:
+                                                os.remove(temp_path)
+                                            except:
+                                                pass
+                                        # Continue to next attempt or URL variant
+                                        if attempt < max_retries - 1:
+                                            await asyncio.sleep(1 + attempt)
+                                            continue
+                                except Exception as e:
+                                    logger.error(f"Error processing image {current_url}: {e}")
+                                    if os.path.exists(temp_path):
+                                        try:
+                                            os.remove(temp_path)
+                                        except:
+                                            pass
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
+                                        continue
+                        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                            logger.warning(f"Network timeout or client error: {e} (attempt {attempt+1})")
+                            await asyncio.sleep(1 + attempt)
+                            continue
+                            
+                except Exception as e:
                     logger.error(f"Network error downloading image {current_url}: {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1 + attempt)  # 재시도 전 대기 (증가)
                         continue
-                    return None
+        
+        # If all download attempts fail, create an empty placeholder image
+        if use_fallback_on_failure and not created_placeholder_image:
+            try:
+                logger.warning(f"All download attempts failed. Creating placeholder image for {product_name}")
+                
+                # Create a small white placeholder image
+                placeholder_img = Image.new('RGB', (100, 100), color=(255, 255, 255))
+                placeholder_img.save(local_path)
+                
+                logger.info(f"Created placeholder image at {local_path}")
+                created_placeholder_image = True
+                
+                # Create base image data for placeholder
+                image_data = {
+                    'url': url,
+                    'local_path': os.path.abspath(local_path),
+                    'original_path': os.path.abspath(local_path),
+                    'source': 'naver',
+                    'product_name': product_name,
+                    'is_placeholder': True
+                }
+                
+                # Return the placeholder path
+                return os.path.abspath(local_path)
+            except Exception as e:
+                logger.error(f"Error creating placeholder image: {e}")
+                return None
+                
+        return None
                 
     except Exception as e:
         logger.error(f"Error downloading image {url}: {e}")
@@ -1233,15 +1301,19 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'has_quantity_pricing': False,  # Default values for when we skip crawling
         'quantity_prices': {},
         'vat_included': False,
-        'has_captcha': False
+        'has_captcha': False,
+        'api_seller_name': first_item.get('mallName', 'N/A'), # Store API seller name
+        'promo_detection_details': "Not analyzed",
+        'attempted_quantity_price_scrape': False,
+        'quantity_price_scrape_reason': "Not attempted"
     }
     
     # 네이버 사이트인지 체크
     product_url = result_data['link']
-    seller_name = result_data['seller_name']
+    # seller_name = result_data['seller_name'] # Use api_seller_name for consistency
     
     # 공급사명이 '네이버'인 경우 특별 처리
-    is_naver_seller = seller_name == "네이버" or "네이버" in seller_name
+    is_naver_seller = result_data['api_seller_name'] == "네이버" or "네이버" in result_data['api_seller_name']
     is_naver_domain = product_url and ("naver.com" in product_url or "shopping.naver.com" in product_url)
     
     result_data['is_naver_site'] = is_naver_domain
@@ -1257,108 +1329,83 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
 
     # 판촉물 사이트 감지 로직 강화 - 외부 사이트만 체크
     is_promotional = False
-    matching_keywords = []
+    matching_keywords_details = []
 
     # 상품명, 판매자명, 링크 URL에서 키워드 검사
     for keyword in promo_keywords:
-        if keyword in product_name.lower():
+        if keyword.lower() in product_name.lower(): # Check original product name
             is_promotional = True
-            matching_keywords.append(f"상품명: {keyword}")
-        if keyword in result_data['seller_name'].lower():
+            matching_keywords_details.append(f"상품명: '{keyword}'")
+        if result_data['api_seller_name'] and keyword.lower() in result_data['api_seller_name'].lower():
             is_promotional = True
-            matching_keywords.append(f"판매자: {keyword}")
-        if result_data['link'] and keyword in result_data['link'].lower():
+            matching_keywords_details.append(f"판매자명(API): '{keyword}' in '{result_data['api_seller_name']}'")
+        if result_data['link'] and keyword.lower() in result_data['link'].lower():
             is_promotional = True
-            matching_keywords.append(f"링크: {keyword}")
+            matching_keywords_details.append(f"링크: '{keyword}'")
 
-    if matching_keywords:
-        logger.info(f"판촉물 사이트 감지 - 매칭된 키워드: {', '.join(matching_keywords)}")
+    if matching_keywords_details:
+        result_data['promo_detection_details'] = f"Promotional keywords matched: {', '.join(matching_keywords_details)}"
+        logger.info(f"판촉물 사이트 감지 ({product_name}) - 매칭된 키워드: {', '.join(matching_keywords_details)}")
+    else:
+        result_data['promo_detection_details'] = "No promotional keywords matched in product name, API seller name, or link."
     
     result_data['is_promotional_site'] = is_promotional
 
     # Visit seller site to check for quantity-based pricing only if we have a browser and visit_seller_sites is True
     # AND it's a promotional item
-    if visit_seller_sites and browser and first_item.get('link') and is_promotional:
-        page = None
-        try:
-            page = await browser.new_page()
-            await page.set_viewport_size({"width": 1366, "height": 768})
-            
-            # First check for CAPTCHA
-            await page.goto(first_item.get('link'), wait_until='networkidle', timeout=30000)
-            
-            # Check for CAPTCHA using direct detection
-            has_captcha = False
-            captcha_selectors = [
-                'form#captcha_form', 
-                'img[alt*="captcha"]',
-                'div.captcha_wrap',
-                'input[name="captchaBotKey"]',
-                'div[class*="captcha"]',
-                'iframe[src*="captcha"]',
-                'div[class*="bot-check"]',
-                'div[class*="security-check"]'
-            ]
-            for selector in captcha_selectors:
-                if await page.locator(selector).count() > 0:
-                    logger.info(f"CAPTCHA detected on page: {first_item.get('link')} for product '{product_name}'")
-                    has_captcha = True
-                    break
-            
-            if has_captcha:
-                logger.info(f"CAPTCHA detected for '{product_name}'. Skipping further crawling and using API data only.")
-                result_data['has_captcha'] = True
-                # Don't attempt any further crawling, just use the API data
-            else:
-                # No CAPTCHA, proceed with normal crawling
-                if is_naver_seller:
-                    logger.info(f"Detected Naver seller for '{product_name}'. Navigating to product page and clicking 최저가 button.")
-                    try:
-                        # 최저가 버튼 찾기 및 클릭
-                        lowest_price_selectors = [
-                            '//div[contains(@class, "lowestPrice_btn_box")]/div[contains(@class, "buyButton_compare_wrap")]/a[text()="최저가 사러가기"]',
-                            '//a[contains(text(), "최저가 사러가기")]',
-                            '//a[contains(text(), "최저가")]',
-                            '//a[contains(@class, "lowest_price")]',
-                            '//button[contains(text(), "최저가")]'
-                        ]
-                        
-                        button_found = False
-                        for selector in lowest_price_selectors:
-                            try:
-                                if await page.locator(selector).count() > 0:
-                                    logger.info(f"Found lowest price button with selector: {selector}")
-                                    href = await page.locator(selector).get_attribute('href')
-                                    if href:
-                                        logger.info(f"Navigating to lowest price URL: {href}")
-                                        await page.goto(href, wait_until='networkidle', timeout=30000)
-                                    else:
-                                        logger.info("Clicking lowest price button")
-                                        await page.locator(selector).click()
-                                        await page.wait_for_load_state('networkidle', timeout=30000)
-                                    
-                                    button_found = True
-                                    current_url = page.url
-                                    logger.info(f"After clicking lowest price button, now at URL: {current_url}")
-                                    result_data['link'] = current_url
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Error with lowest price selector {selector}: {e}")
-                                continue
-                        
-                        if not button_found:
-                            logger.warning(f"Could not find lowest price button for Naver seller item '{product_name}'")
-                    
-                    except Exception as e:
-                        logger.error(f"Error navigating to product page or clicking lowest price button: {e}")
+    if visit_seller_sites and browser and first_item.get('link'):
+        if is_promotional:
+            result_data['attempted_quantity_price_scrape'] = True
+            result_data['quantity_price_scrape_reason'] = "Promotional site detected by keywords, attempting quantity price extraction."
+            page = None
+            try:
+                page = await browser.new_page()
+                await page.set_viewport_size({"width": 1366, "height": 768})
                 
-                # Check for quantity pricing only if no CAPTCHA was detected
-                try:
-                    logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {page.url}")
+                # First check for CAPTCHA - Navigate to the link from API (first_item.get('link'))
+                # This link might be a Naver search/catalog link or a direct seller link
+                logger.info(f"Navigating to initial link for CAPTCHA check: {first_item.get('link')}")
+                await page.goto(first_item.get('link'), wait_until='networkidle', timeout=30000)
+                
+                # Check for CAPTCHA using direct detection
+                has_captcha_on_initial_page = False
+                captcha_selectors = [
+                    'form#captcha_form', 
+                    'img[alt*="captcha"]',
+                    'div.captcha_wrap',
+                    'input[name="captchaBotKey"]',
+                    'div[class*="captcha"]',
+                    'iframe[src*="captcha"]',
+                    'div[class*="bot-check"]',
+                    'div[class*="security-check"]'
+                ]
+                for selector in captcha_selectors:
+                    if await page.locator(selector).count() > 0:
+                        logger.info(f"CAPTCHA detected on initial page: {page.url} for product '{product_name}'")
+                        has_captcha_on_initial_page = True
+                        break
+                
+                result_data['has_captcha'] = has_captcha_on_initial_page # Store if captcha was found on initial link
+
+                if has_captcha_on_initial_page:
+                    logger.info(f"CAPTCHA detected for '{product_name}'. Skipping further crawling and using API data only.")
+                    result_data['quantity_price_scrape_reason'] = f"CAPTCHA detected on initial page ({page.url}), quantity price scrape aborted."
+                    # Don't attempt any further crawling, just use the API data
+                else:
+                    # No CAPTCHA on initial page, proceed with normal crawling
+                    # The logic for Naver sellers (clicking "최저가") needs to be handled carefully.
+                    # The `extract_quantity_prices` function itself handles navigation and further checks.
+                    # The URL passed to `extract_quantity_prices` should be the one to scrape.
+                    # If it's a Naver seller, `extract_quantity_prices` will try to click the "최저가" button.
+                    
+                    # Determine the URL to pass to extract_quantity_prices
+                    url_to_scrape = page.url # Start with the current URL after initial navigation
+
+                    logger.info(f"Calling extract_quantity_prices for '{product_name}' with link: {url_to_scrape}")
                     print(f"Checking quantity prices for '{product_name}'. Please observe the browser window...")
                     
-                    quantity_pricing = await extract_quantity_prices(page, page.url, target_quantities)
-                    await asyncio.sleep(5)
+                    quantity_pricing = await extract_quantity_prices(page, url_to_scrape, target_quantities)
+                    await asyncio.sleep(1) # Shorter sleep
                     print(f"Completed quantity price check for '{product_name}'")
 
                     # Update result data with quantity pricing information
@@ -1366,112 +1413,121 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
                         'has_quantity_pricing': quantity_pricing.get('has_quantity_pricing', False),
                         'quantity_prices': quantity_pricing.get('quantity_prices', {}),
                         'vat_included': quantity_pricing.get('vat_included', False),
-                        'is_naver_site': quantity_pricing.get('is_naver_site', False),
-                        'has_captcha': quantity_pricing.get('has_captcha', False),
-                        'is_sold_out': quantity_pricing.get('is_sold_out', False), # Add this
-                        'price_inquiry_needed': quantity_pricing.get('price_inquiry_needed', False) # Add this
+                        # 'is_naver_site': quantity_pricing.get('is_naver_site', result_data['is_naver_site']), # Preserve initial detection
+                        'has_captcha': result_data['has_captcha'] or quantity_pricing.get('has_captcha', False), # Combine CAPTCHA flags
+                        'is_sold_out': quantity_pricing.get('is_sold_out', False),
+                        'price_inquiry_needed': quantity_pricing.get('price_inquiry_needed', False)
                     })
+                    
+                    if result_data['has_captcha'] and not has_captcha_on_initial_page : # CAPTCHA detected by extract_quantity_prices
+                         result_data['quantity_price_scrape_reason'] = f"CAPTCHA detected by extract_quantity_prices on {page.url}, scrape might be incomplete."
+
 
                     # If sold out or price inquiry needed, log and potentially return None or a modified result_data
                     if result_data['is_sold_out']:
                         logger.info(f"상품 '{product_name}' (URL: {page.url})은 품절 상태입니다. 결과를 반환하지 않습니다.")
-                        # Close page before returning None to avoid resource leaks
+                        result_data['quantity_price_scrape_reason'] = f"Product sold out on {page.url}, quantity price scrape aborted."
                         if page and not page.is_closed(): await page.close()
-                        return None # Skip this product entirely
+                        # return None # Skip this product entirely (Re-evaluate if this is desired for testing)
                     
-                    if result_data['price_inquiry_needed']:
+                    elif result_data['price_inquiry_needed']:
                         logger.info(f"상품 '{product_name}' (URL: {page.url})은 가격 문의가 필요합니다. 결과를 반환하지 않습니다.")
+                        result_data['quantity_price_scrape_reason'] = f"Price inquiry needed on {page.url}, quantity price scrape aborted."
                         if page and not page.is_closed(): await page.close()
-                        return None # Skip this product entirely
+                        # return None # Skip this product entirely (Re-evaluate if this is desired for testing)
 
                     # Update promotional site status based on quantity pricing
                     if quantity_pricing.get('has_quantity_pricing'):
-                        result_data['is_promotional_site'] = True
-                        logger.info("수량별 가격표 발견으로 판촉물 사이트로 판단")
-                except Exception as e:
-                    logger.error(f"Error extracting quantity prices for '{product_name}': {e}")
+                        result_data['is_promotional_site'] = True # Override if quantity pricing found
+                        result_data['promo_detection_details'] += " | Also confirmed as promotional due to quantity pricing table."
+                        logger.info(f"수량별 가격표 발견으로 판촉물 사이트로 최종 판단: {product_name}")
                 
-        except Exception as e:
-            logger.error(f"Error visiting seller site for '{product_name}': {e}")
-        finally:
-            if page:
-                try:
-                    await page.close()
-                except Exception as e:
-                    logger.error(f"Error closing page: {e}")
-    elif visit_seller_sites and browser and first_item.get('link') and not is_promotional:
-        logger.info(f"판촉물이 아니므로 판매자 사이트 방문 건너뜀: {product_name}")
+            except Exception as e:
+                logger.error(f"Error visiting seller site for '{product_name}': {e}")
+                result_data['quantity_price_scrape_reason'] = f"Error during seller site visit: {str(e)[:100]}"
+            finally:
+                if page and not page.is_closed(): # Ensure page is closed only if it was opened
+                    try:
+                        await page.close()
+                    except Exception as e:
+                        logger.error(f"Error closing page: {e}")
+        elif visit_seller_sites and browser and first_item.get('link') and not is_promotional:
+            result_data['attempted_quantity_price_scrape'] = False
+            result_data['quantity_price_scrape_reason'] = "Not a promotional site (no keywords matched), seller site visit and quantity price scrape skipped."
+            logger.info(f"판촉물이 아니므로 판매자 사이트 방문 건너뜀: {product_name}")
+        elif not visit_seller_sites:
+            result_data['attempted_quantity_price_scrape'] = False
+            result_data['quantity_price_scrape_reason'] = "Configuration 'naver_visit_seller_sites' is False."
+        elif not browser:
+            result_data['attempted_quantity_price_scrape'] = False
+            result_data['quantity_price_scrape_reason'] = "Browser instance not available for seller site visit."
+        elif not first_item.get('link'):
+            result_data['attempted_quantity_price_scrape'] = False
+            result_data['quantity_price_scrape_reason'] = "No link available from API to visit seller site."
+
 
     # Process image if available
-    image_api_url = first_item.get('image') # Prefer 'image' field for direct image URL from Naver API
-    if not image_api_url: # Fallback if 'image' is not present
-        image_api_url = first_item.get('image_url')
+    image_api_url = first_item.get('image_url')
     
-    # 네이버 API는 항상 이미지를 제공하지만, 만약 없는 경우를 대비해 fallback 추가
+    # Make sure we have an image URL - if 'image_url' is not present, try 'image' field
     if not image_api_url:
-        logger.warning(f"🟢 Naver API did not provide an image URL for '{product_name}'. This is unusual. Using placeholder.")
-        # 기본 이미지 URL 사용 (네이버의 기본 상품 이미지)
-        image_api_url = "https://shopping-phinf.pstatic.net/main_8306225/83062259762.jpg"
-
-    # Initialize paths and image data structures
+        image_api_url = first_item.get('image')
+    
+    # If still no image URL, log a warning
+    if not image_api_url:
+        logger.warning(f"No image URL found for product '{product_name}'. Using default placeholder URL.")
+        # Use a default placeholder URL
+        image_api_url = "https://via.placeholder.com/300"
+    
+    # Initialize paths
     local_path = None
     abs_local_path = None
     
-    result_data['image_url'] = image_api_url # Keep this for direct API response if needed elsewhere
-    local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
-    if local_path:
-        # Ensure absolute path
-        abs_local_path = os.path.abspath(local_path)
-        result_data['image_path'] = abs_local_path # This is a general image path for the row
-    else:
-        # 다운로드 실패 시 재시도 로직 추가
-        logger.warning(f"🟢 Failed to download image for '{product_name}' on first attempt. Retrying with different URL format.")
-        # URL 포맷 변경 시도 (Naver image URL formats 종종 변경됨)
-        alternate_url = image_api_url.replace("main_", "main/")
-        if alternate_url == image_api_url:
-            alternate_url = image_api_url.replace(".jpg", ".20240101010101.jpg")
-        
-        # 재시도
-        local_path = await download_naver_image(alternate_url, naver_image_dir, product_name, config)
-        if local_path:
-            abs_local_path = os.path.abspath(local_path)
-            result_data['image_path'] = abs_local_path
+    # Try to download the image
+    try:
+        # Only attempt download if we have a valid URL
+        if image_api_url and image_api_url.startswith(('http://', 'https://')):
+            local_path = await download_naver_image(image_api_url, naver_image_dir, product_name, config)
+            
+            if local_path:
+                abs_local_path = os.path.abspath(local_path)
+                logger.info(f"Successfully downloaded image for '{product_name}' to {abs_local_path}")
+            else:
+                logger.warning(f"Failed to download image for '{product_name}' from {image_api_url}")
+    except Exception as e:
+        logger.error(f"Error processing image for '{product_name}': {e}")
     
-    # Always create the '네이버 이미지' entry, even if image download failed or no URL
-    naver_image_column_entry = {
-        'url': image_api_url,  # 항상 URL이 있도록 보장
-        'local_path': abs_local_path if abs_local_path else None, 
-        'source': 'naver',
-        'score': similarity, # Text similarity of the Naver product
-        'product_id': first_item.get('productId'), 
-        'original_path': abs_local_path if abs_local_path else None
-    }
-    result_data['네이버 이미지'] = naver_image_column_entry
-
-    # image_data는 Excel에 이미지를 포함시키는 데 중요한 역할을 합니다
-    # 항상 완전한 데이터 구조를 제공하여 이미지 처리가 실패하지 않도록 합니다
+    # Always include image information in result data, even if download failed
     image_data_for_df = {
         'url': image_api_url,
-        'local_path': abs_local_path if abs_local_path else None,
-        'original_path': abs_local_path if abs_local_path else None,
+        'local_path': abs_local_path,
+        'original_path': abs_local_path,
         'source': 'naver',
         'product_name': product_name,
-        'similarity': similarity, 
+        'similarity': similarity,
         'type': 'naver',
         'product_id': first_item.get('productId')
     }
     
-    # 항상 image_data를 설정하고, 로컬 경로가 없더라도 URL은 포함되도록 합니다
+    # Ensure we have image data even if download failed
     result_data['image_data'] = image_data_for_df
     result_data['naver_image_data'] = image_data_for_df
-    
-    # URL을 확실하게 포함하도록 추가 설정
     result_data['image_url'] = image_api_url
+    result_data['image_path'] = abs_local_path
+    
+    # Include additional links
     result_data['네이버 쇼핑 링크'] = first_item.get('link', '')
     result_data['공급사 상품링크'] = first_item.get('mallProductUrl', first_item.get('link', ''))
     
-    # 이미지 디버그 정보 추가
-    logger.info(f"Product: '{product_name}', Naver image URL: {image_api_url}, Local path success: {abs_local_path is not None}")
+    # Create 네이버 이미지 entry
+    result_data['네이버 이미지'] = {
+        'url': image_api_url,
+        'local_path': abs_local_path,
+        'source': 'naver',
+        'score': similarity,
+        'product_id': first_item.get('productId'),
+        'original_path': abs_local_path
+    }
     
     return result_data
 
@@ -1527,20 +1583,21 @@ async def _test_main():
 
     # Test products including promotional items
     test_data = {
-        '구분': ['A', 'A', 'A'],  # Adjusted for three products
-        '담당자': ['테스트', '테스트', '테스트'],
-        '업체명': ['테스트업체', '테스트업체', '테스트업체'],
-        '업체코드': ['T001', 'T001', 'T001'],
-        'Code': ['CODE001', 'CODE002', 'CODE003'],
-        '중분류카테고리': ['테스트카테고리', '테스트카테고리', '테스트카테고리'],
+        '구분': ['A', 'A', 'A', 'A'],  # Adjusted for four products
+        '담당자': ['테스트', '테스트', '테스트', '테스트'],
+        '업체명': ['테스트업체', '테스트업체', '테스트업체', '테스트업체'],
+        '업체코드': ['T001', 'T001', 'T001', 'T001'],
+        'Code': ['CODE001', 'CODE002', 'CODE003', 'CODE004'],
+        '중분류카테고리': ['테스트카테고리', '테스트카테고리', '테스트카테고리', '테스트카테고리'],
         '상품명': [
-            '멀티 아쿠아 쿨토시',  # New test product 1
-            '원형 미니거울 3TMM007',  # New test product 2
-            '메쉬가방 대형 비치백 망사가방 비치가방 43X39X20'  # New test product 3
+            '멀티 아쿠아 쿨토시',  # Test product 1
+            '원형 미니거울 3TMM007',  # Test product 2
+            '메쉬가방 대형 비치백 망사가방 비치가방 43X39X20',  # Test product 3
+            '에클리즈 고급 코팅 부직포 쇼핑백 대형'  # Test product 4 (promotional site)
         ],
-        '기본수량(1)': [300, 500, 1000],  # Adjusted quantities for testing
-        '판매단가(V포함)': [15000, 20000, 25000],
-        '본사상품링크': ['', '', '']
+        '기본수량(1)': [300, 500, 1000, 1000],  # Adjusted quantities for testing
+        '판매단가(V포함)': [15000, 20000, 25000, 30000],
+        '본사상품링크': ['', '', '', '']
     }
     test_df = pd.DataFrame(test_data)
     
@@ -1568,7 +1625,8 @@ async def _test_main():
                     # Basic info
                     print(f"Matched name: {result.get('name', 'No match')}")
                     print(f"Price: {result.get('price', 'N/A'):,}원")
-                    print(f"Seller: {result.get('seller_name', 'Unknown')}")
+                    # print(f"Seller: {result.get('seller_name', 'Unknown')}") # Original seller_name from API
+                    print(f"API Seller Name: {result.get('api_seller_name', 'N/A')}")
                     print(f"Similarity score: {result.get('initial_similarity', 0):.3f}")
                     
                     # Links
@@ -1579,8 +1637,16 @@ async def _test_main():
                     is_promo = result.get('is_promotional_site', False)
                     has_qty_pricing = result.get('has_quantity_pricing', False)
                     print(f"Is promotional site: {'Yes' if is_promo else 'No'}")
-                    print(f"Has quantity pricing: {'Yes' if has_qty_pricing else 'No'}")
+                    print(f"Promotional Detection Details: {result.get('promo_detection_details', 'N/A')}")
                     
+                    # Quantity price scraping attempt details
+                    print(f"Attempted Quantity Price Scrape: {'Yes' if result.get('attempted_quantity_price_scrape') else 'No'}")
+                    print(f"Quantity Price Scrape Reason: {result.get('quantity_price_scrape_reason', 'N/A')}")
+                    print(f"Has quantity pricing (from scrape): {'Yes' if has_qty_pricing else 'No'}")
+                    print(f"CAPTCHA Detected: {'Yes' if result.get('has_captcha', False) else 'No'}")
+                    print(f"Sold Out: {'Yes' if result.get('is_sold_out', False) else 'No'}")
+                    print(f"Price Inquiry Needed: {'Yes' if result.get('price_inquiry_needed', False) else 'No'}")
+
                     # Add error information if any
                     if result.get('error'):
                         print(f"Error: {result.get('error')}")
