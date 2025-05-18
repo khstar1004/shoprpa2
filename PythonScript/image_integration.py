@@ -200,17 +200,21 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                     name_for_matching = name_for_matching[:-5]
                 
                 # Prepare a clean name for display and matching
+                clean_name = name_for_matching.replace('_', ' ').strip()
+                
                 # Create metadata entry
                 image_info[img_path] = {
                     'path': img_path,  # Store the absolute path for direct access
-                    'original_path': img_path,  # Keep the original path (JPG version)
+                    'original_path': original_jpg_path or original_png_path or img_path,  # Prefer JPG for original path
                     'original_name': filename,
-                    'nobg_path': nobg_path,
-                    'has_nobg': nobg_path is not None,
+                    'nobg_png_path': nobg_png_path,
+                    'nobg_jpg_path': nobg_jpg_path,
+                    'has_nobg': nobg_png_path is not None or nobg_jpg_path is not None,
                     'name_for_matching': name_for_matching,
+                    'clean_name': clean_name,
                     'source': prefix,
-                    'use_jpg': file_ext.lower() in ['.jpg', '.jpeg'],  # Flag to prioritize JPG
-                    'use_original': True  # Flag to use original file, not _nobg version
+                    'is_jpg': file_ext.lower() in ['.jpg', '.jpeg'],
+                    'is_original': not file_root.endswith('_nobg')
                 }
                 
                 # Debug some sample entries
@@ -218,7 +222,10 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                     logging.debug(f"Image metadata sample: {img_path} -> {image_info[img_path]}")
             
             except Exception as e:
-                logging.error(f"Error processing image file {img_path}: {e}")
+                import traceback
+                stack_trace = traceback.format_exc()
+                logging.error(f"Error processing image file {base_name}: {e}")
+                logging.debug(f"Exception traceback: {stack_trace}")
         
         # Log summary
         logging.info(f"Processed {len(image_info)} {prefix} images")
@@ -229,7 +236,10 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
         return image_info
         
     except Exception as e:
+        import traceback
+        stack_trace = traceback.format_exc()
         logging.error(f"Error preparing image metadata from {image_dir_str}: {e}")
+        logging.debug(f"Exception traceback: {stack_trace}")
         return {}
 
 def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> float:
@@ -578,8 +588,23 @@ def find_best_match_with_enhanced_matcher(
         
         # Determine the actual path to use
         actual_path = image_path
-        if isinstance(image_info, dict) and 'path' in image_info:
-            actual_path = image_info['path']
+        if isinstance(image_info, dict):
+            if 'path' in image_info:
+                actual_path = image_info['path']
+            
+            # Try to use nobg version if available (for potentially better matching)
+            if enhanced_matcher.USE_BACKGROUND_REMOVAL and isinstance(image_info, dict):
+                # Check nobg paths
+                nobg_png = image_info.get('nobg_png_path')
+                nobg_jpg = image_info.get('nobg_jpg_path')
+                
+                # Prefer PNG version for nobg (usually better quality)
+                if nobg_png and os.path.exists(nobg_png):
+                    logging.debug(f"Using background-removed PNG version for matching: {os.path.basename(nobg_png)}")
+                    actual_path = nobg_png
+                elif nobg_jpg and os.path.exists(nobg_jpg):
+                    logging.debug(f"Using background-removed JPG version for matching: {os.path.basename(nobg_jpg)}")
+                    actual_path = nobg_jpg
             
         # Check if image exists
         if not os.path.exists(actual_path):
@@ -690,9 +715,8 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
                     haereum_id = id_match.group(1)
                 
                 # 파일명에서 토큰 추출
-                haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path]['clean_name'] 
-                                                         if 'clean_name' in haereum_images[haereum_path] 
-                                                         else haereum_images[haereum_path].get('name_for_matching', '')))
+                haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path].get('clean_name', 
+                                                        haereum_images[haereum_path].get('name_for_matching', ''))))
                 
                 # 토큰 중복 확인
                 common_tokens = product_tokens & haereum_tokens
@@ -730,9 +754,8 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
                     match_quality['kogift']['score'] = max(kogift_score, 0.8) * 1.5
                 else:
                     # 토큰 비교
-                    kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path]['clean_name'] 
-                                                            if 'clean_name' in kogift_images[kogift_path] 
-                                                            else kogift_images[kogift_path].get('name_for_matching', '')))
+                    kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path].get('clean_name',
+                                                         kogift_images[kogift_path].get('name_for_matching', ''))))
                     common_tokens = product_tokens & kogift_tokens
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                     match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
@@ -765,9 +788,8 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
                     match_quality['naver']['score'] = max(naver_score, 0.8) * 1.5
                 else:
                     # 토큰 비교
-                    naver_tokens = set(tokenize_product_name(naver_images[naver_path]['clean_name'] 
-                                                          if 'clean_name' in naver_images[naver_path] 
-                                                          else naver_images[naver_path].get('name_for_matching', '')))
+                    naver_tokens = set(tokenize_product_name(naver_images[naver_path].get('clean_name',
+                                                        naver_images[naver_path].get('name_for_matching', ''))))
                     common_tokens = product_tokens & naver_tokens
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                     match_quality['naver']['score'] = naver_score * (1 + token_ratio)
