@@ -44,110 +44,90 @@ except ImportError:
 
 def prepare_image_metadata(image_dir: Path, prefix: str) -> Dict[str, Dict]:
     """
-    Prepare image metadata with improved token generation and stricter product ID handling.
+    이미지 디렉토리에서 메타데이터를 추출해 인덱스를 생성합니다.
+    
+    Args:
+        image_dir: 이미지 디렉토리 경로
+        prefix: 이미지 소스 구분용 접두사 (예: 'haereum', 'kogift', 'naver')
+        
+    Returns:
+        이미지 경로를 키로, 이미지 메타데이터를 값으로 하는 딕셔너리
     """
-    logger = logging.getLogger(__name__)
-    result = {}
+    image_info = {}
     
-    if not image_dir.exists():
-        logger.warning(f"Image directory does not exist: {image_dir}")
-        return result
-        
-    # Determine source from prefix - ensure proper source field
-    source = None
-    if prefix.lower().startswith('haereum'):
-        source = 'haereum'
-    elif prefix.lower().startswith('kogift'):
-        source = 'kogift'
-    elif prefix.lower().startswith('naver'):
-        source = 'naver'
-    else:
-        source = prefix.rstrip('_')  # Fallback: use prefix without underscore
+    # This is critical - make sure image_dir is an absolute path
+    abs_image_dir = os.path.abspath(str(image_dir))
+    logging.info(f"Preparing image metadata from directory: {abs_image_dir} (prefix: {prefix})")
     
-    for img_path in image_dir.glob('*.*'):
-        if not img_path.is_file():
-            continue
+    # Handle case where directory doesn't exist
+    if not os.path.exists(abs_image_dir):
+        logging.warning(f"Image directory does not exist: {abs_image_dir}")
+        return {}
+    
+    # Make sure we're dealing with a string path
+    image_dir_str = str(abs_image_dir)
+    
+    # First look for image files in the directory
+    image_files = []
+    valid_extensions = ('.jpg', '.jpeg', '.png', '.gif')
+    
+    try:
+        # Get all image files (excluding _nobg versions for now)
+        for root, _, files in os.walk(image_dir_str):
+            for file in files:
+                if file.lower().endswith(valid_extensions) and '_nobg' not in file:
+                    full_path = os.path.join(root, file)
+                    image_files.append(full_path)
+        
+        logging.info(f"Found {len(image_files)} images in {image_dir_str}")
+        
+        # Process each image file
+        for img_path in image_files:
+            try:
+                # Extract metadata
+                filename = os.path.basename(img_path)
+                file_root, file_ext = os.path.splitext(filename)
+                
+                # Find _nobg version if it exists
+                nobg_filename = f"{file_root}_nobg.png"
+                nobg_path = os.path.join(os.path.dirname(img_path), nobg_filename)
+                has_nobg = os.path.exists(nobg_path)
+                
+                # Use filename as unique key for matching purposes
+                # Remove prefix (haereum_, kogift_, naver_) if present
+                if file_root.startswith(f"{prefix}_"):
+                    name_for_matching = file_root[len(f"{prefix}_"):]
+                else:
+                    name_for_matching = file_root
+                
+                # Create metadata entry
+                image_info[img_path] = {
+                    'path': img_path,  # Store the absolute path for direct access
+                    'original_name': filename,
+                    'nobg_path': nobg_path if has_nobg else None,
+                    'has_nobg': has_nobg,
+                    'name_for_matching': name_for_matching,
+                    'source': prefix
+                }
+                
+                # Debug some sample entries
+                if len(image_info) <= 2 or len(image_info) % 50 == 0:
+                    logging.debug(f"Image metadata sample: {img_path} -> {image_info[img_path]}")
             
-        if img_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif']:
-            continue
-            
-        original_name = img_path.stem
-        tokens = []
-        product_id = None
+            except Exception as e:
+                logging.error(f"Error processing image file {img_path}: {e}")
+                
+        # Log summary
+        logging.info(f"Processed {len(image_info)} {prefix} images")
         
-        # Remove prefix from filename for token generation
-        name_without_prefix = original_name
-        if prefix and original_name.startswith(prefix):
-            name_without_prefix = original_name[len(prefix):].lstrip('_')
+        # Additional debug information
+        logging.debug(f"First 3 image keys in {prefix} image_info: {list(image_info.keys())[:3]}")
         
-        # Extract product ID based on source
-        if prefix.lower().startswith('naver'):
-            # Try to extract Naver product ID using more permissive patterns
-            id_match = re.search(r'_([0-9]{6,})(?:_[a-f0-9]{6,})?$', original_name)
-            if id_match:
-                product_id = id_match.group(1)
-                # Remove product ID part from name for better token generation
-                name_without_prefix = re.sub(r'_[0-9]{6,}(?:_[a-f0-9]{6,})?$', '', name_without_prefix)
-        elif prefix.lower().startswith('kogift'):
-            # Extract Kogift product ID with more permissive pattern
-            id_match = re.search(r'_([0-9]{4,})(?:_[a-f0-9]{6,})?$', original_name)
-            if id_match:
-                product_id = id_match.group(1)
-                name_without_prefix = re.sub(r'_[0-9]{4,}(?:_[a-f0-9]{6,})?$', '', name_without_prefix)
+        return image_info
         
-        # Clean the name for token generation
-        cleaned_name = name_without_prefix.replace('_', ' ')
-        cleaned_name = re.sub(r'[^\w\s가-힣]', ' ', cleaned_name)
-        cleaned_name = ' '.join(cleaned_name.split())
-        
-        # Generate tokens from the cleaned name
-        for part in cleaned_name.split():
-            # Skip very short parts unless they're Korean
-            if len(part) <= 1 and not re.match(r'[가-힣]', part):
-                continue
-            # Skip if it looks like a hash
-            if re.match(r'^[a-f0-9]{6,}$', part):
-                continue
-            if part not in tokens:
-                logger.debug(f"[{prefix}] Adding token: {part}")
-                tokens.append(part)
-        
-        # Store metadata
-        # Determine the true original path
-        current_img_path_obj = img_path # Path object from glob
-        true_original_path = current_img_path_obj
-
-        if current_img_path_obj.name.endswith('_nobg.png'):
-            base_name_no_ext = current_img_path_obj.stem.replace('_nobg', '')
-            # Try to find .jpg, .jpeg, .png, .gif (in that order of preference for original)
-            possible_original_extensions = ['.jpg', '.jpeg', '.png', '.gif']
-            found_original = False
-            for ext in possible_original_extensions:
-                potential_original_name = base_name_no_ext + ext
-                potential_original_file = current_img_path_obj.with_name(potential_original_name)
-                if potential_original_file.exists():
-                    true_original_path = potential_original_file
-                    logger.debug(f"[{prefix}] For '{current_img_path_obj.name}', found true original: '{true_original_path.name}'")
-                    found_original = True
-                    break
-            if not found_original:
-                 logger.warning(f"[{prefix}] For _nobg file '{current_img_path_obj.name}', could not find a corresponding original. Using it as original_path.")
-
-        result[str(img_path)] = {
-            'path': current_img_path_obj, # The path of the file being processed (could be _nobg.png)
-            'original_path': true_original_path, # Path to the actual source image (e.g., .jpg)
-            'tokens': tokens,
-            'product_id': product_id,
-            'original_name': original_name, # stem of current_img_path_obj (img_path.stem)
-            'clean_name': cleaned_name,
-            'source': source  # Explicitly set the source
-        }
-        
-        if product_id:
-            logger.debug(f"[{prefix}] Extracted product ID '{product_id}' from '{original_name}'")
-        
-    logger.info(f"Prepared metadata for {len(result)} images from {image_dir} with prefix '{prefix}'")
-    return result
+    except Exception as e:
+        logging.error(f"Error preparing image metadata from {image_dir_str}: {e}")
+        return {}
 
 def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> float:
     """
@@ -196,210 +176,157 @@ def find_best_image_matches(product_names: List[str],
     # Get thresholds from config if available
     if config:
         try:
-            similarity_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.2)  # Use text_threshold as base
-            naver_initial_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', fallback=0.55)
-            naver_minimum_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.35)
-        except ValueError as e:
-            logging.warning(f"임계값 읽기 오류: {e}. 기본값을 사용합니다.")
-            naver_initial_threshold = 0.55
-            naver_minimum_threshold = 0.35
-    else:
-        naver_initial_threshold = 0.55
-        naver_minimum_threshold = 0.35
+            similarity_threshold = config.getfloat('ImageMatching', 'similarity_threshold', fallback=similarity_threshold)
+        except (configparser.Error, ValueError):
+            logging.warning(f"Cannot read similarity_threshold from config, using default: {similarity_threshold}")
     
-    # Log the product names being processed
-    logger.info(f"find_best_image_matches: Processing {len(product_names)} products.")
-    if product_names:
-        logger.info(f"Sample product names: {product_names[:min(3, len(product_names))]}")
-
-    # Log image dictionary sizes
-    logger.info(f"Haereum images count: {len(haereum_images)}")
-    logger.info(f"Kogift images count: {len(kogift_images)}")
-    logger.info(f"Naver images count: {len(naver_images)}")
-    logger.info(f"Using similarity_threshold for find_best_match_for_product: {similarity_threshold}")
-
-    results = []
+    # Print counts for debugging
+    logging.info(f"Haereum images count: {len(haereum_images)}")
+    logging.info(f"Kogift images count: {len(kogift_images)}")
+    logging.info(f"Naver images count: {len(naver_images)}")
+    logging.info(f"Using similarity_threshold for find_best_match_for_product: {similarity_threshold}")
     
-    # 이미지 매칭 시 이미 사용한 이미지 추적
-    used_haereum = set()
-    used_kogift = set()
-    used_naver = set()
-    
-    # 향상된 이미지 매처 초기화 (가능한 경우)
+    # Initialize enhanced image matcher if deep learning is enabled
     enhanced_matcher = None
-    use_enhanced_matcher = False
+    try:
+        from enhanced_image_matcher import EnhancedImageMatcher
+        enhanced_matcher = EnhancedImageMatcher(config)
+        use_gpu = getattr(enhanced_matcher, 'use_gpu', False)
+        logging.info(f"향상된 이미지 매칭을 사용합니다 (GPU: {use_gpu})")
+    except Exception as e:
+        logging.error(f"Error initializing EnhancedImageMatcher: {e}")
+        logging.warning("Enhanced image matching not available. Using basic matching.")
     
-    # 향상된 이미지 매칭 사용 여부
-    if config:
-        use_enhanced_matcher = config.getboolean('ImageMatching', 'use_enhanced_matcher', fallback=True)
-        
-    if ENHANCED_MATCHER_AVAILABLE and use_enhanced_matcher:
-        try:
-            # Explicitly specify use_gpu=True
-            enhanced_matcher = EnhancedImageMatcher(config, use_gpu=True)
-            # Verify the matcher has been initialized correctly
-            if enhanced_matcher.model is None:
-                logging.warning("Enhanced image matcher model was not initialized properly")
-                enhanced_matcher = None
-            else:
-                logging.info(f"향상된 이미지 매칭을 사용합니다 (GPU: {enhanced_matcher.use_gpu})")
-        except Exception as e:
-            logging.error(f"향상된 이미지 매처 초기화 실패: {e}")
-            enhanced_matcher = None
+    # Debug image paths to ensure they exist
+    def check_image_existence(image_dict, source_name):
+        if not image_dict:
+            logging.warning(f"No {source_name} images available")
+            return
+            
+        sample_count = min(3, len(image_dict))
+        sample_keys = list(image_dict.keys())[:sample_count]
+        for key in sample_keys:
+            img_path = image_dict[key].get('path', key)
+            exists = os.path.exists(img_path)
+            logging.info(f"{source_name} sample image: {img_path} - Exists: {exists}")
     
-    # 개선된 이미지 매칭 알고리즘 - 파일명에서 상품 식별자 추출
-    def extract_product_id_from_filename(filename):
-        # 파일명에서 ID 부분 추출 (예: haereum_목쿠션_메모리폼_목베개_여행용목베개_bda60bd016.jpg에서 bda60bd016 추출)
-        match = re.search(r'_([a-f0-9]{10})(?:\.jpg|\.png|_nobg\.png)?$', filename)
-        if match:
-            return match.group(1)
-        return None
+    # Check a sample of images from each source
+    check_image_existence(haereum_images, "Haereum")
+    check_image_existence(kogift_images, "Kogift")
+    check_image_existence(naver_images, "Naver")
     
-    # 파일명 기반 매칭을 위한 이미지 ID 맵 생성
-    haereum_id_map = {}
-    kogift_id_map = {}
-    naver_id_map = {}
-    
-    for img_path, info in haereum_images.items():
-        product_id = extract_product_id_from_filename(img_path)
-        if product_id:
-            haereum_id_map[product_id] = img_path
-    
-    for img_path, info in kogift_images.items():
-        product_id = extract_product_id_from_filename(img_path)
-        if product_id:
-            kogift_id_map[product_id] = img_path
-    
-    for img_path, info in naver_images.items():
-        product_id = extract_product_id_from_filename(img_path)
-        if product_id:
-            naver_id_map[product_id] = img_path
-    
-    # 모든 이미지 소스를 한번에 처리하여 일관된 매칭 보장
+    # Process each product
     for product_name in product_names:
-        # Get tokens using both methods for better matching
-        product_tokens = tokenize_product_name(product_name)
+        logging.debug(f"Processing product: {product_name}")
+        product_tokens = product_name.split()
         
-        # ENHANCEMENT: Add meaningful keywords for better Korean product matching
-        try:
-            meaningful_keywords = extract_meaningful_keywords(product_name, max_keywords=5)
-            # Add keywords that aren't already in tokens
-            for keyword in meaningful_keywords:
-                if keyword and keyword not in product_tokens:
-                    product_tokens.append(keyword)
-                    logging.debug(f"Added meaningful keyword '{keyword}' for product '{product_name}'")
-        except Exception as e:
-            logging.warning(f"Failed to extract meaningful keywords for '{product_name}': {e}")
+        # Get exact product name matches first
+        # For Haereum: Try direct matching with Enhanced Matcher if available
+        haereum_match = None
+        haereum_score = 0
         
-        logging.debug(f"Combined product tokens for '{product_name}': {product_tokens}")
+        # Process Haereum images with enhanced matcher (direct image matching)
+        if enhanced_matcher:
+            # Try to find a direct match for product name in Haereum images
+            # This assumes haereum images might have product names in the file name
+            haereum_candidates = {}
+            for h_path, h_info in haereum_images.items():
+                if any(token.lower() in h_info.get('name_for_matching', '').lower() for token in product_tokens if len(token) > 2):
+                    haereum_candidates[h_path] = h_info
+            
+            logging.debug(f"Found {len(haereum_candidates)} potential Haereum matches for '{product_name}'")
+            
+            # Use the first Haereum candidate found or find the best text-matching one
+            if haereum_candidates:
+                # Sort candidates by text similarity to product name
+                candidates_with_scores = []
+                for path, info in haereum_candidates.items():
+                    name_for_matching = info.get('name_for_matching', '')
+                    text_sim = calculate_text_similarity(product_name, name_for_matching)
+                    candidates_with_scores.append((path, info, text_sim))
+                
+                # Sort by text similarity
+                candidates_with_scores.sort(key=lambda x: x[2], reverse=True)
+                
+                # Take the best matching candidate
+                best_candidate_path = candidates_with_scores[0][0]
+                best_candidate_info = candidates_with_scores[0][1]
+                
+                # Use this Haereum image path for further matching
+                haereum_match = best_candidate_path
+                haereum_score = candidates_with_scores[0][2]  # Text similarity score
+                
+                logging.info(f"Selected Haereum image for '{product_name}': {os.path.basename(haereum_match)} (text similarity: {haereum_score:.3f})")
         
-        # 각 소스별 최적 매치 찾기
-        # For Haoreum and Naver, we still use the 'used' sets to avoid re-using the same image file for different products
-        haereum_best = find_best_match_for_product(product_tokens, haereum_images, used_haereum, similarity_threshold, source_name_for_log="Haereum", config=config)
-        if haereum_best:
-            used_haereum.add(haereum_best[0]) # Add path to used set
+        # Now, using the matched Haereum image, try to find matching Kogift and Naver images
+        kogift_match = None
+        kogift_score = 0
+        naver_match = None
+        naver_score = 0
+        
+        # Only perform matching with other sources if we have a Haereum match
+        if haereum_match and enhanced_matcher:
+            # Get the actual file path from the haereum match info
+            haereum_path = haereum_images[haereum_match].get('path', haereum_match)
             
-            # 해오름 이미지에서 제품 ID 추출
-            haereum_path, haereum_score = haereum_best
-            haereum_id = extract_product_id_from_filename(haereum_path)
-            
-            # ID 매칭을 통한 고려기프트, 네이버 이미지 찾기
-            kogift_best = None
-            naver_best = None
-            
-            # ID 기반 정확한 매칭 시도
-            if haereum_id:
-                # 고려기프트 매칭 - No 'used_kogift' check here for ID based match
-                if haereum_id in kogift_id_map: # and kogift_id_map[haereum_id] not in used_kogift:
-                    kogift_path_by_id = kogift_id_map[haereum_id]
-                    # Ensure the image file actually exists if we consider it a match
-                    if kogift_path_by_id in kogift_images: 
-                        kogift_best = (kogift_path_by_id, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
-                        # Do NOT add to used_kogift here, allow reuse
-                    
-                # 네이버 매칭 (still uses used_naver for ID based match)
-                if haereum_id in naver_id_map and naver_id_map[haereum_id] not in used_naver:
-                    naver_path_by_id = naver_id_map[haereum_id]
-                    if naver_path_by_id in naver_images:
-                        naver_best = (naver_path_by_id, 1.0)  # 정확한 매칭으로 점수를 1.0으로 설정
-                        used_naver.add(naver_path_by_id)
+            # First try with enhanced matcher (direct image comparison)
+            logging.info(f"Using enhanced image matcher to find Kogift match for '{product_name}'")
+            kogift_result = find_best_match_with_enhanced_matcher(
+                haereum_path, kogift_images, used_kogift, enhanced_matcher)
+                
+            if kogift_result:
+                kogift_match, kogift_score = kogift_result
+                used_kogift.add(kogift_match)
+                logging.info(f"Found Kogift match for '{product_name}': {os.path.basename(kogift_match)} (score: {kogift_score:.3f})")
+            else:
+                logging.info(f"No Kogift match found for '{product_name}' with enhanced matcher")
+                
+            # Try to find Naver match using enhanced matcher
+            logging.info(f"Using enhanced image matcher to find Naver match for '{product_name}'")
+            naver_result = find_best_match_with_enhanced_matcher(
+                haereum_path, naver_images, used_naver, enhanced_matcher)
+                
+            if naver_result:
+                naver_match, naver_score = naver_result
+                used_naver.add(naver_match)
+                logging.info(f"Found Naver match for '{product_name}': {os.path.basename(naver_match)} (score: {naver_score:.3f})")
+            else:
+                logging.info(f"No Naver match found for '{product_name}' with enhanced matcher")
         else:
-            # 해오름 이미지가 없는 경우 다음 단계로 진행
-            kogift_best = None # Ensure kogift_best is None if haereum_best is None and no other match found
-            naver_best = None  # Ensure naver_best is None if haereum_best is None
-            pass # Explicitly pass
-            
-        # ID 기반 매칭이 실패한 경우, 기존 방식으로 매칭 시도    
-        # 이미 매칭된 해오름 이미지가 있다면, 그 이미지를 기준으로 다른 소스 매칭 시도
-        if haereum_best:
-            haereum_path, haereum_score = haereum_best # Defined if haereum_best is true
-            haereum_tokens = tokenize_product_name(haereum_images[haereum_path]['clean_name'])
-
-            # 고려기프트 매칭이 없는 경우에만 기존 방식 시도
-            if not kogift_best:
-                if enhanced_matcher:
-                    kogift_best = find_best_match_with_enhanced_matcher(
-                        str(haereum_images[haereum_path]['path']),
-                        kogift_images,
-                        None, # Pass None for used_images for Kogift
-                        enhanced_matcher
-                    )
-                else:
-                    # Use image_threshold from config (0.01 by default) for Kogift
-                    kogift_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.01) if config else 0.01
-                    kogift_best = find_best_match_for_product(haereum_tokens, kogift_images, None, kogift_threshold, source_name_for_log="Kogift_Fallback", config=config) # Pass None for used_images for Kogift
-            
-            # 네이버 매칭이 없는 경우에만 기존 방식 시도 (still uses used_naver)
-            if not naver_best:
-                if enhanced_matcher:
-                    naver_best = find_best_match_with_enhanced_matcher(
-                        str(haereum_images[haereum_path]['path']),
-                        naver_images,
-                        used_naver, # Pass used_naver for Naver
-                        enhanced_matcher
-                    )
-                else:
-                    # Use a more lenient threshold for Naver
-                    naver_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45) if config else 0.45
-                    naver_best = find_best_match_for_product(haereum_tokens, naver_images, used_naver, naver_threshold, source_name_for_log="Naver_Fallback", config=config) # Pass used_naver for Naver
-        else:
-            # 원래 상품명으로 매칭 시도 (해오름 이미지가 없는 경우)
-            # Kogift - pass None for used_images
-            if not kogift_best: # Check if kogift_best is already found by ID match from an earlier (non-Haoreum) source if logic changes
-                # Use image_threshold from config (0.01 by default) for Kogift direct matching
-                kogift_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.01) if config else 0.01
-                kogift_best = find_best_match_for_product(product_tokens, kogift_images, None, kogift_threshold, source_name_for_log="Kogift_Direct", config=config)
-            
-            # Naver - pass used_naver
-            if not naver_best:
-                # Use naver_minimum_similarity from config (0.45 by default) for Naver direct matching
-                naver_threshold = config.getfloat('Matching', 'naver_minimum_similarity', fallback=0.45) if config else 0.45
-                naver_best = find_best_match_for_product(product_tokens, naver_images, used_naver, naver_threshold, source_name_for_log="Naver_Direct", config=config)
+            logging.warning(f"Skipping Kogift/Naver matching for '{product_name}' - No Haereum match or no enhanced matcher")
         
-        # DO NOT add kogift_best to used_kogift set to allow reuse
-
-        # Naver is still added to its used set if a match is found and it wasn't an ID-based match already added
-        if naver_best:
-            if isinstance(naver_best, tuple) and len(naver_best) > 0:
-                # Check if it was an ID-based match; if so, it might already be added.
-                # To be safe, just add it. Set handles duplicates.
-                used_naver.add(naver_best[0])
-            
-        # 결과 추가
-        results.append((haereum_best, kogift_best, naver_best))
+        # Fallback for Kogift if no match with enhanced matcher
+        if not kogift_match:
+            logging.info(f"Trying fallback text-based matching for Kogift images for '{product_name}'")
+            kogift_result = find_best_match_for_product(
+                product_tokens, kogift_images, used_kogift, 
+                similarity_threshold, "Kogift_Direct", config)
+                
+            if kogift_result:
+                kogift_match, kogift_score = kogift_result
+                used_kogift.add(kogift_match)
+                
+        # Fallback for Naver if no match with enhanced matcher
+        if not naver_match:
+            logging.info(f"Trying fallback text-based matching for Naver images for '{product_name}'")
+            naver_result = find_best_match_for_product(
+                product_tokens, naver_images, used_naver, 
+                similarity_threshold, "Naver_Direct", config)
+                
+            if naver_result:
+                naver_match, naver_score = naver_result
+                used_naver.add(naver_match)
         
-        # 로깅
-        haereum_name = haereum_images[haereum_best[0]]['clean_name'] if haereum_best else "없음"
-        kogift_name = kogift_images[kogift_best[0]]['clean_name'] if kogift_best else "없음"
-        naver_name = naver_images[naver_best[0]]['clean_name'] if naver_best else "없음"
-        haereum_score_log = f"{haereum_best[1]:.3f}" if haereum_best else "N/A"
-        kogift_score_log = f"{kogift_best[1]:.3f}" if kogift_best else "N/A"
-        naver_score_log = f"{naver_best[1]:.3f}" if naver_best else "N/A"
+        # Log final match set
+        h_text = '없음' if not haereum_match else os.path.basename(haereum_match)
+        k_text = '없음' if not kogift_match else os.path.basename(kogift_match)
+        n_text = '없음' if not naver_match else os.path.basename(naver_match)
         
-        # Log the final selected matches for this product
-        logging.info(f"Final Match Set for '{product_name}': Haereum='{haereum_name}' ({haereum_score_log}), Kogift='{kogift_name}' ({kogift_score_log}), Naver='{naver_name}' ({naver_score_log})")
+        logging.info(f"Final Match Set for '{product_name}': Haereum='{h_text}' ({haereum_score:.3f}), Kogift='{k_text}' ({kogift_score:.3f}), Naver='{n_text}' ({naver_score:.3f})")
+        
+        best_matches.append((haereum_match, kogift_match, naver_match))
     
-    return results
+    return best_matches
 
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
@@ -408,9 +335,8 @@ def find_best_match_for_product(product_tokens: List[str],
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
-    Find the best matching image for a product.
-    Now using lower thresholds to find more potential matches.
-    Returns a tuple of (image_path, similarity_score) or None if no match found.
+    Find the best matching image for a product using text-based matching.
+    Uses name_for_matching field in the image metadata.
     """
     if not product_tokens:
         return None
@@ -419,112 +345,77 @@ def find_best_match_for_product(product_tokens: List[str],
         used_images = set()
         
     best_match_path = None
-    best_score = 0.0
+    best_match_score = 0
     
-    # Track all scores for fallback matching
-    match_scores = []
-    
-    # Get minimum threshold from config
+    # Check if config specifies a custom threshold
     if config:
         try:
-            min_threshold = config.getfloat('Matching', 'minimum_similarity', fallback=0.001)
-        except:
-            min_threshold = 0.001
-    else:
-        min_threshold = 0.001  # Very low fallback threshold
-        
-    # Use effective threshold: either the provided one or config-based
-    effective_threshold = min_threshold
+            min_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=similarity_threshold)
+            similarity_threshold = min(similarity_threshold, min_threshold)  # Use the lower of the two
+        except Exception as e:
+            logging.warning(f"Error reading threshold from config: {e}")
     
-    # Get config thresholds or use defaults
-    # Use much lower thresholds for Kogift and Naver
-    effective_threshold = similarity_threshold
-    if source_name_for_log.lower().startswith("kogift"):
-        # Use extremely low threshold for Kogift
-        effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.001) if config else 0.001
-    elif source_name_for_log.lower().startswith("naver"):
-        # Use very low threshold for Naver
-        effective_threshold = config.getfloat('Matching', 'image_threshold', fallback=0.001) if config else 0.001
+    # Lower threshold for matching - extreme lenience
+    min_threshold = 0.001  # Effectively accept any match with non-zero similarity
     
-    # Log the effective threshold being used
-    logging.debug(f"Using effective threshold: {effective_threshold} for source: {source_name_for_log}")
-    
-    # Create a list to track all match scores for potential fallback
-    match_scores = []
-    
-    # Match products based on tokens
-    for img_path, info in image_info.items():
-        # 이미 사용된 이미지는 건너뜀
+    # Process each image
+    for img_path, img_data in image_info.items():
+        # Skip if already used
         if img_path in used_images:
             continue
+            
+        # Get the name for matching from metadata
+        if 'name_for_matching' in img_data:
+            img_name = img_data['name_for_matching']
+        elif 'original_name' in img_data:
+            img_name = img_data['original_name']
+        else:
+            # Use the filename if no metadata is available
+            img_name = os.path.basename(img_path)
         
-        # Skip if tokens are missing
-        if 'tokens' not in info or not info['tokens']:
+        # Convert to string and calculate text similarity
+        img_name_str = str(img_name)
+        product_name_str = ' '.join(product_tokens)
+        
+        similarity = calculate_text_similarity(product_name_str, img_name_str)
+        
+        if similarity > best_match_score:
+            best_match_score = similarity
+            best_match_path = img_path
+    
+    # Check threshold - use the minimum threshold for extreme lenience
+    if best_match_score >= min_threshold:
+        if best_match_path:
+            img_name = image_info[best_match_path].get('original_name', os.path.basename(best_match_path))
+            logging.debug(f"{source_name_for_log}: Best match for '{' '.join(product_tokens)}': '{img_name}' with score {best_match_score:.3f}")
+            return best_match_path, best_match_score
+    
+    # No match found with sufficient similarity
+    logging.info(f"No match found above threshold {min_threshold} for {source_name_for_log}. Trying basic token matching.")
+    
+    # Try more basic matching as fallback
+    for img_path, img_data in image_info.items():
+        # Skip if already used
+        if img_path in used_images:
             continue
             
-        try:    
-            similarity = calculate_similarity(product_tokens, info['tokens'])
+        # Get image name from metadata
+        if 'name_for_matching' in img_data:
+            img_name = img_data['name_for_matching']
+        elif 'original_name' in img_data:
+            img_name = img_data['original_name']
+        else:
+            img_name = os.path.basename(img_path)
             
-            # 모든 매칭 점수 추적
-            if similarity > 0:
-                # Store path, score, and clean name for logging
-                match_scores.append((img_path, similarity, info['clean_name']))
-            
-            # Find the best match above threshold
-            if similarity >= effective_threshold and similarity > best_score:
-                best_score = similarity
-                best_match_path = img_path
-            elif similarity == best_score:
-                # If scores are equal, prefer .jpg over .png 
-                # if current best_match is a .png and new one is .jpg
-                if best_match_path and Path(img_path).suffix.lower() == ".jpg" and Path(best_match_path).suffix.lower() == ".png":
-                    # Current image is JPG, previous best was PNG, and scores are equal. Prefer JPG.
-                    best_match_path = img_path
-                    # best_score remains the same
-                    logging.debug(f"  Equal score ({similarity:.3f}), preferring JPG '{Path(img_path).name}' over PNG '{Path(best_match_path).name}'.")
-        except Exception as e:
-            logging.warning(f"[{source_name_for_log}] Error calculating similarity for {img_path}: {e}")
-            continue
-    
-    # If no match found but we have at least one image, consider using a fallback approach
-    if not best_match_path and image_info:
-        # Check if source is Kogift or Naver for fallback logic
-        if source_name_for_log.lower().startswith("kogift") or source_name_for_log.lower().startswith("naver"):
-            logging.info(f"No match found above threshold {effective_threshold} for {source_name_for_log}. Trying basic token matching.")
-            
-            # Try to find any token overlap, even if small
-            best_fallback_path = None
-            best_fallback_score = 0
-            
-            for img_path, info in image_info.items():
-                if img_path in used_images:
-                    continue
-                    
-                # Very basic token check - any overlap at all
-                if 'tokens' in info and info['tokens']:
-                    common_tokens = set(product_tokens) & set(info['tokens'])
-                    overlap_score = len(common_tokens) / max(1, min(len(product_tokens), len(info['tokens'])))
-                    
-                    if common_tokens and overlap_score > best_fallback_score:
-                        best_fallback_path = img_path
-                        best_fallback_score = overlap_score
-            
-            if best_fallback_path:
-                best_match_path = best_fallback_path
-                best_score = max(0.001, best_fallback_score)  # Ensure at least 0.001 score
-                logging.warning(f"Using fallback match with overlap score: {best_fallback_score:.3f} for '{image_info[best_fallback_path]['clean_name']}'")
-            elif match_scores:  # If still nothing, use the best score we found even if below threshold
-                match_scores.sort(key=lambda x: x[1], reverse=True)
-                best_match_path = match_scores[0][0]
-                best_score = max(0.001, match_scores[0][1])  # Ensure at least 0.001 score
-                logging.warning(f"Last resort: Using best available match despite low score: {image_info[best_match_path]['clean_name']} (Score: {best_score:.3f})")
-    
-    # Return the best match and its score
-    if best_match_path:
-        if best_score < similarity_threshold and best_score >= effective_threshold:
-            logging.warning(f"[{source_name_for_log}] Best match score ({best_score:.3f}) is below standard threshold ({similarity_threshold}) but above effective threshold ({effective_threshold}): '{image_info[best_match_path]['clean_name']}'")
-        return best_match_path, best_score
+        # Convert to lowercase for case-insensitive matching
+        img_name_lower = str(img_name).lower()
         
+        # Check if any significant product token is in the image name
+        for token in product_tokens:
+            if len(token) >= 2 and token.lower() in img_name_lower:
+                logging.info(f"{source_name_for_log}: Basic token match found: '{token}' in '{img_name}'")
+                return img_path, 0.5  # Assign a moderate score for token match
+    
     return None
 
 def find_best_match_with_enhanced_matcher(
@@ -551,27 +442,52 @@ def find_best_match_with_enhanced_matcher(
     min_confidence_threshold = 0.0001  # Essentially accept any match
     
     gpu_info = "GPU enabled" if getattr(enhanced_matcher, 'use_gpu', False) else "CPU mode"
-    logging.debug(f"Running enhanced matching on {len(target_images)} images ({gpu_info})")
+    logging.info(f"Running enhanced matching on {len(target_images)} target images against source: {os.path.basename(source_img_path)} ({gpu_info})")
+    
+    # Check if source image exists
+    if not os.path.exists(source_img_path):
+        logging.error(f"Source image doesn't exist: {source_img_path}")
+        return None
     
     # Track timing for performance analysis
     start_time = time.time()
     matches_checked = 0
     high_conf_matches = 0
     
+    # Debug: Log some target image paths for verification
+    sample_keys = list(target_images.keys())[:3] if len(target_images) > 3 else list(target_images.keys())
+    for key in sample_keys:
+        logging.info(f"Sample target image key: {key}")
+        if isinstance(target_images[key], dict):
+            img_path = target_images[key].get('path', key)
+            logging.info(f"  - Path from dict: {img_path}")
+            if os.path.exists(img_path):
+                logging.info(f"  - This path exists on disk")
+            else:
+                logging.info(f"  - This path does NOT exist on disk")
+        else:
+            logging.info(f"  - Value is not a dict: {type(target_images[key])}")
+    
     for image_path, image_info in target_images.items():
         # Skip if already used
         if image_path in used_images:
             continue
+        
+        # Determine the actual path to use
+        actual_path = image_path
+        if isinstance(image_info, dict) and 'path' in image_info:
+            actual_path = image_info['path']
             
         # Check if image exists
-        if not os.path.exists(image_path):
-            logging.warning(f"Image doesn't exist: {image_path}")
+        if not os.path.exists(actual_path):
+            logging.warning(f"Target image doesn't exist: {actual_path} (key: {image_path})")
             continue
         
         try:
+            logging.debug(f"Comparing source {os.path.basename(source_img_path)} with target {os.path.basename(actual_path)}")
             is_match, similarity, scores = enhanced_matcher.is_match(
                 source_img_path, 
-                image_path, 
+                actual_path, 
                 min_confidence_threshold  # Use the minimum threshold
             )
             
@@ -579,15 +495,16 @@ def find_best_match_with_enhanced_matcher(
             
             if similarity > high_confidence_threshold:
                 high_conf_matches += 1
-                logging.debug(f"High confidence match: {os.path.basename(image_path)} = {similarity:.4f}")
+                logging.info(f"High confidence match: {os.path.basename(actual_path)} = {similarity:.4f}")
                 
             if similarity > best_score:
                 best_score = similarity
-                best_match = image_path
+                best_match = image_path  # Keep the original key, not the resolved path
+                logging.info(f"New best match: {os.path.basename(actual_path)} with score {similarity:.4f}")
                 
                 # Early exit for very high confidence matches to save processing time
                 if similarity > 0.75:
-                    logging.debug(f"Found very high confidence match ({similarity:.4f}), early exit")
+                    logging.info(f"Found very high confidence match ({similarity:.4f}), early exit")
                     break
                     
         except Exception as e:
@@ -598,12 +515,16 @@ def find_best_match_with_enhanced_matcher(
     
     # Don't return matches below the absolute minimum threshold
     if best_match and best_score < min_confidence_threshold:
-        logging.debug(f"Best match score ({best_score:.4f}) below min threshold ({min_confidence_threshold})")
+        logging.info(f"Best match score ({best_score:.4f}) below min threshold ({min_confidence_threshold})")
         return None
         
-    # Log summary of matching results for debugging
+    # Log summary of matching results
     if best_match:
-        logging.info(f"Best image match: {os.path.basename(best_match)} ({best_score:.4f}) [checked {matches_checked} images in {elapsed:.2f}s, {high_conf_matches} high confidence]")
+        if isinstance(target_images[best_match], dict) and 'path' in target_images[best_match]:
+            best_path = target_images[best_match]['path']
+        else:
+            best_path = best_match
+        logging.info(f"Best image match: {os.path.basename(best_path)} ({best_score:.4f}) [checked {matches_checked} images in {elapsed:.2f}s, {high_conf_matches} high confidence]")
     else:
         logging.info(f"No image match found after checking {matches_checked} images in {elapsed:.2f}s")
     
@@ -2081,6 +2002,52 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
             logger.error(f"Error creating Excel output: {e}")
     
     return result_df
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate text similarity between two strings.
+    Uses a combination of Levenshtein distance and token overlap.
+    """
+    # Convert to strings if needed
+    str1 = str(text1).lower()
+    str2 = str(text2).lower()
+    
+    # Handle empty strings
+    if not str1 or not str2:
+        return 0.0
+        
+    try:
+        # Try to use Levenshtein distance if available
+        try:
+            from Levenshtein import ratio
+            lev_ratio = ratio(str1, str2)
+        except ImportError:
+            # Fallback to a basic similarity measure
+            lev_ratio = len(set(str1) & set(str2)) / max(len(set(str1)), len(set(str2)))
+        
+        # Calculate token overlap
+        tokens1 = set(str1.split())
+        tokens2 = set(str2.split())
+        
+        # If either set is empty, default to character-based ratio
+        if not tokens1 or not tokens2:
+            return lev_ratio
+            
+        # Calculate Jaccard similarity coefficient
+        intersection = tokens1.intersection(tokens2)
+        union = tokens1.union(tokens2)
+        
+        if not union:
+            return 0.0
+            
+        jaccard = len(intersection) / len(union)
+        
+        # Weighted average of Levenshtein and Jaccard
+        return 0.3 * lev_ratio + 0.7 * jaccard
+        
+    except Exception as e:
+        logging.error(f"Error calculating text similarity: {e}")
+        return 0.0
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":
