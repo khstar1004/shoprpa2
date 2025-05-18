@@ -444,6 +444,19 @@ def find_best_image_matches(product_names: List[str],
             if kogift_result:
                 kogift_match, kogift_score = kogift_result
                 used_kogift.add(kogift_match)
+
+        # Fallback for Kogift with even more lenient threshold if still no match
+        if not kogift_match and config:
+            super_lenient_threshold = config.getfloat('Matching', 'minimum_match_confidence', fallback=0.001)
+            logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Kogift images for '{product_name}'")
+            kogift_result = find_best_match_for_product(
+                product_tokens, kogift_images, used_kogift, 
+                super_lenient_threshold, "Kogift_Lenient", config)
+                
+            if kogift_result:
+                kogift_match, kogift_score = kogift_result
+                used_kogift.add(kogift_match)
+                logging.info(f"Found Kogift match with super lenient threshold: {os.path.basename(kogift_match)} ({kogift_score:.4f})")
                 
         # Fallback for Naver if no match with enhanced matcher
         if not naver_match:
@@ -455,6 +468,49 @@ def find_best_image_matches(product_names: List[str],
             if naver_result:
                 naver_match, naver_score = naver_result
                 used_naver.add(naver_match)
+                
+        # Fallback for Naver with even more lenient threshold if still no match
+        if not naver_match and config:
+            super_lenient_threshold = config.getfloat('Matching', 'minimum_match_confidence', fallback=0.001)
+            logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Naver images for '{product_name}'")
+            naver_result = find_best_match_for_product(
+                product_tokens, naver_images, used_naver, 
+                super_lenient_threshold, "Naver_Lenient", config)
+                
+            if naver_result:
+                naver_match, naver_score = naver_result
+                used_naver.add(naver_match)
+                logging.info(f"Found Naver match with super lenient threshold: {os.path.basename(naver_match)} ({naver_score:.4f})")
+        
+        # If there is no Haereum match but we have Kogift or Naver, try to find Haereum match using reverse matching
+        if not haereum_match and (kogift_match or naver_match) and enhanced_matcher:
+            source_img_path = None
+            
+            # Use the best available match as source
+            if kogift_match and naver_match:
+                # Use the one with higher score
+                if kogift_score > naver_score:
+                    source_img_path = kogift_images[kogift_match].get('path', kogift_match)
+                    source_name = "Kogift"
+                else:
+                    source_img_path = naver_images[naver_match].get('path', naver_match)
+                    source_name = "Naver"
+            elif kogift_match:
+                source_img_path = kogift_images[kogift_match].get('path', kogift_match)
+                source_name = "Kogift"
+            elif naver_match:
+                source_img_path = naver_images[naver_match].get('path', naver_match)
+                source_name = "Naver"
+            
+            if source_img_path and os.path.exists(source_img_path):
+                logging.info(f"Trying reverse matching from {source_name} to find Haereum image for '{product_name}'")
+                haereum_result = find_best_match_with_enhanced_matcher(
+                    source_img_path, haereum_images, used_haereum, enhanced_matcher)
+                    
+                if haereum_result:
+                    haereum_match, haereum_score = haereum_result
+                    used_haereum.add(haereum_match)
+                    logging.info(f"Found Haereum match using reverse {source_name} matching: {os.path.basename(haereum_match)} ({haereum_score:.3f})")
         
         # Log final match set
         h_text = '없음' if not haereum_match else os.path.basename(haereum_match)
@@ -554,12 +610,34 @@ def find_best_match_for_product(product_tokens: List[str],
             
         # Convert to lowercase for case-insensitive matching
         img_name_lower = str(img_name).lower()
+        product_name_lower = ' '.join(product_tokens).lower()
         
-        # Check if any significant product token is in the image name
+        # 1. 우선 전체 상품명의 일부가 이미지 이름에 포함되어 있는지 확인
+        basic_match_score = 0.0
+        if len(product_name_lower) >= 4 and product_name_lower[:4] in img_name_lower:
+            basic_match_score = 0.4
+            logging.info(f"{source_name_for_log}: Product name prefix match found: '{product_name_lower[:4]}' in '{img_name}'")
+            return img_path, basic_match_score
+        
+        # 2. 개별 토큰 매칭 (길이가 2 이상인 중요 토큰)
+        matched_tokens = []
         for token in product_tokens:
             if len(token) >= 2 and token.lower() in img_name_lower:
-                logging.info(f"{source_name_for_log}: Basic token match found: '{token}' in '{img_name}'")
-                return img_path, 0.5  # Assign a moderate score for token match
+                matched_tokens.append(token)
+        
+        # 매칭된 토큰 수에 따라 점수 계산
+        if matched_tokens:
+            # 토큰 길이에 따라 가중치 적용
+            token_weight = sum(len(token) for token in matched_tokens) / sum(len(token) for token in product_tokens)
+            # 토큰 개수에 따라 가중치 적용
+            count_weight = len(matched_tokens) / len(product_tokens)
+            # 최종 점수 계산 (길이와 개수를 모두 고려)
+            basic_match_score = 0.3 * token_weight + 0.2 * count_weight
+            
+            # 임계값을 0.05로 설정하여 매칭을 허용
+            if basic_match_score >= 0.05:
+                logging.info(f"{source_name_for_log}: Basic token match found: '{matched_tokens}' in '{img_name}' with score {basic_match_score:.3f}")
+                return img_path, basic_match_score
     
     return None
 
@@ -582,9 +660,9 @@ def find_best_match_with_enhanced_matcher(
     best_match = None
     best_score = 0
     
-    # Using extremely reduced thresholds to find more potential matches
-    high_confidence_threshold = 0.2   # Reduced from 0.40
-    min_confidence_threshold = 0.0001  # Essentially accept any match
+    # Using even more reduced thresholds to find more potential matches
+    high_confidence_threshold = 0.15   # Further reduced from 0.20
+    min_confidence_threshold = 0.00001  # Super low threshold to accept almost any match
     
     gpu_info = "GPU enabled" if getattr(enhanced_matcher, 'use_gpu', False) else "CPU mode"
     logging.info(f"Running enhanced matching on {len(target_images)} target images against source: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -1256,12 +1334,18 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image despite very low score {kogift_score:.3f}. Manual review required.")
                 else:
                     # No Kogift product info for this row.
-                    # Using lowered high_quality threshold for when no product info
-                    if kogift_score >= 0.30:  # Reduced from 0.70
+                    # 매우 관대한 처리를 위해 더 낮은 임계값 사용
+                    absolute_minimum_threshold = 0.001  # 매우 낮은 임계값
+                    
+                    if kogift_score >= 0.05:  # Reduced from 0.30
                         assign_kogift_image = True
                         logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with score {kogift_score:.3f} despite MISSING Kogift product info.")
+                    elif kogift_score >= absolute_minimum_threshold:
+                        # 매우 낮은 임계값으로도 매칭 허용
+                        assign_kogift_image = True
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): Assigning Kogift image with VERY LOW score {kogift_score:.3f} (above absolute min {absolute_minimum_threshold}).")
                     else:
-                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below threshold (0.30) AND no Kogift product info exists.")
+                        logging.warning(f"Row {idx} (Product: '{product_name_for_log}'): REJECTING Kogift image match. Score {kogift_score:.3f} is below absolute minimum threshold ({absolute_minimum_threshold}) AND no Kogift product info exists.")
                         assign_kogift_image = False
 
                 if assign_kogift_image:
@@ -1394,10 +1478,17 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         if col_to_clear in result_df.columns:
                             result_df.at[idx, col_to_clear] = None
                 elif naver_score_from_match < naver_integration_score_threshold:
-                    logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < integration threshold {naver_integration_score_threshold}. Clearing all Naver data.")
-                    for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
-                        if col_to_clear in result_df.columns:
-                            result_df.at[idx, col_to_clear] = None
+                    # 점수가 임계값보다 낮더라도, 아주 낮은 임계값보다는 높은지 확인 (매우 관대한 처리)
+                    absolute_minimum_threshold = 0.001  # 매우 낮은 임계값
+                    
+                    if naver_score_from_match >= absolute_minimum_threshold:
+                        logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} < threshold {naver_integration_score_threshold} but >= absolute minimum {absolute_minimum_threshold}. Keeping match with warning.")
+                        # 이 경우에는 이미지 유지, 즉 이 부분에서 early return 하고 아래 로직으로 계속 진행하도록 함
+                    else:
+                        logging.info(f"Row {idx}: Naver - Score {naver_score_from_match:.3f} for '{naver_product_name_for_log}' < integration threshold {naver_integration_score_threshold}. Clearing all Naver data.")
+                        for col_to_clear in NAVER_DATA_COLUMNS_TO_CLEAR: 
+                            if col_to_clear in result_df.columns:
+                                result_df.at[idx, col_to_clear] = None
                 else:
                     # naver_path_from_match is the local disk path found by find_best_image_matches
                     # img_path_obj_dict_entry is metadata for this local disk path from prepare_image_metadata
@@ -2296,7 +2387,7 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
 def calculate_text_similarity(text1: str, text2: str) -> float:
     """
     Calculate text similarity between two strings.
-    Uses a combination of Levenshtein distance and token overlap.
+    Uses a combination of Levenshtein distance, token overlap, and character n-gram matching.
     """
     # Convert to strings if needed
     str1 = str(text1).lower()
@@ -2332,8 +2423,55 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
             
         jaccard = len(intersection) / len(union)
         
-        # Weighted average of Levenshtein and Jaccard
-        return 0.3 * lev_ratio + 0.7 * jaccard
+        # Character n-gram matching (더 관대한 매칭을 위해 추가)
+        # 2-gram과 3-gram 매칭 계산
+        ngram_similarity = 0.0
+        
+        # 2-gram 매칭
+        ngrams1_2 = set(str1[i:i+2] for i in range(len(str1)-1))
+        ngrams2_2 = set(str2[i:i+2] for i in range(len(str2)-1))
+        
+        if ngrams1_2 and ngrams2_2:
+            ngram_intersection_2 = ngrams1_2.intersection(ngrams2_2)
+            ngram_union_2 = ngrams1_2.union(ngrams2_2)
+            if ngram_union_2:
+                ngram2_sim = len(ngram_intersection_2) / len(ngram_union_2)
+                ngram_similarity += ngram2_sim
+        
+        # 3-gram 매칭 (더 긴 문자열 패턴 매칭)
+        if len(str1) >= 3 and len(str2) >= 3:
+            ngrams1_3 = set(str1[i:i+3] for i in range(len(str1)-2))
+            ngrams2_3 = set(str2[i:i+3] for i in range(len(str2)-2))
+            
+            if ngrams1_3 and ngrams2_3:
+                ngram_intersection_3 = ngrams1_3.intersection(ngrams2_3)
+                ngram_union_3 = ngrams1_3.union(ngrams2_3)
+                if ngram_union_3:
+                    ngram3_sim = len(ngram_intersection_3) / len(ngram_union_3)
+                    ngram_similarity += ngram3_sim
+        
+        # Normalize n-gram similarity (if both n-grams used)
+        ngram_similarity = ngram_similarity / 2 if len(str1) >= 3 and len(str2) >= 3 else ngram_similarity
+        
+        # Check for exact substring matches (부분 문자열 일치 확인)
+        # 길이가 3 이상인 토큰이 다른 문자열에 포함되어 있으면 보너스 점수
+        substring_bonus = 0.0
+        for token in tokens1:
+            if len(token) >= 3 and token in str2:
+                substring_bonus = max(substring_bonus, 0.15)  # 최대 0.15 보너스
+                break
+                
+        for token in tokens2:
+            if len(token) >= 3 and token in str1:
+                substring_bonus = max(substring_bonus, 0.15)  # 최대 0.15 보너스
+                break
+        
+        # Weighted average of all similarity measures
+        # 가중치 조정으로 더 관대한 매칭 허용
+        combined_similarity = 0.2 * lev_ratio + 0.4 * jaccard + 0.25 * ngram_similarity + substring_bonus
+        
+        # 너무 낮은 점수일 경우 최소값으로 조정 (완전히 관련 없는 항목도 있을 수 있으므로)
+        return max(combined_similarity, 0.01)  # 최소 0.01의 유사도 반환
         
     except Exception as e:
         logging.error(f"Error calculating text similarity: {e}")

@@ -43,21 +43,21 @@ logger = logging.getLogger(__name__)
 
 # Default Constants - Optimized for accuracy
 DEFAULT_IMG_SIZE = (299, 299)  # Larger size for better feature extraction
-DEFAULT_FEATURE_MATCH_THRESHOLD = 10  # Reduced to be more lenient
-DEFAULT_SIFT_RATIO_THRESHOLD = 0.85  # Even more lenient (was 0.80)
-DEFAULT_AKAZE_DISTANCE_THRESHOLD = 60  # Even more lenient (was 50)
-DEFAULT_COMBINED_THRESHOLD = 0.001  # Extremely low threshold to catch any potential match
-DEFAULT_WEIGHTS = {'sift': 0.40, 'akaze': 0.40, 'deep': 0.05, 'orb': 0.15}  # Reduced deep weight further, increased SIFT/AKAZE
+DEFAULT_FEATURE_MATCH_THRESHOLD = 10  # Minimum matches needed
+DEFAULT_SIFT_RATIO_THRESHOLD = 0.80  # More strict (was 0.85)
+DEFAULT_AKAZE_DISTANCE_THRESHOLD = 45  # More strict (was 60)
+DEFAULT_COMBINED_THRESHOLD = 0.05  # More balanced threshold to prevent very poor matches
+DEFAULT_WEIGHTS = {'sift': 0.40, 'akaze': 0.30, 'deep': 0.20, 'orb': 0.10}  # Reweighted to favor traditional CV methods
 DEFAULT_CACHE_DIR = 'C:\\RPA\\Temp\\feature_cache'
 
 # Enhanced parameters
-DEFAULT_SIFT_FEATURES = 2000  # Increased number of SIFT features
-DEFAULT_AKAZE_FEATURES = 2000  # Increased number of AKAZE features
-DEFAULT_ORB_FEATURES = 2000    # Number of ORB features
+DEFAULT_SIFT_FEATURES = 3500  # Higher number of SIFT features for better accuracy
+DEFAULT_AKAZE_FEATURES = 3500  # Higher number of AKAZE features
+DEFAULT_ORB_FEATURES = 3500    # Higher number of ORB features
 
 # Add quality check parameters
-DEFAULT_MIN_MATCH_COUNT = 10   # Minimum number of matches for geometric verification
-DEFAULT_INLIER_THRESHOLD = 5.0  # RANSAC reprojection error threshold
+DEFAULT_MIN_MATCH_COUNT = 8   # Increased minimum number of matches (was 10, then 5)
+DEFAULT_INLIER_THRESHOLD = 3.5  # More strict RANSAC reprojection error threshold (was 5.0)
 
 def _load_config() -> configparser.ConfigParser:
     """Load configuration from config.ini"""
@@ -1029,6 +1029,12 @@ class EnhancedImageMatcher:
         """
         Calculate combined similarity using all methods
         Returns the weighted score and individual scores
+        
+        Implements tiered confidence levels:
+        - High confidence: score >= 0.6
+        - Medium confidence: 0.3 <= score < 0.6
+        - Low confidence: 0.1 <= score < 0.3
+        - Very low confidence: score < 0.1
         """
         if not weights:
             weights = SETTINGS['WEIGHTS'].copy()  # Make a copy to avoid modifying the original
@@ -1081,22 +1087,48 @@ class EnhancedImageMatcher:
         if weight_sum > 0:
             combined_score /= weight_sum
             
-        # Boost score if any methods have high scores - much more aggressive boosting
-        max_score = max(scores.values())
-        if max_score > 0.6:  # If any method has a high score, boost the combined score
-            combined_score = max(combined_score, 0.7 * max_score)  # Take at least 70% of the best method's score
-            
-        # Count methods with decent scores
-        high_scores = sum(1 for score in scores.values() if score > 0.5)  # Reduced threshold from 0.65
-        medium_scores = sum(1 for score in scores.values() if 0.3 <= score <= 0.5)  # Count medium scores too
+        # Determine confidence tier based on scores
+        high_scores = sum(1 for score in scores.values() if score >= 0.6)
+        medium_scores = sum(1 for score in scores.values() if 0.3 <= score < 0.6)
+        low_scores = sum(1 for score in scores.values() if 0.1 <= score < 0.3)
         
-        # Boost score based on how many methods agree
-        if high_scores >= 3:
-            combined_score = min(1.0, combined_score * 1.3)  # +30% boost if 3+ methods strongly agree (was 10%)
-        elif high_scores >= 2:
-            combined_score = min(1.0, combined_score * 1.2)  # +20% boost if 2+ methods strongly agree (was 5%)
-        elif high_scores >= 1 and medium_scores >= 1:
-            combined_score = min(1.0, combined_score * 1.1)  # +10% boost if 1 high and 1+ medium scores
+        # Apply confidence tier-based boosts
+        if high_scores >= 2:
+            # At least two methods have high confidence - strong match
+            combined_score = max(combined_score, 0.8 * max(scores.values()))
+            logger.debug(f"High confidence match: {high_scores} methods with score >= 0.6")
+        elif high_scores == 1 and medium_scores >= 1:
+            # One high confidence and at least one medium confidence - good match
+            combined_score = max(combined_score, 0.7 * max(scores.values()))
+            logger.debug(f"Good confidence match: {high_scores} high, {medium_scores} medium methods")
+        elif medium_scores >= 2:
+            # At least two medium confidence methods - moderate match
+            combined_score = max(combined_score, 0.6 * max(scores.values()))
+            logger.debug(f"Moderate confidence match: {medium_scores} methods with score >= 0.3")
+        elif medium_scores == 1 and low_scores >= 1:
+            # One medium confidence and at least one low confidence - acceptable match
+            combined_score = max(combined_score, 0.5 * max(scores.values()))
+            logger.debug(f"Acceptable confidence match: {medium_scores} medium, {low_scores} low methods")
+        elif low_scores >= 2:
+            # Multiple low confidence methods - possible match, needs review
+            combined_score = max(combined_score, 0.3 * max(scores.values()))
+            logger.debug(f"Low confidence match: {low_scores} methods with score >= 0.1")
+            
+        # Increase confidence if SIFT and AKAZE agree strongly (traditional CV validation)
+        if sift_score >= 0.4 and akaze_score >= 0.4:
+            logger.debug(f"Strong agreement between SIFT and AKAZE: {sift_score:.2f}, {akaze_score:.2f}")
+            combined_score = min(1.0, combined_score * 1.15)  # 15% boost when traditional methods agree
+            
+        # Calculate a consensus score based on standard deviation (lower std = higher consensus)
+        non_zero_scores = [s for s in scores.values() if s > 0.01]
+        if len(non_zero_scores) >= 2:
+            score_std = np.std(non_zero_scores)
+            consensus_factor = max(0, 1 - score_std)  # Higher when methods agree
+            
+            # Apply consensus boost (up to 10%)
+            consensus_boost = min(0.1, consensus_factor * 0.2)
+            combined_score = min(1.0, combined_score * (1 + consensus_boost))
+            logger.debug(f"Consensus boost: {consensus_boost:.2f} (std={score_std:.2f})")
             
         logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
         
@@ -1133,30 +1165,56 @@ class EnhancedImageMatcher:
         Args:
             img_path1: Path to first image
             img_path2: Path to second image
-            threshold: Similarity threshold (default: from config, extremely low)
+            threshold: Similarity threshold (default: from config)
             
         Returns:
             Tuple of (is_match, similarity_score, individual_scores)
         """
         if threshold is None:
-            # Use an extremely low threshold to find any potential matches
-            threshold = SETTINGS.get('COMBINED_THRESHOLD', 0.0001)
+            threshold = SETTINGS.get('COMBINED_THRESHOLD', 0.05)
             
         try:
+            # Check if images exist
+            if not os.path.exists(img_path1) or not os.path.exists(img_path2):
+                if not os.path.exists(img_path1):
+                    logger.warning(f"First image does not exist: {img_path1}")
+                if not os.path.exists(img_path2):
+                    logger.warning(f"Second image does not exist: {img_path2}")
+                return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+            
             # Calculate combined similarity
             similarity, scores = self.calculate_combined_similarity(img_path1, img_path2)
+            
+            # Determine match confidence level
+            confidence_level = "Very Low"
+            if similarity >= 0.60:
+                confidence_level = "High"
+            elif similarity >= 0.30:
+                confidence_level = "Medium"
+            elif similarity >= 0.10:
+                confidence_level = "Low"
             
             # Determine if it's a match
             is_match = similarity >= threshold
             
-            # Log match information for debugging
-            if similarity > 0.01:
-                logger.info(f"Potential match found: {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
+            # Log match information for debugging with appropriate level based on confidence
+            if similarity >= 0.60:
+                logger.info(f"HIGH CONFIDENCE MATCH: {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
+                logger.info(f"  - SIFT: {scores['sift']:.3f}, AKAZE: {scores['akaze']:.3f}, Deep: {scores['deep']:.3f}, ORB: {scores['orb']:.3f}")
+            elif similarity >= 0.30:
+                logger.info(f"MEDIUM CONFIDENCE MATCH: {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
+            elif similarity >= 0.10:
+                logger.debug(f"LOW CONFIDENCE MATCH: {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
+            elif similarity >= threshold:
+                logger.debug(f"VERY LOW CONFIDENCE MATCH (above threshold): {os.path.basename(img_path1)} and {os.path.basename(img_path2)} with score {similarity:.4f}")
+            
+            # Store confidence level in the scores dictionary
+            scores['confidence_level'] = confidence_level
             
             return is_match, similarity, scores
         except Exception as e:
             logger.error(f"Error determining match between {img_path1} and {img_path2}: {e}")
-            return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0}
+            return False, 0.0, {'sift': 0.0, 'akaze': 0.0, 'deep': 0.0, 'orb': 0.0, 'confidence_level': 'Error'}
             
     def clear_cache(self):
         """Clear the feature cache"""
