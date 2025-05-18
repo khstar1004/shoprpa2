@@ -438,7 +438,11 @@ def find_best_image_matches(product_names: List[str],
         
         logging.info(f"Final Match Set for '{product_name}': Haereum='{h_text}' ({haereum_score:.3f}), Kogift='{k_text}' ({kogift_score:.3f}), Naver='{n_text}' ({naver_score:.3f})")
         
-        best_matches.append((haereum_match, kogift_match, naver_match))
+        # Store the (path, score) tuples
+        h_match_data = (haereum_match, haereum_score) if haereum_match else None
+        k_match_data = (kogift_match, kogift_score) if kogift_match else None
+        n_match_data = (naver_match, naver_score) if naver_match else None
+        best_matches.append((h_match_data, k_match_data, n_match_data))
     
     return best_matches
 
@@ -681,156 +685,115 @@ def verify_image_matches(best_matches, product_names, haereum_images, kogift_ima
     
     for idx, (product_name, match_set) in enumerate(zip(product_names, best_matches)):
         # Handle cases where match_set may not have exactly 3 elements
-        if not match_set or len(match_set) < 3:
-            logging.warning(f"Invalid match_set for product '{product_name}': {match_set}. Using None values.")
-            haereum_match, kogift_match, naver_match = None, None, None
+        # or if elements within are not as expected (e.g. None instead of (path, score) tuple)
+        haereum_data, kogift_data, naver_data = None, None, None # Initialize with None
+
+        if match_set and len(match_set) == 3:
+            haereum_data, kogift_data, naver_data = match_set
         else:
-            haereum_match, kogift_match, naver_match = match_set
-        
+            logging.warning(f"Invalid match_set for product '{product_name}': {match_set}. Using None values for all sources.")
+            # haereum_data, kogift_data, naver_data remain None as initialized
+
         product_tokens = set(tokenize_product_name(product_name))
         
         # 매칭 품질 기록
         match_quality = {
-            'haereum': {'score': 0, 'match': haereum_match},
-            'kogift': {'score': 0, 'match': kogift_match},
-            'naver': {'score': 0, 'match': naver_match}
+            'haereum': {'score': 0, 'match': haereum_data, 'id': None}, # Store data tuple directly
+            'kogift': {'score': 0, 'match': kogift_data, 'id': None},  # Store data tuple directly
+            'naver': {'score': 0, 'match': naver_data, 'id': None}    # Store data tuple directly
         }
         
         # 해오름 매칭 검증
-        if haereum_match:
-            # Ensure haereum_match is actually a tuple with path and score
-            if isinstance(haereum_match, tuple) and len(haereum_match) == 2:
-                haereum_path, haereum_score = haereum_match
-            else:
-                # If it's a string, it's likely a file path directly
-                if isinstance(haereum_match, str) and os.path.exists(haereum_match):
-                    haereum_path = haereum_match
-                    haereum_score = 0.5  # Default score
-                    # Create a proper tuple for consistent handling later
-                    match_quality['haereum']['match'] = (haereum_path, haereum_score)
-                    logging.debug(f"Converted string haereum_match to tuple: ({haereum_path}, {haereum_score})")
-                else:
-                    logging.warning(f"Unexpected format for haereum_match: {haereum_match}. Using default values.")
-                    haereum_path = haereum_match if isinstance(haereum_match, str) else None
-                    haereum_score = 0.5  # Default score
-                
+        if haereum_data and isinstance(haereum_data, tuple) and len(haereum_data) == 2:
+            haereum_path, haereum_score = haereum_data
+            match_quality['haereum']['score'] = haereum_score # Use the propagated score
+            
             if haereum_path and haereum_path in haereum_images:
                 haereum_filename = os.path.basename(haereum_path)
-                
-                # 파일명에서 ID 추출
                 haereum_id = None
                 id_match = id_pattern.search(haereum_filename)
                 if id_match:
                     haereum_id = id_match.group(1)
                 
-                # 파일명에서 토큰 추출
                 haereum_tokens = set(tokenize_product_name(haereum_images[haereum_path].get('clean_name', 
                                                         haereum_images[haereum_path].get('name_for_matching', ''))))
-                
-                # 토큰 중복 확인
                 common_tokens = product_tokens & haereum_tokens
                 token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                 
-                # 품질 점수 계산
-                match_quality['haereum']['score'] = haereum_score * (1 + token_ratio)
+                # Refine score, but start with the propagated score
+                match_quality['haereum']['score'] = haereum_score * (1 + token_ratio) 
                 match_quality['haereum']['id'] = haereum_id
             else:
-                logging.warning(f"Haereum path not found in haereum_images: {haereum_path}")
-                match_quality['haereum']['match'] = None
+                logging.warning(f"Haereum path '{haereum_path}' not found in haereum_images or path is None.")
+                match_quality['haereum']['match'] = None # Invalidate if path issue
+                match_quality['haereum']['score'] = 0
+        elif haereum_data: # Was not None, but not a (path, score) tuple
+             logging.warning(f"Unexpected format for haereum_data: {haereum_data}. Clearing Haereum match.")
+             match_quality['haereum']['match'] = None
+             match_quality['haereum']['score'] = 0
         
         # 고려기프트 매칭 검증
-        if kogift_match:
-            # Ensure kogift_match is actually a tuple with path and score
-            if isinstance(kogift_match, tuple) and len(kogift_match) == 2:
-                kogift_path, kogift_score = kogift_match
-            else:
-                # If it's a string, it's likely a file path directly
-                if isinstance(kogift_match, str) and os.path.exists(kogift_match):
-                    kogift_path = kogift_match
-                    kogift_score = 0.5  # Default score
-                    # Create a proper tuple for consistent handling later
-                    match_quality['kogift']['match'] = (kogift_path, kogift_score)
-                    logging.debug(f"Converted string kogift_match to tuple: ({kogift_path}, {kogift_score})")
-                else:
-                    logging.warning(f"Unexpected format for kogift_match: {kogift_match}. Using default values.")
-                    kogift_path = kogift_match if isinstance(kogift_match, str) else None
-                    kogift_score = 0.5  # Default score
-                
+        if kogift_data and isinstance(kogift_data, tuple) and len(kogift_data) == 2:
+            kogift_path, kogift_score = kogift_data
+            match_quality['kogift']['score'] = kogift_score # Use the propagated score
+
             if kogift_path and kogift_path in kogift_images:
                 kogift_filename = os.path.basename(kogift_path)
-                
-                # 파일명에서 ID 추출
                 kogift_id = None
                 id_match = id_pattern.search(kogift_filename)
                 if id_match:
                     kogift_id = id_match.group(1)
                 
-                # 해오름 ID와 비교
-                if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == kogift_id:
-                    # ID가 일치하면 점수 증가
+                haereum_id_for_comparison = match_quality['haereum'].get('id')
+                if haereum_id_for_comparison and haereum_id_for_comparison == kogift_id:
                     match_quality['kogift']['score'] = max(kogift_score, 0.8) * 1.5
                 else:
-                    # 토큰 비교
                     kogift_tokens = set(tokenize_product_name(kogift_images[kogift_path].get('clean_name',
                                                          kogift_images[kogift_path].get('name_for_matching', ''))))
                     common_tokens = product_tokens & kogift_tokens
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
                     match_quality['kogift']['score'] = kogift_score * (1 + token_ratio)
+                match_quality['kogift']['id'] = kogift_id
             else:
-                # This is a plain string path that's not in kogift_images dictionary
-                # We need to create a tuple that matches the expected format (path, score)
-                logging.warning(f"Kogift path not found in kogift_images dictionary: {kogift_path}")
-                if isinstance(kogift_path, str) and os.path.exists(kogift_path):
-                    match_quality['kogift']['match'] = (kogift_path, kogift_score)
-                else:
-                    match_quality['kogift']['match'] = None
-        
+                logging.warning(f"Kogift path '{kogift_path}' not found in kogift_images or path is None.")
+                match_quality['kogift']['match'] = None # Invalidate if path issue
+                match_quality['kogift']['score'] = 0
+        elif kogift_data: # Was not None, but not a (path, score) tuple
+             logging.warning(f"Unexpected format for kogift_data: {kogift_data}. Clearing Kogift match.")
+             match_quality['kogift']['match'] = None
+             match_quality['kogift']['score'] = 0
+
         # 네이버 매칭 검증
-        if naver_match:
-            # Ensure naver_match is actually a tuple with path and score
-            if isinstance(naver_match, tuple) and len(naver_match) == 2:
-                naver_path, naver_score = naver_match
-            else:
-                # If it's a string, it's likely a file path directly
-                if isinstance(naver_match, str) and os.path.exists(naver_match):
-                    naver_path = naver_match
-                    naver_score = 0.5  # Default score
-                    # Create a proper tuple for consistent handling later
-                    match_quality['naver']['match'] = (naver_path, naver_score)
-                    logging.debug(f"Converted string naver_match to tuple: ({naver_path}, {naver_score})")
-                else:
-                    logging.warning(f"Unexpected format for naver_match: {naver_match}. Using default values.")
-                    naver_path = naver_match if isinstance(naver_match, str) else None
-                    naver_score = 0.5  # Default score
-                
+        if naver_data and isinstance(naver_data, tuple) and len(naver_data) == 2:
+            naver_path, naver_score = naver_data
+            match_quality['naver']['score'] = naver_score # Use the propagated score
+
             if naver_path and naver_path in naver_images:
                 naver_filename = os.path.basename(naver_path)
-                
-                # 파일명에서 ID 추출
                 naver_id = None
                 id_match = id_pattern.search(naver_filename)
                 if id_match:
                     naver_id = id_match.group(1)
                 
-                # 해오름 ID와 비교
-                if haereum_match and match_quality['haereum']['id'] and match_quality['haereum']['id'] == naver_id:
-                    # ID가 일치하면 점수 증가
+                haereum_id_for_comparison = match_quality['haereum'].get('id')
+                if haereum_id_for_comparison and haereum_id_for_comparison == naver_id:
                     match_quality['naver']['score'] = max(naver_score, 0.8) * 1.5
                 else:
-                    # 토큰 비교
                     naver_tokens = set(tokenize_product_name(naver_images[naver_path].get('clean_name',
                                                         naver_images[naver_path].get('name_for_matching', ''))))
                     common_tokens = product_tokens & naver_tokens
                     token_ratio = len(common_tokens) / max(len(product_tokens), 1)
-                    match_quality['naver']['score'] = naver_score * (1 + token_ratio)
+                    # Refine score, but start with the propagated score
+                    match_quality['naver']['score'] = naver_score * (1 + token_ratio) 
+                match_quality['naver']['id'] = naver_id
             else:
-                # This is a plain string path that's not in naver_images dictionary
-                # We need to create a tuple that matches the expected format (path, score)
-                logging.warning(f"Naver path not found in naver_images dictionary: {naver_path}")
-                if isinstance(naver_path, str) and os.path.exists(naver_path):
-                    match_quality['naver']['match'] = (naver_path, naver_score)
-                else:
-                    match_quality['naver']['match'] = None
+                logging.warning(f"Naver path '{naver_path}' not found in naver_images or path is None.")
+                match_quality['naver']['match'] = None # Invalidate if path issue
+                match_quality['naver']['score'] = 0
+        elif naver_data: # Was not None, but not a (path, score) tuple
+             logging.warning(f"Unexpected format for naver_data: {naver_data}. Clearing Naver match.")
+             match_quality['naver']['match'] = None
+             match_quality['naver']['score'] = 0
         
         # 검증 결과를 로그로 출력
         logging.debug(f"Product: '{product_name}' - Verification scores: Haereum={match_quality['haereum']['score']:.2f}, Kogift={match_quality['kogift']['score']:.2f}, Naver={match_quality['naver']['score']:.2f}")
@@ -1373,9 +1336,13 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 '공급사명'               # 공급사 정보
             ]
             
-            # 임계값 설정 (더 낮게 조정)
-            naver_integration_score_threshold = 0.20  # Reduced from 0.55 to 0.20
-            logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold}")
+            # 임계값 설정: config.ini의 naver_initial_similarity_threshold 값을 사용
+            # 기본값은 text_threshold 또는 0.35로 설정 (이전에 0.20으로 하드코딩됨)
+            default_naver_threshold = config.getfloat('Matching', 'text_threshold', fallback=0.35)
+            naver_integration_score_threshold = config.getfloat('Matching', 'naver_initial_similarity_threshold', 
+                                                              fallback=default_naver_threshold)
+            
+            logging.info(f"Row {idx}: Using Naver integration score threshold: {naver_integration_score_threshold} (from config: naver_initial_similarity_threshold or fallback)")
 
             if naver_match and (isinstance(naver_match, tuple) or (isinstance(naver_match, str) and naver_match != '없음' and naver_match is not None)):
                 # Handle both tuple and string formats
