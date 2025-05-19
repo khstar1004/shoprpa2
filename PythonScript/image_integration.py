@@ -1923,7 +1923,7 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                                     except Exception as e:
                                         logger.warning(f"Row {idx}: Failed to extract product ID from Naver shopping link: {e}")
                                 
-                                # 이미지 URL 설정 - placeholder URL 대신 실제 URL 사용
+                                # 이미지 URL 설정 - 상품 링크를 이미지 URL로 사용하지 않고 실제 이미지 URL만 사용
                                 if 'product_id' in naver_data and naver_data['product_id']:
                                     # 이미 product_id가 추출되었으면 이를 사용하여 URL 생성
                                     product_id = naver_data['product_id']
@@ -1934,48 +1934,17 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                                     # original_crawled_url이 있고, shopping-phinf.pstatic.net을 포함하는 실제 이미지 URL이면 이를 사용
                                     naver_data['url'] = naver_data['original_crawled_url']
                                     logger.info(f"Row {idx}: Using original crawled URL for Naver image: {naver_data['original_crawled_url'][:50]}...")
-                                elif '네이버 쇼핑 링크' in result_df.columns and idx < len(result_df) and isinstance(result_df.at[idx, '네이버 쇼핑 링크'], str) and result_df.at[idx, '네이버 쇼핑 링크'].startswith(('http://', 'https://')):
-                                    # 네이버 쇼핑 링크에서 product ID 추출해 이미지 URL 생성
-                                    shopping_link = result_df.at[idx, '네이버 쇼핑 링크']
-                                    logger.debug(f"Row {idx}: Trying to extract product ID from shopping link: {shopping_link[:50]}...")
-                                    
-                                    # 다양한 패턴으로 product ID 추출 시도
-                                    product_id = None
-                                    # Pattern 1: catalog/XXXXXXX
-                                    catalog_match = re.search(r'/catalog/(\d+)', shopping_link)
-                                    if catalog_match:
-                                        product_id = catalog_match.group(1)
-                                    # Pattern 2: nvMid= or nv_mid=
-                                    elif 'nvMid=' in shopping_link or 'nv_mid=' in shopping_link:
-                                        nvmid_match = re.search(r'nv[_]?[mM]id=(\d+)', shopping_link)
-                                        if nvmid_match:
-                                            product_id = nvmid_match.group(1)
-                                    # Pattern 3: productNo=
-                                    elif 'productNo=' in shopping_link:
-                                        prod_match = re.search(r'productNo=(\d+)', shopping_link)
-                                        if prod_match:
-                                            product_id = prod_match.group(1)
-                                    # Pattern 4: products/XXXXXXX
-                                    elif '/products/' in shopping_link:
-                                        prod_match = re.search(r'/products/(\d+)', shopping_link)
-                                        if prod_match:
-                                            product_id = prod_match.group(1)
-                                            
-                                    if product_id:
-                                        constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                        naver_data['url'] = constructed_url
-                                        naver_data['product_id'] = product_id
-                                        logger.info(f"Row {idx}: Extracted product ID from shopping link and constructed image URL: {constructed_url}")
-                                    else:
-                                        # 상품 링크에서 ID를 추출할 수 없는 경우 placeholder 사용
-                                        naver_data['url'] = f"https://shopping-phinf.pstatic.net/placeholder/image_{idx}.jpg"
-                                        logger.warning(f"Row {idx}: Unable to extract product ID from shopping link. Using placeholder URL.")
                                 else:
-                                    # 마지막 수단으로 placeholder URL 사용하되 prefix를 표준 URL로 설정
-                                    naver_data['url'] = f"https://shopping-phinf.pstatic.net/placeholder/image_{idx}.jpg"
-                                    logger.warning(f"Row {idx}: Using standardized placeholder URL for Naver image (no valid URL found).")
-                        
-                        result_df.at[idx, '네이버 이미지'] = naver_data
+                                    # 유효한 이미지 URL이 없는 경우, 네이버 이미지 데이터를 None으로 설정
+                                    logger.warning(f"Row {idx}: No valid URL found for Naver image. Clearing Naver image data.")
+                                    naver_data = None
+                                    result_df.at[idx, '네이버 이미지'] = None
+                                    # 관련 상품 정보 없는 경우로 처리
+                                    continue
+
+                        # 네이버 이미지 데이터가 여전히 유효한 경우에만 저장
+                        if naver_data is not None:
+                            result_df.at[idx, '네이버 이미지'] = naver_data
                     else:
                         # Only clear if both URL is invalid and local file doesn't exist
                         logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Naver URL '{url}' and no valid local path. Clearing Naver data.")

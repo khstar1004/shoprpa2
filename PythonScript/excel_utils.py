@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Optional
 import hashlib
 import glob
+import io
 
 
 # Check Python/PIL version for proper resampling constant
@@ -387,41 +388,69 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
 
 def clean_naver_images_and_data(worksheet, df):
     """
-    네이버 이미지 링크가 없는 경우 해당 셀 이미지를 삭제하고,
-    네이버 관련 상품정보 칼럼들을 '-'로 초기화하는 함수.
+    Clean Naver images and data for invalid entries:
+    1. Remove any displayed images for rows without a valid Naver URL
+    2. Clear all Naver-related cells for those rows
     
     Args:
-        worksheet: openpyxl 워크시트 객체
-        df: pandas DataFrame (엑셀에 쓰여진 데이터와 동일한 순서, 컬럼명 포함)
+        worksheet: The Excel worksheet
+        df: DataFrame with the source data
     """
-    # 네이버 이미지 컬럼명과 네이버 관련 초기화 대상 컬럼명 리스트
-    naver_image_col_name = '네이버 이미지'
-    naver_related_cols = [
-        '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)',
-        '공급사명', '네이버 쇼핑 링크', '공급사 상품링크'
-    ]
-    
-    # 컬럼명 -> 엑셀 컬럼 인덱스(1-based) 매핑
-    col_index_map = {col: idx+1 for idx, col in enumerate(df.columns)}
-    
-    # 네이버 이미지 컬럼 인덱스
-    naver_img_col_idx = col_index_map.get(naver_image_col_name)
-    if not naver_img_col_idx:
-        # 네이버 이미지 컬럼이 없으면 종료
+    if worksheet is None:
         return
     
-    # 네이버 관련 컬럼 인덱스
-    naver_related_col_indices = [col_index_map.get(col) for col in naver_related_cols if col in col_index_map]
+    # Find column indexes for Naver-related columns
+    header_row = 1  # First row is header
+    naver_related_headers = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명',
+                          '판매단가(V포함)(3)', '기본수량(3)', '가격차이(3)', '가격차이(3)(%)']
     
-    # 워크시트의 이미지 리스트를 직접 참조
+    # Find column indices for all relevant columns
+    naver_related_col_indices = []
+    naver_img_col_idx = None
+    
+    for col_idx in range(1, worksheet.max_column + 1):
+        cell_value = worksheet.cell(row=header_row, column=col_idx).value
+        if cell_value in naver_related_headers:
+            naver_related_col_indices.append(col_idx)
+            if cell_value == '네이버 이미지':
+                naver_img_col_idx = col_idx
+    
+    if not naver_img_col_idx or not naver_related_col_indices:
+        logger.warning("Naver image column or related columns not found in worksheet")
+        return
+    
+    # Track images to be removed
     images_to_remove = []
     
     # 네이버 이미지 컬럼의 각 행을 순회하며 링크 유무 확인
     for row_idx in range(2, worksheet.max_row + 1):  # 1행은 헤더
         cell_value = worksheet.cell(row=row_idx, column=naver_img_col_idx).value
         
+        # Check if the cell value is a valid URL or if it has a valid local path
+        is_valid = False
+        
+        # If the value is in the DataFrame and is a dictionary with URL
+        if len(df) >= row_idx - 1:  # Adjust for header row
+            df_idx = row_idx - 2  # DataFrame index (0-based, and accounting for header)
+            if df_idx < len(df) and '네이버 이미지' in df.columns:
+                naver_img_value = df.iloc[df_idx]['네이버 이미지']
+                if isinstance(naver_img_value, dict):
+                    # Check if it has a URL
+                    if 'url' in naver_img_value and naver_img_value['url'] and isinstance(naver_img_value['url'], str):
+                        if naver_img_value['url'].startswith(('http://', 'https://')):
+                            is_valid = True
+                    
+                    # Also check for local_path
+                    if 'local_path' in naver_img_value and naver_img_value['local_path'] and isinstance(naver_img_value['local_path'], str):
+                        if os.path.exists(naver_img_value['local_path']):
+                            is_valid = True
+        
+        # Cell value check
+        if isinstance(cell_value, str) and cell_value.startswith(('http://', 'https://')):
+            is_valid = True
+        
         # 링크가 없거나 빈값이면 처리 대상
-        if cell_value in (None, '', '-', '-이미지 없음-', '-처리 오류-'):
+        if not is_valid and cell_value in (None, '', '-', '-이미지 없음-', '-처리 오류-'):
             # 1) 해당 셀 위치에 삽입된 이미지 삭제
             # openpyxl은 이미지 객체가 워크시트에 리스트로 존재함
             # 이미지의 anchor 속성으로 위치를 확인 가능
@@ -506,85 +535,78 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             path = path.replace('file:///', '')
             # Normalize slashes for Windows
             path = path.replace('/', os.sep)
-
+        
         # Skip URLs - we need local files
         if path.startswith(('http://', 'https://')):
             logger.debug(f"Skipping URL path (need local file): {path}")
-            return None
-            
-        # Verify file exists
-        if not os.path.exists(path):
-            logger.warning(f"Image file does not exist: {path}")
-            return None
-            
-        # Attempt to open and resize the image
-        for attempt in range(retry_count + 1):
+            # Check if we have a matching local path for this URL in the image directory
+            # Try to find a matching file in the appropriate image directory
+            if 'phinf.pstatic.net' in path:  # Naver image
+                local_path = find_naver_image_from_url(path)
+                if local_path:
+                    logger.info(f"Found local Naver image for URL: {local_path}")
+                    path = local_path
+                else:
+                    return None
+            else:
+                return None
+        
+        # If path still exists, try to open and resize the image
+        retry = 0
+        while retry <= retry_count:
             try:
+                if not os.path.exists(path):
+                    logger.warning(f"Image path does not exist: {path}")
+                    return None
+                    
+                if os.path.getsize(path) <= 0:
+                    logger.warning(f"Image file is empty: {path}")
+                    return None
+                
                 img = PILImage.open(path)
                 
-                # Check if image is valid
-                img.verify()  # Verify image integrity
-                
-                # Re-open after verify (verify closes the file)
-                img = PILImage.open(path)
-                
-                # Calculate new dimensions preserving aspect ratio
+                # Handle RGBA images (convert to RGB for Excel compatibility)
+                if img.mode == 'RGBA':
+                    # Create white background
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    # Paste using alpha as mask
+                    background.paste(img, mask=img.split()[3])  # 3 is the alpha channel
+                    img = background
+                    
+                # Calculate new dimensions while maintaining aspect ratio
                 width, height = img.size
                 if width > max_width or height > max_height:
                     ratio = min(max_width / width, max_height / height)
                     new_width = int(width * ratio)
                     new_height = int(height * ratio)
+                    img = img.resize((new_width, new_height), Image.LANCZOS)
                     
-                    # Improved resizing with error handling
-                    try:
-                        # Use LANCZOS resampling for better quality
-                        img = img.resize((new_width, new_height), RESAMPLING_FILTER)
-                    except Exception as resize_err:
-                        logger.warning(f"Error during image resize, trying simpler method: {resize_err}")
-                        # Fallback to simpler resize
-                        img = img.resize((new_width, new_height))
+                # Convert PIL image to BytesIO buffer
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format=img.format or 'JPEG')
+                img_byte_arr.seek(0)
                 
-                # Save temporary resized version with proper error handling
-                try:
-                    temp_dir = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', '')), 'rpa_temp_images')
-                    if not os.path.exists(temp_dir):
-                        os.makedirs(temp_dir, exist_ok=True)
-                    
-                    # Add hash to filename to avoid collisions
-                    file_hash = hashlib.md5(path.encode()).hexdigest()[:8]
-                    filename = os.path.basename(path)
-                    temp_path = os.path.join(temp_dir, f"resized_{file_hash}_{filename}")
-                    
-                    # Get correct format for saving
-                    img_format = os.path.splitext(path)[1].replace('.', '').upper()
-                    if img_format not in ['JPEG', 'JPG', 'PNG', 'GIF']:
-                        img_format = 'PNG'  # Default to PNG for unsupported formats
-                    
-                    # Save the image - use original format if possible
-                    if img_format == 'JPG':
-                        img_format = 'JPEG'  # PIL uses 'JPEG' not 'JPG'
-                    
-                    img.save(temp_path, format=img_format)
-                    logger.debug(f"Successfully resized image to {temp_path}")
-                    return temp_path
-                except Exception as save_error:
-                    logger.warning(f"Error saving resized image: {save_error}")
-                    # If temp save fails, return original path
-                    return path
-                    
+                return img_byte_arr
+                
             except Exception as e:
-                logger.warning(f"Error loading image {path} (attempt {attempt+1}/{retry_count+1}): {e}")
-                if attempt == retry_count:
-                    logger.error(f"Failed to load image after {retry_count+1} attempts: {path}")
+                retry += 1
+                error_msg = f"Error loading image {path} (attempt {retry}/{retry_count}): {e}"
+                if retry <= retry_count:
+                    logger.warning(error_msg)
+                    time.sleep(0.5)  # Short delay before retry
+                else:
+                    logger.error(error_msg)
                     return None
-                time.sleep(0.5)  # Small delay before retry
-        
-        return None  # Should not reach here, but just in case
     
     # Helper function to find Naver image file using hash patterns
     def find_naver_image_from_url(url):
         """Find local Naver image file from URL using hash patterns and intelligent matching"""
         if not url or not isinstance(url, str):
+            return None
+            
+        # Skip non-image URLs like shopping links - only process phinf.pstatic.net URLs
+        if not 'phinf.pstatic.net' in url:
+            logger.debug(f"Not a Naver image URL (skipping): {url[:50]}...")
             return None
             
         # Naver image directory
@@ -680,6 +702,19 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
             # Skip cells with placeholder dash
             if cell_value == "-":
                 continue
+                
+            # Special handling for Naver images - skip placeholders and non-image URLs
+            if is_naver_image:
+                # Skip any Naver data that doesn't have a valid image URL
+                if isinstance(cell_value, dict):
+                    url = cell_value.get('url', '')
+                    if not url or not isinstance(url, str) or not 'phinf.pstatic.net' in url:
+                        logger.debug(f"Skipping Naver value that doesn't have a valid image URL: {str(cell_value)[:50]}...")
+                        continue
+                elif isinstance(cell_value, str) and not 'phinf.pstatic.net' in cell_value:
+                    # Skip strings that aren't Naver image URLs
+                    logger.debug(f"Skipping Naver string that isn't an image URL: {cell_value[:50]}...")
+                    continue
             
             # Handle dictionary format (most complete info)
             if isinstance(cell_value, dict):
@@ -707,7 +742,7 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                             # IMPROVED: More comprehensive fallback strategy
                             url_to_try = cell_value.get('url')
-                            if url_to_try:
+                            if url_to_try and 'phinf.pstatic.net' in url_to_try:
                                 # Try to find alternative file based on URL hash pattern
                                 alt_path = find_naver_image_from_url(url_to_try)
                                 if alt_path:
@@ -733,10 +768,15 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                         logger.info(f"Found _nobg version of Naver image: {nobg_path}")
                                         img_path = nobg_path
                 
-                # IMPROVED: If local_path failed, try URL-based approach for all image types
+                # IMPROVED: If local_path failed, only try URL-based approach for Naver images with phinf.pstatic.net URLs
                 if not img_path or not os.path.exists(img_path):
                     url = cell_value.get('url')
                     if url and isinstance(url, str) and url.startswith(('http://', 'https://')):
+                        # For Naver, only process actual image URLs (phinf.pstatic.net)
+                        if is_naver_image and not 'phinf.pstatic.net' in url:
+                            logger.debug(f"Skipping Naver URL that isn't a phinf.pstatic.net image URL: {url[:50]}...")
+                            continue
+                            
                         logger.debug(f"Local path failed or missing, trying URL-based approach: {url[:50]}...")
                         
                         if is_naver_image:
@@ -748,10 +788,6 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 # Update the cell value with correct path for future reference
                                 cell_value['local_path'] = alt_path
                                 df.at[row_idx, column] = cell_value
-                        elif is_kogift_image:
-                            # Similar for Kogift but with their patterns
-                            # We could add a similar function for Kogift if needed
-                            pass
             
             # If we've found a potentially valid path, try to load the image
             if img_path and os.path.exists(img_path):
@@ -1520,6 +1556,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                 worksheet_result.auto_filter.ref = None
                 logger.info("Removed filter from result Excel file")
             
+            # Clean Naver images and related data when image URLs are missing
+            clean_naver_images_and_data(worksheet_result, df_for_excel)
+            
             # Save without images first to ensure we can write to file
             workbook_result.save(result_path)
             
@@ -1774,6 +1813,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                 if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
                     worksheet_with_images.auto_filter.ref = None
                     logger.info("Removed filter from result Excel file after adding images")
+                
+                # Clean Naver images and related data for the workbook with images as well
+                clean_naver_images_and_data(worksheet_with_images, df_for_excel)
                 
                 # Save the workbook with images
                 workbook_with_images.save(result_path)
@@ -2923,8 +2965,6 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.
         
     # Naver image column in upload format
     naver_img_col = '네이버쇼핑(이미지링크)'
-    # Naver link column in upload format 
-    naver_link_col = '네이버 링크'
     
     # Check if necessary columns exist
     if naver_img_col not in df_with_image_urls.columns:
@@ -2944,69 +2984,54 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.
         try:
             # Get the image URL value
             img_url = df_with_image_urls.at[idx, naver_img_col]
-            # Get the product link value if available
-            product_link = df_with_image_urls.at[idx, naver_link_col] if naver_link_col in df_with_image_urls.columns else None
-            
             processed_count += 1
             
-            # Handle any placeholder or empty URLs
+            # Handle any placeholder or empty URLs - clear instead of replacing with fallbacks
             if not img_url or (isinstance(img_url, str) and (img_url.startswith('http://placeholder.url/') or not img_url.strip())):
                 # First try to get data from the original Naver image column
                 naver_img_key = '네이버 이미지'
                 if naver_img_key in df_with_image_urls.columns:
                     original_data = df_with_image_urls.at[idx, naver_img_key]
                     
-                    # Try multiple sources for image URL in the following order:
+                    # Try only original_crawled_url that points to an actual image
                     url_found = False
                     
                     if isinstance(original_data, dict):
-                        # 1. Check for original_crawled_url (highest priority)
+                        # Only use original_crawled_url if it's a phinf.pstatic.net URL (actual image)
                         original_crawled_url = original_data.get('original_crawled_url')
-                        if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')) and not original_crawled_url.startswith('http://placeholder.url/'):
+                        if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')) and 'phinf.pstatic.net' in original_crawled_url:
                             result_df.at[idx, naver_img_col] = original_crawled_url
                             placeholder_fixed += 1
-                            logger.info(f"Row {idx}: Recovered original crawled URL for Naver placeholder: {original_crawled_url[:50]}...")
+                            logger.info(f"Row {idx}: Recovered actual Naver image URL: {original_crawled_url[:50]}...")
                             url_found = True
-                            
-                        # 2. Next try product_url
-                        elif not url_found:
-                            product_url = original_data.get('product_url')
-                            if product_url and isinstance(product_url, str) and product_url.startswith(('http://', 'https://')):
-                                result_df.at[idx, naver_img_col] = product_url
-                                placeholder_fixed += 1
-                                logger.info(f"Row {idx}: Using product URL for Naver placeholder: {product_url[:50]}...")
-                                url_found = True
-                                
-                        # 3. Try to construct URL from product_id if available
-                        elif not url_found:
-                            product_id = original_data.get('product_id')
-                            if product_id:
-                                try:
-                                    # Try multiple image URL patterns for Naver
-                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                    result_df.at[idx, naver_img_col] = constructed_url
-                                    placeholder_fixed += 1
-                                    logger.info(f"Row {idx}: Constructed Naver URL from product_id: {constructed_url}")
-                                    url_found = True
-                                except Exception as e:
-                                    logger.warning(f"Row {idx}: Failed to construct Naver URL from product_id: {e}")
                     
-                    # 4. If still no URL, try using the product link from Naver link column as last resort
-                    if not url_found and product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                        result_df.at[idx, naver_img_col] = product_link
-                        placeholder_fixed += 1
-                        logger.info(f"Row {idx}: Using product link as fallback for Naver image: {product_link[:50]}...")
-                        url_found = True
-                    
-                    # 5. If still not found, log failure
+                    # If no valid URL found, clear the value
                     if not url_found:
-                        logger.warning(f"Row {idx}: Failed to find any valid URL for Naver image, placeholder remains")
-            # For non-placeholder URLs that are already valid, keep them
-            elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')) and not img_url.startswith('http://placeholder.url/'):
-                logger.debug(f"Row {idx}: Already has valid Naver image URL: {img_url[:50]}...")
+                        result_df.at[idx, naver_img_col] = ""
+                        logger.warning(f"Row {idx}: No valid Naver image URL found. Clearing value.")
+                else:
+                    # If no original data column, just clear the value
+                    result_df.at[idx, naver_img_col] = ""
+                    logger.warning(f"Row {idx}: No Naver image data column. Clearing value.")
+            
+            # For non-placeholder URLs that are already valid, keep them only if they're actual image URLs
+            elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')):
+                # Only keep if it's a phinf.pstatic.net URL (actual image)
+                if 'phinf.pstatic.net' in img_url and not img_url.startswith('http://placeholder.url/'):
+                    logger.debug(f"Row {idx}: Already has valid Naver image URL: {img_url[:50]}...")
+                else:
+                    # It's a shopping link or other non-image URL, clear it
+                    result_df.at[idx, naver_img_col] = ""
+                    logger.warning(f"Row {idx}: URL is not a Naver image URL. Clearing value: {img_url[:50]}...")
+            else:
+                # Any other non-string or invalid value
+                result_df.at[idx, naver_img_col] = ""
+                logger.warning(f"Row {idx}: Invalid Naver image value. Clearing.")
         
         except Exception as e:
             logger.error(f"Error processing row {idx} in prepare_naver_image_urls_for_upload: {e}")
+            # On error, clear the value rather than keeping potentially bad data
+            result_df.at[idx, naver_img_col] = ""
     
     logger.info(f"Processed {processed_count} Naver image URLs for upload file. Fixed {placeholder_fixed} placeholder URLs.")
     return result_df

@@ -125,15 +125,19 @@ def _is_data_missing(series: pd.Series) -> pd.Series:
 def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filters DataFrame based on configurable criteria:
-    1. Only removes rows where BOTH Koreagift and Naver data are missing
-    2. Uses a configurable price difference threshold (default -0.5%)
-    3. Still keeps rows with valid data even if they have front URLs
+    1. Only keep rows with price differences < -1 (more negative)
+    2. Only removes rows where BOTH Koreagift and Naver data are missing
+    3. Uses a configurable price difference threshold (default -0.5%)
+    4. Still keeps rows with valid data even if they have front URLs
     
     The price threshold can be adjusted by setting filter_upload_data._price_threshold 
     before calling the function.
     """
     # Get the current threshold setting or use default
     price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
+    
+    # Fixed threshold to filter out rows with price difference >= -1
+    FIXED_PRICE_THRESHOLD = -1.0
     
     if df.empty:
         logging.warning("Input DataFrame for upload filtering is empty. Returning empty DataFrame.")
@@ -166,39 +170,37 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     # Identify rows where BOTH sources are missing - this is the primary filter
     missing_links_mask = is_kogift_missing & is_naver_missing
     
-    # --- 2. Price difference filtering with configurable threshold ---
+    # --- 2. Price difference filtering with strict threshold (-1) ---
     # Log the current price threshold
-    logging.info(f"Using price difference threshold: {price_threshold}%")
+    logging.info(f"Using price difference threshold: < {FIXED_PRICE_THRESHOLD} (more negative)")
     
-    # Initialize masks for rows to keep
-    kogift_price_filtered = pd.Series(False, index=filtered_df.index)
-    naver_price_filtered = pd.Series(False, index=filtered_df.index)
+    # Initialize masks for rows to keep - rows must have price difference < -1 to be included
+    kogift_price_valid = pd.Series(False, index=filtered_df.index)
+    naver_price_valid = pd.Series(False, index=filtered_df.index)
     
     # Only apply price filtering if we have both price column and link column
     if KOREAGIFT_PRICE_DIFF_COL in filtered_df.columns and kogift_col:
         # Convert to numeric, coercing errors to NaN
         kogift_price_diff = pd.to_numeric(filtered_df[KOREAGIFT_PRICE_DIFF_COL], errors='coerce')
         
-        # Only filter out rows that are:
+        # Keep rows that have:
         # 1. Not missing Kogift link AND
         # 2. Have a valid price difference value AND
-        # 3. Have a price difference >= price_threshold
-        kogift_price_mask = (
+        # 3. Have a price difference < -1 (more negative than -1)
+        kogift_price_valid = (
             ~is_kogift_missing &
             kogift_price_diff.notna() &
-            (kogift_price_diff >= price_threshold)
+            (kogift_price_diff < FIXED_PRICE_THRESHOLD)
         )
-        kogift_price_filtered = kogift_price_mask
     
     # Same for Naver
     if NAVER_PRICE_DIFF_COL in filtered_df.columns and naver_col:
         naver_price_diff = pd.to_numeric(filtered_df[NAVER_PRICE_DIFF_COL], errors='coerce')
-        naver_price_mask = (
+        naver_price_valid = (
             ~is_naver_missing &
             naver_price_diff.notna() &
-            (naver_price_diff >= price_threshold)
+            (naver_price_diff < FIXED_PRICE_THRESHOLD)
         )
-        naver_price_filtered = naver_price_mask
     
     # --- 3. Count front URLs but don't filter them out ---
     front_url_mask = pd.Series(False, index=filtered_df.index)
@@ -213,14 +215,12 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # Combine filtering conditions:
     # 1. Remove rows where both Kogift and Naver links are missing
-    # 2. Keep row if it has a good price difference for either vendor
+    # 2. Keep rows that have EITHER Kogift price < -1 OR Naver price < -1
     rows_to_keep_mask = (
-        # Keep row unless BOTH links are missing
-        (~missing_links_mask) |  
-        # OR keep row if it has Kogift data and price diff is good (not filtered)
-        (~is_kogift_missing & ~kogift_price_filtered) |
-        # OR keep row if it has Naver data and price diff is good (not filtered)
-        (~is_naver_missing & ~naver_price_filtered)
+        # Don't keep row if both links are missing
+        (~missing_links_mask) &
+        # AND only keep row if either Kogift or Naver has a price difference < -1
+        (kogift_price_valid | naver_price_valid)
     )
     
     # Apply the filter
@@ -231,8 +231,8 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     if removed_count > 0:
         logging.info(f"Upload filter: Removed {removed_count} rows total:")
         logging.info(f"  - {missing_links_mask.sum()} rows identified with both Koreagift and Naver links missing")
-        logging.info(f"  - {kogift_price_filtered.sum()} rows identified with Koreagift price difference > {price_threshold}%")
-        logging.info(f"  - {naver_price_filtered.sum()} rows identified with Naver price difference > {price_threshold}%")
+        logging.info(f"  - {(~kogift_price_valid & ~is_kogift_missing).sum()} rows with Koreagift price difference >= {FIXED_PRICE_THRESHOLD}")
+        logging.info(f"  - {(~naver_price_valid & ~is_naver_missing).sum()} rows with Naver price difference >= {FIXED_PRICE_THRESHOLD}")
         logging.info(f"  - {front_url_mask.sum()} rows had 'front/' URLs (but were not removed for this reason)")
     else:
         logging.info("Upload filter: No rows removed.")
@@ -354,28 +354,11 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
             logging.info("Upload filtering is disabled (strictness=none). No rows will be filtered.")
             df_filtered = df.copy()
         else:
-            # Adjust price thresholds based on strictness
-            if filter_strictness == 'high':
-                # Temporarily modify the price threshold in the function
-                # This is a bit of a hack, but it avoids having to duplicate the function
-                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
-                filter_upload_data._price_threshold = -1.5  # More strict threshold
-                logging.info("Using high strictness filtering with price threshold -1.5%")
-            elif filter_strictness == 'low':
-                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
-                filter_upload_data._price_threshold = 0.0  # Very lenient threshold
-                logging.info("Using low strictness filtering with price threshold 0.0%")
-            else:  # 'medium'
-                original_price_threshold = getattr(filter_upload_data, '_price_threshold', -0.5)
-                filter_upload_data._price_threshold = -0.5  # Default threshold
-                logging.info("Using medium strictness filtering with price threshold -0.5%")
-            
-            # Apply filtering
+            # We no longer need to adjust price thresholds here since the filter_upload_data function
+            # now uses a fixed FIXED_PRICE_THRESHOLD of -1.0
+            # Just apply the filter directly
+            logging.info("Applying filtering - only keeping rows with price differences < -1")
             df_filtered = filter_upload_data(df)
-            
-            # Restore original price threshold
-            if hasattr(filter_upload_data, '_price_threshold'):
-                filter_upload_data._price_threshold = original_price_threshold
         
         # Process front URLs without removing rows
         df_filtered = filter_front_urls_from_upload_data(df_filtered)
@@ -416,7 +399,7 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
         # Save the filtered data back to the same file path, overwriting it.
         # Use 'openpyxl' engine to ensure compatibility with .xlsx format features.
         df_filtered.to_excel(upload_file_path, index=False, engine='openpyxl')
-
+        
         logging.info(f"Successfully filtered and overwrote upload file: {upload_file_path}")
         return True
     except FileNotFoundError:
