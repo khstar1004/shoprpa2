@@ -1444,67 +1444,41 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
     Create separate Excel output files for normal view and upload.
     
     Args:
-        df_finalized: Final DataFrame with all data
+        df_finalized: DataFrame with all required data
         output_path_base: Base path for output files
-        input_filename: Input filename for reference (optional)
+        input_filename: Optional original input filename
     
     Returns:
-        Tuple of (result_success, upload_success, result_path, upload_path)
+        Tuple of (success_result, success_upload)
     """
-    if df_finalized is None:
-        logger.error("Cannot create Excel file: Input DataFrame is None.")
-        return False, False, None, None
-
     logger.info(f"Starting creation of split Excel outputs: {output_path_base}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_filename = f"{output_path_base}_result_{timestamp}.xlsx"
+    upload_filename = f"{output_path_base}_upload_{timestamp}.xlsx"
+    
+    # Ensure output directory exists
     output_dir = os.path.dirname(output_path_base)
-    if output_dir:
+    if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-
+        
+    result_path = result_filename
+    upload_path = upload_filename
+    
+    # Set default return values
+    result_success = False
+    upload_success = False
+    
+    # Safeguard for empty DataFrame
+    if df_finalized.empty:
+        logger.error(f"DataFrame is empty, cannot create Excel outputs")
+        return result_success, upload_success, None, None
+    
+    # Use best Naver detection settings
+    skip_naver_validation = True
+    lenient_naver_validation = True
+    
     try:
-        # Get current date and timestamp
-        current_date = datetime.now().strftime("%Y%m%d")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Convert output_path_base to Path object for cross-platform compatibility
-        output_path = Path(output_path_base)
-        
-        # Setup output file paths
-        if input_filename:
-            # Extract just the base name without extension and any date patterns
-            input_base = Path(input_filename).stem
-            # Remove date patterns like -20250425 from the filename
-            input_base = re.sub(r'-\d{8}', '', input_base)
-            
-            # Create simplified filenames with just the essential parts
-            result_path = str(output_path.parent / f"{input_base}_result_{timestamp}.xlsx")
-            upload_path = str(output_path.parent / f"{input_base}_upload_{timestamp}.xlsx")
-        else:
-            # Use a timestamp if no input filename
-            result_path = str(output_path.parent / f"result_{timestamp}.xlsx")
-            upload_path = str(output_path.parent / f"upload_{timestamp}.xlsx")
-        
-        # Ensure output directory exists
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Set up configuration for naver image handling
-        try:
-            config = configparser.ConfigParser()
-            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
-            config.read(config_path, encoding='utf-8')
-            
-            # Get lenient validation setting from config
-            lenient_naver_validation = config.getboolean('ImageFiltering', 'lenient_naver_validation', fallback=True)
-        except Exception as e:
-            logger.warning(f"Could not read lenient_naver_validation from config: {e}. Using default (True).")
-            lenient_naver_validation = True
-        
-        # Ensure result path exists
-        result_dir = os.path.dirname(result_path)
-        if not os.path.exists(result_dir):
-            os.makedirs(result_dir)
-            logger.info(f"Created directory: {result_dir}")
-            
-        # Create copy of DataFrame for processing
+        # Prepare data using existing function for Excel output
         df_for_excel = _prepare_data_for_excel(df_finalized)
         
         # -----------------------------------------
@@ -1549,126 +1523,31 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         df_result.at[idx, img_col_original_name] = final_url_string
             # --- END MODIFICATION ---
 
-            wb_result = openpyxl.Workbook()
-            ws_result = wb_result.active
-            ws_result.title = "제품 가격 비교 (정상)"
-            
-            # Convert DataFrame to Excel
-            df_result.to_excel(ws_result, index=False)
-            
-            # Get the worksheet
-            worksheet = ws_result
-            
-            # Set lenient validation flag on worksheet
-            worksheet._lenient_naver_validation = lenient_naver_validation
-            
-            # Apply Excel styles and formatting
-            apply_excel_styles(worksheet, df_result)
-            
-            # FIXED: Ensure filter is removed before adding images
-            if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
-                worksheet.auto_filter.ref = None
-                logger.info("Removed filter from result Excel file before adding images")
-            
-            # Now add images to the saved file if any image columns exist
             try:
-                workbook_with_images = openpyxl.load_workbook(result_path)
-                worksheet_with_images = workbook_with_images.active
+                # Create Excel workbook for result file
+                with pd.ExcelWriter(result_path, engine='openpyxl') as writer:
+                    # Convert DataFrame to Excel
+                    df_result.to_excel(writer, index=False, sheet_name="제품 가격 비교 (정상)")
+                    
+                    # Get the worksheet
+                    worksheet = writer.sheets["제품 가격 비교 (정상)"]
+                    
+                    # Set lenient validation flag on worksheet
+                    worksheet._lenient_naver_validation = lenient_naver_validation
+                    
+                    # Apply Excel styles and formatting
+                    apply_excel_styles(worksheet, df_result)
+                    
+                    # FIXED: Ensure filter is removed before adding images
+                    if hasattr(worksheet, 'auto_filter'):
+                        worksheet.auto_filter.ref = None
+                        logger.info("Removed filter from result Excel file before adding images")
                 
-                # Set lenient validation flag on worksheet with images too
-                worksheet_with_images._lenient_naver_validation = lenient_naver_validation
-                
-                # Process image columns
-                images_added = 0
-                
-                # Find columns that have image data
-                image_columns = []
-                for col_idx, column in enumerate(df_for_excel.columns, start=1):
-                    col_name = str(column)
-                    if '이미지' in col_name:
-                        image_columns.append(col_idx)
-                
-                if image_columns:
-                    for row_idx, row_data_tuple in enumerate(df_for_excel.itertuples(index=False), start=2):
-                        # Convert row_data_tuple to a dictionary if it's not already, mapping column names to values
-                        row_data_dict = dict(zip(df_for_excel.columns, row_data_tuple))
-                        
-                        for col_idx_excel_1_based in image_columns: # This is the 1-based Excel column index
-                            # Get the column name from the 0-based DataFrame index
-                            col_name_df = df_for_excel.columns[col_idx_excel_1_based - 1]
-                            img_value_dict = row_data_dict.get(col_name_df)
-                            
-                            cell_to_update = worksheet_with_images.cell(row=row_idx, column=col_idx_excel_1_based)
-                            cell_coord = f"{get_column_letter(col_idx_excel_1_based)}{row_idx}"
-                            img_embedded_successfully = False
-
-                            if isinstance(img_value_dict, dict):
-                                img_path_local = img_value_dict.get('local_path')
-                                img_url_remote = img_value_dict.get('url')
-
-                                if img_path_local and os.path.isfile(str(img_path_local)):
-                                    try:
-                                        img = Image.open(img_path_local)
-                                        max_width, max_height = 150, 150
-                                        if img.width > max_width or img.height > max_height:
-                                            width_ratio = max_width / img.width
-                                            height_ratio = max_height / img.height
-                                            ratio = min(width_ratio, height_ratio)
-                                            new_width = int(img.width * ratio)
-                                            new_height = int(img.height * ratio)
-                                            img = img.resize((new_width, new_height), RESAMPLING_FILTER)
-                                        
-                                        img_byte_arr = io.BytesIO()
-                                        img.save(img_byte_arr, format=img.format or 'PNG')
-                                        img_byte_arr.seek(0)
-                                        excel_img = openpyxl.drawing.image.Image(img_byte_arr)
-                                        excel_img.anchor = cell_coord
-                                        worksheet_with_images.add_image(excel_img)
-                                        cell_to_update.value = None # Clear cell if image embedded
-                                        images_added += 1
-                                        img_embedded_successfully = True
-                                        
-                                        current_row_height = worksheet_with_images.row_dimensions[row_idx].height
-                                        height_to_compare = current_row_height if current_row_height is not None else 0.0
-                                        new_row_height = min(max_height + 10, max(112.5, height_to_compare)) # Add some padding
-                                        worksheet_with_images.row_dimensions[row_idx].height = new_row_height
-                                    except Exception as e:
-                                        logger.error(f"Error adding image from {img_path_local} to {cell_coord}: {e}")
-                                        # Fall through to URL attempt if embedding failed
-
-                                if not img_embedded_successfully:
-                                    if img_url_remote and isinstance(img_url_remote, str) and img_url_remote.startswith(('http://', 'https://')):
-                                        cell_to_update.value = img_url_remote
-                                        cell_to_update.hyperlink = img_url_remote
-                                        cell_to_update.font = Font(color="0563C1", underline="single")
-                                        logger.debug(f"Displaying URL in {cell_coord} as image embedding failed or no local path: {img_url_remote[:60]}...")
-                                    elif img_path_local: # Local path existed but embedding failed, display path
-                                        cell_to_update.value = str(img_path_local)
-                                        logger.warning(f"Displaying local path in {cell_coord} as image embedding failed: {img_path_local}")
-                                    else: # No local path and no valid remote URL
-                                        cell_to_update.value = '-' # Default placeholder
-                            else:
-                                # img_value_dict is not a dictionary or is None
-                                cell_to_update.value = '-' # Default placeholder if no valid image data
-                
-                # FIXED: Ensure filter is removed after image addition too
-                if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
-                    worksheet_with_images.auto_filter.ref = None
-                    logger.info("Removed filter from result Excel file after adding images")
-                
-                # Clean Naver images and related data for the workbook with images as well
-                clean_naver_images_and_data(worksheet_with_images, df_for_excel)
-                
-                # Save the workbook with images
-                workbook_with_images.save(result_path)
-                logger.info(f"Successfully added {images_added} images to result file")
-            except Exception as img_err:
-                logger.error(f"Error adding images to result file: {img_err}")
-                # Continue with the file without images
-            
-            result_success = True
-            logger.info(f"Successfully created result file: {result_path}")
-            
+                logger.info(f"Created initial result file: {result_path}")
+                result_success = True
+            except Exception as writer_err:
+                logger.error(f"Error writing result Excel file: {writer_err}")
+                result_success = False
         except Exception as e:
             logger.error(f"Error creating result file: {e}")
             logger.debug(traceback.format_exc())
@@ -1698,7 +1577,7 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 
                     if upload_img_col not in df_with_image_urls.columns:
                         df_with_image_urls[upload_img_col] = ""
-
+                    
                     extracted_urls_count = 0
                     for idx in df_finalized.index:
                         value = df_finalized.at[idx, img_col] # value is the dictionary from df_finalized
@@ -1706,37 +1585,74 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         url_source_log = "none"
 
                         if isinstance(value, dict):
-                            # Prioritize 'url' key, which should be the direct image URL
+                            # Priority 1: 'url' key, which should be the direct image URL
                             if 'url' in value and isinstance(value['url'], str) and value['url'].strip().startswith(('http://', 'https://')):
                                 image_url_for_upload = value['url'].strip()
                                 url_source_log = "dict['url']"
-                            # Fallback for Kogift: original_crawled_url or original_url if 'url' is placeholder/missing
+                            # Priority 2: 'original_url' (especially for Kogift)
+                            elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].strip().startswith(('http://', 'https://')):
+                                image_url_for_upload = value['original_url'].strip()
+                                url_source_log = "dict['original_url']"
+                            # Priority 3: 'original_crawled_url' (backup for Kogift)
+                            elif 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].strip().startswith(('http://', 'https://')):
+                                image_url_for_upload = value['original_crawled_url'].strip()
+                                url_source_log = "dict['original_crawled_url']"
+                            
+                            # Specific fallbacks for Naver (using product_page_url if image URL is bad/placeholder)
+                            elif img_col == '네이버 이미지':
+                                if 'product_page_url' in value and isinstance(value['product_page_url'], str) and value['product_page_url'].strip().startswith(('http://', 'https://')):
+                                    # Check if 'url' is a placeholder or seems invalid
+                                    current_img_url = value.get('url')
+                                    if not current_img_url or not isinstance(current_img_url, str) or \
+                                       not current_img_url.strip().startswith(('http://', 'https://')) or \
+                                       "placeholder" in current_img_url or \
+                                       not any(current_img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+                                        image_url_for_upload = value['product_page_url'].strip()
+                                        url_source_log = "dict['product_page_url']_as_naver_fallback"
+                                # If 'url' was already good, it would have been picked up by the first condition.
+
+                            # Specific fallbacks for Kogift (trying to construct from product link if URL is placeholder/missing)
                             elif img_col == '고려기프트 이미지':
-                                if 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].strip().startswith(('http://', 'https://')):
-                                    image_url_for_upload = value['original_crawled_url'].strip()
-                                    url_source_log = "dict['original_crawled_url'] (Kogift)"
-                                elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].strip().startswith(('http://', 'https://')):
-                                    image_url_for_upload = value['original_url'].strip()
-                                    url_source_log = "dict['original_url'] (Kogift)"
-                            # Fallback for Naver: product_page_url if 'url' is direct image and we need page link for upload (depends on definition of upload link)
-                            # However, for Naver, the '네이버쇼핑(이미지링크)' should be the *image* link, not page link based on user summary.
-                            # The 'url' key from image_integration for Naver should be the phinf.pstatic.net link.
-                            # 'product_page_url' from Naver dict is for the separate '네이버 쇼핑 링크' column.
+                                current_img_url = value.get('url')
+                                is_placeholder_url = not current_img_url or not isinstance(current_img_url, str) or \
+                                                     not current_img_url.strip().startswith(('http://', 'https://')) or \
+                                                     "placeholder.url" in current_img_url
+                                
+                                if is_placeholder_url:
+                                    # Try to use '고려기프트 상품링크' from df_finalized to construct URL
+                                    # This requires access to the original df_finalized row for that product link
+                                    # The 'value' dict itself might not have the product page link.
+                                    # This part of logic is complex and might be better handled in image_integration or
+                                    # by ensuring 'url' in the dict is already the best possible.
+                                    # For now, rely on 'url', 'original_url', 'original_crawled_url' being populated correctly.
+                                    pass # Assuming prior steps populated 'url' or 'original_url' well.
+
+                            # Fallback to 'local_path' only if it's a web URL (very unlikely)
+                            elif 'local_path' in value and isinstance(value['local_path'], str) and value['local_path'].strip().startswith(('http://', 'https://')):
+                                image_url_for_upload = value['local_path'].strip()
+                                url_source_log = "dict['local_path']_as_url"
+                            else:
+                                url_source_log = "dict_no_valid_url_found"
+                                if logger.isEnabledFor(logging.DEBUG):
+                                     logger.debug(f"Upload - Row {idx}, Col '{img_col}': No valid web URL found in dict. Original dict: {str(value)[:200]}")
 
                         elif isinstance(value, str) and value.strip().startswith(('http://', 'https://')):
-                            # If the column itself already contains a URL string (less ideal at this stage)
-                            image_url_for_upload = value.strip()
-                            url_source_log = "direct_string"
-                        
-                        if image_url_for_upload:
-                            extracted_urls_count += 1
+                            image_url_for_upload = value.strip() # Already a URL string
+                            url_source_log = "already_string_url"
+                        else:
+                            url_source_log = "not_dict_or_string_url"
+                            if value is not None and value != "" and not pd.isna(value) and logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(f"Upload - Row {idx}, Col '{img_col}': Cell contained non-dict, non-URL value: '{str(value)[:70]}'.")
                         
                         df_with_image_urls.at[idx, upload_img_col] = image_url_for_upload
-                        # logger.debug(f"Upload col '{upload_img_col}' [Row {idx}]: URL '{image_url_for_upload[:30]}...' (Source: {url_source_log})")
-                    logger.info(f"Extracted {extracted_urls_count} URLs for upload column '{upload_img_col}' from source '{img_col}'")
-
+                        if image_url_for_upload: # Log if a URL was actually set
+                            extracted_urls_count += 1
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(f"Upload - Row {idx}, Col '{upload_img_col}': Set URL '{image_url_for_upload[:70]}...' (source: {url_source_log})")
+                                
+                    logger.info(f"Extracted {extracted_urls_count} URLs for column {upload_img_col} in upload file.")
+            
             # Special handling for Naver image column - recover original URLs and handle placeholders
-            # Pass df_finalized as the source of rich dictionaries for Naver
             df_with_image_urls = prepare_naver_image_urls_for_upload(df_with_image_urls, df_finalized)
             
             # Special handling for Kogift image column - recover original URLs
@@ -1797,8 +1713,8 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         sample_values = df_upload.loc[non_empty_urls, img_col].head(3).tolist()
                         logger.info(f"Sample URL values in final upload df: {sample_values}")
                     elif count > 0:
-                         sample_non_urls = df_upload.loc[non_empty & ~non_empty_urls, img_col].head(3).tolist()
-                         logger.warning(f"Sample non-URL values in final upload df {img_col}: {sample_non_urls}")
+                        sample_non_urls = df_upload.loc[non_empty & ~non_empty_urls, img_col].head(3).tolist()
+                        logger.warning(f"Sample non-URL values in final upload df {img_col}: {sample_non_urls}")
 
             # Create new workbook for upload file (now with properly extracted image URLs)
             workbook_upload = openpyxl.Workbook()
@@ -2613,7 +2529,7 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame, df_fin
     if naver_rich_data_col_source not in df_finalized_source_data.columns:
         logger.warning(f"Naver rich data column '{naver_rich_data_col_source}' not found in df_finalized_source_data. Skipping Naver URL recovery.")
         # Continue without rich data if not available, but log it.
-
+    
     # Track processed items
     replaced_count = 0
     placeholder_fixed = 0
@@ -2632,7 +2548,6 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame, df_fin
             # Handle any placeholder or empty URLs - clear instead of replacing with fallbacks
             if not img_url or (isinstance(img_url, str) and (img_url.startswith('http://placeholder.url/') or not img_url.strip())):
                 # First try to get data from the original Naver image column
-                # naver_img_key = '네이버 이미지' # This was trying to read from df_with_image_urls itself
                 url_found_from_source = False
                 if naver_rich_data_col_source in df_finalized_source_data.columns and idx in df_finalized_source_data.index:
                     original_data_dict = df_finalized_source_data.at[idx, naver_rich_data_col_source]
@@ -2649,7 +2564,7 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame, df_fin
                         
                         # Fallback: original_crawled_url if it's a direct image URL
                         if not url_found_from_source:
-                            original_crawled_url = original_data_dict.get('original_crawled_url') # Assuming this key might exist
+                            original_crawled_url = original_data_dict.get('original_crawled_url')
                             if isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')) and \
                                ('phinf.pstatic.net' in original_crawled_url or any(original_crawled_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
                                 result_df.at[idx, naver_img_col] = original_crawled_url
@@ -2661,9 +2576,9 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame, df_fin
                 if not url_found_from_source:
                     result_df.at[idx, naver_img_col] = ""
                     if img_url and isinstance(img_url, str) and img_url.strip() and not img_url.startswith('http://placeholder.url/'):
-                         logger.warning(f"Row {idx}: No valid Naver image URL found from source. Clearing existing non-placeholder URL: {img_url[:50]}")
+                        logger.warning(f"Row {idx}: No valid Naver image URL found from source. Clearing existing non-placeholder URL: {img_url[:50]}")
                     elif img_url: # Placeholder or empty
-                         logger.warning(f"Row {idx}: No valid Naver image URL found from source. Clearing placeholder/empty URL.")
+                        logger.warning(f"Row {idx}: No valid Naver image URL found from source. Clearing placeholder/empty URL.")
             
             # For non-placeholder URLs that are already valid, keep them only if they're actual image URLs
             elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')):
