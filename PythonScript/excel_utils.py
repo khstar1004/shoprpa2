@@ -1476,12 +1476,12 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
             input_base = re.sub(r'-\d{8}', '', input_base)
             
             # Create simplified filenames with just the essential parts
-            result_path = str(output_path / f"{input_base}-{current_date}_result_{timestamp}.xlsx")
-            upload_path = str(output_path / f"{input_base}-{current_date}_upload_{timestamp}.xlsx")
+            result_path = str(output_path.parent / f"{input_base}_result_{timestamp}.xlsx")
+            upload_path = str(output_path.parent / f"{input_base}_upload_{timestamp}.xlsx")
         else:
             # Use a timestamp if no input filename
-            result_path = str(output_path / f"result_{timestamp}.xlsx")
-            upload_path = str(output_path / f"upload_{timestamp}.xlsx")
+            result_path = str(output_path.parent / f"result_{timestamp}.xlsx")
+            upload_path = str(output_path.parent / f"upload_{timestamp}.xlsx")
         
         # Ensure output directory exists
         output_path.mkdir(parents=True, exist_ok=True)
@@ -1555,86 +1555,67 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         image_columns.append(col_idx)
                 
                 if image_columns:
-                    for row_idx, row in enumerate(df_for_excel.itertuples(index=False), start=2):
-                        for col_idx in image_columns:
-                            col_name = df_for_excel.columns[col_idx-1]
-                            img_value = df_for_excel.iloc[row_idx-2, col_idx-1]
+                    for row_idx, row_data_tuple in enumerate(df_for_excel.itertuples(index=False), start=2):
+                        # Convert row_data_tuple to a dictionary if it's not already, mapping column names to values
+                        row_data_dict = dict(zip(df_for_excel.columns, row_data_tuple))
+                        
+                        for col_idx_excel_1_based in image_columns: # This is the 1-based Excel column index
+                            # Get the column name from the 0-based DataFrame index
+                            col_name_df = df_for_excel.columns[col_idx_excel_1_based - 1]
+                            img_value_dict = row_data_dict.get(col_name_df)
                             
-                            if not isinstance(img_value, dict):
-                                continue
-                                
-                            # Check for local_path in the dictionary
-                            img_path = img_value.get('local_path', None)
-                            has_url = 'url' in img_value and img_value['url']
-                            
-                            if img_path and os.path.isfile(img_path):
-                                try:
-                                    # Create and add image to cell
-                                    img = Image.open(img_path)
-                                    
-                                    # Resize image if too large (max 150x150 pixels)
-                                    max_width, max_height = 150, 150
-                                    if img.width > max_width or img.height > max_height:
-                                        # Calculate new dimensions maintaining aspect ratio
-                                        width_ratio = max_width / img.width
-                                        height_ratio = max_height / img.height
-                                        ratio = min(width_ratio, height_ratio)
+                            cell_to_update = worksheet_with_images.cell(row=row_idx, column=col_idx_excel_1_based)
+                            cell_coord = f"{get_column_letter(col_idx_excel_1_based)}{row_idx}"
+                            img_embedded_successfully = False
+
+                            if isinstance(img_value_dict, dict):
+                                img_path_local = img_value_dict.get('local_path')
+                                img_url_remote = img_value_dict.get('url')
+
+                                if img_path_local and os.path.isfile(str(img_path_local)):
+                                    try:
+                                        img = Image.open(img_path_local)
+                                        max_width, max_height = 150, 150
+                                        if img.width > max_width or img.height > max_height:
+                                            width_ratio = max_width / img.width
+                                            height_ratio = max_height / img.height
+                                            ratio = min(width_ratio, height_ratio)
+                                            new_width = int(img.width * ratio)
+                                            new_height = int(img.height * ratio)
+                                            img = img.resize((new_width, new_height), RESAMPLING_FILTER)
                                         
-                                        new_width = int(img.width * ratio)
-                                        new_height = int(img.height * ratio)
+                                        img_byte_arr = io.BytesIO()
+                                        img.save(img_byte_arr, format=img.format or 'PNG')
+                                        img_byte_arr.seek(0)
+                                        excel_img = openpyxl.drawing.image.Image(img_byte_arr)
+                                        excel_img.anchor = cell_coord
+                                        worksheet_with_images.add_image(excel_img)
+                                        cell_to_update.value = None # Clear cell if image embedded
+                                        images_added += 1
+                                        img_embedded_successfully = True
                                         
-                                        # Resize the image
-                                        img = img.resize((new_width, new_height), RESAMPLING_FILTER)
-                                    
-                                    # Save to a BytesIO object to create openpyxl image
-                                    img_byte_arr = io.BytesIO()
-                                    img.save(img_byte_arr, format=img.format or 'PNG')
-                                    img_byte_arr.seek(0)
-                                    
-                                    # Create openpyxl image
-                                    excel_img = openpyxl.drawing.image.Image(img_byte_arr)
-                                    
-                                    # Add to worksheet at the cell position
-                                    cell_coord = f"{get_column_letter(col_idx)}{row_idx}"
-                                    excel_img.anchor = cell_coord
-                                    worksheet_with_images.add_image(excel_img)
-                                    # Clear the cell value after adding the image
-                                    worksheet_with_images.cell(row=row_idx, column=col_idx).value = None
-                                    
-                                    # Count image
-                                    images_added += 1
-                                    
-                                    # Adjust row height to fit image
-                                    current_worksheet_row_height = worksheet_with_images.row_dimensions[row_idx].height
-                                    height_to_compare = current_worksheet_row_height if current_worksheet_row_height is not None else 0.0
-                                    row_height = min(max_height, max(112.5, height_to_compare))
-                                    worksheet_with_images.row_dimensions[row_idx].height = row_height
-                                except Exception as e:
-                                    logger.error(f"Error adding image from {img_path}: {e}")
-                                    # Fallback to displaying URL if available
-                                    if has_url:
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                        cell.value = img_value['url']
-                                        cell.hyperlink = img_value['url']
-                                        cell.font = Font(color="0563C1", underline="single")
-                                        logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
+                                        current_row_height = worksheet_with_images.row_dimensions[row_idx].height
+                                        height_to_compare = current_row_height if current_row_height is not None else 0.0
+                                        new_row_height = min(max_height + 10, max(112.5, height_to_compare)) # Add some padding
+                                        worksheet_with_images.row_dimensions[row_idx].height = new_row_height
+                                    except Exception as e:
+                                        logger.error(f"Error adding image from {img_path_local} to {cell_coord}: {e}")
+                                        # Fall through to URL attempt if embedding failed
+
+                                if not img_embedded_successfully:
+                                    if img_url_remote and isinstance(img_url_remote, str) and img_url_remote.startswith(('http://', 'https://')):
+                                        cell_to_update.value = img_url_remote
+                                        cell_to_update.hyperlink = img_url_remote
+                                        cell_to_update.font = Font(color="0563C1", underline="single")
+                                        logger.debug(f"Displaying URL in {cell_coord} as image embedding failed or no local path: {img_url_remote[:60]}...")
+                                    elif img_path_local: # Local path existed but embedding failed, display path
+                                        cell_to_update.value = str(img_path_local)
+                                        logger.warning(f"Displaying local path in {cell_coord} as image embedding failed: {img_path_local}")
+                                    else: # No local path and no valid remote URL
+                                        cell_to_update.value = '-' # Default placeholder
                             else:
-                                # No valid local file, try to add as URL if available
-                                try:
-                                    if has_url:
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                        cell.value = img_value['url']
-                                        cell.hyperlink = img_value['url']
-                                        cell.font = Font(color="0563C1", underline="single")
-                                        logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
-                                except Exception as e:
-                                    logger.error(f"Error creating/configuring image object for {img_path}: {e}")
-                                    # Fallback to displaying URL if available
-                                    if has_url:
-                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                        cell.value = img_value['url']
-                                        cell.hyperlink = img_value['url']
-                                        cell.font = Font(color="0563C1", underline="single")
+                                # img_value_dict is not a dictionary or is None
+                                cell_to_update.value = '-' # Default placeholder if no valid image data
                 
                 # FIXED: Ensure filter is removed after image addition too
                 if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:

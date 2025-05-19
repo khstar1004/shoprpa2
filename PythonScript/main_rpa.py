@@ -850,14 +850,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 output_dir = config.get('Paths', 'output_dir')
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Generate output filename
-                input_filename_base = input_filename.rsplit('.', 1)[0]
+                # Generate output filename without creating additional subdirectories
+                input_filename_base = os.path.basename(input_filename).rsplit('.', 1)[0]
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"{input_filename_base}")
+                output_path = os.path.join(output_dir, input_filename_base)
 
-                # DO NOT create the full output path with timestamp here
-                # Instead, pass the base directory and filename to create_split_excel_outputs
-                # and let it add the appropriate suffix (_result or _upload) and timestamp
+                # Pass the base directory and filename to create_split_excel_outputs
+                # It will add the appropriate suffix (_result or _upload) and timestamp
                 
                 # --- Moved Image Integration Here ---
                 try:
