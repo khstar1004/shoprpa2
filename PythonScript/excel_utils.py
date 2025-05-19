@@ -1809,7 +1809,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                     logger.info(f"Extracting image URLs from {img_col} column...")
                     
                     # Map the column names to the upload file column names
-                    # This maps: '본사 이미지' -> '해오름(이미지링크)', '고려기프트 이미지' -> '고려기프트(이미지링크)', '네이버 이미지' -> '네이버쇼핑(이미지링크)'
                     upload_img_col = COLUMN_MAPPING_FINAL_TO_UPLOAD.get(img_col, img_col) # Use mapping, fallback to original if not found
 
                     # Create the target upload column if it doesn't exist in the intermediate df
@@ -1830,14 +1829,19 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         url_source = "unknown"
                         
                         try:
-                            # FIX: Explicitly check dictionary structure and extract 'url' key if it's a web URL
+                            # Check dictionary structure and extract 'url' key if it's a web URL
                             if isinstance(value, dict):
-                                # 1. Check for product_url first (for Naver) - NEW ADDITION
+                                # 1. Check for product_url first (for Naver)
                                 if 'product_url' in value and isinstance(value['product_url'], str) and value['product_url'].startswith(('http://', 'https://')):
                                     image_url = value['product_url'].strip()
                                     url_source = "direct_from_product_url_key"
                                     logger.debug(f"Found product URL in {img_col} at idx {idx} using 'product_url' key: {image_url[:50]}...")
-                                # 2. Check for regular 'url' key (including placeholders, but preferring real URLs)
+                                # 2. Check for original_crawled_url added by our improvements
+                                elif 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].startswith(('http://', 'https://')):
+                                    image_url = value['original_crawled_url'].strip()
+                                    url_source = "from_original_crawled_url_key"
+                                    logger.debug(f"Found original crawled URL in {img_col} at idx {idx}: {image_url[:50]}...")
+                                # 3. Check for regular 'url' key (including placeholders, but preferring real URLs)
                                 elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
                                     # Try to use real URLs, but for placeholders check for original_crawled_url
                                     if value['url'].startswith('http://placeholder.url/'):
@@ -1854,16 +1858,11 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         image_url = value['url'].strip()
                                         url_source = "direct_from_url_key"
                                         logger.debug(f"Found web URL in {img_col} at idx {idx} using 'url' key: {image_url[:50]}...")
-                                # 3. Check for original_url key for original crawled URLs
+                                # 4. Check for original_url key for original crawled URLs
                                 elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].startswith(('http://', 'https://')):
                                     image_url = value['original_url'].strip()
                                     url_source = "from_original_url_key"
                                     logger.debug(f"Found original URL in {img_col} at idx {idx} using 'original_url' key: {image_url[:50]}...")
-                                # 4. Check for original_crawled_url key (NEW KEY for keeping crawled URLs)
-                                elif 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].startswith(('http://', 'https://')):
-                                    image_url = value['original_crawled_url'].strip()
-                                    url_source = "from_original_crawled_url_key"
-                                    logger.debug(f"Found original crawled URL in {img_col} at idx {idx} using 'original_crawled_url' key: {image_url[:50]}...")
                                 # 5. Check if original_path is a URL
                                 elif 'original_path' in value and isinstance(value['original_path'], str) and value['original_path'].startswith(('http://', 'https://')):
                                     image_url = value['original_path'].strip()
@@ -1889,13 +1888,12 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                     # Log summary for this column
                     logger.info(f"URL 추출 결과 ({upload_img_col}): 총 {urls_found}개 URL 추출 성공, {url_errors}개 오류")
 
-            # NEW: Special handling for Naver image column - replace with product links
+            # Special handling for Naver image column - recover original URLs and handle placeholders
             df_with_image_urls = prepare_naver_image_urls_for_upload(df_with_image_urls)
             
-            # NEW: Special handling for Kogift image column - recover original URLs
+            # Special handling for Kogift image column - recover original URLs
             df_with_image_urls = prepare_kogift_image_urls_for_upload(df_with_image_urls)
 
-            # Check if we extracted any image URLs
             # Check if we extracted any image URLs
             for img_col in ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']: # Use upload file column names
                 if img_col in df_with_image_urls.columns:
@@ -2743,7 +2741,7 @@ def use_naver_product_links_for_upload(df: pd.DataFrame) -> pd.DataFrame:
 # Function to handle extraction and replacement of image URLs for upload file
 def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.DataFrame:
     """
-    Prepare Naver image URLs for the upload file by prioritizing product links over image URLs.
+    Prepare Naver image URLs for the upload file by prioritizing actual image URLs over placeholders.
     
     Args:
         df_with_image_urls: DataFrame with extracted image URLs
@@ -2782,47 +2780,66 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.
             
             processed_count += 1
             
-            # Handle placeholder URLs by checking the original DataFrame
-            if isinstance(img_url, str) and img_url.startswith('http://placeholder.url/'):
-                # Check if we have useful information in the original Naver image column
+            # Handle any placeholder or empty URLs
+            if not img_url or (isinstance(img_url, str) and (img_url.startswith('http://placeholder.url/') or not img_url.strip())):
+                # First try to get data from the original Naver image column
                 naver_img_key = '네이버 이미지'
                 if naver_img_key in df_with_image_urls.columns:
                     original_data = df_with_image_urls.at[idx, naver_img_key]
+                    
+                    # Try multiple sources for image URL in the following order:
+                    url_found = False
+                    
                     if isinstance(original_data, dict):
-                        # Check for any useful URL data
+                        # 1. Check for original_crawled_url (highest priority)
                         original_crawled_url = original_data.get('original_crawled_url')
-                        
-                        product_url = original_data.get('product_url')
-                        
-                        if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')):
+                        if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')) and not original_crawled_url.startswith('http://placeholder.url/'):
                             result_df.at[idx, naver_img_col] = original_crawled_url
                             placeholder_fixed += 1
-                            logger.info(f"Row {idx}: Recovered original crawled URL for placeholder: {original_crawled_url[:50]}...")
-                            continue
-                        elif product_url and isinstance(product_url, str) and product_url.startswith(('http://', 'https://')):
-                            result_df.at[idx, naver_img_col] = product_url
-                            placeholder_fixed += 1
-                            logger.info(f"Row {idx}: Recovered product URL for placeholder: {product_url[:50]}...")
-                            continue
+                            logger.info(f"Row {idx}: Recovered original crawled URL for Naver placeholder: {original_crawled_url[:50]}...")
+                            url_found = True
                             
-                # If we have a product link from the Naver link column, use it as fallback
-                if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                    result_df.at[idx, naver_img_col] = product_link
-                    placeholder_fixed += 1
-                    logger.info(f"Row {idx}: Using product link from 네이버 링크 column for placeholder: {product_link[:50]}...")
-                    continue
-            
-            # Regular handling - replace image URL with product link if available
-            if naver_link_col in df_with_image_urls.columns and product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                # Only replace if the current image URL is from pstatic.net or empty
-                if not img_url or (isinstance(img_url, str) and ('pstatic.net' in img_url or not img_url.strip())):
-                    result_df.at[idx, naver_img_col] = product_link
-                    replaced_count += 1
-                    logger.debug(f"Row {idx}: Replaced Naver image URL with product link in upload file: {product_link[:50]}...")
+                        # 2. Next try product_url
+                        elif not url_found:
+                            product_url = original_data.get('product_url')
+                            if product_url and isinstance(product_url, str) and product_url.startswith(('http://', 'https://')):
+                                result_df.at[idx, naver_img_col] = product_url
+                                placeholder_fixed += 1
+                                logger.info(f"Row {idx}: Using product URL for Naver placeholder: {product_url[:50]}...")
+                                url_found = True
+                                
+                        # 3. Try to construct URL from product_id if available
+                        elif not url_found:
+                            product_id = original_data.get('product_id')
+                            if product_id:
+                                try:
+                                    # Try multiple image URL patterns for Naver
+                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                    result_df.at[idx, naver_img_col] = constructed_url
+                                    placeholder_fixed += 1
+                                    logger.info(f"Row {idx}: Constructed Naver URL from product_id: {constructed_url}")
+                                    url_found = True
+                                except Exception as e:
+                                    logger.warning(f"Row {idx}: Failed to construct Naver URL from product_id: {e}")
+                    
+                    # 4. If still no URL, try using the product link from Naver link column as last resort
+                    if not url_found and product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                        result_df.at[idx, naver_img_col] = product_link
+                        placeholder_fixed += 1
+                        logger.info(f"Row {idx}: Using product link as fallback for Naver image: {product_link[:50]}...")
+                        url_found = True
+                    
+                    # 5. If still not found, log failure
+                    if not url_found:
+                        logger.warning(f"Row {idx}: Failed to find any valid URL for Naver image, placeholder remains")
+            # For non-placeholder URLs that are already valid, keep them
+            elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')) and not img_url.startswith('http://placeholder.url/'):
+                logger.debug(f"Row {idx}: Already has valid Naver image URL: {img_url[:50]}...")
+        
         except Exception as e:
             logger.error(f"Error processing row {idx} in prepare_naver_image_urls_for_upload: {e}")
     
-    logger.info(f"Prepared {replaced_count}/{processed_count} Naver image URLs for upload file. Fixed {placeholder_fixed} placeholder URLs.")
+    logger.info(f"Processed {processed_count} Naver image URLs for upload file. Fixed {placeholder_fixed} placeholder URLs.")
     return result_df
 
 def is_unreliable_naver_url(url: str) -> bool:
@@ -2907,67 +2924,106 @@ def prepare_kogift_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd
             
             processed_count += 1
             
-            # Handle placeholder URLs by checking the original DataFrame
-            if isinstance(img_url, str) and img_url.startswith('http://placeholder.url/'):
+            # Handle any placeholder or empty URLs
+            if not img_url or (isinstance(img_url, str) and (img_url.startswith('http://placeholder.url/') or not img_url.strip())):
+                # Log that we're processing this row
+                logger.debug(f"Row {idx}: Processing Kogift placeholder URL")
+                
+                # Initialize URL found flag
+                url_found = False
+                
                 # Check if we have useful information in the original Kogift image column
                 kogift_img_key = '고려기프트 이미지'
                 if kogift_img_key in df_with_image_urls.columns:
                     original_data = df_with_image_urls.at[idx, kogift_img_key]
                     if isinstance(original_data, dict):
-                        # Check for any useful URL data
+                        # 1. First try original_crawled_url (highest priority)
                         original_crawled_url = original_data.get('original_crawled_url')
-                        original_url = original_data.get('original_url')
-                        
                         if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')) and not original_crawled_url.startswith('http://placeholder.url/'):
                             result_df.at[idx, kogift_img_col] = original_crawled_url
                             placeholder_fixed += 1
                             logger.info(f"Row {idx}: Recovered original crawled URL for Kogift placeholder: {original_crawled_url[:50]}...")
-                            continue
-                        elif original_url and isinstance(original_url, str) and original_url.startswith(('http://', 'https://')) and not original_url.startswith('http://placeholder.url/'):
-                            result_df.at[idx, kogift_img_col] = original_url
-                            placeholder_fixed += 1
-                            logger.info(f"Row {idx}: Recovered original URL for Kogift placeholder: {original_url[:50]}...")
-                            continue
+                            url_found = True
+                        
+                        # 2. Try original_url
+                        elif not url_found:
+                            original_url = original_data.get('original_url')
+                            if original_url and isinstance(original_url, str) and original_url.startswith(('http://', 'https://')) and not original_url.startswith('http://placeholder.url/'):
+                                result_df.at[idx, kogift_img_col] = original_url
+                                placeholder_fixed += 1
+                                logger.info(f"Row {idx}: Recovered original URL for Kogift placeholder: {original_url[:50]}...")
+                                url_found = True
                             
-                # If original data check failed, try to use product link
-                if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                    # Try to construct an image URL from the product link
+                        # 3. Try direct url (might be a valid URL even if flagged as placeholder)
+                        elif not url_found:
+                            url = original_data.get('url')
+                            if url and isinstance(url, str) and url.startswith(('http://', 'https://')) and not url.startswith('http://placeholder.url/'):
+                                result_df.at[idx, kogift_img_col] = url
+                                placeholder_fixed += 1
+                                logger.info(f"Row {idx}: Using direct URL from Kogift image data: {url[:50]}...")
+                                url_found = True
+                        
+                        # 4. Try to construct URL from product_id in the image data
+                        elif not url_found and 'product_id' in original_data:
+                            product_id = original_data.get('product_id')
+                            if product_id:
+                                try:
+                                    constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                    result_df.at[idx, kogift_img_col] = constructed_url
+                                    placeholder_fixed += 1
+                                    logger.info(f"Row {idx}: Constructed Kogift image URL from product_id in image data: {constructed_url}")
+                                    url_found = True
+                                except Exception as e:
+                                    logger.warning(f"Row {idx}: Failed to construct URL from product_id in image data: {e}")
+                        
+                # 5. Try to use product link and extract product_id
+                if not url_found and product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
                     try:
                         # Extract product code from URL (common pattern in Kogift links)
                         import re
+                        # Try different patterns for extracting product ID
+                        product_id = None
+                        
+                        # Look for 'product_id='
                         product_id_match = re.search(r'product_id=(\d+)', product_link)
                         if product_id_match:
                             product_id = product_id_match.group(1)
+                        
+                        # Also try 'no=' which appears in some Kogift URLs
+                        elif 'no=' in product_link:
+                            no_match = re.search(r'no=(\d+)', product_link)
+                            if no_match:
+                                product_id = no_match.group(1)
+                        
+                        # If found product_id, construct image URL
+                        if product_id:
                             constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
                             result_df.at[idx, kogift_img_col] = constructed_url
                             placeholder_fixed += 1
-                            logger.info(f"Row {idx}: Constructed Kogift image URL from product link: {constructed_url}")
-                            continue
+                            logger.info(f"Row {idx}: Constructed Kogift image URL from product ID in link: {constructed_url}")
+                            url_found = True
+                        # If we couldn't extract product_id, use the product link as fallback
+                        else:
+                            result_df.at[idx, kogift_img_col] = product_link
+                            placeholder_fixed += 1
+                            logger.info(f"Row {idx}: Using product link as fallback for Kogift image: {product_link[:50]}...")
+                            url_found = True
                     except Exception as e:
                         logger.warning(f"Row {idx}: Failed to process Kogift product link: {e}")
+                        # Still use the product link as fallback even if processing failed
+                        result_df.at[idx, kogift_img_col] = product_link
+                        placeholder_fixed += 1
+                        logger.info(f"Row {idx}: Using product link as fallback despite error: {product_link[:50]}...")
+                        url_found = True
                 
-                # If we have product_id directly in the image data, try to use it
-                if kogift_img_key in df_with_image_urls.columns:
-                    original_data = df_with_image_urls.at[idx, kogift_img_key]
-                    if isinstance(original_data, dict) and 'product_id' in original_data:
-                        product_id = original_data['product_id']
-                        if product_id:
-                            try:
-                                constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
-                                result_df.at[idx, kogift_img_col] = constructed_url
-                                placeholder_fixed += 1
-                                logger.info(f"Row {idx}: Constructed Kogift image URL from product_id: {constructed_url}")
-                                continue
-                            except Exception as e:
-                                logger.warning(f"Row {idx}: Failed to construct URL from product_id: {e}")
-                
-                # If all attempts to recover a better URL failed, but we have a product link,
-                # use the product link itself as a fallback (better than placeholder)
-                if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                    result_df.at[idx, kogift_img_col] = product_link
-                    placeholder_fixed += 1
-                    logger.info(f"Row {idx}: Using product link as fallback for Kogift image: {product_link[:50]}...")
-        
+                # 6. Log if we couldn't find any valid URL
+                if not url_found:
+                    logger.warning(f"Row {idx}: Failed to find any valid URL for Kogift image, placeholder remains")
+            
+            # For non-placeholder URLs that are already valid, keep them
+            elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')) and not img_url.startswith('http://placeholder.url/'):
+                logger.debug(f"Row {idx}: Already has valid Kogift image URL: {img_url[:50]}...")
+            
         except Exception as e:
             logger.error(f"Error processing row {idx} in prepare_kogift_image_urls_for_upload: {e}")
     
