@@ -1033,7 +1033,7 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
     상품별로 일관된 이미지 매칭을 보장합니다.
     
     Args:
-        df: 처리할 DataFrame
+        df: 처리할 DataFrame (data_processing.py의 format_product_data_for_output을 거친 상태여야 함)
         config: 설정 파일
         
     Returns:
@@ -1041,13 +1041,13 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
     """
     try:
         logging.info("통합: 이미지 통합 프로세스 시작...")
-        result_df = df.copy()
-        
-        # Define expected column names for scraped URLs in the input df
-        # These names are based on user's description and common patterns
-        scraped_haereum_url_col = '본사이미지URL'  # As stated by user for input df
-        scraped_kogift_url_col = '고려기프트이미지URL' # Hypothetical, for consistency
-        scraped_naver_url_col = '네이버이미지URL'     # Based on user description
+        result_df = df.copy() # df는 이미 format_product_data_for_output을 거쳐 이미지 컬럼에 dict가 있을 것으로 예상
+
+        # These column names are expected to be in the input df, potentially holding original scraped URLs
+        # if they were not already incorporated into the image dictionaries by data_processing.py
+        scraped_haereum_url_col_input_df = '본사이미지URL' 
+        scraped_kogift_url_col_input_df = '고려기프트이미지URL' 
+        scraped_naver_url_col_input_df = '네이버이미지URL'
         
         # 이미지 디렉토리 경로
         main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\\\RPA\\\\Image\\\\Main'))
@@ -1226,74 +1226,91 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 if haereum_data and isinstance(haereum_data, tuple) and len(haereum_data) >= 2:
                     haereum_path, haereum_score = haereum_data[:2]  # Correctly extract path and score
                     if haereum_path and haereum_path in haereum_images:
-                        haereum_image_info = haereum_images[haereum_path]
+                        haereum_image_info_from_metadata = haereum_images[haereum_path] # Metadata from disk scan
                         
                         current_haereum_url = None
-                        if idx < len(df) and scraped_haereum_url_col in df.columns:
-                            url_val = df.iloc[idx].get(scraped_haereum_url_col)
-                            if isinstance(url_val, str) and url_val.startswith(('http://', 'https://')):
-                                current_haereum_url = url_val
-                        if not current_haereum_url: # Fallback to metadata URL if any
-                            current_haereum_url = haereum_image_info.get('url', '')
+                        # 1. Check URL from the dictionary in the input df's '본사 이미지' column
+                        if idx < len(df) and '본사 이미지' in df.columns and isinstance(df.iloc[idx].get('본사 이미지'), dict):
+                            url_from_dict = df.iloc[idx]['본사 이미지'].get('url')
+                            if isinstance(url_from_dict, str) and url_from_dict.startswith(('http://', 'https://')):
+                                current_haereum_url = url_from_dict
+                        
+                        # 2. Fallback: Check a separate URL column in input df (e.g., '본사이미지URL')
+                        if not current_haereum_url and idx < len(df) and scraped_haereum_url_col_input_df in df.columns:
+                            url_val_from_separate_col = df.iloc[idx].get(scraped_haereum_url_col_input_df)
+                            if isinstance(url_val_from_separate_col, str) and url_val_from_separate_col.startswith(('http://', 'https://')):
+                                current_haereum_url = url_val_from_separate_col
+                        
+                        # 3. Fallback: URL from metadata (less likely to be a web URL)
+                        if not current_haereum_url:
+                            current_haereum_url = haereum_image_info_from_metadata.get('url', '')
 
                         image_data = {
-                            'url': current_haereum_url, # Prioritize scraped URL from input df
-                            'local_path': haereum_image_info.get('path', haereum_path),
+                            'url': current_haereum_url, 
+                            'local_path': haereum_image_info_from_metadata.get('path', haereum_path),
                             'source': 'haereum',
                             'product_name': product_name,
-                            'similarity': haereum_score,  # Store the similarity score
+                            'similarity': haereum_score,
                             'original_path': haereum_path
                         }
                         result_df.at[idx, '본사 이미지'] = image_data
                         
-                        # Also add the URL to a dedicated column if it exists
-                        # This column in result_df is also named '본사이미지URL'
-                        if scraped_haereum_url_col not in result_df.columns:
-                            result_df[scraped_haereum_url_col] = None
-                        result_df.at[idx, scraped_haereum_url_col] = image_data['url']
+                        # Also update the separate URL column in result_df for consistency if it exists
+                        if scraped_haereum_url_col_input_df not in result_df.columns:
+                            result_df[scraped_haereum_url_col_input_df] = None
+                        result_df.at[idx, scraped_haereum_url_col_input_df] = image_data['url']
                 
                 # Process Kogift image
                 if kogift_data and isinstance(kogift_data, tuple) and len(kogift_data) >= 2:
-                    kogift_path, kogift_score = kogift_data[:2]  # Correctly extract path and score
-                    logger.debug(f"Row {idx} ('{product_name}'): Kogift image matched: '{kogift_path}' (Score: {kogift_score:.4f})")
+                    kogift_path, kogift_score = kogift_data[:2]
                     if kogift_path and kogift_path in kogift_images:
-                        # Only add Kogift image if there's actual product info
                         has_kogift_product_info = idx < len(kogift_product_info_exists) and kogift_product_info_exists[idx]
-                        logger.debug(f"Row {idx} ('{product_name}'): Kogift product info exists check: {has_kogift_product_info}")
                         if has_kogift_product_info:
-                            kogift_image_info = kogift_images[kogift_path]
-
+                            kogift_image_info_from_metadata = kogift_images[kogift_path]
+                            
                             current_kogift_url = None
-                            if idx < len(df) and scraped_kogift_url_col in df.columns:
-                                 url_val = df.iloc[idx].get(scraped_kogift_url_col)
-                                 if isinstance(url_val, str) and url_val.startswith(('http://', 'https://')):
-                                    current_kogift_url = url_val
-                            if not current_kogift_url: # Fallback to metadata URL
-                                current_kogift_url = kogift_image_info.get('url', '')
+                            original_url_for_dict = None
+                            original_crawled_url_for_dict = None
+
+                            # 1. Check URL from the dictionary in the input df's '고려기프트 이미지' column
+                            input_kogift_dict = None
+                            if idx < len(df) and '고려기프트 이미지' in df.columns and isinstance(df.iloc[idx].get('고려기프트 이미지'), dict):
+                                input_kogift_dict = df.iloc[idx]['고려기프트 이미지']
+                                url_from_dict = input_kogift_dict.get('url')
+                                if isinstance(url_from_dict, str) and url_from_dict.startswith(('http://', 'https://')):
+                                    current_kogift_url = url_from_dict
+                                # Preserve original_url and original_crawled_url if they exist in the input dict
+                                original_url_for_dict = input_kogift_dict.get('original_url')
+                                original_crawled_url_for_dict = input_kogift_dict.get('original_crawled_url')
                             
-                            # Attempt to get original_url and original_crawled_url from input df if they exist
-                            # These might be set by earlier processing stages or need specific column names.
-                            # For now, using generic names; these might need adjustment.
-                            original_url_from_df = None
-                            if idx < len(df) and '고려기프트_original_url' in df.columns:
-                                original_url_from_df = df.iloc[idx].get('고려기프트_original_url')
+                            # 2. Fallback: Check a separate URL column in input df (e.g., '고려기프트이미지URL')
+                            if not current_kogift_url and idx < len(df) and scraped_kogift_url_col_input_df in df.columns:
+                                url_val_from_separate_col = df.iloc[idx].get(scraped_kogift_url_col_input_df)
+                                if isinstance(url_val_from_separate_col, str) and url_val_from_separate_col.startswith(('http://', 'https://')):
+                                    current_kogift_url = url_val_from_separate_col
                             
-                            original_crawled_url_from_df = None
-                            if idx < len(df) and '고려기프트_original_crawled_url' in df.columns:
-                                original_crawled_url_from_df = df.iloc[idx].get('고려기프트_original_crawled_url')
+                            # 3. Fallback: URL from metadata (less likely to be a web URL)
+                            if not current_kogift_url:
+                                current_kogift_url = kogift_image_info_from_metadata.get('url', '')
+                            
+                            # If original_url/original_crawled_url were not in input_dict, try metadata
+                            if not original_url_for_dict:
+                                original_url_for_dict = kogift_image_info_from_metadata.get('original_url')
+                            if not original_crawled_url_for_dict:
+                                original_crawled_url_for_dict = kogift_image_info_from_metadata.get('original_crawled_url')
 
                             image_data = {
-                                'url': current_kogift_url, # Will be refined by improved_kogift_image_matching
-                                'local_path': kogift_image_info.get('path', kogift_path),
+                                'url': current_kogift_url, 
+                                'local_path': kogift_image_info_from_metadata.get('path', kogift_path),
                                 'source': 'kogift',
                                 'product_name': product_name,
-                                'similarity': kogift_score,  # Store the similarity score
+                                'similarity': kogift_score,  
                                 'original_path': kogift_path,
-                                'original_url': original_url_from_df if original_url_from_df else kogift_image_info.get('original_url'),
-                                'original_crawled_url': original_crawled_url_from_df if original_crawled_url_from_df else kogift_image_info.get('original_crawled_url')
+                                'original_url': original_url_for_dict,
+                                'original_crawled_url': original_crawled_url_for_dict
                             }
                             result_df.at[idx, '고려기프트 이미지'] = image_data
-                            logger.info(f"Row {idx} ('{product_name}'): Assigned Kogift image '{os.path.basename(kogift_path)}'")
+                            logger.info(f"Row {idx} ('{product_name}'): Assigned Kogift image '{os.path.basename(kogift_path)}' with URL: {current_kogift_url}")
                         else:
                             logger.warning(f"Row {idx} ('{product_name}'): Matched Kogift image '{os.path.basename(kogift_path)}' (Score: {kogift_score:.4f}) BUT product info missing. Discarding image.")
                             mismatch_count += 1
@@ -1334,57 +1351,75 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             naver_mismatch_count += 1
                             logging.warning(f"Adding Naver image despite missing product info: {product_name}")
                             
-                        naver_image_info = naver_images[naver_path]
+                        naver_image_info_from_metadata = naver_images[naver_path]
                         
                         current_naver_image_url = None
-                        # 1. Prioritize scraped direct image URL from input df
-                        if idx < len(df) and scraped_naver_url_col in df.columns:
-                            url_val = df.iloc[idx].get(scraped_naver_url_col)
-                            if isinstance(url_val, str) and url_val.startswith(('http://', 'https://')):
-                                if 'phinf.pstatic.net' in url_val or any(url_val.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
-                                    current_naver_image_url = url_val
+                        product_page_url_for_dict = None
+
+                        # 1. Check URL from the dictionary in the input df's '네이버 이미지' column
+                        input_naver_dict = None
+                        if idx < len(df) and '네이버 이미지' in df.columns and isinstance(df.iloc[idx].get('네이버 이미지'), dict):
+                            input_naver_dict = df.iloc[idx]['네이버 이미지']
+                            url_from_dict = input_naver_dict.get('url') # This should be direct image URL
+                            if isinstance(url_from_dict, str) and (('phinf.pstatic.net' in url_from_dict) or any(url_from_dict.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                current_naver_image_url = url_from_dict
+                            # Preserve product_page_url if it exists and is not an image URL
+                            prod_page_url = input_naver_dict.get('product_page_url')
+                            if isinstance(prod_page_url, str) and prod_page_url.startswith(('http://', 'https://')) and not (('phinf.pstatic.net' in prod_page_url) or any(prod_page_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                product_page_url_for_dict = prod_page_url
                         
-                        # 2. Fallback: if 'url' in naver_image_info (from metadata) is a direct image URL
+                        # 2. Fallback: Check a separate URL column in input df for direct image URL
+                        if not current_naver_image_url and idx < len(df) and scraped_naver_url_col_input_df in df.columns:
+                            url_val_from_separate_col = df.iloc[idx].get(scraped_naver_url_col_input_df)
+                            if isinstance(url_val_from_separate_col, str) and (('phinf.pstatic.net' in url_val_from_separate_col) or any(url_val_from_separate_col.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                current_naver_image_url = url_val_from_separate_col
+                        
+                        # 3. Fallback: URL from metadata (less likely to be a direct image web URL)
                         if not current_naver_image_url:
-                            meta_url = naver_image_info.get('url') # url from prepare_image_metadata
-                            if isinstance(meta_url, str) and meta_url.startswith(('http://', 'https://')):
-                                if 'phinf.pstatic.net' in meta_url or any(meta_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
-                                    current_naver_image_url = meta_url
+                            meta_url = naver_image_info_from_metadata.get('url')
+                            if isinstance(meta_url, str) and (('phinf.pstatic.net' in meta_url) or any(meta_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                current_naver_image_url = meta_url
+
+                        # For product_page_url, if not found in input_dict, try metadata's product_url
+                        if not product_page_url_for_dict:
+                            meta_prod_page_url = naver_image_info_from_metadata.get('product_url')
+                            if isinstance(meta_prod_page_url, str) and meta_prod_page_url.startswith(('http://', 'https://')) and not (('phinf.pstatic.net' in meta_prod_page_url) or any(meta_prod_page_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                product_page_url_for_dict = meta_prod_page_url
                         
-                        # Ensure correct indentation for image_data assignment
                         image_data = {
-                            'url': current_naver_image_url, # This should be the DIRECT IMAGE URL or None
-                            'local_path': naver_image_info.get('path', naver_path),
+                            'url': current_naver_image_url, 
+                            'local_path': naver_image_info_from_metadata.get('path', naver_path),
                             'source': 'naver',
                             'product_name': product_name,
-                            'similarity': naver_score,  # Store the similarity score
+                            'similarity': naver_score,  
                             'original_path': naver_path,
-                            'product_page_url': naver_image_info.get('product_url') if isinstance(naver_image_info.get('product_url'), str) and not ('phinf.pstatic.net' in naver_image_info.get('product_url')) else None
+                            'product_page_url': product_page_url_for_dict
                         }
                         result_df.at[idx, '네이버 이미지'] = image_data
                         
-                        # Logic for '네이버 쇼핑 링크' (product page link)
+                        # Logic for '네이버 쇼핑 링크' (product page link in result_df)
                         shopping_link_col_in_result_df = '네이버 쇼핑 링크'
-                        scraped_product_page_url = None
+                        final_product_page_link = None
 
-                        # Check if input df already has a '네이버 쇼핑 링크' (product page URL)
-                        if idx < len(df) and shopping_link_col_in_result_df in df.columns:
-                             url_val = df.iloc[idx].get(shopping_link_col_in_result_df)
-                             if isinstance(url_val, str) and url_val.startswith(('http://', 'https://')) and not ('phinf.pstatic.net' in url_val):
-                                 scraped_product_page_url = url_val
+                        # A. Prioritize product_page_url_for_dict if available from above
+                        if product_page_url_for_dict:
+                            final_product_page_link = product_page_url_for_dict
                         
-                        if scraped_product_page_url:
-                             if shopping_link_col_in_result_df not in result_df.columns: result_df[shopping_link_col_in_result_df] = None
-                             result_df.at[idx, shopping_link_col_in_result_df] = scraped_product_page_url
-                        else:
-                            # Fallback to product_url or url from naver_image_info if it's a page link
-                            shopping_link_candidate_from_meta = naver_image_info.get('product_url', naver_image_info.get('url', ''))
-                            if shopping_link_candidate_from_meta and isinstance(shopping_link_candidate_from_meta, str) and \
-                               not ('phinf.pstatic.net' in shopping_link_candidate_from_meta):
-                                if shopping_link_col_in_result_df not in result_df.columns: result_df[shopping_link_col_in_result_df] = None
-                                # Set only if current value is empty or placeholder
-                                if not pd.notna(result_df.at[idx, shopping_link_col_in_result_df]) or result_df.at[idx, shopping_link_col_in_result_df] in ['', '-', 'None', None]:
-                                    result_df.at[idx, shopping_link_col_in_result_df] = shopping_link_candidate_from_meta
+                        # B. Fallback to checking a separate '네이버 쇼핑 링크' column in the input df
+                        if not final_product_page_link and idx < len(df) and shopping_link_col_in_result_df in df.columns:
+                             url_val_from_input_shopping_link_col = df.iloc[idx].get(shopping_link_col_in_result_df)
+                             if isinstance(url_val_from_input_shopping_link_col, str) and url_val_from_input_shopping_link_col.startswith(('http://', 'https://')) and not (('phinf.pstatic.net' in url_val_from_input_shopping_link_col) or any(url_val_from_input_shopping_link_col.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                                 final_product_page_link = url_val_from_input_shopping_link_col
+                        
+                        # C. Fallback to naver_image_info_from_metadata's product_url or url if it's a page link (already covered by product_page_url_for_dict logic)
+                        # No new logic needed here for C as it's incorporated into product_page_url_for_dict
+
+                        if final_product_page_link:
+                            if shopping_link_col_in_result_df not in result_df.columns: result_df[shopping_link_col_in_result_df] = None
+                            # Set only if current value is empty/placeholder OR if the new link is different and valid
+                            current_shopping_link_val = result_df.at[idx, shopping_link_col_in_result_df]
+                            if not pd.notna(current_shopping_link_val) or current_shopping_link_val in ['', '-', 'None', None] or current_shopping_link_val != final_product_page_link:
+                                result_df.at[idx, shopping_link_col_in_result_df] = final_product_page_link
         
         # 이미지 경로 불일치 수정 (로컬 파일이 이동된 경우)
         for idx in range(len(result_df)):
