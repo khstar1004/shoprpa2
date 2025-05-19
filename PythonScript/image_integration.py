@@ -1827,6 +1827,25 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                             logger.info(f"Row {idx}: Using original path as Naver URL: {original_path[:50]}...")
                         else:
                             # Only use placeholder as a last resort
+                            # Check for product_url or other sources first
+                            product_url = naver_data.get('product_url')
+                            product_id = naver_data.get('product_id')
+                            
+                            # Store original crawled URL if available
+                            if product_url and isinstance(product_url, str) and product_url.startswith(('http://', 'https://')):
+                                naver_data['original_crawled_url'] = product_url
+                                logger.info(f"Row {idx}: Saved original product URL before using placeholder: {product_url[:50]}...")
+                            
+                            # Try to construct URL from product_id
+                            if not product_url and product_id:
+                                try:
+                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                    naver_data['original_crawled_url'] = constructed_url
+                                    logger.info(f"Row {idx}: Constructed and saved URL from product_id: {constructed_url}")
+                                except Exception as e:
+                                    logger.warning(f"Row {idx}: Failed to construct URL from product_id: {e}")
+                            
+                            # Now set placeholder URL
                             naver_data['url'] = f"http://placeholder.url/for/{idx}.jpg"
                             logger.warning(f"Row {idx}: Using placeholder for Naver image. No valid URL found.")
                         
@@ -1867,6 +1886,34 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                         # Fix the URL with a placeholder as last resort
                         if local_path and os.path.exists(str(local_path)):
                             logger.info(f"Row {idx} (Product: '{product_name}'): Setting placeholder URL for valid Kogift local file.")
+                            
+                            # Try to extract URL from product link first
+                            product_link = result_df.at[idx, '고려기프트 상품링크'] if '고려기프트 상품링크' in result_df.columns else ''
+                            
+                            if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                # Try to derive image URL from product link
+                                try:
+                                    # Extract product code from URL
+                                    from urllib.parse import urlparse
+                                    parsed_url = urlparse(product_link)
+                                    path = parsed_url.path
+                                    
+                                    # Look for patterns like /product/detail.html?product_id=1234
+                                    product_id_match = re.search(r'product_id=(\d+)', product_link)
+                                    if product_id_match:
+                                        product_id = product_id_match.group(1)
+                                        constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                        kogift_data['original_crawled_url'] = constructed_url
+                                        logger.info(f"Row {idx}: Constructed and saved Kogift URL from product_id: {constructed_url}")
+                                    else:
+                                        # Just save the product link as reference
+                                        kogift_data['original_crawled_url'] = product_link
+                                        logger.info(f"Row {idx}: Saved product link as reference: {product_link[:50]}...")
+                                except Exception as e:
+                                    logger.warning(f"Row {idx}: Failed to process Kogift product link: {e}")
+                                    kogift_data['original_crawled_url'] = product_link
+                            
+                            # Set the placeholder URL
                             kogift_data['url'] = f"http://placeholder.url/kogift_{idx}.jpg"
                             logger.warning(f"Row {idx}: Using placeholder for Kogift image. No valid URL found.")
                         
