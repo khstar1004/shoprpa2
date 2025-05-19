@@ -831,13 +831,17 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     
                             # Fix missing Naver images by finding local files
                             logging.info("Fixing Naver images with missing local paths...")
-                            df_to_save = fix_missing_naver_images(df_to_save, result_file=True)
-                            if progress_queue:
-                                progress_queue.emit("status", "Fixed missing Naver images")
+                            try:
+                                df_to_save = fix_missing_naver_images(df_to_save, result_file=True)
+                                if progress_queue:
+                                    progress_queue.emit("status", "Fixed missing Naver images")
+                            except Exception as fix_err:
+                                logging.warning(f"Non-critical error in fix_missing_naver_images: {fix_err}. Continuing with current data.")
+                                # Continue with the original DataFrame
                         except Exception as clean_err:
                             logging.error(f"Error cleaning Naver data: {clean_err}", exc_info=True)
                             # Continue with original DataFrame if cleaning fails
-                            
+                        
                         # 여기서 원본 해오름 이미지 URL을 DataFrame에 적용
                         try:
                             # 해오름 이미지 URL을 엑셀 데이터에 적용하는 로직
@@ -1041,26 +1045,33 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         # Fix Naver images in result file
                                         if result_path and os.path.exists(result_path):
                                             logging.info(f"Fixing Naver images in result file: {result_path}")
-                                            # Load the Excel file
-                                            result_df = pd.read_excel(result_path)
-                                            # Apply the fix
-                                            fixed_result_df = fix_missing_naver_images(result_df, result_file=True)
-                                            # Save back to the same file
-                                            fixed_result_df.to_excel(result_path, index=False)
-                                            logging.info("Fixed Naver images in result file")
+                                            try:
+                                                # Load the Excel file
+                                                result_df = pd.read_excel(result_path)
+                                                # Apply the fix
+                                                fixed_result_df = fix_missing_naver_images(result_df, result_file=True)
+                                                # Save back to the same file
+                                                fixed_result_df.to_excel(result_path, index=False)
+                                                logging.info("Fixed Naver images in result file")
+                                            except Exception as result_fix_err:
+                                                logging.warning(f"Non-critical error fixing Naver images in result file: {result_fix_err}. Proceeding without this fix.")
                                         
                                         # Fix Naver images in upload file (with result_file=False flag)
                                         if upload_path and os.path.exists(upload_path):
                                             logging.info(f"Fixing Naver images in upload file: {upload_path}")
-                                            # Load the Excel file
-                                            upload_df = pd.read_excel(upload_path)
-                                            # Apply the fix
-                                            fixed_upload_df = fix_missing_naver_images(upload_df, result_file=False)
-                                            # Save back to the same file
-                                            fixed_upload_df.to_excel(upload_path, index=False)
-                                            logging.info("Fixed Naver images in upload file")
+                                            try:
+                                                # Load the Excel file
+                                                upload_df = pd.read_excel(upload_path)
+                                                # Apply the fix - use result_file=True to avoid skipping upload file in the new implementation
+                                                fixed_upload_df = fix_missing_naver_images(upload_df, result_file=True)
+                                                # Save back to the same file
+                                                fixed_upload_df.to_excel(upload_path, index=False)
+                                                logging.info("Fixed Naver images in upload file")
+                                            except Exception as upload_fix_err:
+                                                logging.warning(f"Non-critical error fixing Naver images in upload file: {upload_fix_err}. Proceeding without this fix.")
                                     except Exception as fix_err:
                                         logging.error(f"Error fixing Naver images in Excel files: {fix_err}", exc_info=True)
+                                        # Don't stop the process for Naver image errors - continue with other steps
                                     # --- End Naver Image Fix ---
 
                                     # --- Apply Excel Formatting (NEW) ---
