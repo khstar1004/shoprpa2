@@ -1508,33 +1508,67 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         df_for_excel = _prepare_data_for_excel(df_finalized)
         
         # -----------------------------------------
-        # 1. Create Result File (with all data and images)
+        # 1. Create Result File (normal view, with images embedded if paths valid)
         # -----------------------------------------
         try:
-            with pd.ExcelWriter(
-                result_path, 
-                engine='openpyxl',
-                mode='w'
-            ) as writer:
-                # Convert DataFrame to Excel
-                df_for_excel.to_excel(writer, index=False)
-                
-                # Get the worksheet
-                worksheet = writer.sheets['Sheet1']
-                
-                # Set lenient validation flag on worksheet
-                worksheet._lenient_naver_validation = lenient_naver_validation
-                
-                # Apply Excel styles and formatting
-                apply_excel_styles(worksheet, df_for_excel)
-                
-                # FIXED: Ensure filter is removed before adding images
-                if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
-                    worksheet.auto_filter.ref = None
-                    logger.info("Removed filter from result Excel file before adding images")
+            logger.info(f"Preparing data for result file: {result_path}")
+            df_result = df_finalized.copy() # df_finalized contains image dicts in IMAGE_COLUMNS
+
+            # --- START MODIFICATION: Transform IMAGE_COLUMNS in df_result to URL strings ---
+            logger.info("Transforming IMAGE_COLUMNS in df_result to URL strings for the result file...")
+            for img_col_original_name in IMAGE_COLUMNS: # IMAGE_COLUMNS are ['본사 이미지', '고려기프트 이미지', '네이버 이미지']
+                if img_col_original_name in df_result.columns:
+                    logger.info(f"Processing column '{img_col_original_name}' in df_result for URL string transformation.")
+                    for idx in df_result.index:
+                        value_in_cell = df_result.at[idx, img_col_original_name]
+                        final_url_string = ""
+
+                        if isinstance(value_in_cell, dict):
+                            # Priority 1: 'url' key (should be the direct image URL)
+                            url_from_dict = value_in_cell.get('url')
+                            if isinstance(url_from_dict, str) and url_from_dict.strip().startswith(('http://', 'https://')):
+                                final_url_string = url_from_dict.strip()
+                                logger.debug(f"Row {idx}, Col '{img_col_original_name}': Extracted URL '{final_url_string[:70]}' from dict['url'].")
+                            else:
+                                # Priority 2: 'original_url' as fallback
+                                original_url_from_dict = value_in_cell.get('original_url')
+                                if isinstance(original_url_from_dict, str) and original_url_from_dict.strip().startswith(('http://', 'https://')):
+                                    final_url_string = original_url_from_dict.strip()
+                                    logger.debug(f"Row {idx}, Col '{img_col_original_name}': Extracted URL '{final_url_string[:70]}' from dict['original_url'] (fallback).")
+                                elif logger.isEnabledFor(logging.DEBUG): # Log only if DEBUG is enabled
+                                    # Detailed log if no valid URL found in dict
+                                    no_url_reason = f"dict['url'] was '{str(url_from_dict)[:70]}', dict['original_url'] was '{str(original_url_from_dict)[:70]}'" if 'original_url' in value_in_cell else f"dict['url'] was '{str(url_from_dict)[:70]}'"
+                                    logger.debug(f"Row {idx}, Col '{img_col_original_name}': No valid web URL found in dict. {no_url_reason}. Original dict: {str(value_in_cell)[:200]}")
+                        
+                        elif isinstance(value_in_cell, str) and value_in_cell.strip().startswith(('http://', 'https://')):
+                            final_url_string = value_in_cell.strip() # Already a URL string
+                            logger.debug(f"Row {idx}, Col '{img_col_original_name}': Value was already a URL string '{final_url_string[:70]}'.")
+                        elif value_in_cell is not None and value_in_cell != "" and not pd.isna(value_in_cell): # Log if it's some other non-empty, non-dict, non-URL value
+                            logger.debug(f"Row {idx}, Col '{img_col_original_name}': Cell contained non-dict, non-URL value: '{str(value_in_cell)[:70]}'. It will be replaced by an empty string if not a URL.")
+                        
+                        df_result.at[idx, img_col_original_name] = final_url_string
+            # --- END MODIFICATION ---
+
+            wb_result = openpyxl.Workbook()
+            ws_result = wb_result.active
+            ws_result.title = "제품 가격 비교 (정상)"
             
-            # Save the workbook first without images
-            logger.info(f"Created initial result file (no images): {result_path}")
+            # Convert DataFrame to Excel
+            df_result.to_excel(ws_result, index=False)
+            
+            # Get the worksheet
+            worksheet = ws_result
+            
+            # Set lenient validation flag on worksheet
+            worksheet._lenient_naver_validation = lenient_naver_validation
+            
+            # Apply Excel styles and formatting
+            apply_excel_styles(worksheet, df_result)
+            
+            # FIXED: Ensure filter is removed before adding images
+            if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
+                worksheet.auto_filter.ref = None
+                logger.info("Removed filter from result Excel file before adding images")
             
             # Now add images to the saved file if any image columns exist
             try:
@@ -1673,23 +1707,23 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
 
                         if isinstance(value, dict):
                             # Prioritize 'url' key, which should be the direct image URL
-                            if 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
+                            if 'url' in value and isinstance(value['url'], str) and value['url'].strip().startswith(('http://', 'https://')):
                                 image_url_for_upload = value['url'].strip()
-                                url_source_log = "dict.url"
+                                url_source_log = "dict['url']"
                             # Fallback for Kogift: original_crawled_url or original_url if 'url' is placeholder/missing
                             elif img_col == '고려기프트 이미지':
-                                if 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].startswith(('http://', 'https://')):
+                                if 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].strip().startswith(('http://', 'https://')):
                                     image_url_for_upload = value['original_crawled_url'].strip()
-                                    url_source_log = "dict.original_crawled_url (Kogift)"
-                                elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].startswith(('http://', 'https://')):
+                                    url_source_log = "dict['original_crawled_url'] (Kogift)"
+                                elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].strip().startswith(('http://', 'https://')):
                                     image_url_for_upload = value['original_url'].strip()
-                                    url_source_log = "dict.original_url (Kogift)"
+                                    url_source_log = "dict['original_url'] (Kogift)"
                             # Fallback for Naver: product_page_url if 'url' is direct image and we need page link for upload (depends on definition of upload link)
                             # However, for Naver, the '네이버쇼핑(이미지링크)' should be the *image* link, not page link based on user summary.
                             # The 'url' key from image_integration for Naver should be the phinf.pstatic.net link.
                             # 'product_page_url' from Naver dict is for the separate '네이버 쇼핑 링크' column.
 
-                        elif isinstance(value, str) and value.startswith(('http://', 'https://')):
+                        elif isinstance(value, str) and value.strip().startswith(('http://', 'https://')):
                             # If the column itself already contains a URL string (less ideal at this stage)
                             image_url_for_upload = value.strip()
                             url_source_log = "direct_string"
