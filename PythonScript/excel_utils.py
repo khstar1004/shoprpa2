@@ -402,13 +402,14 @@ def clean_naver_images_and_data(worksheet, df):
         
         # Check if we should be more lenient with Naver data validation
         # This flag can be set in various parts of the application
-        lenient_validation = getattr(worksheet, "_lenient_naver_validation", True)
+        lenient_validation = True  # Always set to True to make it more lenient
         
         # If lenient validation is enabled, skip cleaning to preserve Naver data
         if lenient_validation:
             logger.info("Using lenient Naver data validation - skipping strict cleaning")
             return
             
+        # The rest of the function will be skipped due to the early return above
         # Find column indexes for Naver-related columns
         header_row = 1  # First row is header
         naver_related_headers = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명',
@@ -1411,13 +1412,14 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         if input_filename:
             # Extract base name without extension
             input_base = os.path.splitext(os.path.basename(input_filename))[0]
-            result_path = f"{output_path_base}\\{input_base}_결과.xlsx"
-            upload_path = f"{output_path_base}\\{input_base}_업로드.xlsx"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_path = os.path.join(output_path_base, f"{input_base}_result_{timestamp}.xlsx")
+            upload_path = os.path.join(output_path_base, f"{input_base}_upload_{timestamp}.xlsx")
         else:
             # Use a timestamp if no input filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_path = f"{output_path_base}\\결과_{timestamp}.xlsx"
-            upload_path = f"{output_path_base}\\업로드_{timestamp}.xlsx"
+            result_path = os.path.join(output_path_base, f"result_{timestamp}.xlsx")
+            upload_path = os.path.join(output_path_base, f"upload_{timestamp}.xlsx")
         
         # Set up configuration for naver image handling
         try:

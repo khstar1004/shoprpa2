@@ -58,6 +58,100 @@ if platform.system() == "Windows":
     except Exception:
         pass
 
+def verify_excel_images(excel_path: str) -> dict:
+    """
+    Verify if Kogift and Naver images are correctly included in the Excel file.
+    
+    Args:
+        excel_path: Path to the Excel file
+        
+    Returns:
+        dict: Dictionary with counts of image types found
+    """
+    try:
+        import openpyxl
+        import pandas as pd
+        from pathlib import Path
+        
+        logging.info(f"Verifying images in Excel file: {excel_path}")
+        
+        # Check if file exists
+        if not Path(excel_path).exists():
+            logging.warning(f"Excel file not found: {excel_path}")
+            return {"exists": False}
+            
+        # Try to read Excel file
+        try:
+            # First try with pandas to check the data
+            df = pd.read_excel(excel_path)
+            
+            # Look for image columns
+            image_cols = [col for col in df.columns if '이미지' in col]
+            if not image_cols:
+                logging.warning(f"No image columns found in Excel file: {excel_path}")
+                return {"exists": True, "image_columns": 0}
+                
+            logging.info(f"Found {len(image_cols)} image columns: {image_cols}")
+            
+            # Count cells with image data by type
+            kogift_cells = 0
+            naver_cells = 0
+            haereum_cells = 0
+            
+            # Check for image data in DataFrame
+            for col in image_cols:
+                for idx, value in enumerate(df[col]):
+                    if isinstance(value, str) and value.startswith(('http://', 'https://')):
+                        if 'koreagift' in value.lower() or 'kogift' in value.lower():
+                            kogift_cells += 1
+                        elif 'pstatic.net' in value.lower() or 'naver' in value.lower():
+                            naver_cells += 1
+                        elif 'jclgift' in value.lower() or 'haereum' in value.lower():
+                            haereum_cells += 1
+            
+            # Now try with openpyxl to check for actual images
+            wb = openpyxl.load_workbook(excel_path)
+            ws = wb.active
+            
+            actual_images = len(ws._images)
+            logging.info(f"Found {actual_images} actual images in the Excel file.")
+            
+            # Count by column (rough estimation of image types)
+            col_indices = {}
+            for col_idx, col_name in enumerate(df.columns, 1):
+                for img_type in ['고려기프트', '네이버', '본사']:
+                    if img_type in col_name:
+                        col_indices[img_type] = col_idx
+            
+            # Return summary
+            result = {
+                "exists": True,
+                "image_columns": len(image_cols),
+                "actual_images": actual_images,
+                "kogift_urls": kogift_cells,
+                "naver_urls": naver_cells,
+                "haereum_urls": haereum_cells,
+                "column_names": image_cols
+            }
+            
+            # Log summary
+            logging.info(f"Excel image verification complete: {result}")
+            
+            # Special warning for Naver images
+            if naver_cells == 0 and '네이버 이미지' in df.columns:
+                logging.warning("⚠️ NO NAVER IMAGES found in Excel file despite column existing!")
+                logging.warning("Check 'filter_images_by_similarity' function in image_integration.py")
+                logging.warning("Consider lowering naver_similarity_threshold in config.ini [ImageFiltering] section")
+            
+            return result
+        except Exception as e:
+            logging.error(f"Error reading Excel file: {e}")
+            return {"exists": True, "error": str(e)}
+            
+    except Exception as e:
+        logging.error(f"Error verifying Excel images: {e}")
+        return {"exists": False, "error": str(e)}
+
 async def main(config: configparser.ConfigParser, gpu_available: bool, progress_queue=None):
     """Main function orchestrating the RPA process (now asynchronous)."""
     try:
@@ -202,7 +296,6 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 processed_count = len(input_file_image_map)
             else:
                 input_file_image_map = {}
-                processed_count = 0
                 
             logging.info(f"[Step 3/7] Input file images preprocessed. Processed {processed_count} images. Duration: {time.time() - step_start_time:.2f} sec")
             if progress_queue: progress_queue.emit("status", "Finished preprocessing input images.")
@@ -760,7 +853,11 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 # Generate output filename
                 input_filename_base = input_filename.rsplit('.', 1)[0]
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, f"{input_filename_base}_{timestamp}.xlsx")
+                output_path = os.path.join(output_dir, f"{input_filename_base}")
+
+                # DO NOT create the full output path with timestamp here
+                # Instead, pass the base directory and filename to create_split_excel_outputs
+                # and let it add the appropriate suffix (_result or _upload) and timestamp
                 
                 # --- Moved Image Integration Here ---
                 try:
@@ -804,7 +901,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     if df_to_save.empty and not integrated_df.empty:
                         logging.error("DataFrame became empty after finalization. Skipping Excel creation.")
                         # Optionally: Emit error to progress_queue if available
-                        if progress_queue: progress_queue.emit("error", "Error during data finalization stage.")
+                        if progress_queue:
+                            progress_queue.emit("error", "Error during data finalization stage.")
                         # Skip Excel creation steps
                         result_success, upload_success = False, False
                         result_path, upload_path = None, None
@@ -1025,6 +1123,33 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     except Exception as kogift_fix_err:
                                         logging.error(f"Error applying Kogift price corrections: {kogift_fix_err}", exc_info=True)
                                     # --- End Kogift Price Fixes ---
+                                    
+                                    # --- NEW: Verify images in result Excel file ---
+                                    try:
+                                        if result_path and os.path.exists(result_path):
+                                            logging.info("Verifying image counts in final Excel file...")
+                                            image_stats = verify_excel_images(result_path)
+                                            
+                                            # Log important stats and report to UI
+                                            total_images = image_stats.get("actual_images", 0)
+                                            naver_urls = image_stats.get("naver_urls", 0)
+                                            kogift_urls = image_stats.get("kogift_urls", 0)
+                                            
+                                            status_msg = f"Image verification: Total={total_images}, Naver={naver_urls}, Kogift={kogift_urls}"
+                                            logging.info(status_msg)
+                                            
+                                            if progress_queue:
+                                                progress_queue.emit("status", status_msg)
+                                                
+                                            # Check for potential issues with Naver images
+                                            if naver_urls == 0 and "네이버 이미지" in image_stats.get("column_names", []):
+                                                alert_msg = "⚠️ WARNING: No Naver images found despite column existing. Check config.ini [ImageFiltering] section."
+                                                logging.warning(alert_msg)
+                                                if progress_queue:
+                                                    progress_queue.emit("warning", alert_msg)
+                                    except Exception as verify_err:
+                                        logging.error(f"Error verifying Excel images: {verify_err}", exc_info=True)
+                                    # --- End image verification ---
 
                                     # --- Apply Filter to Upload File (Remove rows with no external data) ---
                                     try:
