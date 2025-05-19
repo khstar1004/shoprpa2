@@ -1870,18 +1870,78 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
-    현재는 필터링을 비활성화하여 모든 이미지를 유지합니다.
+    유사도 점수가 0.6 미만인 경우, 이미지뿐만 아니라 해당 소스의 모든 관련 정보가 제거됩니다.
     """
     try:
         result_df = df.copy()
         
-        # Disable all filtering and keep all images
-        logging.info("필터링 비활성화: 모든 이미지를 유지합니다.")
+        # Set high threshold for image similarity (0.6 as requested)
+        similarity_threshold = 0.6
+        logging.info(f"높은 이미지 유사도 임계값 적용: {similarity_threshold} (0.6 이상의 매칭 점수만 허용)")
         
-        # Count images for logging
-        kogift_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-        naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        logging.info(f"필터링 후 이미지 수: 고려기프트={kogift_count}, 네이버={naver_count} (필터링 비활성화됨)")
+        # Count images before filtering
+        kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+        naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+        
+        # Define columns for each source that need to be cleared when similarity is too low
+        kogift_columns = [
+            '고려기프트 이미지',
+            '고려기프트 상품링크',
+            '기본수량(2)',
+            '판매가(V포함)(2)',
+            '판매단가(V포함)(2)',
+            '가격차이(2)',
+            '가격차이(2)(%)',
+            '고려기프트_실제가격티어'  # Additional column that might be present
+        ]
+        
+        naver_columns = [
+            '네이버 이미지',
+            '네이버 쇼핑 링크',
+            '기본수량(3)',
+            '판매단가(V포함)(3)',
+            '가격차이(3)',
+            '가격차이(3)(%)',
+            '공급사명',
+            '공급사 상품링크'
+        ]
+        
+        # Filter and clear data by similarity threshold
+        for idx in range(len(result_df)):
+            product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+            
+            # Check Kogift image similarity
+            kogift_data = result_df.at[idx, '고려기프트 이미지']
+            if isinstance(kogift_data, dict):
+                kogift_score = kogift_data.get('similarity', 0)
+                
+                if kogift_score < similarity_threshold:
+                    logging.info(f"고려기프트 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {kogift_score:.3f} < {similarity_threshold}")
+                    # Clear all Kogift-related columns
+                    for col in kogift_columns:
+                        if col in result_df.columns:
+                            result_df.at[idx, col] = None
+            
+            # Check Naver image similarity
+            naver_data = result_df.at[idx, '네이버 이미지']
+            if isinstance(naver_data, dict):
+                naver_score = naver_data.get('similarity', 0)
+                
+                if naver_score < similarity_threshold:
+                    logging.info(f"네이버 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {naver_score:.3f} < {similarity_threshold}")
+                    # Clear all Naver-related columns
+                    for col in naver_columns:
+                        if col in result_df.columns:
+                            result_df.at[idx, col] = None
+        
+        # Count images after filtering
+        kogift_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+        naver_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+        
+        removed_kogift = kogift_before - kogift_after
+        removed_naver = naver_before - naver_after
+        
+        logging.info(f"이미지/정보 필터링 결과: 고려기프트 {removed_kogift}개 제거됨 (남은 이미지: {kogift_after}개), 네이버 {removed_naver}개 제거됨 (남은 이미지: {naver_after}개)")
         
         return result_df
         
