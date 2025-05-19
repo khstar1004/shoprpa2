@@ -1643,302 +1643,111 @@ def create_excel_with_images(df, output_file):
 
 def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Improves the matching between Kogift image URLs and local files.
-    Ensures URLs and downloaded images are properly associated.
+    고려기프트 이미지 매칭 개선 함수
+    
+    이미지 URL이 누락되었거나 잘못된 경우 실제 상품 링크를 활용해 올바른 이미지 URL을 가져옵니다.
     
     Args:
-        df: DataFrame with image information
+        df: 현재 DataFrame
         
     Returns:
-        DataFrame with improved Kogift image matching
+        updated DataFrame with improved Kogift image URLs
     """
-    import os
-    import hashlib
-    import logging
-    
-    logger = logging.getLogger(__name__)
-    logger.info("Starting improved Kogift image matching...")
-    
-    # Define column for Kogift images (both old and new naming standards)
-    kogift_img_columns = ['고려기프트 이미지', '고려기프트(이미지링크)']
-    # Keep only columns that exist in the DataFrame
-    kogift_img_columns = [col for col in kogift_img_columns if col in df.columns]
-    
-    if not kogift_img_columns:
-        logger.warning("No Kogift image columns found in DataFrame.")
-        return df
+    try:
+        if '고려기프트 이미지' not in df.columns or '고려기프트 상품링크' not in df.columns:
+            logging.warning("필요한 컬럼(고려기프트 이미지 또는 고려기프트 상품링크)이 없어 이미지 링크 수정 불가")
+            return df
         
-    # Get RPA image directory from environment or use default
-    base_img_dir = os.environ.get('RPA_IMAGE_DIR', 'C:\\RPA\\Image')
-    
-    # Create a mapping of URLs to local files
-    url_to_local_map = {}
-    
-    # First, build a database of available Kogift images
-    kogift_images = {}
-    
-    # Scan all potential Kogift image directories
-    kogift_dirs = [
-        os.path.join(base_img_dir, 'Main', 'Kogift'),
-        os.path.join(base_img_dir, 'Main', 'kogift'),
-        os.path.join(base_img_dir, 'Kogift'),
-        os.path.join(base_img_dir, 'kogift'),
-        os.path.join(base_img_dir, 'Target', 'Kogift'),
-        os.path.join(base_img_dir, 'Target', 'kogift')
-    ]
-    
-    # Scan each directory for images
-    for dir_path in kogift_dirs:
-        if os.path.exists(dir_path):
-            try:
-                logger.info(f"Scanning directory: {dir_path}")
-                # Get all image files in the directory
-                for file in os.listdir(dir_path):
-                    if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                        full_path = os.path.join(dir_path, file)
-                        base_name = os.path.basename(file) # Original filename with extension
-
-                        # Skip small files
-                        if os.path.getsize(full_path) < 1000:  # Less than 1KB
-                            continue
-
-                        # Always map the actual filename (and its lowercase version) to its actual path
-                        kogift_images[base_name] = full_path
-                        kogift_images[base_name.lower()] = full_path
-                        
-                        # Handle 'kogift_' prefix
-                        if base_name.lower().startswith('kogift_'):
-                            no_prefix_name = base_name[7:] # Remove 'kogift_'
-                            kogift_images[no_prefix_name] = full_path
-                            kogift_images[no_prefix_name.lower()] = full_path
-
-                        # Handle 'shop_' prefix (common in some Kogift URLs/files)
-                        # This can be complex if 'kogift_' and 'shop_' appear together.
-                        # Example: shop_kogift_product.jpg -> product.jpg
-                        # Example: kogift_shop_product.jpg -> shop_product.jpg (less common)
-                        # Example: shop_product.jpg -> product.jpg
-                        
-                        temp_name_for_shop_handling = base_name
-                        if temp_name_for_shop_handling.lower().startswith('kogift_'):
-                            temp_name_for_shop_handling = temp_name_for_shop_handling[7:]
-                        
-                        if temp_name_for_shop_handling.lower().startswith('shop_'):
-                            name_after_shop = temp_name_for_shop_handling[5:] # Remove 'shop_'
-                            kogift_images[name_after_shop] = full_path
-                            kogift_images[name_after_shop.lower()] = full_path
-
-                        # Store hash-based keys if a hash is identifiable in the filename
-                        # e.g., kogift_productname_a1b2c3d4.jpg -> a1b2c3d4
-                        hash_match = re.search(r'_([a-f0-9]{8,})\.', base_name.lower())
-                        if hash_match:
-                            hash_val = hash_match.group(1)
-                            kogift_images[hash_val] = full_path
-                            # Also store common prefixed hash patterns if the original name had them
-                            if base_name.lower().startswith('kogift_'):
-                                kogift_images[f"kogift_{hash_val}.jpg"] = full_path
-                                kogift_images[f"kogift_{hash_val}.png"] = full_path
-                                kogift_images[f"kogift_{hash_val}_nobg.png"] = full_path
-
-
-            except Exception as e:
-                logger.error(f"Error scanning directory {dir_path}: {e}")
-    
-    logger.info(f"Found {len(kogift_images)} Kogift images on disk")
-    
-    # Process each row that has Kogift image data
-    fixed_count = 0
-    rows_processed = 0
-    
-    for idx, row in df.iterrows():
-        for col in kogift_img_columns:
-            img_data = row[col]
-            if pd.isna(img_data) or img_data == '' or img_data == '-':
+        update_count = 0
+        result_df = df.copy()
+        
+        for idx, row in result_df.iterrows():
+            # Check if already has a valid URL
+            img_data = row.get('고려기프트 이미지')
+            if not isinstance(img_data, dict):
                 continue
                 
-            rows_processed += 1
-            url = None
-            local_path = None
-            original_path = None
-            
-            # Handle dictionary format
-            if isinstance(img_data, dict):
-                # Extract URL and paths
-                url = img_data.get('url', '')
-                local_path = img_data.get('local_path', '')
-                original_path = img_data.get('original_path', '')
+            # Check if URL is missing or a placeholder
+            url = img_data.get('url')
+            if url and isinstance(url, str) and not url.startswith('http://placeholder.url/'):
+                # 이미 유효한 URL이 있는 경우
+                continue
                 
-                # Check if we have a URL without a valid local_path
-                if url and (not local_path or not os.path.exists(local_path)):
-                    logger.debug(f"Row {idx}: Found Kogift URL without valid local_path: {url[:50]}...")
-                    
-                    # Try to find the local file based on URL
-                    if url.startswith(('http://', 'https://')):
-                        filename = os.path.basename(url)
-                        
-                        # Check if the filename exists in our image database
-                        if filename in kogift_images:
-                            new_local_path = kogift_images[filename]
-                            logger.info(f"Row {idx}: Found direct filename match for Kogift URL: {filename}")
-                            
-                            # Update the dictionary
-                            img_data['local_path'] = new_local_path
-                            df.at[idx, col] = img_data
-                            fixed_count += 1
-                            continue
-                            
-                        # Try extracting product code or ID pattern from URL
-                        # Common patterns in Kogift URLs:
-                        # - mall/shop_PRODUCTNAME.jpg
-                        # - product/PRODUCTCODE.jpg
-                        # - shop_NAME.jpg
-                        if 'mall/shop_' in url:
-                            product_part = url.split('mall/shop_')[1].split('?')[0]
-                            
-                            # Check for this product part in our database
-                            if product_part in kogift_images:
-                                new_local_path = kogift_images[product_part]
-                                logger.info(f"Row {idx}: Found product match via mall/shop_ pattern: {product_part}")
-                                
-                                # Update the dictionary
-                                img_data['local_path'] = new_local_path
-                                df.at[idx, col] = img_data
-                                fixed_count += 1
-                                continue
-                                
-                        # Try hash-based matching if direct matching fails
-                        url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-                        hash_patterns = [
-                            f"kogift_{url_hash}.jpg",
-                            f"kogift_{url_hash}.png", 
-                            f"kogift_{url_hash}_nobg.png"  # ADDED: Explicit _nobg pattern for hash
-                        ]
-                        
-                        for pattern in hash_patterns:
-                            if pattern in kogift_images:
-                                new_local_path = kogift_images[pattern]
-                                logger.info(f"Row {idx}: Found match via URL hash pattern: {pattern}")
-                                
-                                # Update the dictionary
-                                img_data['local_path'] = new_local_path
-                                df.at[idx, col] = img_data
-                                fixed_count += 1
-                                break
-                                
-                        # ADDED: Try looking for _nobg version if regular image not found
-                        if not local_path and filename.lower().endswith(('.jpg', '.png')) and '_nobg' not in filename.lower():
-                            # Generate _nobg variant of the filename
-                            base_name = os.path.splitext(filename)[0]
-                            nobg_variant = f"{base_name}_nobg.png"
-                            
-                            if nobg_variant in kogift_images:
-                                new_local_path = kogift_images[nobg_variant]
-                                logger.info(f"Row {idx}: Found _nobg variant for regular image: {nobg_variant}")
-                                
-                                # Update the dictionary
-                                img_data['local_path'] = new_local_path
-                                df.at[idx, col] = img_data
-                                fixed_count += 1
-                                continue
-                                
-                        # If still not found, try fuzzy matching
-                        best_match = None
-                        highest_similarity = 0
-                        
-                        for img_name, img_path in kogift_images.items():
-                            # Skip if filename is very short (to avoid false matches)
-                            if len(img_name) < 5:
-                                continue
-                                
-                            # Calculate similarity between URL basename and image filename
-                            url_base = os.path.basename(url).lower()
-                            img_base = img_name.lower()
-                            
-                            # Check for partial matches
-                            if url_base[:5] in img_base or img_base[:5] in url_base:
-                                # Calculate similarity score (simplified)
-                                similarity = 0
-                                for i in range(min(len(url_base), len(img_base))):
-                                    if i < len(url_base) and i < len(img_base) and url_base[i] == img_base[i]:
-                                        similarity += 1
-                                
-                                similarity = similarity / max(len(url_base), len(img_base))
-                                
-                                if similarity > highest_similarity:
-                                    highest_similarity = similarity
-                                    best_match = img_path
-                        
-                        # If we found a reasonably good match
-                        if best_match and highest_similarity > 0.4:
-                            logger.info(f"Row {idx}: Found fuzzy match with similarity {highest_similarity:.2f}: {os.path.basename(best_match)}")
-                            
-                            # Update the dictionary
-                            img_data['local_path'] = best_match
-                            df.at[idx, col] = img_data
-                            fixed_count += 1
-            
-            # Handle string format (URL or path)
-            elif isinstance(img_data, str) and img_data.startswith(('http://', 'https://')):
-                url = img_data
+            # Check if we have an original_url - 추가된 부분
+            original_url = img_data.get('original_url')
+            if original_url and isinstance(original_url, str) and original_url.startswith(('http://', 'https://')):
+                # 원본 URL 정보가 있으면 사용
+                img_data['url'] = original_url
+                result_df.at[idx, '고려기프트 이미지'] = img_data
+                update_count += 1
+                logging.info(f"Row {idx}: Using original URL {original_url[:50]}... for Kogift image")
+                continue
                 
-                # Try to find local file based on URL
-                filename = os.path.basename(url)
+            # 상품 링크가 있는지 확인
+            product_link = row.get('고려기프트 상품링크')
+            if not product_link or not isinstance(product_link, str) or not product_link.startswith(('http://', 'https://')):
+                continue
                 
-                # Check if the filename exists in our image database
-                if filename in kogift_images:
-                    new_local_path = kogift_images[filename]
-                    logger.info(f"Row {idx}: Found direct filename match for Kogift URL string: {filename}")
-                    
-                    # Create a dictionary format
-                    df.at[idx, col] = {
-                        'url': url,
-                        'local_path': new_local_path,
-                        'source': 'kogift'
-                    }
-                    fixed_count += 1
+            # Get product code from URL
+            try:
+                # 상품 코드 추출 (URL 패턴에 따라 조정 필요)
+                product_code = None
+                
+                # URL에서 상품 코드 추출 시도 (여러 패턴 지원)
+                if 'goods_view.php' in product_link:
+                    # goods_view.php?goodsno=12345 패턴 처리
+                    parts = product_link.split('goodsno=')
+                    if len(parts) > 1:
+                        product_code = parts[1].split('&')[0]
+                elif '/goods/' in product_link:
+                    # /goods/1234 패턴 처리
+                    parts = product_link.split('/goods/')
+                    if len(parts) > 1:
+                        product_code = parts[1].split('/')[0].split('?')[0]
+                elif 'goodsDetail' in product_link:
+                    # goodsDetail?goodsNo=1234 패턴 처리
+                    parts = product_link.split('goodsNo=')
+                    if len(parts) > 1:
+                        product_code = parts[1].split('&')[0]
+                
+                if not product_code:
+                    logging.warning(f"Row {idx}: 상품 링크에서 코드를 추출할 수 없음: {product_link}")
                     continue
                     
-                # ADDED: Try _nobg variant for regular image names
-                if filename.lower().endswith(('.jpg', '.png')) and '_nobg' not in filename.lower():
-                    base_name = os.path.splitext(filename)[0]
-                    nobg_variant = f"{base_name}_nobg.png"
-                    
-                    if nobg_variant in kogift_images:
-                        new_local_path = kogift_images[nobg_variant]
-                        logger.info(f"Row {idx}: Found _nobg variant for regular image URL string: {nobg_variant}")
-                        
-                        # Create a dictionary format
-                        df.at[idx, col] = {
-                            'url': url,
-                            'local_path': new_local_path,
-                            'source': 'kogift'
-                        }
-                        fixed_count += 1
+                # 상품 이미지 URL 생성
+                # 여기서는 common_img_url 패턴을 사용. 
+                # 실제 사이트의 이미지 URL 패턴에 맞게 수정 필요
+                if 'koreagift.com' in product_link.lower():
+                    # 고려기프트 이미지 패턴
+                    base_domain = 'koreagift.com'
+                    image_url = f"https://img.koreagift.com/shopimages/koreagift/0{product_code[0]}/{product_code}_500.jpg"
+                else:
+                    # 일반적인 쇼핑몰 이미지 패턴
+                    domain_parts = product_link.split('/')
+                    if len(domain_parts) > 2:
+                        base_domain = domain_parts[2]
+                        image_url = f"https://{base_domain}/data/item/goods{product_code}/thumb-{product_code}_500x500.jpg"
+                    else:
+                        logging.warning(f"Row {idx}: 상품 링크 {product_link}에서 도메인을 추출할 수 없음")
                         continue
-                    
-                # Try hash-based matching
-                url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-                hash_patterns = [
-                    f"kogift_{url_hash}.jpg",
-                    f"kogift_{url_hash}.png", 
-                    f"kogift_{url_hash}_nobg.png"  # ADDED: Include _nobg pattern
-                ]
                 
-                for pattern in hash_patterns:
-                    if pattern in kogift_images:
-                        new_local_path = kogift_images[pattern]
-                        logger.info(f"Row {idx}: Found match via URL hash pattern for string URL: {pattern}")
-                        
-                        # Create a dictionary format
-                        df.at[idx, col] = {
-                            'url': url,
-                            'local_path': new_local_path,
-                            'source': 'kogift'
-                        }
-                        fixed_count += 1
-                        break
-    
-    logger.info(f"Kogift image matching completed. Processed {rows_processed} rows, fixed {fixed_count} image links.")
-    return df
+                # 기존 이미지 데이터 업데이트
+                img_data['url'] = image_url
+                img_data['original_url'] = image_url  # 추가: 원본 URL 저장
+                result_df.at[idx, '고려기프트 이미지'] = img_data
+                update_count += 1
+                logging.debug(f"Row {idx}: 고려기프트 URL 추가 - {image_url}")
+                
+            except Exception as e:
+                logging.error(f"Row {idx}: 고려기프트 이미지 URL 생성 오류 - {str(e)}")
+                continue
+                
+        logging.info(f"improved_kogift_image_matching fixed {update_count} image links")
+        return result_df
+        
+    except Exception as e:
+        logging.error(f"고려기프트 이미지 링크 개선 중 오류: {str(e)}")
+        return df
 
 def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigParser, 
                             save_excel_output=False) -> pd.DataFrame:
@@ -2003,10 +1812,25 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                     local_path = naver_data.get('local_path')
                     if local_path and os.path.exists(str(local_path)):
                         logger.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver image with invalid URL but valid local path.")
-                        # Update the URL with a placeholder to avoid further validation failures
-                        if not url or not isinstance(url, str):
+                        # Check if original data has a valid URL that we can use
+                        original_path = naver_data.get('original_path')
+                        image_url = naver_data.get('original_url')
+                        
+                        # Try to find a valid URL from various sources
+                        if image_url and isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
+                            # Use the original URL if available
+                            naver_data['url'] = image_url
+                            logger.info(f"Row {idx}: Using original Naver URL: {image_url[:50]}...")
+                        elif original_path and isinstance(original_path, str) and original_path.startswith(('http://', 'https://')):
+                            # Use original path as URL if it's a web URL
+                            naver_data['url'] = original_path
+                            logger.info(f"Row {idx}: Using original path as Naver URL: {original_path[:50]}...")
+                        else:
+                            # Only use placeholder as a last resort
                             naver_data['url'] = f"http://placeholder.url/for/{idx}.jpg"
-                            result_df.at[idx, '네이버 이미지'] = naver_data
+                            logger.warning(f"Row {idx}: Using placeholder for Naver image. No valid URL found.")
+                        
+                        result_df.at[idx, '네이버 이미지'] = naver_data
                     else:
                         # Only clear if both URL is invalid and local file doesn't exist
                         logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Naver URL '{url}' and no valid local path. Clearing Naver data.")
@@ -2024,12 +1848,29 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                 if (not url or not isinstance(url, str) or not url.startswith('http')) and (not local_path or not os.path.exists(str(local_path))):
                     logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Kogift URL and missing local file. Clearing Kogift data.")
                     result_df.at[idx, '고려기프트 이미지'] = None
-                elif not url or not isinstance(url, str):
-                    # Fix the URL with a placeholder if local path is valid
-                    if local_path and os.path.exists(str(local_path)):
-                        logger.info(f"Row {idx} (Product: '{product_name}'): Setting placeholder URL for valid Kogift local file.")
-                        kogift_data['url'] = f"http://placeholder.url/kogift_{idx}.jpg"
-                        result_df.at[idx, '고려기프트 이미지'] = kogift_data
+                elif not url or not isinstance(url, str) or url.startswith('http://placeholder.url/'):
+                    # Try to find a valid URL in the data
+                    # Check if original data has a valid URL that we can use
+                    original_path = kogift_data.get('original_path')
+                    image_url = kogift_data.get('original_url')
+                    
+                    # Try to find a valid URL from various sources
+                    if image_url and isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
+                        # Use the original URL if available
+                        kogift_data['url'] = image_url
+                        logger.info(f"Row {idx}: Using original Kogift URL: {image_url[:50]}...")
+                    elif original_path and isinstance(original_path, str) and original_path.startswith(('http://', 'https://')):
+                        # Use original path as URL if it's a web URL
+                        kogift_data['url'] = original_path
+                        logger.info(f"Row {idx}: Using original path as Kogift URL: {original_path[:50]}...")
+                    else:
+                        # Fix the URL with a placeholder as last resort
+                        if local_path and os.path.exists(str(local_path)):
+                            logger.info(f"Row {idx} (Product: '{product_name}'): Setting placeholder URL for valid Kogift local file.")
+                            kogift_data['url'] = f"http://placeholder.url/kogift_{idx}.jpg"
+                            logger.warning(f"Row {idx}: Using placeholder for Kogift image. No valid URL found.")
+                        
+                    result_df.at[idx, '고려기프트 이미지'] = kogift_data
     
     # Count images after final validation
     naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))

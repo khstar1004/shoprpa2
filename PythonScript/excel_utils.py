@@ -1832,19 +1832,29 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                         try:
                             # FIX: Explicitly check dictionary structure and extract 'url' key if it's a web URL
                             if isinstance(value, dict):
-                                # Check for product_url first (for Naver) - NEW ADDITION
+                                # 1. Check for product_url first (for Naver) - NEW ADDITION
                                 if 'product_url' in value and isinstance(value['product_url'], str) and value['product_url'].startswith(('http://', 'https://')):
                                     image_url = value['product_url'].strip()
                                     url_source = "direct_from_product_url_key"
                                     logger.debug(f"Found product URL in {img_col} at idx {idx} using 'product_url' key: {image_url[:50]}...")
-                                # Then check for regular 'url' key as fallback
-                                elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
+                                # 2. Check for regular 'url' key that is not a placeholder
+                                elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')) and not value['url'].startswith('http://placeholder.url/'):
                                     image_url = value['url'].strip()
                                     url_source = "direct_from_url_key"
                                     logger.debug(f"Found web URL in {img_col} at idx {idx} using 'url' key: {image_url[:50]}...")
+                                # 3. Check for original_url key for original crawled URLs
+                                elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].startswith(('http://', 'https://')):
+                                    image_url = value['original_url'].strip()
+                                    url_source = "from_original_url_key"
+                                    logger.debug(f"Found original URL in {img_col} at idx {idx} using 'original_url' key: {image_url[:50]}...")
+                                # 4. Check if original_path is a URL
+                                elif 'original_path' in value and isinstance(value['original_path'], str) and value['original_path'].startswith(('http://', 'https://')):
+                                    image_url = value['original_path'].strip()
+                                    url_source = "from_original_path_as_url"
+                                    logger.debug(f"Found URL in original_path for {img_col} at idx {idx}: {image_url[:50]}...")
                                 else:
                                     # Fallback: Check other potential keys if 'url' is missing or invalid
-                                    for url_key in ['image_url', 'original_url', 'src']:
+                                    for url_key in ['image_url', 'src']:
                                         fallback_url = value.get(url_key)
                                         if fallback_url and isinstance(fallback_url, str) and fallback_url.startswith(('http://', 'https://')):
                                             image_url = fallback_url.strip()

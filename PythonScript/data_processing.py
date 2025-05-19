@@ -383,6 +383,7 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                                 # 이미지 데이터 사전 생성
                                 img_dict = {
                                     'url': image_url,
+                                    'original_url': image_url,  # 추가: 원본 URL 보관
                                     'source': 'kogift',
                                     'product_name': product_name
                                 }
@@ -453,81 +454,106 @@ def format_product_data_for_output(input_df: pd.DataFrame,
 
     # Add Naver data from crawl results if available
     if naver_results:
-        naver_matched_count = 0
+        naver_update_count = 0
+        naver_img_count = 0
+        naver_price_count = 0
+        
         for idx, row in df.iterrows():
             product_name = row.get('상품명')
-            
             if product_name in naver_results:
+                # Get first matching result from Naver
                 naver_data = naver_results[product_name]
+                
                 if naver_data and len(naver_data) > 0:
-                    # Use first match for now
-                    item = naver_data[0]
+                    # Use the first match
+                    item = naver_data[0]  
                     
-                    # Process if item is valid and has required data
-                    if isinstance(item, dict):
-                        naver_matched_count += 1
-                        
-                        # Update Naver related columns
-                        # 기본수량(3) - 요청에 따라 수량정보는 생략 (항상 기본수량(1)과 동일하게 설정)
-                        if '기본수량(3)' in df.columns:
-                            # 기본수량(1)의 값을 그대로 복사 (직접 가격 비교를 위해)
-                            if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
-                                df.at[idx, '기본수량(3)'] = row['기본수량(1)']
-                            else:
-                                df.at[idx, '기본수량(3)'] = 1  # 기본값
-                        
-                        # 판매단가 정보 업데이트
-                        if '판매단가(V포함)(3)' in df.columns and 'price' in item:
-                            df.at[idx, '판매단가(V포함)(3)'] = item['price']
-                        
-                        # 링크 정보 업데이트
-                        if '네이버 쇼핑 링크' in df.columns and 'link' in item:
+                    # Update Naver link columns
+                    if '네이버 쇼핑 링크' in df.columns:
+                        if 'link' in item:
                             df.at[idx, '네이버 쇼핑 링크'] = item['link']
-                        if '공급사 상품링크' in df.columns and 'seller_link' in item:
-                            df.at[idx, '공급사 상품링크'] = item['seller_link']
-                        if '공급사명' in df.columns and 'seller_name' in item:
-                            df.at[idx, '공급사명'] = item['seller_name']
+                        elif 'href' in item:
+                            df.at[idx, '네이버 쇼핑 링크'] = item['href']
+                            
+                    # Update Naver seller/mall information
+                    if '공급사명' in df.columns:
+                        if 'mall_name' in item:
+                            df.at[idx, '공급사명'] = item['mall_name']
+                            
+                    if '공급사 상품링크' in df.columns:
+                        if 'mall_link' in item:
+                            df.at[idx, '공급사 상품링크'] = item['mall_link']
+                    
+                    # Update Naver price information (V포함)(3)
+                    if '판매단가(V포함)(3)' in df.columns:
+                        # Price with VAT
+                        if 'price_with_vat' in item:
+                            df.at[idx, '판매단가(V포함)(3)'] = item['price_with_vat']
+                            naver_price_count += 1
+                        # Calculate VAT manually if not included
+                        elif 'price' in item:
+                            df.at[idx, '판매단가(V포함)(3)'] = round(item['price'] * 1.1)
+                            naver_price_count += 1
+                    
+                    # Update Naver quantity - 기본수량(3) should match 기본수량(1) for direct comparison
+                    if '기본수량(3)' in df.columns:
+                        # Copy the value from 기본수량(1) for consistent comparison
+                        if '기본수량(1)' in df.columns and pd.notna(row['기본수량(1)']):
+                            df.at[idx, '기본수량(3)'] = row['기본수량(1)']
+                        # If quantity exists in the item, use it as a fallback
+                        elif 'quantity' in item:
+                            df.at[idx, '기본수량(3)'] = item['quantity']
+                    
+                    # Update Naver Image information
+                    # Find image URL in the item data
+                    image_url = None
+                    if 'image_url' in item and item['image_url']:
+                        image_url = item['image_url']
+                    elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path']:
+                        if item['image_path'].startswith(('http://', 'https://')):
+                            image_url = item['image_path']
+                            
+                    # Get the local path if available
+                    local_image_path = None
+                    if 'image_path' in item and item['image_path'] and isinstance(item['image_path'], str):
+                        if not item['image_path'].startswith(('http://', 'https://')) and os.path.exists(item['image_path']):
+                            local_image_path = item['image_path']
+                    
+                    # Add a fallback to image_data structure if available
+                    if not local_image_path and 'image_data' in item and isinstance(item['image_data'], dict):
+                        img_data_dict = item['image_data']
+                        if 'local_path' in img_data_dict and img_data_dict['local_path']:
+                            if isinstance(img_data_dict['local_path'], str) and os.path.exists(img_data_dict['local_path']):
+                                local_image_path = img_data_dict['local_path']
                         
-                        # 이미지 URL 추가
-                        if '네이버 이미지' in df.columns:
-                            # 이미지 경로 정보가 있으면 추가
-                            img_path = None
-                            img_url = None
-                            
-                            # IMPROVED: 실제 이미지 URL 찾기 (순서대로 시도)
-                            if 'image_url' in item and item['image_url'] and item['image_url'].startswith(('http://', 'https://')):
-                                img_url = item['image_url']
-                            elif 'image_path' in item and isinstance(item['image_path'], str) and item['image_path'].startswith(('http://', 'https://')):
-                                img_url = item['image_path']
-                            elif 'image_path' in item:
-                                img_path = item['image_path']
-                            
-                            if img_path or img_url:
-                                # 이미지 URL을 포함하는 사전 생성
-                                if img_url:
-                                    img_dict = {
-                                        'url': img_url,
-                                        'source': '네이버'
-                                    }
-                                    if img_path and not isinstance(img_path, dict) and not img_path.startswith(('http://', 'https://')):
-                                        img_dict['local_path'] = img_path
-                                    
-                                    df.at[idx, '네이버 이미지'] = img_dict
-                                    logging.debug(f"Found Naver image URL: {img_url[:50]}...")
-                                elif isinstance(img_path, dict):
-                                    # 이미 사전 형태인 경우
-                                    img_dict = img_path.copy()
-                                    if 'source' not in img_dict:
-                                        img_dict['source'] = '네이버'
-                                    df.at[idx, '네이버 이미지'] = img_dict
-                                else:
-                                    # 로컬 경로만 있는 경우
-                                    df.at[idx, '네이버 이미지'] = {
-                                        'local_path': img_path,
-                                        'source': '네이버'
-                                    }
+                        # Also try to get image URL from image_data if needed
+                        if not image_url and 'url' in img_data_dict and img_data_dict['url']:
+                            image_url = img_data_dict['url']
+                    
+                    # Add Naver image information if URL is available
+                    if (image_url or local_image_path) and '네이버 이미지' in df.columns:
+                        # Create image data dictionary
+                        img_dict = {
+                            'source': 'naver',
+                            'product_name': product_name,
+                        }
+                        
+                        # Add URL if available
+                        if image_url:
+                            img_dict['url'] = image_url
+                            img_dict['original_url'] = image_url  # 추가: 원본 URL 보관
+                        
+                        # Add local path if available
+                        if local_image_path:
+                            img_dict['local_path'] = local_image_path
+                            img_dict['original_path'] = local_image_path
+                        
+                        df.at[idx, '네이버 이미지'] = img_dict
+                        naver_img_count += 1
+                        
+                    naver_update_count += 1
         
-        logging.info(f"Updated {naver_matched_count} rows with Naver data")
+        logging.info(f"Added data from {naver_update_count} Naver results: {naver_img_count} images, {naver_price_count} price points")
     
     # --- Calculate additional fields ---
     # Calculate price differences if base price exists
