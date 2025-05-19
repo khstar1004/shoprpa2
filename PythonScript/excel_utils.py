@@ -1697,7 +1697,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                                     product_link = df_finalized.at[idx, '고려기프트 상품링크']
                                                     if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
                                                         # Try to extract product ID from link
-                                                        import re
                                                         no_match = re.search(r'no=(\d+)', product_link)
                                                         if no_match:
                                                             product_id = no_match.group(1)
@@ -1785,7 +1784,6 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                             product_link = df_finalized.at[idx, '고려기프트 상품링크']
                                             if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
                                                 # Try to extract product ID from link
-                                                import re
                                                 no_match = re.search(r'no=(\d+)', product_link)
                                                 if no_match:
                                                     product_id = no_match.group(1)
