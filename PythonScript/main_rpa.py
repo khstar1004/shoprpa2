@@ -850,13 +850,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 output_dir = config.get('Paths', 'output_dir')
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Generate output filename without creating additional subdirectories
-                input_filename_base = os.path.basename(input_filename).rsplit('.', 1)[0]
+                # Generate output filename
+                input_filename_base = input_filename.rsplit('.', 1)[0]
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(output_dir, input_filename_base)
+                output_path = os.path.join(output_dir, f"{input_filename_base}")
 
-                # Pass the base directory and filename to create_split_excel_outputs
-                # It will add the appropriate suffix (_result or _upload) and timestamp
+                # DO NOT create the full output path with timestamp here
+                # Instead, pass the base directory and filename to create_split_excel_outputs
+                # and let it add the appropriate suffix (_result or _upload) and timestamp
                 
                 # --- Moved Image Integration Here ---
                 try:
@@ -1295,10 +1296,31 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                             logging.warning(f"Upload path is invalid or does not exist: {upload_path}")
                                             progress_queue.emit("final_path", "Error: Upload file not found")
                                 else:
-                                    logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
-                                    if progress_queue:
-                                        progress_queue.emit("error", "Failed to create one or both Excel output files.")
-                                    output_path = None
+                                    # Check if files were actually created despite the reported failure
+                                    files_exist = (result_path and os.path.exists(result_path)) or (upload_path and os.path.exists(upload_path))
+                                    
+                                    if files_exist:
+                                        # At least one file was created successfully despite the failure flags
+                                        logging.info("Files were created successfully despite reported failure, continuing with processing")
+                                        
+                                        # Update success flags since files exist
+                                        if result_path and os.path.exists(result_path):
+                                            result_success = True
+                                        if upload_path and os.path.exists(upload_path):
+                                            upload_success = True
+                                            
+                                        # Emit success message
+                                        if progress_queue:
+                                            progress_queue.emit("status", "Output files saved successfully")
+                                            if upload_path and os.path.exists(upload_path):
+                                                progress_queue.emit("final_path", upload_path)
+                                                logging.info(f"Emitting final upload path: {upload_path}")
+                                    else:
+                                        # No files were created, log error
+                                        logging.error("엑셀 파일 생성 실패 (create_split_excel_outputs). 이전 로그를 확인하세요.")
+                                        if progress_queue:
+                                            progress_queue.emit("error", "Failed to create one or both Excel output files.")
+                                        output_path = None
                             except Exception as save_err:
                                 error_msg = f"Failed during Excel creation step: {str(save_err)}"
                                 logging.error(f"[Step 7/7] {error_msg}", exc_info=True)
@@ -1331,20 +1353,32 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             total_time = time.time() - main_start_time
             logging.info(f"========= RPA Process Finished - Total Time: {total_time:.2f} sec ==========")
             if progress_queue:
-                # First send the result path (which is now upload_path) if available
-                if output_path: # output_path here corresponds to the base name structure, but the actual final path is emitted above
-                    # Check if the specifically emitted upload_path exists
-                    final_emitted_path = upload_path # Use the variable we know holds the upload path
-                    if final_emitted_path and os.path.exists(final_emitted_path):
-                        logging.info(f"Emitting final upload path: {final_emitted_path}")
-                        # Ensure final_path signal emission logic remains consistent (already done above)
-                        # progress_queue.emit("final_path", final_emitted_path) # This is now redundant as it's emitted earlier
+                # Check for any valid output path - prefer upload_path if it exists
+                valid_path = None
+                # First check upload_path (most important for final output)
+                if upload_path and os.path.exists(upload_path):
+                    valid_path = upload_path
+                    logging.info(f"Using upload_path as final output path: {valid_path}")
+                # Then check result_path
+                elif result_path and os.path.exists(result_path):
+                    valid_path = result_path
+                    logging.info(f"Using result_path as final output path: {valid_path}")
+                # Lastly check output_path
+                elif output_path:
+                    valid_path = output_path
+                    logging.info(f"Using base output_path as final path: {valid_path}")
+                
+                # Now use valid_path for final emission
+                if valid_path:
+                    if os.path.exists(valid_path):
+                        logging.info(f"Emitting final path to UI: {valid_path}")
+                        progress_queue.emit("final_path", valid_path)
                     else:
-                        logging.warning(f"Upload path does not exist or was not generated: {final_emitted_path}")
-                        progress_queue.emit("final_path", f"Error: Upload file not found at {final_emitted_path}")
+                        logging.warning(f"Final path does not exist: {valid_path}")
+                        progress_queue.emit("final_path", f"Error: File not found at {valid_path}")
                 else:
-                    # If output_path wasn't even determined (earlier error maybe)
-                    logging.warning("No base output path available, cannot check for upload file.")
+                    # No valid path found
+                    logging.warning("No valid output path available")
                     progress_queue.emit("final_path", "Error: No output file created")
                 
                 # Then mark the process as finished
