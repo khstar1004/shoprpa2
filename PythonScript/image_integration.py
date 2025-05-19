@@ -1669,7 +1669,7 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                 
             # Check if URL is missing or a placeholder
             url = img_data.get('url')
-            if url and isinstance(url, str) and not url.startswith('http://placeholder.url/'):
+            if url and isinstance(url, str) and not url.startswith('http://placeholder.url/') and url.startswith(('http://', 'https://')):
                 # 이미 유효한 URL이 있는 경우
                 continue
                 
@@ -1681,6 +1681,16 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                 result_df.at[idx, '고려기프트 이미지'] = img_data
                 update_count += 1
                 logging.info(f"Row {idx}: Using original URL {original_url[:50]}... for Kogift image")
+                continue
+                
+            # Check if we have an original_crawled_url
+            original_crawled_url = img_data.get('original_crawled_url')
+            if original_crawled_url and isinstance(original_crawled_url, str) and original_crawled_url.startswith(('http://', 'https://')):
+                # original_crawled_url 정보가 있으면 사용
+                img_data['url'] = original_crawled_url
+                result_df.at[idx, '고려기프트 이미지'] = img_data
+                update_count += 1
+                logging.info(f"Row {idx}: Using original crawled URL {original_crawled_url[:50]}... for Kogift image")
                 continue
                 
             # 상품 링크가 있는지 확인
@@ -1709,18 +1719,28 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                     parts = product_link.split('goodsNo=')
                     if len(parts) > 1:
                         product_code = parts[1].split('&')[0]
+                # 고려기프트 특화 패턴
+                elif 'no=' in product_link:
+                    # 고려기프트 URL 패턴 처리 (no=12345)
+                    parts = product_link.split('no=')
+                    if len(parts) > 1:
+                        product_code = parts[1].split('&')[0]
                 
                 if not product_code:
                     logging.warning(f"Row {idx}: 상품 링크에서 코드를 추출할 수 없음: {product_link}")
+                    # 상품 코드를 추출할 수 없는 경우 상품 링크 자체를 이미지 URL로 사용
+                    img_data['url'] = product_link
+                    img_data['original_url'] = product_link  # 추가: 원본 URL 저장
+                    result_df.at[idx, '고려기프트 이미지'] = img_data
+                    update_count += 1
+                    logging.info(f"Row {idx}: 코드 추출 실패, 상품 링크를 이미지 URL로 사용 - {product_link}")
                     continue
                     
                 # 상품 이미지 URL 생성
-                # 여기서는 common_img_url 패턴을 사용. 
-                # 실제 사이트의 이미지 URL 패턴에 맞게 수정 필요
                 if 'koreagift.com' in product_link.lower():
                     # 고려기프트 이미지 패턴
-                    base_domain = 'koreagift.com'
-                    image_url = f"https://img.koreagift.com/shopimages/koreagift/0{product_code[0]}/{product_code}_500.jpg"
+                    # 1. 기본 패턴: shop_{product_code}.jpg
+                    image_url = f"https://koreagift.com/ez/upload/mall/shop_{product_code}.jpg"
                 else:
                     # 일반적인 쇼핑몰 이미지 패턴
                     domain_parts = product_link.split('/')
@@ -1728,18 +1748,28 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                         base_domain = domain_parts[2]
                         image_url = f"https://{base_domain}/data/item/goods{product_code}/thumb-{product_code}_500x500.jpg"
                     else:
-                        logging.warning(f"Row {idx}: 상품 링크 {product_link}에서 도메인을 추출할 수 없음")
-                        continue
+                        # 도메인을 추출할 수 없는 경우 상품 링크 자체를 이미지 URL로 사용
+                        image_url = product_link
+                        logging.warning(f"Row {idx}: 상품 링크 {product_link}에서 도메인을 추출할 수 없어 상품 링크 자체를 사용")
                 
                 # 기존 이미지 데이터 업데이트
                 img_data['url'] = image_url
                 img_data['original_url'] = image_url  # 추가: 원본 URL 저장
+                img_data['original_crawled_url'] = image_url  # 추가: 크롤링된 URL 저장
+                img_data['product_id'] = product_code  # 추가: 상품 코드 저장
                 result_df.at[idx, '고려기프트 이미지'] = img_data
                 update_count += 1
                 logging.debug(f"Row {idx}: 고려기프트 URL 추가 - {image_url}")
                 
             except Exception as e:
                 logging.error(f"Row {idx}: 고려기프트 이미지 URL 생성 오류 - {str(e)}")
+                # 오류가 발생한 경우에도 상품 링크 자체를 이미지 URL로 사용
+                if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                    img_data['url'] = product_link
+                    img_data['original_url'] = product_link
+                    result_df.at[idx, '고려기프트 이미지'] = img_data
+                    update_count += 1
+                    logging.info(f"Row {idx}: 오류 발생, 상품 링크를 이미지 URL로 사용 - {product_link}")
                 continue
                 
         logging.info(f"improved_kogift_image_matching fixed {update_count} image links")
@@ -1889,9 +1919,25 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                                     except Exception as e:
                                         logger.warning(f"Row {idx}: Failed to extract product ID from Naver shopping link: {e}")
                                 
-                                # Now set placeholder URL
-                                naver_data['url'] = f"http://placeholder.url/for/{idx}.jpg"
-                                logger.warning(f"Row {idx}: Using placeholder for Naver image. No valid URL found.")
+                                # 이미지 URL 설정 - placeholder URL 대신 실제 URL 사용
+                                if 'product_id' in naver_data and naver_data['product_id']:
+                                    # 이미 product_id가 추출되었으면 이를 사용하여 URL 생성
+                                    product_id = naver_data['product_id']
+                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                    naver_data['url'] = constructed_url
+                                    logger.info(f"Row {idx}: Using constructed URL for Naver image based on product_id: {constructed_url}")
+                                elif 'original_crawled_url' in naver_data and naver_data['original_crawled_url'] and isinstance(naver_data['original_crawled_url'], str) and naver_data['original_crawled_url'].startswith(('http://', 'https://')):
+                                    # original_crawled_url이 있으면 이를 사용
+                                    naver_data['url'] = naver_data['original_crawled_url']
+                                    logger.info(f"Row {idx}: Using original crawled URL for Naver image: {naver_data['original_crawled_url'][:50]}...")
+                                elif '네이버 쇼핑 링크' in result_df.columns and idx < len(result_df) and isinstance(result_df.at[idx, '네이버 쇼핑 링크'], str) and result_df.at[idx, '네이버 쇼핑 링크'].startswith(('http://', 'https://')):
+                                    # 네이버 쇼핑 링크가 있으면 이를 사용
+                                    naver_data['url'] = result_df.at[idx, '네이버 쇼핑 링크']
+                                    logger.info(f"Row {idx}: Using Naver shopping link as image URL: {result_df.at[idx, '네이버 쇼핑 링크'][:50]}...")
+                                else:
+                                    # 마지막 수단으로 placeholder URL 사용하되 prefix를 표준 URL로 설정
+                                    naver_data['url'] = f"https://shopping-phinf.pstatic.net/placeholder/image_{idx}.jpg"
+                                    logger.warning(f"Row {idx}: Using standardized placeholder URL for Naver image (no valid URL found).")
                         
                         result_df.at[idx, '네이버 이미지'] = naver_data
                     else:
@@ -1954,6 +2000,10 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                                         # Store product_id for future use
                                         kogift_data['product_id'] = product_id
                                         logger.info(f"Row {idx}: Constructed and saved Kogift URL from product_id: {constructed_url}")
+                                        
+                                        # 실제 constructed_url 사용
+                                        kogift_data['url'] = constructed_url
+                                        logger.info(f"Row {idx}: Using constructed URL for Kogift image: {constructed_url}")
                                     else:
                                         # Try 'no=' pattern which is also common in Kogift URLs
                                         no_match = re.search(r'no=(\d+)', product_link)
@@ -1964,17 +2014,25 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
                                             # Store product_id for future use
                                             kogift_data['product_id'] = product_id
                                             logger.info(f"Row {idx}: Constructed and saved Kogift URL from 'no' parameter: {constructed_url}")
+                                            
+                                            # 실제 constructed_url 사용
+                                            kogift_data['url'] = constructed_url
+                                            logger.info(f"Row {idx}: Using constructed URL for Kogift image: {constructed_url}")
                                         else:
                                             # Just save the product link as reference
                                             kogift_data['original_crawled_url'] = product_link
                                             logger.info(f"Row {idx}: Saved product link as reference: {product_link[:50]}...")
+                                            
+                                            # 상품 링크를 이미지 URL로 사용
+                                            kogift_data['url'] = product_link
+                                            logger.info(f"Row {idx}: Using product link as Kogift image URL: {product_link[:50]}...")
                                 except Exception as e:
                                     logger.warning(f"Row {idx}: Failed to process Kogift product link: {e}")
                                     kogift_data['original_crawled_url'] = product_link
-                                
-                                # Set the placeholder URL
-                                kogift_data['url'] = f"http://placeholder.url/kogift_{idx}.jpg"
-                                logger.warning(f"Row {idx}: Using placeholder for Kogift image. No valid URL found.")
+                                    
+                                    # 오류 발생 시에도 상품 링크를 이미지 URL로 사용
+                                    kogift_data['url'] = product_link
+                                    logger.info(f"Row {idx}: Using product link as Kogift image URL despite error: {product_link[:50]}...")
                         
                     result_df.at[idx, '고려기프트 이미지'] = kogift_data
     

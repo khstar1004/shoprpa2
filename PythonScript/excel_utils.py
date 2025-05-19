@@ -1835,11 +1835,13 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                 if 'product_url' in value and isinstance(value['product_url'], str) and value['product_url'].startswith(('http://', 'https://')):
                                     image_url = value['product_url'].strip()
                                     url_source = "direct_from_product_url_key"
+                                    urls_found += 1
                                     logger.debug(f"Found product URL in {img_col} at idx {idx} using 'product_url' key: {image_url[:50]}...")
                                 # 2. Check for original_crawled_url added by our improvements
                                 elif 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].startswith(('http://', 'https://')):
                                     image_url = value['original_crawled_url'].strip()
                                     url_source = "from_original_crawled_url_key"
+                                    urls_found += 1
                                     logger.debug(f"Found original crawled URL in {img_col} at idx {idx}: {image_url[:50]}...")
                                 # 3. Check for regular 'url' key (including placeholders, but preferring real URLs)
                                 elif 'url' in value and isinstance(value['url'], str) and value['url'].startswith(('http://', 'https://')):
@@ -1849,34 +1851,201 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         if 'original_crawled_url' in value and isinstance(value['original_crawled_url'], str) and value['original_crawled_url'].startswith(('http://', 'https://')) and not value['original_crawled_url'].startswith('http://placeholder.url/'):
                                             image_url = value['original_crawled_url'].strip()
                                             url_source = "from_original_crawled_url_key"
+                                            urls_found += 1
                                             logger.debug(f"Found original crawled URL in {img_col} at idx {idx}: {image_url[:50]}...")
                                         else:
-                                            image_url = value['url'].strip()
-                                            url_source = "placeholder_url_key"
-                                            logger.debug(f"Using placeholder URL in {img_col} at idx {idx}: {image_url[:50]}...")
+                                            # Don't use placeholder URLs
+                                            # Try to construct a better URL based on image source
+                                            source = value.get('source', '').lower()
+                                            
+                                            # For Kogift images
+                                            if source == 'kogift' or '고려' in img_col:
+                                                # If we have a product_id, try to construct URL
+                                                if 'product_id' in value and value['product_id']:
+                                                    product_id = value['product_id']
+                                                    constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                                    image_url = constructed_url
+                                                    url_source = "constructed_kogift_url"
+                                                    urls_found += 1
+                                                    logger.debug(f"Constructed URL for Kogift image: {image_url}")
+                                                # If we have product link in a different column, use it
+                                                elif '고려기프트 상품링크' in df_finalized.columns:
+                                                    product_link = df_finalized.at[idx, '고려기프트 상품링크']
+                                                    if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                                        # Try to extract product ID from link
+                                                        import re
+                                                        no_match = re.search(r'no=(\d+)', product_link)
+                                                        if no_match:
+                                                            product_id = no_match.group(1)
+                                                            constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                                            image_url = constructed_url
+                                                            url_source = "constructed_from_product_link"
+                                                            urls_found += 1
+                                                            logger.debug(f"Constructed URL from product link: {image_url}")
+                                                        else:
+                                                            # If we can't extract product ID, use product link as fallback
+                                                            image_url = product_link
+                                                            url_source = "kogift_product_link_fallback"
+                                                            urls_found += 1
+                                                            logger.debug(f"Using product link for Kogift image: {image_url[:50]}...")
+                                            
+                                            # For Naver images
+                                            elif source == 'naver' or '네이버' in img_col:
+                                                # Try to use product_id to construct URL
+                                                if 'product_id' in value and value['product_id']:
+                                                    product_id = value['product_id']
+                                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                                                    image_url = constructed_url
+                                                    url_source = "constructed_naver_url"
+                                                    urls_found += 1
+                                                    logger.debug(f"Constructed URL for Naver image: {image_url}")
+                                                # Check if we have product link in a different column
+                                                elif '네이버 쇼핑 링크' in df_finalized.columns:
+                                                    product_link = df_finalized.at[idx, '네이버 쇼핑 링크']
+                                                    if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                                        image_url = product_link
+                                                        url_source = "naver_product_link_fallback"
+                                                        urls_found += 1
+                                                        logger.debug(f"Using product link for Naver image: {image_url[:50]}...")
+                                            
+                                            # If still no URL, use original placeholder as last resort
+                                            if not image_url:
+                                                image_url = value['url'].strip()
+                                                url_source = "placeholder_url_key"
+                                                logger.debug(f"Using placeholder URL in {img_col} at idx {idx}: {image_url[:50]}...")
                                     else:
                                         image_url = value['url'].strip()
                                         url_source = "direct_from_url_key"
+                                        urls_found += 1
                                         logger.debug(f"Found web URL in {img_col} at idx {idx} using 'url' key: {image_url[:50]}...")
                                 # 4. Check for original_url key for original crawled URLs
                                 elif 'original_url' in value and isinstance(value['original_url'], str) and value['original_url'].startswith(('http://', 'https://')):
                                     image_url = value['original_url'].strip()
                                     url_source = "from_original_url_key"
+                                    urls_found += 1
                                     logger.debug(f"Found original URL in {img_col} at idx {idx} using 'original_url' key: {image_url[:50]}...")
                                 # 5. Check if original_path is a URL
                                 elif 'original_path' in value and isinstance(value['original_path'], str) and value['original_path'].startswith(('http://', 'https://')):
                                     image_url = value['original_path'].strip()
                                     url_source = "from_original_path_as_url"
+                                    urls_found += 1
                                     logger.debug(f"Found URL in original_path for {img_col} at idx {idx}: {image_url[:50]}...")
-                                else:
-                                    # Fallback: Check other potential keys if 'url' is missing or invalid
+                                # 6. Try to generate a URL based on the source and other available information
+                                elif not image_url:
+                                    source = value.get('source', '').lower()
+                                    
+                                    # For Haereum images, try to extract product code
+                                    if source == 'haereum' or '본사' in img_col:
+                                        if 'p_idx' in value:
+                                            product_code = value['p_idx']
+                                            constructed_url = f"https://www.jclgift.com/upload/product/bimg3/{product_code}b.jpg"
+                                            image_url = constructed_url
+                                            url_source = "constructed_haereum_url"
+                                            urls_found += 1
+                                            logger.debug(f"Constructed URL for Haereum image: {image_url}")
+                                        elif 'original_path' in value and isinstance(value['original_path'], str):
+                                            path = value['original_path']
+                                            # Look for product code pattern (e.g., BBCA0009349, CCBK0001873)
+                                            code_match = re.search(r'([A-Z]{4}\d{7})', path)
+                                            if code_match:
+                                                product_code = code_match.group(1)
+                                                constructed_url = f"https://www.jclgift.com/upload/product/bimg3/{product_code}b.jpg"
+                                                image_url = constructed_url
+                                                url_source = "constructed_haereum_url_from_path"
+                                                urls_found += 1
+                                                logger.debug(f"Constructed URL for Haereum image from path: {image_url}")
+                                            
+                                    # For Kogift images
+                                    elif source == 'kogift' or '고려' in img_col:
+                                        if '고려기프트 상품링크' in df_finalized.columns:
+                                            product_link = df_finalized.at[idx, '고려기프트 상품링크']
+                                            if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                                # Try to extract product ID from link
+                                                import re
+                                                no_match = re.search(r'no=(\d+)', product_link)
+                                                if no_match:
+                                                    product_id = no_match.group(1)
+                                                    constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                                    image_url = constructed_url
+                                                    url_source = "constructed_from_product_link"
+                                                    urls_found += 1
+                                                    logger.debug(f"Constructed URL from product link: {image_url}")
+                                                else:
+                                                    # If we can't extract product ID, use product link as fallback
+                                                    image_url = product_link
+                                                    url_source = "kogift_product_link_fallback"
+                                                    urls_found += 1
+                                                    logger.debug(f"Using product link for Kogift image: {image_url[:50]}...")
+                                    
+                                    # For Naver images
+                                    elif source == 'naver' or '네이버' in img_col:
+                                        if '네이버 쇼핑 링크' in df_finalized.columns:
+                                            product_link = df_finalized.at[idx, '네이버 쇼핑 링크']
+                                            if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                                image_url = product_link
+                                                url_source = "naver_product_link_fallback"
+                                                urls_found += 1
+                                                logger.debug(f"Using product link for Naver image: {image_url[:50]}...")
+                                
+                                # 7. Check other potential keys if still no URL found
+                                if not image_url:
                                     for url_key in ['image_url', 'src', 'product_link']:
                                         fallback_url = value.get(url_key)
                                         if fallback_url and isinstance(fallback_url, str) and fallback_url.startswith(('http://', 'https://')):
                                             image_url = fallback_url.strip()
                                             url_source = f"fallback_from_{url_key}"
+                                            urls_found += 1
                                             logger.debug(f"Found web URL in {img_col} at idx {idx} using fallback key '{url_key}': {image_url[:50]}...")
                                             break # Stop checking keys once a valid URL is found
+                            
+                            # Special handling for non-dictionary values (direct strings)
+                            elif isinstance(value, str) and value and value != '-':
+                                if value.startswith(('http://', 'https://')):
+                                    # Direct URL string
+                                    image_url = value.strip()
+                                    url_source = "direct_string_url"
+                                    urls_found += 1
+                                    logger.debug(f"Found direct string URL in {img_col} at idx {idx}: {image_url[:50]}...")
+                                elif os.path.exists(value):
+                                    # Convert local file path to URL
+                                    if '본사' in img_col or 'haereum' in img_col.lower():
+                                        # Try to extract product code from path
+                                        code_match = re.search(r'([A-Z]{4}\d{7})', value)
+                                        if code_match:
+                                            product_code = code_match.group(1)
+                                            image_url = f"https://www.jclgift.com/upload/product/bimg3/{product_code}b.jpg"
+                                            url_source = "converted_haereum_path_to_url"
+                                            urls_found += 1
+                                            logger.debug(f"Converted Haereum path to URL: {image_url}")
+                                    elif '고려' in img_col or 'kogift' in img_col.lower():
+                                        # Try to extract product info from path
+                                        basename = os.path.basename(value)
+                                        if basename.startswith('shop_'):
+                                            product_id = basename.replace('shop_', '').split('.')[0]
+                                            image_url = f"https://koreagift.com/ez/upload/mall/{basename}"
+                                            url_source = "converted_kogift_path_to_url"
+                                            urls_found += 1
+                                            logger.debug(f"Converted Kogift path to URL: {image_url}")
+                            
+                            # Special fallback for specific columns if URL is still empty
+                            if not image_url:
+                                # For Kogift images, try using the product link
+                                if '고려' in img_col and '고려기프트 상품링크' in df_finalized.columns:
+                                    product_link = df_finalized.at[idx, '고려기프트 상품링크']
+                                    if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                        image_url = product_link
+                                        url_source = "final_kogift_product_link_fallback"
+                                        urls_found += 1
+                                        logger.debug(f"Using product link as final fallback for Kogift: {image_url[:50]}...")
+                                
+                                # For Naver images, try using the product link
+                                elif '네이버' in img_col and '네이버 쇼핑 링크' in df_finalized.columns:
+                                    product_link = df_finalized.at[idx, '네이버 쇼핑 링크']
+                                    if isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
+                                        image_url = product_link
+                                        url_source = "final_naver_product_link_fallback"
+                                        urls_found += 1
+                                        logger.debug(f"Using product link as final fallback for Naver: {image_url[:50]}...")
                         except Exception as e:
                             logger.error(f"이미지 URL 추출 중 오류 발생 (행 {idx+1}, {img_col}): {str(e)[:100]}")
                             image_url = ""  # Reset on error
