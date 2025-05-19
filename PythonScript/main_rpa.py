@@ -44,7 +44,7 @@ from .price_highlighter import apply_price_highlighting_to_files
 from .upload_filter import apply_filter_to_upload_excel
 from .excel_formatter import apply_excel_formatting
 from .fix_kogift_images import fix_excel_kogift_images
-from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
+from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows, fix_missing_naver_images
 
 # Global configuration
 warnings.filterwarnings('ignore')
