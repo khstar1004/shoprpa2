@@ -401,8 +401,8 @@ def clean_naver_images_and_data(worksheet, df):
             return
         
         # Check if we should be more lenient with Naver data validation
-        # This flag can be set in various parts of the application
-        lenient_validation = True  # Always set to True to make it more lenient
+        # This flag is set on the worksheet object by the calling function
+        lenient_validation = getattr(worksheet, '_lenient_naver_validation', True) # Default to True if not set
         
         # If lenient validation is enabled, skip cleaning to preserve Naver data
         if lenient_validation:
@@ -831,6 +831,8 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                             # Add image to worksheet
                             worksheet.add_image(img_obj)
+                            # Clear the cell value after adding the image
+                            worksheet.cell(row=row_idx, column=col_idx).value = None
                             
                             # Update success counts
                             successful_embeddings += 1
@@ -1596,6 +1598,8 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                     cell_coord = f"{get_column_letter(col_idx)}{row_idx}"
                                     excel_img.anchor = cell_coord
                                     worksheet_with_images.add_image(excel_img)
+                                    # Clear the cell value after adding the image
+                                    worksheet_with_images.cell(row=row_idx, column=col_idx).value = None
                                     
                                     # Count image
                                     images_added += 1

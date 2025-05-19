@@ -1240,9 +1240,12 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 # Process Kogift image
                 if kogift_data and isinstance(kogift_data, tuple) and len(kogift_data) >= 2:
                     kogift_path, kogift_score = kogift_data[:2]  # Correctly extract path and score
+                    logger.debug(f"Row {idx} ('{product_name}'): Kogift image matched: '{kogift_path}' (Score: {kogift_score:.4f})")
                     if kogift_path and kogift_path in kogift_images:
                         # Only add Kogift image if there's actual product info
-                        if idx < len(kogift_product_info_exists) and kogift_product_info_exists[idx]:
+                        has_kogift_product_info = idx < len(kogift_product_info_exists) and kogift_product_info_exists[idx]
+                        logger.debug(f"Row {idx} ('{product_name}'): Kogift product info exists check: {has_kogift_product_info}")
+                        if has_kogift_product_info:
                             kogift_image_info = kogift_images[kogift_path]
                             image_data = {
                                 'url': kogift_image_info.get('url', ''),
@@ -1253,10 +1256,17 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                                 'original_path': kogift_path
                             }
                             result_df.at[idx, '고려기프트 이미지'] = image_data
+                            logger.info(f"Row {idx} ('{product_name}'): Assigned Kogift image '{os.path.basename(kogift_path)}'")
                         else:
-                            logging.warning(f"Found Koreagift image without product info. Removing image.")
+                            logger.warning(f"Row {idx} ('{product_name}'): Matched Kogift image '{os.path.basename(kogift_path)}' (Score: {kogift_score:.4f}) BUT product info missing. Discarding image.")
                             mismatch_count += 1
-                
+                    else:
+                        logger.warning(f"Row {idx} ('{product_name}'): Kogift matched path '{kogift_path}' not in kogift_images dict or path is None.")
+                elif kogift_data: # Matched but not in expected tuple format
+                    logger.warning(f"Row {idx} ('{product_name}'): Kogift image matched but data format unexpected: {kogift_data}")
+                else: # No Kogift match found by find_best_image_matches
+                    logger.debug(f"Row {idx} ('{product_name}'): No Kogift image matched by find_best_image_matches.")
+
                 # Process Naver image
                 if naver_data and isinstance(naver_data, tuple) and len(naver_data) >= 2:
                     naver_path, naver_score = naver_data[:2]  # Correctly extract path and score
@@ -1418,9 +1428,10 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     # Example: if config has naver_similarity_threshold = 0.5, use 0.5.
     # If config is missing, it defaults to 0.01.
     # Let's use a moderate cap for safety if config value is extreme, e.g. 0.8
-    naver_threshold = min(naver_threshold, 0.8) 
+    naver_threshold_from_config = naver_threshold # Preserve the value read from config or default
+    naver_threshold_final = min(naver_threshold_from_config, 0.8) 
     
-    logging.info(f"이미지 유사도 임계값 적용: 고려기프트 {kogift_threshold}, 네이버 {naver_threshold}")
+    logging.info(f"이미지 유사도 임계값 적용: 고려기프트 {kogift_threshold}, 네이버 {naver_threshold_final} (config value was: {naver_threshold_from_config}, capped at 0.8 if higher)")
     
     # Count images before filtering
     kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
@@ -1449,13 +1460,13 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
             n_img = result_df.at[i, '네이버 이미지']
             similarity = n_img.get('similarity', 1.0) # Default to 1.0 if not found
 
-            if similarity < naver_threshold:
+            if similarity < naver_threshold_final:
                 # Clear Naver image and related data if similarity is below threshold
                 for col in naver_columns: # naver_columns is defined in the original function
                     if col in result_df.columns:
                         result_df.at[i, col] = '-' # Or None
                 naver_filtered += 1
-                logging.info(f"Row {i}: Naver image filtered out due to low similarity ({similarity:.4f} < {naver_threshold}). Product: {n_img.get('product_name', 'N/A')}")
+                logging.info(f"Row {i}: Naver image filtered out due to low similarity ({similarity:.4f} < {naver_threshold_final}). Product: {n_img.get('product_name', 'N/A')}")
     
     # Count images after filtering
     kogift_after = sum(1 for i in range(len(result_df)) if '고려기프트 이미지' in result_df.columns and isinstance(result_df.at[i, '고려기프트 이미지'], dict))
