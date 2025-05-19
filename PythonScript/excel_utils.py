@@ -831,8 +831,17 @@ def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             
                             # Add image to worksheet
                             worksheet.add_image(img_obj)
-                            # Clear the cell value after adding the image
-                            worksheet.cell(row=row_idx, column=col_idx).value = None
+                            
+                            # Instead of clearing the cell value, set it to the URL if available
+                            if isinstance(cell_value, dict) and 'url' in cell_value and isinstance(cell_value['url'], str):
+                                worksheet.cell(row=row_idx, column=col_idx).value = cell_value['url']
+                                worksheet.cell(row=row_idx, column=col_idx).hyperlink = cell_value['url']
+                                worksheet.cell(row=row_idx, column=col_idx).font = LINK_FONT
+                            # For non-dictionary values that might be URLs
+                            elif isinstance(cell_value, str) and cell_value.startswith(('http://', 'https://')):
+                                worksheet.cell(row=row_idx, column=col_idx).value = cell_value
+                                worksheet.cell(row=row_idx, column=col_idx).hyperlink = cell_value
+                                worksheet.cell(row=row_idx, column=col_idx).font = LINK_FONT
                             
                             # Update success counts
                             successful_embeddings += 1
@@ -1498,6 +1507,9 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         # Create copy of DataFrame for processing
         df_for_excel = _prepare_data_for_excel(df_finalized)
         
+        # NEW: Prepare image URLs for the result file
+        df_for_excel = prepare_image_urls_for_result_file(df_for_excel)
+        
         # -----------------------------------------
         # 1. Create Result File (with all data and images)
         # -----------------------------------------
@@ -1555,13 +1567,18 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                             col_name_df = df_for_excel.columns[col_idx_excel_1_based - 1]
                             img_value_dict = row_data_dict.get(col_name_df)
                             
+                            # NEW: Check if we have an extracted URL in the special URL column
+                            url_col_name = f"{col_name_df}_URL"
+                            extracted_url = row_data_dict.get(url_col_name, "") if url_col_name in row_data_dict else ""
+                            
                             cell_to_update = worksheet_with_images.cell(row=row_idx, column=col_idx_excel_1_based)
                             cell_coord = f"{get_column_letter(col_idx_excel_1_based)}{row_idx}"
                             img_embedded_successfully = False
 
                             if isinstance(img_value_dict, dict):
                                 img_path_local = img_value_dict.get('local_path')
-                                img_url_remote = img_value_dict.get('url')
+                                # NEW: Prioritize the extracted URL if available
+                                img_url_remote = extracted_url if extracted_url else img_value_dict.get('url')
 
                                 if img_path_local and os.path.isfile(str(img_path_local)):
                                     try:
@@ -1581,7 +1598,26 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
                                         excel_img = openpyxl.drawing.image.Image(img_byte_arr)
                                         excel_img.anchor = cell_coord
                                         worksheet_with_images.add_image(excel_img)
-                                        cell_to_update.value = None # Clear cell if image embedded
+                                        
+                                        # Instead of clearing the cell value, set it to the URL if available
+                                        if img_url_remote and isinstance(img_url_remote, str) and img_url_remote.startswith(('http://', 'https://')):
+                                            cell_to_update.value = img_url_remote
+                                            cell_to_update.hyperlink = img_url_remote
+                                            cell_to_update.font = Font(color="0563C1", underline="single")
+                                            logger.info(f"Added URL to cell with image at {cell_coord}: {img_url_remote[:60]}...")
+                                        # If no URL but we have extracted URL
+                                        elif extracted_url and isinstance(extracted_url, str) and extracted_url.startswith(('http://', 'https://')):
+                                            cell_to_update.value = extracted_url
+                                            cell_to_update.hyperlink = extracted_url
+                                            cell_to_update.font = Font(color="0563C1", underline="single")
+                                            logger.info(f"Added extracted URL to cell with image at {cell_coord}: {extracted_url[:60]}...")
+                                        # Even if no URL, add a note about the image
+                                        else:
+                                            # If we still have a local path, keep it as a reference
+                                            if img_path_local:
+                                                cell_to_update.value = f"{os.path.basename(str(img_path_local))}"
+                                                logger.debug(f"Added local image filename to cell at {cell_coord}")
+                                        
                                         images_added += 1
                                         img_embedded_successfully = True
                                         
@@ -3065,4 +3101,89 @@ def prepare_kogift_image_urls_for_upload(df_with_image_urls: pd.DataFrame, df_fi
                 urls_updated += 1 # Counts as an update if it was changed to empty
         
     logger.info(f"Processed {processed_count} Kogift image URLs for upload file. Updated {urls_updated} URLs, fixed {placeholder_fixed} placeholders.")
+    return result_df
+
+# Add this new function after prepare_kogift_image_urls_for_upload function
+def prepare_image_urls_for_result_file(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare image URLs for the result file by extracting them from the image data.
+    This ensures URLs are available in the result file even if image embedding fails.
+    
+    Args:
+        df: DataFrame with image data
+        
+    Returns:
+        DataFrame with added image URL columns for result file
+    """
+    if df.empty:
+        return df
+        
+    # Create a copy to avoid modifying the original
+    result_df = df.copy()
+    
+    # Define image columns
+    image_columns = [col for col in df.columns if col in IMAGE_COLUMNS]
+    
+    # Process each image column
+    url_count = 0
+    processed_count = 0
+    
+    for img_col in image_columns:
+        if img_col not in df.columns:
+            continue
+            
+        # Create an extra column to store just the URL if needed
+        url_col = f"{img_col}_URL"
+        result_df[url_col] = ""
+        
+        # Process each row
+        for idx in df.index:
+            processed_count += 1
+            value = df.at[idx, img_col]
+            
+            # Extract URL from dictionary 
+            if isinstance(value, dict):
+                # Try various URL fields in priority order
+                url = None
+                
+                # Check different possible URL fields
+                for url_field in ['url', 'product_url', 'original_crawled_url', 'original_url']:
+                    if url_field in value and isinstance(value[url_field], str) and value[url_field].startswith(('http://', 'https://')):
+                        url = value[url_field]
+                        break
+                
+                # If no URL found but we have source information, try to construct one
+                if not url and 'source' in value:
+                    source = value['source'].lower() if isinstance(value['source'], str) else ''
+                    
+                    # For Haereum images
+                    if source == 'haereum' and 'original_path' in value:
+                        path = value['original_path']
+                        if isinstance(path, str):
+                            # Try to extract product code
+                            code_match = re.search(r'([A-Z]{4}\d{7})', path)
+                            if code_match:
+                                product_code = code_match.group(1)
+                                url = f"https://www.jclgift.com/upload/product/bimg3/{product_code}b.jpg"
+                    
+                    # For Kogift images
+                    elif source == 'kogift' and 'product_id' in value:
+                        product_id = value['product_id']
+                        if product_id:
+                            if not str(product_id).endswith('_0'):
+                                url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}_0.jpg"
+                            else:
+                                url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                
+                # If URL found, store it
+                if url:
+                    result_df.at[idx, url_col] = url
+                    url_count += 1
+            
+            # Handle string URLs directly
+            elif isinstance(value, str) and value.startswith(('http://', 'https://')):
+                result_df.at[idx, url_col] = value
+                url_count += 1
+    
+    logger.info(f"Prepared {url_count} image URLs for result file out of {processed_count} processed values")
     return result_df
