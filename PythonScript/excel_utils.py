@@ -1271,62 +1271,101 @@ def _prepare_data_for_excel(df: pd.DataFrame, skip_images=False) -> pd.DataFrame
     """
     Prepares the DataFrame for Excel output: column order, formatting.
     """
+    logger.info(f"Starting _prepare_data_for_excel. Input df shape: {df.shape}")
+    if '고려기프트 이미지' in df.columns:
+        # Log a sample of the column, converting dicts to strings for concise logging if necessary
+        sample_data = df[df['고려기프트 이미지'].apply(lambda x: x is not None and x != '-')]['고려기프트 이미지'].head()
+        logger.info(f"Input df['고려기프트 이미지'] sample (first 5 non-None/non-'-'): \n{sample_data.to_string()}")
+    else:
+        logger.info("Input df does not have '고려기프트 이미지' column.")
+
     # Make a copy to avoid modifying the original
-    df = df.copy()
+    df_copy = df.copy()
 
     # 1) Rename columns EARLY so that original names are preserved before we drop/reorder columns
-    df.rename(columns=COLUMN_RENAME_MAP, inplace=True, errors='ignore')
+    df_copy.rename(columns=COLUMN_RENAME_MAP, inplace=True, errors='ignore')
+    logger.info("After rename:")
+    if '고려기프트 이미지' in df_copy.columns:
+        sample_data_after_rename = df_copy[df_copy['고려기프트 이미지'].apply(lambda x: x is not None and x != '-')]['고려기프트 이미지'].head()
+        logger.info(f"df_copy['고려기프트 이미지'] sample (first 5 non-None/non-'-'): \n{sample_data_after_rename.to_string()}")
+    else:
+        logger.info("df_copy does not have '고려기프트 이미지' column after rename.")
 
-    # 2) Ensure all required columns from FINAL_COLUMN_ORDER exist
+    # Temp DataFrame to hold columns in order
+    df_ordered = pd.DataFrame()
+
+    # 2) Ensure all required columns from FINAL_COLUMN_ORDER exist and are ordered
     for col in FINAL_COLUMN_ORDER:
-        if col not in df.columns:
-            df[col] = ""
-            logger.debug(f"Added missing column '{col}' to DataFrame before ordering.")
+        if col in df_copy.columns:
+            df_ordered[col] = df_copy[col]
+        else:
+            df_ordered[col] = "" # Initialize with empty string if missing after rename
+            logger.debug(f"Added missing column '{col}' as empty string in _prepare_data_for_excel during ordering.")
+    
+    logger.info("After ordering and adding missing FINAL_COLUMN_ORDER columns:")
+    if '고려기프트 이미지' in df_ordered.columns:
+        sample_data_after_order = df_ordered[df_ordered['고려기프트 이미지'].apply(lambda x: x is not None and x != '-')]['고려기프트 이미지'].head()
+        logger.info(f"df_ordered['고려기프트 이미지'] sample (first 5 non-None/non-'-'): \n{sample_data_after_order.to_string()}")
+    else:
+        # This should not happen if FINAL_COLUMN_ORDER includes it and we initialize missing ones
+        logger.error("'고려기프트 이미지' column MISSING from df_ordered unexpectedly.")
 
-    # 3) Re-order columns based on FINAL_COLUMN_ORDER (keep only expected columns)
-    df = df[[col for col in FINAL_COLUMN_ORDER if col in df.columns]]
+    df_to_return = df_ordered
 
     # For upload file, modify image column values to be web URLs or empty
     if skip_images:
-        # Image columns now use new names from FINAL_COLUMN_ORDER / IMAGE_COLUMNS constant
-        # final_image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)'] # Already defined
-        image_columns = [col for col in df.columns if col in IMAGE_COLUMNS] # Use the constant
+        image_cols_to_process = [col for col in df_to_return.columns if col in IMAGE_COLUMNS]
 
-        for col in image_columns:
-            # Replace image dict/path with web URL or empty string for upload file
-            df[col] = df[col].apply(
+        for col in image_cols_to_process:
+            df_to_return[col] = df_to_return[col].apply(
                 lambda x:
-                    # Case 1: Input is a dictionary with 'url' key
                     x['url'] if isinstance(x, dict) and 'url' in x and isinstance(x['url'], str) and x['url'].startswith(('http://', 'https://'))
-                    # Case 2: Input is a string that is already a web URL
                     else (x if isinstance(x, str) and x.startswith(('http://', 'https://'))
-                    # Case 3: Anything else (dict without web URL, local path, file://, other types, None)
                     else '')
                 if pd.notna(x) else ''
             )
-        logger.debug(f"Processed image columns for upload file, keeping only web URLs: {image_columns}")
+        logger.debug(f"Processed image columns for upload file (skip_images=True), keeping only web URLs: {image_cols_to_process}")
 
     # Format numeric columns (prices, quantities) using new names
-    # numeric_keywords removed, using specific lists instead
-    for col in df.columns:
-        if any(keyword in col for keyword in ['단가', '가격', '수량']):
+    for col in df_to_return.columns:
+        # Check if column should be numeric based on keywords or explicit lists
+        is_price_col = col in PRICE_COLUMNS
+        is_qty_col = col in QUANTITY_COLUMNS
+        is_pct_col = col in PERCENTAGE_COLUMNS
+        # Generic keyword check as a fallback, be careful not to catch unintended columns
+        is_general_numeric_keyword = any(keyword in col for keyword in ['가격', '수량']) and not any(kc in col for kc in ['이미지', '링크', '코드', '카테고리', '상품명', '담당자', '업체명', '구분'])
+        
+        if is_price_col or is_qty_col or is_pct_col or is_general_numeric_keyword:
             try:
-                # Attempt conversion, handle errors gracefully
-                original_dtype = df[col].dtype
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                # Only fillna if conversion was successful (result is numeric)
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    df[col] = df[col].fillna('') # Fill NaN with empty string for Excel
-                else:
-                     # If coercion failed, maybe revert or log? Keep original if not numeric.
-                     df[col] = df[col].astype(original_dtype) # Revert if conversion failed badly
-                     df[col] = df[col].fillna('') # Still fill NaNs
+                original_dtype = df_to_return[col].dtype
+                # Preserve existing numbers, convert strings to numbers, leave others as NA
+                def safe_to_numeric_enhanced(val):
+                    if isinstance(val, (int, float, Decimal)): return val
+                    if isinstance(val, str):
+                        cleaned_val = val.replace(',', '').strip()
+                        if not cleaned_val: return pd.NA # Empty string to NA
+                        try: return float(cleaned_val)
+                        except ValueError: return pd.NA # Coerce if string but not number
+                    return pd.NA # For other types (like dicts, lists if any), coerce to NA
+                
+                converted_series = df_to_return[col].apply(safe_to_numeric_enhanced)
+                
+                # Fill resulting NAs (from coercion or original NAs) with empty string for Excel
+                df_to_return[col] = converted_series.fillna('')
+
             except Exception as e:
-                logging.warning(f"Error formatting numeric column '{col}': {str(e)}")
-                df[col] = df[col].fillna('') # Ensure NaNs are handled even on error
+                logging.warning(f"Error formatting numeric column '{col}' in _prepare_data_for_excel: {str(e)}. Filling with empty string.")
+                # Ensure column exists and fill with empty string on error
+                if col in df_to_return:
+                    df_to_return[col] = df_to_return[col].fillna('')
+                else:
+                    df_to_return[col] = pd.Series([''] * len(df_to_return), index=df_to_return.index)
     
-    logger.debug(f"Final columns for Excel output: {df.columns.tolist()}")
-    return df
+    logger.info(f"Final columns for Excel output from _prepare_data_for_excel: {df_to_return.columns.tolist()}")
+    if '고려기프트 이미지' in df_to_return.columns:
+         sample_data_final = df_to_return[df_to_return['고려기프트 이미지'].apply(lambda x: x is not None and x != '-')]['고려기프트 이미지'].head()
+         logger.info(f"_prepare_data_for_excel returning df_to_return['고려기프트 이미지'] sample (first 5 non-None/non-'-'): \n{sample_data_final.to_string()}")
+    return df_to_return
 
 def safe_excel_operation(func):
     """
