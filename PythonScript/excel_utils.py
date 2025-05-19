@@ -1337,7 +1337,10 @@ def safe_excel_operation(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            logging.error(f"Excel operation failed in {func.__name__}: {str(e)}", exc_info=True)
+            error_msg = f"Unexpected error in {func.__name__}: {str(e)}"
+            logging.error(error_msg, exc_info=True)
+            if func.__name__ == 'create_split_excel_outputs':
+                return False, False, None, None  # Return appropriate tuple for this function
             return False
     return wrapper
 
@@ -1405,26 +1408,42 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         input_filename: Input filename for reference (optional)
     
     Returns:
-        Tuple of (result_path, upload_path)
+        Tuple of (result_success, upload_success, result_path, upload_path)
     """
+    if df_finalized is None:
+        logger.error("Cannot create Excel file: Input DataFrame is None.")
+        return False, False, None, None
+
+    logger.info(f"Starting creation of split Excel outputs: {output_path_base}")
+    output_dir = os.path.dirname(output_path_base)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     try:
         # Get current date and timestamp
         current_date = datetime.now().strftime("%Y%m%d")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Convert output_path_base to Path object for cross-platform compatibility
+        output_path = Path(output_path_base)
+        
         # Setup output file paths
         if input_filename:
             # Extract just the base name without extension and any date patterns
-            input_base = os.path.splitext(os.path.basename(input_filename))[0]
+            input_base = Path(input_filename).stem
+            # Remove date patterns like -20250425 from the filename
             input_base = re.sub(r'-\d{8}', '', input_base)
             
             # Create simplified filenames with just the essential parts
-            result_path = os.path.join(output_path_base, f"{input_base}-{current_date}_result_{timestamp}.xlsx")
-            upload_path = os.path.join(output_path_base, f"{input_base}-{current_date}_upload_{timestamp}.xlsx")
+            result_path = str(output_path / f"{input_base}-{current_date}_result_{timestamp}.xlsx")
+            upload_path = str(output_path / f"{input_base}-{current_date}_upload_{timestamp}.xlsx")
         else:
             # Use a timestamp if no input filename
-            result_path = os.path.join(output_path_base, f"result_{timestamp}.xlsx")
-            upload_path = os.path.join(output_path_base, f"upload_{timestamp}.xlsx")
+            result_path = str(output_path / f"result_{timestamp}.xlsx")
+            upload_path = str(output_path / f"upload_{timestamp}.xlsx")
+        
+        # Ensure output directory exists
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Set up configuration for naver image handling
         try:
