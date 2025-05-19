@@ -1408,16 +1408,21 @@ def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str
         Tuple of (result_path, upload_path)
     """
     try:
+        # Get current date and timestamp
+        current_date = datetime.now().strftime("%Y%m%d")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
         # Setup output file paths
         if input_filename:
-            # Extract base name without extension
+            # Extract just the base name without extension and any date patterns
             input_base = os.path.splitext(os.path.basename(input_filename))[0]
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_path = os.path.join(output_path_base, f"{input_base}_result_{timestamp}.xlsx")
-            upload_path = os.path.join(output_path_base, f"{input_base}_upload_{timestamp}.xlsx")
+            input_base = re.sub(r'-\d{8}', '', input_base)
+            
+            # Create simplified filenames with just the essential parts
+            result_path = os.path.join(output_path_base, f"{input_base}-{current_date}_result_{timestamp}.xlsx")
+            upload_path = os.path.join(output_path_base, f"{input_base}-{current_date}_upload_{timestamp}.xlsx")
         else:
             # Use a timestamp if no input filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             result_path = os.path.join(output_path_base, f"result_{timestamp}.xlsx")
             upload_path = os.path.join(output_path_base, f"upload_{timestamp}.xlsx")
         
@@ -2956,7 +2961,12 @@ def prepare_kogift_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd
                             product_id = original_data.get('product_id')
                             if product_id:
                                 try:
-                                    constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                    # Try with _0.jpg first, then without if that seems more appropriate based on product_id format
+                                    if isinstance(product_id, str) and not product_id.endswith('_0'):
+                                        constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}_0.jpg"
+                                    else: # If product_id might already include _0 or similar
+                                        constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                                    
                                     result_df.at[idx, kogift_img_col] = constructed_url
                                     placeholder_fixed += 1
                                     logger.info(f"Row {idx}: Constructed Kogift image URL from product_id in image data: {constructed_url}")
@@ -2985,7 +2995,11 @@ def prepare_kogift_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd
                         
                         # If found product_id, construct image URL
                         if product_id:
-                            constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
+                            # Construct with _0.jpg as primary pattern
+                            # Ensure product_id is just the base number (e.g., 1707873892937710, not 1707873892937710_0)
+                            # The regex r'no=(\\d+)' should extract just the numeric part.
+                            constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}_0.jpg"
+                            
                             result_df.at[idx, kogift_img_col] = constructed_url
                             placeholder_fixed += 1
                             logger.info(f"Row {idx}: Constructed Kogift image URL from product ID in link: {constructed_url}")

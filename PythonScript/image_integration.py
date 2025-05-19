@@ -1760,7 +1760,8 @@ def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
                 if 'koreagift.com' in product_link.lower():
                     # 고려기프트 이미지 패턴
                     # 1. 기본 패턴: shop_{product_code}.jpg
-                    image_url = f"https://koreagift.com/ez/upload/mall/shop_{product_code}.jpg"
+                    # Ensure product_code is just the base number (e.g., 1707873892937710, not 1707873892937710_0)
+                    image_url = f"https://koreagift.com/ez/upload/mall/shop_{product_code}_0.jpg"
                 else:
                     # 일반적인 쇼핑몰 이미지 패턴
                     domain_parts = product_link.split('/')
