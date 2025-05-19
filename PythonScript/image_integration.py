@@ -1288,8 +1288,21 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             logging.warning(f"Adding Naver image despite missing product info: {product_name}")
                             
                         naver_image_info = naver_images[naver_path]
+                        
+                        crawled_url = None # Initialize crawled_url
+                        if idx < len(df) and '네이버 이미지' in df.columns: # Check bounds and column existence
+                            original_naver_image_dict_from_input_df = df.iloc[idx].get('네이버 이미지')
+                            if isinstance(original_naver_image_dict_from_input_df, dict):
+                                temp_url = original_naver_image_dict_from_input_df.get('url')
+                                if temp_url and isinstance(temp_url, str) and temp_url.startswith(('http://', 'https://')):
+                                    if 'phinf.pstatic.net' in temp_url:  # Prioritize actual image URLs
+                                        crawled_url = temp_url
+                                    # If it's not a phinf.pstatic.net URL, we consider it not a direct image URL for Naver.
+                                    # The '네이버 쇼핑 링크' column should hold the product page URL.
+                        
+                        # Ensure correct indentation for image_data assignment
                         image_data = {
-                            'url': naver_image_info.get('url', ''),
+                            'url': crawled_url if crawled_url else naver_image_info.get('product_url', naver_image_info.get('url', '')),
                             'local_path': naver_image_info.get('path', naver_path),
                             'source': 'naver',
                             'product_name': product_name,
@@ -1298,11 +1311,11 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                         }
                         result_df.at[idx, '네이버 이미지'] = image_data
                         
-                        # Update Naver shopping URL if available
-                        naver_url = naver_image_info.get('product_url', naver_image_info.get('url', ''))
-                        if naver_url and '네이버 쇼핑 링크' in result_df.columns:
-                            if not pd.notna(result_df.at[idx, '네이버 쇼핑 링크']) or result_df.at[idx, '네이버 쇼핑 링크'] in ['', '-', 'None', None]:
-                                result_df.at[idx, '네이버 쇼핑 링크'] = naver_url
+                        shopping_link_candidate = naver_image_info.get('product_url', naver_image_info.get('url', ''))
+                        if shopping_link_candidate and '네이버 쇼핑 링크' in result_df.columns and \
+                           (not pd.notna(result_df.at[idx, '네이버 쇼핑 링크']) or result_df.at[idx, '네이버 쇼핑 링크'] in ['', '-', 'None', None]):
+                            if not 'phinf.pstatic.net' in shopping_link_candidate:
+                                result_df.at[idx, '네이버 쇼핑 링크'] = shopping_link_candidate
         
         # 이미지 경로 불일치 수정 (로컬 파일이 이동된 경우)
         for idx in range(len(result_df)):
@@ -1391,15 +1404,21 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     try:
         # Set very low thresholds to ensure images are kept
         kogift_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.01)
-        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.01)
+        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.01) # Keep this for Naver
     except (configparser.NoSectionError, configparser.NoOptionError):
         # Default thresholds - set very low
         kogift_threshold = 0.01
-        naver_threshold = 0.01
+        naver_threshold = 0.01 # Keep this for Naver
     
     # Ensure thresholds aren't too high (could happen if config values are wrong)
     kogift_threshold = min(kogift_threshold, 0.1)
-    naver_threshold = min(naver_threshold, 0.1)
+    # For Naver, use the threshold as is from config, or default 0.01.
+    # Let's ensure it's not overly aggressive by capping it if it's very high, but generally respect config.
+    # User wants to clear low similarity Naver images, so the threshold from config matters.
+    # Example: if config has naver_similarity_threshold = 0.5, use 0.5.
+    # If config is missing, it defaults to 0.01.
+    # Let's use a moderate cap for safety if config value is extreme, e.g. 0.8
+    naver_threshold = min(naver_threshold, 0.8) 
     
     logging.info(f"이미지 유사도 임계값 적용: 고려기프트 {kogift_threshold}, 네이버 {naver_threshold}")
     
@@ -1407,30 +1426,42 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
     naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
     
-    # We'll skip actually filtering Naver images since we want to keep them all
-    logging.info(f"네이버 이미지 필터링 과정 건너뜀 (원래 {naver_before}개)")
-    
-    # For Kogift images, we'll only filter if the similarity is extremely low
     kogift_filtered = 0
+    naver_filtered = 0
     
     for i in range(len(result_df)):
         # Process Kogift images
-        if isinstance(result_df.at[i, '고려기프트 이미지'], dict):
+        if '고려기프트 이미지' in result_df.columns and isinstance(result_df.at[i, '고려기프트 이미지'], dict):
             k_img = result_df.at[i, '고려기프트 이미지']
             similarity = k_img.get('similarity', 1.0)  # Default to 1.0 if not found
             
-            # Only clear if similarity is absolutely terrible
-            if similarity < 0.001:
-                for col in kogift_columns:
+            # Only clear if similarity is absolutely terrible (for Kogift, as per original logic)
+            # Or if it's below the specified kogift_threshold
+            if similarity < kogift_threshold: # Use the threshold
+                for col in kogift_columns: # kogift_columns is defined in the original function
                     if col in result_df.columns:
-                        result_df.at[i, col] = '-'
+                        result_df.at[i, col] = '-' # Or None, consistent with how data is cleared
                 kogift_filtered += 1
+                logging.debug(f"Row {i}: Kogift image filtered out due to low similarity ({similarity} < {kogift_threshold})")
+
+        # Process Naver images - This is the new part based on user request
+        if '네이버 이미지' in result_df.columns and isinstance(result_df.at[i, '네이버 이미지'], dict):
+            n_img = result_df.at[i, '네이버 이미지']
+            similarity = n_img.get('similarity', 1.0) # Default to 1.0 if not found
+
+            if similarity < naver_threshold:
+                # Clear Naver image and related data if similarity is below threshold
+                for col in naver_columns: # naver_columns is defined in the original function
+                    if col in result_df.columns:
+                        result_df.at[i, col] = '-' # Or None
+                naver_filtered += 1
+                logging.info(f"Row {i}: Naver image filtered out due to low similarity ({similarity:.4f} < {naver_threshold}). Product: {n_img.get('product_name', 'N/A')}")
     
     # Count images after filtering
-    kogift_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-    naver_after = naver_before  # We're no longer filtering Naver images
+    kogift_after = sum(1 for i in range(len(result_df)) if '고려기프트 이미지' in result_df.columns and isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+    naver_after = sum(1 for i in range(len(result_df)) if '네이버 이미지' in result_df.columns and isinstance(result_df.at[i, '네이버 이미지'], dict))
     
-    logging.info(f"이미지 필터링 결과: 고려기프트 {kogift_before} -> {kogift_after} ({kogift_filtered}개 필터링됨), 네이버 {naver_before} -> {naver_after} (0개 필터링됨)")
+    logging.info(f"이미지 필터링 결과: 고려기프트 {kogift_before} -> {kogift_after} ({kogift_filtered}개 필터링됨), 네이버 {naver_before} -> {naver_after} ({naver_filtered}개 필터링됨)")
     
     return result_df
 
