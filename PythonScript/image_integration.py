@@ -1367,87 +1367,79 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
-    이미지 유사도에 따라 고려기프트 및 네이버 이미지를 필터링합니다.
-    유사도 점수가 0.6 미만인 경우, 이미지뿐만 아니라 해당 소스의 모든 관련 정보가 제거됩니다.
+    Filter images based on similarity scores to ensure high quality matches.
+    
+    This removes images with similarity scores below a certain threshold.
+    
+    Args:
+        df: DataFrame with image similarity scores
+        config: Configuration settings
+        
+    Returns:
+        DataFrame with filtered images
     """
-    try:
-        result_df = df.copy()
-        
-        # Set high threshold for image similarity (0.6 as requested)
-        similarity_threshold = 0.6
-        logging.info(f"높은 이미지 유사도 임계값 적용: {similarity_threshold} (0.6 이상의 매칭 점수만 허용)")
-        
-        # Count images before filtering
-        kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-        naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        
-        # Define columns for each source that need to be cleared when similarity is too low
-        kogift_columns = [
-            '고려기프트 이미지',
-            '고려기프트 상품링크',
-            '기본수량(2)',
-            '판매가(V포함)(2)',
-            '판매단가(V포함)(2)',
-            '가격차이(2)',
-            '가격차이(2)(%)',
-            '고려기프트_실제가격티어'  # Additional column that might be present
-        ]
-        
-        naver_columns = [
-            '네이버 이미지',
-            '네이버 쇼핑 링크',
-            '기본수량(3)',
-            '판매단가(V포함)(3)',
-            '가격차이(3)',
-            '가격차이(3)(%)',
-            '공급사명',
-            '공급사 상품링크'
-        ]
-        
-        # Filter and clear data by similarity threshold
-        for idx in range(len(result_df)):
-            product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
-            
-            # Check Kogift image similarity
-            kogift_data = result_df.at[idx, '고려기프트 이미지']
-            if isinstance(kogift_data, dict):
-                # Look for similarity score in different fields (for compatibility)
-                kogift_score = kogift_data.get('similarity', kogift_data.get('score', 0))
-                
-                if kogift_score < similarity_threshold:
-                    logging.info(f"고려기프트 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {kogift_score:.3f} < {similarity_threshold}")
-                    # Clear all Kogift-related columns
-                    for col in kogift_columns:
-                        if col in result_df.columns:
-                            result_df.at[idx, col] = None
-            
-            # Check Naver image similarity
-            naver_data = result_df.at[idx, '네이버 이미지']
-            if isinstance(naver_data, dict):
-                # Look for similarity score in different fields (for compatibility)
-                naver_score = naver_data.get('similarity', naver_data.get('score', 0))
-                
-                if naver_score < similarity_threshold:
-                    logging.info(f"네이버 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {naver_score:.3f} < {similarity_threshold}")
-                    # Clear all Naver-related columns
-                    for col in naver_columns:
-                        if col in result_df.columns:
-                            result_df.at[idx, col] = None
-        
-        # Count images after filtering
-        kogift_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-        naver_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-        
-        removed_kogift = kogift_before - kogift_after
-        removed_naver = naver_before - naver_after
-        
-        logging.info(f"이미지/정보 필터링 결과: 고려기프트 {removed_kogift}개 제거됨 (남은 이미지: {kogift_after}개), 네이버 {removed_naver}개 제거됨 (남은 이미지: {naver_after}개)")
-        
-        return result_df
-        
-    except Exception as e:
-        logging.error(f"이미지 필터링 중 오류 발생: {e}", exc_info=True)
+    if df.empty:
         return df
+        
+    result_df = df.copy()
+    
+    # Define columns that should be cleared if image is filtered out
+    kogift_columns = ['고려기프트 이미지', '고려기프트 상품링크', '고려기프트 상품코드', '판매단가(V포함)(1)', '기본수량(1)']
+    naver_columns = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명', '판매단가(V포함)(3)', '기본수량(3)']
+    
+    # Try to get thresholds from config first
+    try:
+        # Check ImageFiltering section first (for backwards compatibility)
+        kogift_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.6)
+        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.3)  # Lower threshold for Naver
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        # Default thresholds
+        kogift_threshold = 0.6  # Kogift needs higher similarity
+        naver_threshold = 0.3   # Naver can use lower threshold
+    
+    logging.info(f"이미지 유사도 임계값 적용: 고려기프트 {kogift_threshold}, 네이버 {naver_threshold}")
+    
+    # Count images before filtering
+    kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+    naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+    
+    # Filter and clear data by similarity threshold
+    for idx in range(len(result_df)):
+        product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
+        
+        # Check Kogift image similarity
+        kogift_data = result_df.at[idx, '고려기프트 이미지']
+        if isinstance(kogift_data, dict):
+            # Look for similarity score in different fields (for compatibility)
+            kogift_score = kogift_data.get('similarity', kogift_data.get('score', 0))
+            
+            if kogift_score < kogift_threshold:
+                logging.info(f"고려기프트 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {kogift_score:.3f} < {kogift_threshold}")
+                # Clear all Kogift-related columns
+                for col in kogift_columns:
+                    if col in result_df.columns:
+                        result_df.at[idx, col] = None
+        
+        # Check Naver image similarity
+        naver_data = result_df.at[idx, '네이버 이미지']
+        if isinstance(naver_data, dict):
+            # Look for similarity score in different fields (for compatibility)
+            naver_score = naver_data.get('similarity', naver_data.get('score', 0))
+            
+            if naver_score < naver_threshold:
+                logging.info(f"네이버 데이터 제거 (낮은 유사도): 상품 '{product_name}', 점수: {naver_score:.3f} < {naver_threshold}")
+                # Clear all Naver-related columns
+                for col in naver_columns:
+                    if col in result_df.columns:
+                        result_df.at[idx, col] = None
+    
+    # Count images after filtering
+    kogift_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
+    naver_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
+    
+    logging.info(f"이미지/정보 필터링 결과: 고려기프트 {kogift_before - kogift_after}개 제거됨 (남은 이미지: {kogift_after}개), 네이버 {naver_before - naver_after}개 제거됨 (남은 이미지: {naver_after}개)")
+    
+    return result_df
 
 def create_excel_with_images(df, output_file):
     """이미지가 포함된 엑셀 파일 생성"""
@@ -1829,237 +1821,69 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
             result_df[col_name] = None
             
     # Step 4: Final validation - ensure all URLs are valid and reject any problematic images
-    # Now with less strict validation
+    # Now with less strict validation for Naver images
     logger.info("Performing final URL validation and quality check...")
+    
+    # Add an ImageFiltering section to config if it doesn't exist
+    if 'ImageFiltering' not in config:
+        config.add_section('ImageFiltering')
+    
+    # Get validation settings from config
+    try:
+        skip_naver_validation = config.getboolean('ImageFiltering', 'skip_naver_validation', fallback=True)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        skip_naver_validation = True  # Default to skipping Naver validation to avoid filtering
     
     for idx in range(len(result_df)):
         product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Index {idx}"
         
-        # Check Naver image URLs - only reject if image clearly invalid
+        # Check Naver image URLs - much more lenient validation
         if '네이버 이미지' in result_df.columns:
             naver_data = result_df.at[idx, '네이버 이미지']
-            if isinstance(naver_data, dict) and 'url' in naver_data:
-                url = naver_data['url']
-                # Check for obviously invalid URL patterns
-                if not url or not isinstance(url, str) or 'front/' in url.lower():
-                    # Check if there's a valid local_path before clearing
-                    local_path = naver_data.get('local_path')
-                    if local_path and os.path.exists(str(local_path)):
-                        logger.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver image with invalid URL but valid local path.")
-                        # Check if original data has a valid URL that we can use
-                        original_path = naver_data.get('original_path')
-                        image_url = naver_data.get('original_url')
-                        
-                        # Try to find a valid URL from various sources
-                        if image_url and isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
-                            # Use the original URL if available
-                            naver_data['url'] = image_url
-                            # Also store as original_url for reference
-                            naver_data['original_url'] = image_url
-                            logger.info(f"Row {idx}: Using original Naver URL: {image_url[:50]}...")
-                        elif original_path and isinstance(original_path, str) and original_path.startswith(('http://', 'https://')):
-                            # Use original path as URL if it's a web URL
-                            naver_data['url'] = original_path
-                            # Also store as original_url for reference
-                            naver_data['original_url'] = original_path
-                            logger.info(f"Row {idx}: Using original path as Naver URL: {original_path[:50]}...")
-                        else:
-                            # Only use placeholder as a last resort
-                            # Check for product_url or other sources first
-                            product_url = naver_data.get('product_url')
-                            product_id = naver_data.get('product_id')
-                            
-                            # Store original crawled URL if available
-                            if product_url and isinstance(product_url, str) and product_url.startswith(('http://', 'https://')):
-                                naver_data['original_crawled_url'] = product_url
-                                naver_data['original_url'] = product_url
-                                logger.info(f"Row {idx}: Saved original product URL before using placeholder: {product_url[:50]}...")
-                            
-                            # Try to construct URL from product_id
-                            if product_id:
-                                try:
-                                    # Try multiple patterns for Naver image URLs
-                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                    naver_data['original_crawled_url'] = constructed_url
-                                    logger.info(f"Row {idx}: Constructed and saved URL from product_id: {constructed_url}")
-                                except Exception as e:
-                                    logger.warning(f"Row {idx}: Failed to construct URL from product_id: {e}")
-                            
-                            # Check if there's a Naver shopping link we can extract product ID from
-                            if '네이버 쇼핑 링크' in result_df.columns:
-                                shopping_link = result_df.at[idx, '네이버 쇼핑 링크']
-                                if shopping_link and isinstance(shopping_link, str) and shopping_link.startswith(('http://', 'https://')):
-                                    # Store the shopping link as a fallback
-                                    naver_data['original_url'] = shopping_link
-                                    
-                                    # Try to extract product IDs from various Naver URL patterns
-                                    try:
-                                        # Pattern 1: catalog/product/id
-                                        catalog_match = re.search(r'/catalog/(\d+)/(\d+)', shopping_link)
-                                        if catalog_match:
-                                            product_id = catalog_match.group(2)
-                                            constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg" 
-                                            naver_data['original_crawled_url'] = constructed_url
-                                            naver_data['product_id'] = product_id
-                                            logger.info(f"Row {idx}: Extracted product ID from Naver shopping link: {product_id}")
-                                        # Pattern 2: nvMid= or nv_mid=
-                                        elif 'nvMid=' in shopping_link or 'nv_mid=' in shopping_link:
-                                            nvmid_match = re.search(r'nv[_]?[mM]id=(\d+)', shopping_link)
-                                            if nvmid_match:
-                                                product_id = nvmid_match.group(1)
-                                                constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                                naver_data['original_crawled_url'] = constructed_url
-                                                naver_data['product_id'] = product_id
-                                                logger.info(f"Row {idx}: Extracted nvMid from Naver shopping link: {product_id}")
-                                        # Pattern 3: productNo=
-                                        elif 'productNo=' in shopping_link:
-                                            prod_match = re.search(r'productNo=(\d+)', shopping_link)
-                                            if prod_match:
-                                                product_id = prod_match.group(1)
-                                                constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                                naver_data['original_crawled_url'] = constructed_url
-                                                naver_data['product_id'] = product_id
-                                                logger.info(f"Row {idx}: Extracted productNo from Naver shopping link: {product_id}")
-                                    except Exception as e:
-                                        logger.warning(f"Row {idx}: Failed to extract product ID from Naver shopping link: {e}")
-                                
-                                # 이미지 URL 설정 - 상품 링크를 이미지 URL로 사용하지 않고 실제 이미지 URL만 사용
-                                if 'product_id' in naver_data and naver_data['product_id']:
-                                    # 이미 product_id가 추출되었으면 이를 사용하여 URL 생성
-                                    product_id = naver_data['product_id']
-                                    constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
-                                    naver_data['url'] = constructed_url
-                                    logger.info(f"Row {idx}: Using constructed URL for Naver image based on product_id: {constructed_url}")
-                                elif 'original_crawled_url' in naver_data and naver_data['original_crawled_url'] and isinstance(naver_data['original_crawled_url'], str) and naver_data['original_crawled_url'].startswith(('http://', 'https://')) and 'shopping-phinf.pstatic.net' in naver_data['original_crawled_url']:
-                                    # original_crawled_url이 있고, shopping-phinf.pstatic.net을 포함하는 실제 이미지 URL이면 이를 사용
-                                    naver_data['url'] = naver_data['original_crawled_url']
-                                    logger.info(f"Row {idx}: Using original crawled URL for Naver image: {naver_data['original_crawled_url'][:50]}...")
-                                else:
-                                    # 유효한 이미지 URL이 없는 경우, 네이버 이미지 데이터를 None으로 설정
-                                    logger.warning(f"Row {idx}: No valid URL found for Naver image. Clearing Naver image data.")
-                                    naver_data = None
-                                    result_df.at[idx, '네이버 이미지'] = None
-                                    # 관련 상품 정보 없는 경우로 처리
-                                    continue
-
-                        # 네이버 이미지 데이터가 여전히 유효한 경우에만 저장
-                        if naver_data is not None:
-                            result_df.at[idx, '네이버 이미지'] = naver_data
-                    else:
-                        # Only clear if both URL is invalid and local file doesn't exist
-                        logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Naver URL '{url}' and no valid local path. Clearing Naver data.")
-                        result_df.at[idx, '네이버 이미지'] = None
-        
-        # Check Kogift image URLs - only reject if both URL and local file are invalid
-        if '고려기프트 이미지' in result_df.columns:
-            kogift_data = result_df.at[idx, '고려기프트 이미지']
-            if isinstance(kogift_data, dict):
-                # Check if Kogift image has a valid local path
-                local_path = kogift_data.get('local_path')
-                url = kogift_data.get('url')
+            if isinstance(naver_data, dict):
+                # Check if there's a valid local_path
+                local_path = naver_data.get('local_path')
+                has_valid_local_path = local_path and os.path.exists(str(local_path))
                 
-                # Only clear if both URL and local path are invalid
-                if (not url or not isinstance(url, str) or not url.startswith('http')) and (not local_path or not os.path.exists(str(local_path))):
-                    logger.warning(f"Row {idx} (Product: '{product_name}'): Invalid Kogift URL and missing local file. Clearing Kogift data.")
-                    result_df.at[idx, '고려기프트 이미지'] = None
-                elif not url or not isinstance(url, str) or url.startswith('http://placeholder.url/'):
-                    # Try to find a valid URL in the data
-                    # Check if original data has a valid URL that we can use
-                    original_path = kogift_data.get('original_path')
-                    image_url = kogift_data.get('original_url')
+                # Check URL validity but be very lenient
+                url = naver_data.get('url')
+                has_valid_url = url and isinstance(url, str) and url.startswith(('http://', 'https://'))
+                
+                # Special case: Keep Naver images with valid local path even without valid URL
+                if has_valid_local_path:
+                    logger.info(f"Row {idx} (Product: '{product_name}'): Keeping Naver image with invalid URL but valid local path.")
                     
-                    # Try to find a valid URL from various sources
-                    if image_url and isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
-                        # Use the original URL if available
-                        kogift_data['url'] = image_url
-                        logger.info(f"Row {idx}: Using original Kogift URL: {image_url[:50]}...")
-                    elif original_path and isinstance(original_path, str) and original_path.startswith(('http://', 'https://')):
-                        # Use original path as URL if it's a web URL
-                        kogift_data['url'] = original_path
-                        logger.info(f"Row {idx}: Using original path as Kogift URL: {original_path[:50]}...")
-                    else:
-                        # Fix the URL with a placeholder as last resort
-                        if local_path and os.path.exists(str(local_path)):
-                            logger.info(f"Row {idx} (Product: '{product_name}'): Setting placeholder URL for valid Kogift local file.")
-                            
-                            # Try to extract URL from product link first
-                            product_link = result_df.at[idx, '고려기프트 상품링크'] if '고려기프트 상품링크' in result_df.columns else ''
-                            
-                            if product_link and isinstance(product_link, str) and product_link.startswith(('http://', 'https://')):
-                                # Try to derive image URL from product link
-                                try:
-                                    # Extract product code from URL
-                                    from urllib.parse import urlparse
-                                    parsed_url = urlparse(product_link)
-                                    path = parsed_url.path
-                                    
-                                    # Also preserve the product link itself as a fallback
-                                    kogift_data['original_url'] = product_link
-                                    
-                                    # Look for patterns like /product/detail.html?product_id=1234
-                                    product_id_match = re.search(r'product_id=(\d+)', product_link)
-                                    if product_id_match:
-                                        product_id = product_id_match.group(1)
-                                        constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
-                                        kogift_data['original_crawled_url'] = constructed_url
-                                        # Store product_id for future use
-                                        kogift_data['product_id'] = product_id
-                                        logger.info(f"Row {idx}: Constructed and saved Kogift URL from product_id: {constructed_url}")
-                                        
-                                        # 실제 constructed_url 사용
-                                        kogift_data['url'] = constructed_url
-                                        logger.info(f"Row {idx}: Using constructed URL for Kogift image: {constructed_url}")
-                                    else:
-                                        # Try 'no=' pattern which is also common in Kogift URLs
-                                        no_match = re.search(r'no=(\d+)', product_link)
-                                        if no_match:
-                                            product_id = no_match.group(1)
-                                            constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
-                                            kogift_data['original_crawled_url'] = constructed_url
-                                            # Store product_id for future use
-                                            kogift_data['product_id'] = product_id
-                                            logger.info(f"Row {idx}: Constructed and saved Kogift URL from 'no' parameter: {constructed_url}")
-                                            
-                                            # 실제 constructed_url 사용
-                                            kogift_data['url'] = constructed_url
-                                            logger.info(f"Row {idx}: Using constructed URL for Kogift image: {constructed_url}")
-                                        else:
-                                            # 상품 링크에서 ID를 추출할 수 없으면 대체 이미지 URL 패턴 시도
-                                            # 고려기프트 상품번호 추출을 위한 추가 패턴들
-                                            # Pattern 1: mall.php?cat=XXXXXX&query=view&no=XXXXX
-                                            mall_match = re.search(r'mall\.php.*?no=(\d+)', product_link)
-                                            if mall_match:
-                                                product_id = mall_match.group(1)
-                                                constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
-                                                kogift_data['url'] = constructed_url
-                                                kogift_data['product_id'] = product_id
-                                                logger.info(f"Row {idx}: Extracted Kogift product ID from mall.php link: {product_id}")
-                                            else:
-                                                # 표준 패턴의 이미지 URL 사용
-                                                product_name_hash = hashlib.md5(str(product_name).encode()).hexdigest()[:8]
-                                                constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_name_hash}.jpg"
-                                                kogift_data['url'] = constructed_url
-                                                logger.info(f"Row {idx}: Created standardized Kogift image URL using product name hash: {constructed_url}")
-                                except Exception as e:
-                                    logger.warning(f"Row {idx}: Failed to process Kogift product link: {e}")
-                                    # 오류 발생해도 상품 ID 추출 시도
-                                    if '고려기프트 상품링크' in result_df.columns and idx < len(result_df) and isinstance(result_df.at[idx, '고려기프트 상품링크'], str):
-                                        product_link = result_df.at[idx, '고려기프트 상품링크']
-                                        no_match = re.search(r'no=(\d+)', product_link)
-                                        if no_match:
-                                            product_id = no_match.group(1)
-                                            constructed_url = f"https://koreagift.com/ez/upload/mall/shop_{product_id}.jpg"
-                                            kogift_data['url'] = constructed_url
-                                            logger.info(f"Row {idx}: Extracted Kogift ID despite error: {product_id}, URL: {constructed_url}")
-                                        else:
-                                            # 상품 링크 대신 표준화된 이미지 URL 패턴 사용
-                                            dummy_id = hashlib.md5(str(idx).encode()).hexdigest()[:8]
-                                            kogift_data['url'] = f"https://koreagift.com/ez/upload/mall/shop_{dummy_id}.jpg"
-                                            logger.warning(f"Row {idx}: Using standardized Kogift image URL pattern with generated ID.")
-                        
-                    result_df.at[idx, '고려기프트 이미지'] = kogift_data
+                    # Try to fix/add URL from other available data
+                    original_path = naver_data.get('original_path')
+                    image_url = naver_data.get('original_url')
+                    product_id = naver_data.get('product_id')
+                    
+                    # Try to find a valid URL but don't clear data if none found
+                    if not has_valid_url:
+                        if image_url and isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
+                            naver_data['url'] = image_url
+                        elif original_path and isinstance(original_path, str) and original_path.startswith(('http://', 'https://')):
+                            naver_data['url'] = original_path
+                        elif product_id:
+                            # Construct URL from product_id as a last resort
+                            constructed_url = f"https://shopping-phinf.pstatic.net/main_{product_id}/{product_id}.jpg"
+                            naver_data['url'] = constructed_url
+                            logger.info(f"Row {idx}: Constructed Naver URL from product_id: {constructed_url}")
+                    
+                    # Update DataFrame with possibly updated naver_data
+                    result_df.at[idx, '네이버 이미지'] = naver_data
+                elif not has_valid_url and skip_naver_validation:
+                    # If we're skipping validation and there's no valid URL, warn but don't remove
+                    logger.warning(f"Row {idx}: No valid URL found for Naver image, but keeping data due to skip_naver_validation=True.")
+                elif not has_valid_url and not has_valid_local_path:
+                    # Only clear if both URL and local file are invalid AND we're not skipping validation
+                    logger.warning(f"Row {idx}: No valid URL or local path found for Naver image. Clearing Naver image data.")
+                    result_df.at[idx, '네이버 이미지'] = None
+                else:
+                    # For all other cases, keep the data as is
+                    pass
     
-    # Count images after final validation
+    # Count valid images after all processing
     naver_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
     kogift_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
     haereum_count = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '본사 이미지'], dict))

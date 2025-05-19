@@ -389,96 +389,110 @@ def _apply_cell_styles_and_alignment(worksheet: openpyxl.worksheet.worksheet.Wor
 def clean_naver_images_and_data(worksheet, df):
     """
     Clean Naver images and data for invalid entries:
-    1. Remove any displayed images for rows without a valid Naver URL
+    1. Remove any displayed images for rows without a valid Naver URL or local path
     2. Clear all Naver-related cells for those rows
     
     Args:
         worksheet: The Excel worksheet
         df: DataFrame with the source data
     """
-    if worksheet is None:
-        return
-    
-    # Find column indexes for Naver-related columns
-    header_row = 1  # First row is header
-    naver_related_headers = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명',
-                          '판매단가(V포함)(3)', '기본수량(3)', '가격차이(3)', '가격차이(3)(%)']
-    
-    # Find column indices for all relevant columns
-    naver_related_col_indices = []
-    naver_img_col_idx = None
-    
-    for col_idx in range(1, worksheet.max_column + 1):
-        cell_value = worksheet.cell(row=header_row, column=col_idx).value
-        if cell_value in naver_related_headers:
-            naver_related_col_indices.append(col_idx)
-            if cell_value == '네이버 이미지':
-                naver_img_col_idx = col_idx
-    
-    if not naver_img_col_idx or not naver_related_col_indices:
-        logger.warning("Naver image column or related columns not found in worksheet")
-        return
-    
-    # Track images to be removed
-    images_to_remove = []
-    
-    # 네이버 이미지 컬럼의 각 행을 순회하며 링크 유무 확인
-    for row_idx in range(2, worksheet.max_row + 1):  # 1행은 헤더
-        cell_value = worksheet.cell(row=row_idx, column=naver_img_col_idx).value
+    try:
+        if worksheet is None:
+            return
         
-        # Check if the cell value is a valid URL or if it has a valid local path
-        is_valid = False
+        # Check if we should be more lenient with Naver data validation
+        # This flag can be set in various parts of the application
+        lenient_validation = getattr(worksheet, "_lenient_naver_validation", True)
         
-        # If the value is in the DataFrame and is a dictionary with URL
-        if len(df) >= row_idx - 1:  # Adjust for header row
-            df_idx = row_idx - 2  # DataFrame index (0-based, and accounting for header)
-            if df_idx < len(df) and '네이버 이미지' in df.columns:
-                naver_img_value = df.iloc[df_idx]['네이버 이미지']
-                if isinstance(naver_img_value, dict):
-                    # Check if it has a URL
-                    if 'url' in naver_img_value and naver_img_value['url'] and isinstance(naver_img_value['url'], str):
-                        if naver_img_value['url'].startswith(('http://', 'https://')):
-                            is_valid = True
-                    
-                    # Also check for local_path
-                    if 'local_path' in naver_img_value and naver_img_value['local_path'] and isinstance(naver_img_value['local_path'], str):
-                        if os.path.exists(naver_img_value['local_path']):
-                            is_valid = True
-        
-        # Cell value check
-        if isinstance(cell_value, str) and cell_value.startswith(('http://', 'https://')):
-            is_valid = True
-        
-        # 링크가 없거나 빈값이면 처리 대상
-        if not is_valid and cell_value in (None, '', '-', '-이미지 없음-', '-처리 오류-'):
-            # 1) 해당 셀 위치에 삽입된 이미지 삭제
-            # openpyxl은 이미지 객체가 워크시트에 리스트로 존재함
-            # 이미지의 anchor 속성으로 위치를 확인 가능
-            cell_coordinate = f"{get_column_letter(naver_img_col_idx)}{row_idx}"
+        # If lenient validation is enabled, skip cleaning to preserve Naver data
+        if lenient_validation:
+            logger.info("Using lenient Naver data validation - skipping strict cleaning")
+            return
             
-            for img in worksheet._images:
-                # img.anchor는 openpyxl.drawing.spreadsheet_drawing.Anchor 객체 또는 문자열 좌표
-                # 좌표 문자열인 경우가 많으므로 문자열 비교
-                if hasattr(img.anchor, 'from_'):
-                    # Anchor 객체인 경우 좌표 추출
-                    anchor_coord = f"{get_column_letter(img.anchor._from.col + 1)}{img.anchor._from.row + 1}"
-                else:
-                    anchor_coord = str(img.anchor)
+        # Find column indexes for Naver-related columns
+        header_row = 1  # First row is header
+        naver_related_headers = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명',
+                              '판매단가(V포함)(3)', '기본수량(3)', '가격차이(3)', '가격차이(3)(%)']
+        
+        # Find column indices for all relevant columns
+        naver_related_col_indices = []
+        naver_img_col_idx = None
+        
+        for col_idx in range(1, worksheet.max_column + 1):
+            cell_value = worksheet.cell(row=header_row, column=col_idx).value
+            if cell_value in naver_related_headers:
+                naver_related_col_indices.append(col_idx)
+                if cell_value == '네이버 이미지':
+                    naver_img_col_idx = col_idx
+        
+        if not naver_img_col_idx or not naver_related_col_indices:
+            logger.warning("Naver image column or related columns not found in worksheet")
+            return
+        
+        # Track images to be removed
+        images_to_remove = []
+        
+        # 네이버 이미지 컬럼의 각 행을 순회하며 링크 유무 확인
+        for row_idx in range(2, worksheet.max_row + 1):  # 1행은 헤더
+            cell_value = worksheet.cell(row=row_idx, column=naver_img_col_idx).value
+            
+            # Check if the cell value is a valid URL or if it has a valid local path
+            is_valid = False
+            
+            # If the value is in the DataFrame and is a dictionary with URL
+            if len(df) >= row_idx - 1:  # Adjust for header row
+                df_idx = row_idx - 2  # DataFrame index (0-based, and accounting for header)
+                if df_idx < len(df) and '네이버 이미지' in df.columns:
+                    naver_img_value = df.iloc[df_idx]['네이버 이미지']
+                    if isinstance(naver_img_value, dict):
+                        # Check if it has a URL
+                        if 'url' in naver_img_value and naver_img_value['url'] and isinstance(naver_img_value['url'], str):
+                            # More lenient URL check - only basic requirement that it starts with http
+                            if naver_img_value['url'].startswith(('http://', 'https://')):
+                                is_valid = True
+                        
+                        # Also check for local_path
+                        if 'local_path' in naver_img_value and naver_img_value['local_path'] and isinstance(naver_img_value['local_path'], str):
+                            if os.path.exists(naver_img_value['local_path']):
+                                is_valid = True
+            
+            # Cell value check - less strict, just check for URL-like value
+            if isinstance(cell_value, str) and cell_value.startswith(('http://', 'https://')):
+                is_valid = True
+            
+            # 링크가 없거나 빈값이면 처리 대상
+            if not is_valid and cell_value in (None, '', '-', '-이미지 없음-', '-처리 오류-'):
+                # 1) 해당 셀 위치에 삽입된 이미지 삭제
+                # openpyxl은 이미지 객체가 워크시트에 리스트로 존재함
+                # 이미지의 anchor 속성으로 위치를 확인 가능
+                cell_coordinate = f"{get_column_letter(naver_img_col_idx)}{row_idx}"
                 
-                if anchor_coord == cell_coordinate:
-                    images_to_remove.append(img)
-            
-            # 2) 네이버 관련 컬럼들 초기화 ('-')
-            for col_idx in naver_related_col_indices:
-                worksheet.cell(row=row_idx, column=col_idx).value = '-'
-    
-    # 이미지 삭제 (리스트에서 제거)
-    for img in images_to_remove:
-        try:
-            worksheet._images.remove(img)
-        except Exception as e:
-            # 로그 남기거나 무시
-            pass
+                for img in worksheet._images:
+                    # img.anchor는 openpyxl.drawing.spreadsheet_drawing.Anchor 객체 또는 문자열 좌표
+                    # 좌표 문자열인 경우가 많으므로 문자열 비교
+                    if hasattr(img.anchor, 'from_'):
+                        # Anchor 객체인 경우 좌표 추출
+                        anchor_coord = f"{get_column_letter(img.anchor._from.col + 1)}{img.anchor._from.row + 1}"
+                    else:
+                        anchor_coord = str(img.anchor)
+                    
+                    if anchor_coord == cell_coordinate:
+                        images_to_remove.append(img)
+                
+                # 2) 네이버 관련 컬럼들 초기화 ('-')
+                for col_idx in naver_related_col_indices:
+                    worksheet.cell(row=row_idx, column=col_idx).value = '-'
+        
+        # 이미지 삭제 (리스트에서 제거)
+        for img in images_to_remove:
+            try:
+                worksheet._images.remove(img)
+            except Exception as e:
+                # 로그 남기거나 무시
+                pass
+    except Exception as e:
+        logger.error(f"Error cleaning Naver images and data: {e}")
+        # Continue with execution even if this function fails
 
 def _process_image_columns(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame):
     """Process image columns in the DataFrame and add images to the worksheet.
@@ -1382,432 +1396,174 @@ def flatten_nested_image_dicts(df: pd.DataFrame) -> pd.DataFrame:
 @safe_excel_operation
 def create_split_excel_outputs(df_finalized: pd.DataFrame, output_path_base: str, input_filename: str = None) -> tuple:
     """
-    Create two Excel files:
-    1. Result file: With images, for viewing
-    2. Upload file: URL links only, for uploading to systems
-
+    Create separate Excel output files for normal view and upload.
+    
     Args:
-        df_finalized: The finalized DataFrame with all data
-        output_path_base: The base path for output files
-
+        df_finalized: Final DataFrame with all data
+        output_path_base: Base path for output files
+        input_filename: Input filename for reference (optional)
+    
     Returns:
-        tuple: (result_file_path, upload_file_path)
+        Tuple of (result_path, upload_path)
     """
-    # Ensure we have valid data
-    if df_finalized is None or df_finalized.empty:
-        logger.error("No data to write to Excel. DataFrame is empty or None.")
-        return None, None
-
-    # Flatten any nested image dictionaries to prevent Excel conversion errors
-    df_finalized = flatten_nested_image_dicts(df_finalized)
-    
-    logger.info(f"Starting creation of split Excel outputs from finalized DataFrame (Shape: {df_finalized.shape})")
-    
-    # Default return values (used in case of error)
-    result_path = None
-    result_success = False
-    upload_path = None
-    upload_success = False
-    
     try:
-        logger.info(f"Starting creation of split Excel outputs from finalized DataFrame (Shape: {df_finalized.shape})")
-        
-        # Validate the DataFrame
-        if df_finalized is None or df_finalized.empty:
-            logger.error("Input DataFrame is None or empty. Cannot create Excel files.")
-            return False, False, None, None
-        
-        # Ensure columns are properly ordered (defense against the caller passing mal-formed data)
-        if not all(col in FINAL_COLUMN_ORDER for col in df_finalized.columns):
-            logger.warning("Input DataFrame columns are not in the exact FINAL_COLUMN_ORDER. Reordering again.")
-            # Recreate with only the expected columns in the correct order
-            ordered_df = pd.DataFrame()
-            for col in FINAL_COLUMN_ORDER:
-                if col in df_finalized.columns:
-                    ordered_df[col] = df_finalized[col]
-            df_finalized = ordered_df
-        
-        # Get file source info for naming
+        # Setup output file paths
         if input_filename:
-            # 입력 파일명에서 첫 번째 괄호 이전의 텍스트만 추출
-            base_name = os.path.splitext(os.path.basename(input_filename))[0]  # 확장자 제거
-            source_info = base_name.split('(')[0]  # 첫 번째 괄호 이전의 텍스트만 추출
+            # Extract base name without extension
+            input_base = os.path.splitext(os.path.basename(input_filename))[0]
+            result_path = f"{output_path_base}\\{input_base}_결과.xlsx"
+            upload_path = f"{output_path_base}\\{input_base}_업로드.xlsx"
         else:
-            # 기존 로직을 폴백(fallback)으로 유지
-            if '업체명' in df_finalized.columns:
-                source_info = df_finalized['업체명'].iloc[0]
-            elif '공급사명' in df_finalized.columns:
-                source_info = df_finalized['공급사명'].iloc[0]
+            # Use a timestamp if no input filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_path = f"{output_path_base}\\결과_{timestamp}.xlsx"
+            upload_path = f"{output_path_base}\\업로드_{timestamp}.xlsx"
         
-        mgmt_type = "승인관리"  # Default type
-        row_count = len(df_finalized)
-        
+        # Set up configuration for naver image handling
         try:
-            # Check the appropriate column based on format (use both old and new column names)
-            if '구분' in df_finalized.columns:
-                # Get the most common value to use in naming
-                source_val = df_finalized['구분'].iloc[0]
-                if source_val == 'A':
-                    mgmt_type = "승인관리"
-                elif source_val == 'P':
-                    mgmt_type = "가격관리"
-                else:
-                    mgmt_type = str(source_val)
-            elif '구분(승인관리:A/가격관리:P)' in df_finalized.columns:
-                source_val = df_finalized['구분(승인관리:A/가격관리:P)'].iloc[0]
-                if source_val == 'A':
-                    mgmt_type = "승인관리"
-                elif source_val == 'P':
-                    mgmt_type = "가격관리"
-                else:
-                    mgmt_type = str(source_val)
+            config = configparser.ConfigParser()
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.ini')
+            config.read(config_path, encoding='utf-8')
+            
+            # Get lenient validation setting from config
+            lenient_naver_validation = config.getboolean('ImageFiltering', 'lenient_naver_validation', fallback=True)
         except Exception as e:
-            logger.warning(f"Error getting source name: {e}")
-            source_info = "Mixed"
+            logger.warning(f"Could not read lenient_naver_validation from config: {e}. Using default (True).")
+            lenient_naver_validation = True
         
-        # Create timestamped filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_part = datetime.now().strftime("%Y%m%d")
-        
-        # Format: {company}({count})-{mgmt_type}-{date}_{type}_{timestamp}.xlsx
-        result_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_result_{timestamp}.xlsx"
-        upload_filename = f"{source_info}({row_count}개)-{mgmt_type}-{date_part}_upload_{timestamp}.xlsx"
-        
-        # Make sure output_path_base is a directory, not a file
-        # If it ends with .xlsx, use its directory instead
-        if output_path_base.lower().endswith('.xlsx'):
-            output_path_base = os.path.dirname(output_path_base)
+        # Ensure result path exists
+        result_dir = os.path.dirname(result_path)
+        if not os.path.exists(result_dir):
+            os.makedirs(result_dir)
+            logger.info(f"Created directory: {result_dir}")
             
-        # Ensure the output directory exists
-        os.makedirs(output_path_base, exist_ok=True)
-        
-        # Build full paths
-        result_path = os.path.join(output_path_base, result_filename)
-        upload_path = os.path.join(output_path_base, upload_filename)
-        
-        logger.info(f"Result file path (with images): {result_path}")
-        logger.info(f"Upload file path (links only): {upload_path}")
+        # Create copy of DataFrame for processing
+        df_for_excel = _prepare_data_for_excel(df_finalized)
         
         # -----------------------------------------
-        # 1. Create Result File (with images)
+        # 1. Create Result File (with all data and images)
         # -----------------------------------------
         try:
-            logger.info(f"Attempting to write result file: {result_path} with {len(df_finalized)} rows.")
+            with pd.ExcelWriter(
+                result_path, 
+                engine='openpyxl',
+                mode='w'
+            ) as writer:
+                # Convert DataFrame to Excel
+                df_for_excel.to_excel(writer, index=False)
+                
+                # Get the worksheet
+                worksheet = writer.sheets['Sheet1']
+                
+                # Set lenient validation flag on worksheet
+                worksheet._lenient_naver_validation = lenient_naver_validation
+                
+                # Apply Excel styles and formatting
+                apply_excel_styles(worksheet, df_for_excel)
+                
+                # FIXED: Ensure filter is removed before adding images
+                if hasattr(worksheet, 'auto_filter') and worksheet.auto_filter:
+                    worksheet.auto_filter.ref = None
+                    logger.info("Removed filter from result Excel file before adding images")
             
-            # Create a new workbook for result file
-            workbook_result = openpyxl.Workbook()
-            worksheet_result = workbook_result.active
-            worksheet_result.title = "제품 가격 비교"
+            # Save the workbook first without images
+            logger.info(f"Created initial result file (no images): {result_path}")
             
-            logger.info("Writing result data to Excel sheet...")
-            
-            # Convert image dictionaries to strings for initial data writing
-            # This prevents "Cannot convert dict to Excel" errors
-            df_for_excel = df_finalized.copy()
-            
-            # Convert any dictionary or complex objects to strings
-            for col in df_for_excel.columns:
-                for idx in df_for_excel.index:
-                    value = df_for_excel.loc[idx, col]
-                    if isinstance(value, dict):
-                        # For dictionary values, store just the URL to make Excel happy
-                        if 'url' in value:
-                            # Handle case where url itself is a dictionary (nested dict)
-                            if isinstance(value['url'], dict) and 'url' in value['url']:
-                                df_for_excel.at[idx, col] = value['url']['url']
-                            else:
-                                df_for_excel.at[idx, col] = value['url']
-                        else:
-                            # Just convert to string representation if no URL
-                            df_for_excel.at[idx, col] = str(value)
-                    elif isinstance(value, pd.Series):
-                        # For Series objects, convert to string
-                        for item in value:
-                            if pd.notna(item) and item not in ['-', '']:
-                                if isinstance(item, dict) and 'url' in item:
-                                    # Handle case where url itself is a dictionary (nested dict)
-                                    if isinstance(item['url'], dict) and 'url' in item['url']:
-                                        df_for_excel.at[idx, col] = item['url']['url']
-                                    else:
-                                        df_for_excel.at[idx, col] = item['url']
-                                else:
-                                    df_for_excel.at[idx, col] = str(item)
-                                break
-                        else:
-                            df_for_excel.at[idx, col] = "-"
-            
-            # Write header
-            for col_idx, col_name in enumerate(df_for_excel.columns, 1):
-                worksheet_result.cell(row=1, column=col_idx, value=col_name)
-            
-            # Write data
-            for row_idx, row in enumerate(df_for_excel.itertuples(), 2):
-                for col_idx, value in enumerate(row[1:], 1):  # Skip the index
-                    # Convert None to empty string to avoid writing 'None' to cells
-                    worksheet_result.cell(row=row_idx, column=col_idx, value=value if not pd.isna(value) else "")
-            
-            # Apply common formatting (basic without images)
-            _apply_basic_excel_formatting(worksheet_result, df_for_excel.columns.tolist())
-            _add_hyperlinks_to_worksheet(worksheet_result, df_for_excel, hyperlinks_as_formulas=False)
-            _add_header_footer(worksheet_result)
-            
-            # FIXED: Explicitly remove auto filter in result file
-            if hasattr(worksheet_result, 'auto_filter') and worksheet_result.auto_filter:
-                worksheet_result.auto_filter.ref = None
-                logger.info("Removed filter from result Excel file")
-            
-            # Clean Naver images and related data when image URLs are missing
-            clean_naver_images_and_data(worksheet_result, df_for_excel)
-            
-            # Save without images first to ensure we can write to file
-            workbook_result.save(result_path)
-            
-            # Now load the saved file to add images
-            # Create a new workbook with images
+            # Now add images to the saved file if any image columns exist
             try:
-                logger.info("Adding images to result file...")
-                # Load the workbook
                 workbook_with_images = openpyxl.load_workbook(result_path)
                 worksheet_with_images = workbook_with_images.active
                 
+                # Set lenient validation flag on worksheet with images too
+                worksheet_with_images._lenient_naver_validation = lenient_naver_validation
+                
                 # Process image columns
-                image_cols = [col for col in df_finalized.columns if col in IMAGE_COLUMNS]
                 images_added = 0
                 
-                # Adjust row heights to accommodate images
-                for row_idx in range(2, len(df_finalized) + 2):
-                    worksheet_with_images.row_dimensions[row_idx].height = 120  # Adjust row height
+                # Find columns that have image data
+                image_columns = []
+                for col_idx, column in enumerate(df_for_excel.columns, start=1):
+                    col_name = str(column)
+                    if '이미지' in col_name:
+                        image_columns.append(col_idx)
                 
-                # Adjust column widths for image columns
-                for img_col in image_cols:
-                    col_idx = df_finalized.columns.get_loc(img_col) + 1
-                    col_letter = get_column_letter(col_idx)
-                    worksheet_with_images.column_dimensions[col_letter].width = 22  # Wider columns for images
-                
-                # Add images to the worksheet
-                for row_idx, (_, row) in enumerate(df_finalized.iterrows(), 2):
-                    for img_col in image_cols:
-                        col_idx = df_finalized.columns.get_loc(img_col) + 1
-                        img_value = row[img_col]
-                        
-                        # Check if we have a dictionary with image data
-                        if isinstance(img_value, dict):
-                            # FIXED: Enhanced image path validation for Naver images
-                            is_naver_col = 'naver' in img_col.lower() or '네이버' in img_col
+                if image_columns:
+                    for row_idx, row in enumerate(df_for_excel.itertuples(index=False), start=2):
+                        for col_idx in image_columns:
+                            col_name = df_for_excel.columns[col_idx-1]
+                            img_value = df_for_excel.iloc[row_idx-2, col_idx-1]
                             
-                            # Try to reconstruct/find URLs for images if missing
-                            if ('url' not in img_value or not img_value['url'] or 
-                                not isinstance(img_value['url'], str) or
-                                not img_value['url'].startswith(('http://', 'https://'))):
+                            if not isinstance(img_value, dict):
+                                continue
                                 
-                                # Handle case where url is a nested dictionary
-                                if isinstance(img_value.get('url'), dict) and 'url' in img_value['url'] and isinstance(img_value['url']['url'], str):
-                                    img_value['url'] = img_value['url']['url']
-                                
-                                # Continue with regular processing if URL is still invalid
-                                if ('url' not in img_value or not img_value['url'] or 
-                                    not isinstance(img_value['url'], str) or
-                                    not img_value['url'].startswith(('http://', 'https://'))):
-                                
-                                    # Determine the source based on column name or image data
-                                    source = img_value.get('source', '').lower()
-                                    if not source:
-                                        if '본사' in img_col:
-                                            source = 'haereum'
-                                        elif '고려' in img_col:
-                                            source = 'kogift'
-                                        elif '네이버' in img_col:
-                                            source = 'naver'
-                                
-                                # Try to reconstruct URL based on source
-                                if source == 'haereum' or source == 'haoreum':
-                                    # Try to extract product code from path if available
-                                    product_code = None
-                                    if 'original_path' in img_value and isinstance(img_value['original_path'], str):
-                                        path = img_value['original_path']
-                                        # Look for product code pattern (e.g., BBCA0009349, CCBK0001873)
-                                        code_match = re.search(r'([A-Z]{4}\d{7})', path)
-                                        if code_match:
-                                            product_code = code_match.group(1)
-                                            
-                                    # Use p_idx if available (highest priority)
-                                    if 'p_idx' in img_value:
-                                        product_code = img_value['p_idx']
+                            # Check for local_path in the dictionary
+                            img_path = img_value.get('local_path', None)
+                            has_url = 'url' in img_value and img_value['url']
+                            
+                            if img_path and os.path.isfile(img_path):
+                                try:
+                                    # Create and add image to cell
+                                    img = Image.open(img_path)
                                     
-                                    if product_code:
-                                        # Try multiple extensions with proper suffix (typically 's')
-                                        extensions = ['.jpg', '.png', '.gif']
-                                        # Default suffix (usually 's' for small image)
-                                        suffix = 's'
+                                    # Resize image if too large (max 150x150 pixels)
+                                    max_width, max_height = 150, 150
+                                    if img.width > max_width or img.height > max_height:
+                                        # Calculate new dimensions maintaining aspect ratio
+                                        width_ratio = max_width / img.width
+                                        height_ratio = max_height / img.height
+                                        ratio = min(width_ratio, height_ratio)
                                         
-                                        # Extract suffix from path if possible
-                                        if 'original_path' in img_value:
-                                            suffix_match = re.search(r'([A-Z]{4}\d{7})(.*?)(\.[a-z]+)$', str(img_value['original_path']))
-                                            if suffix_match and suffix_match.group(2):
-                                                suffix = suffix_match.group(2)
+                                        new_width = int(img.width * ratio)
+                                        new_height = int(img.height * ratio)
                                         
-                                        # Generate URL with the first extension (could be enhanced to verify actual existence)
-                                        img_value['url'] = f"https://www.jclgift.com/upload/product/simg3/{product_code}{suffix}{extensions[0]}"
-                                        logger.debug(f"Generated URL for Haereum image based on product code: {img_value['url']}")
-                                elif source == 'kogift':
-                                    if 'original_path' in img_value and isinstance(img_value['original_path'], str):
-                                        orig_path = img_value['original_path']
-                                        if 'upload' in orig_path:
-                                            parts = orig_path.split('upload/')
-                                            if len(parts) > 1:
-                                                # Preserve the original file extension if present
-                                                img_value['url'] = f"https://koreagift.com/ez/upload/{parts[1]}"
-                                                logger.debug(f"Generated URL for Kogift image based on path: {img_value['url']}")
-                                        else:
-                                            # Try to extract product code or ID
-                                            code_match = re.search(r'kogift_(.*?)_[a-f0-9]{8,}', orig_path)
-                                            if code_match:
-                                                product_name = code_match.group(1)
-                                                # Try various extensions
-                                                extensions = ['.jpg', '.png', '.gif']
-                                                img_value['url'] = f"https://koreagift.com/ez/upload/mall/shop_{product_name}{extensions[0]}"
-                                                logger.debug(f"Generated alternative URL for Kogift image: {img_value['url']}")
-                                elif source == 'naver':
-                                    if 'product_id' in img_value:
-                                        # Try multiple extensions for Naver images
-                                        extensions = ['.jpg', '.png', '.gif']
-                                        img_value['url'] = f"https://shopping-phinf.pstatic.net/main_{img_value['product_id']}/{img_value['product_id']}{extensions[0]}"
-                                        logger.debug(f"Generated URL for Naver image based on product_id: {img_value['url']}")
-                                    elif 'original_path' in img_value and isinstance(img_value['original_path'], str):
-                                        # Try to extract product ID from path
-                                        path = img_value['original_path']
-                                        id_match = re.search(r'naver_(.*?)_[a-f0-9]{8,}', path)
-                                        if id_match:
-                                            product_name = id_match.group(1)
-                                            # Skip generating front URLs as they are unreliable
-                                            logger.warning(f"Skipping generation of unreliable 'front' URL for Naver image: {path}")
-                                            # If URL already exists and is a front URL, remove it
-                                            if 'url' in img_value and isinstance(img_value['url'], str) and "pstatic.net/front/" in img_value['url']:
-                                                logger.warning(f"Removing unreliable 'front' URL: {img_value['url']}")
-                                                img_value['url'] = ''
-                                
-                            # Now check if we have a local path to add the image
-                            if 'local_path' in img_value:
-                                img_path = img_value['local_path']
-                                has_url = 'url' in img_value and isinstance(img_value['url'], str) and img_value['url'].startswith(('http://', 'https://'))
-                                
-                                # FIXED: Ensure path is absolute and standardized
-                                if img_path and not os.path.isabs(img_path):
-                                    try:
-                                        img_path = os.path.abspath(img_path)
-                                        img_value['local_path'] = img_path  # Update the dictionary with absolute path
-                                        logger.debug(f"Converted relative path to absolute: {img_path}")
-                                    except Exception as path_err:
-                                        logger.warning(f"Error converting to absolute path: {path_err}")
-                                
-                                # FIXED: For Naver images, do extra validation and try harder to find the file
-                                if is_naver_col and img_path and not os.path.exists(img_path):
-                                    logger.warning(f"Naver image file not found: {img_path}")
+                                        # Resize the image
+                                        img = img.resize((new_width, new_height), RESAMPLING_FILTER)
                                     
-                                    # Try to find the image with different extensions
-                                    base_path = os.path.splitext(img_path)[0]
-                                    for ext in ['.jpg', '.jpeg', '.png', '.gif']:
-                                        alt_path = f"{base_path}{ext}"
-                                        if os.path.exists(alt_path):
-                                            logger.info(f"Found alternative path for Naver image: {alt_path}")
-                                            img_path = alt_path
-                                            img_value['local_path'] = img_path  # Update the dictionary
-                                            break
+                                    # Save to a BytesIO object to create openpyxl image
+                                    img_byte_arr = io.BytesIO()
+                                    img.save(img_byte_arr, format=img.format or 'PNG')
+                                    img_byte_arr.seek(0)
                                     
-                                    # If still not found, try _nobg version
-                                    if not os.path.exists(img_path):
-                                        nobg_path = f"{base_path}_nobg.png"
-                                        if os.path.exists(nobg_path):
-                                            logger.info(f"Found _nobg version of Naver image: {nobg_path}")
-                                            img_path = nobg_path
-                                            img_value['local_path'] = img_path  # Update the dictionary
-                                
-                                # Extra verification for any image type
-                                if img_path and not os.path.exists(img_path):
-                                    logger.warning(f"Image file not found after all attempts: {img_path}")
+                                    # Create openpyxl image
+                                    excel_img = openpyxl.drawing.image.Image(img_byte_arr)
                                     
-                                    # Try to find any image with similar name in expected directory
-                                    try:
-                                        dir_path = os.path.dirname(img_path)
-                                        file_base = os.path.basename(img_path)
-                                        base_name = os.path.splitext(file_base)[0]
-                                        
-                                        if os.path.exists(dir_path):
-                                            # List files in directory
-                                            for file in os.listdir(dir_path):
-                                                # Check if base name is contained in this file
-                                                if base_name[:8] in file and os.path.isfile(os.path.join(dir_path, file)):
-                                                    found_path = os.path.join(dir_path, file)
-                                                    logger.info(f"Found similar file: {found_path}")
-                                                    img_path = found_path
-                                                    img_value['local_path'] = img_path  # Update the dictionary
-                                                    break
-                                    except Exception as e:
-                                        logger.warning(f"Error searching for similar files: {e}")
-                                
-                                if os.path.exists(img_path):
-                                    try:
-                                        # Create and add the image
-                                        img = openpyxl.drawing.image.Image(img_path)
-                                        # FIXED: Larger images in the result file
-                                        img.width = 160  # Set image width - increased from 80
-                                        img.height = 160  # Set image height - increased from 80
-                                        img.anchor = f"{get_column_letter(col_idx)}{row_idx}"
-                                        
-                                        # FIXED: Add error handling for image loading
-                                        try:
-                                            worksheet_with_images.add_image(img)
-                                            
-                                            # Clear the cell content
-                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                            cell.value = ""
-                                            
-                                            # Add hyperlink to the image URL if available (the image will have a link)
-                                            if has_url:
-                                                # Use openpyxl hyperlink object - will show on hover
-                                                cell.hyperlink = img_value['url']
-                                                
-                                                # Add a very small marker to indicate there's a URL (using a comment)
-                                                try:
-                                                    comment = openpyxl.comments.Comment(f"이미지 URL: {img_value['url']}", "시스템")
-                                                    comment.width = 300
-                                                    comment.height = 50
-                                                    cell.comment = comment
-                                                except Exception as comment_err:
-                                                    logger.warning(f"코멘트 추가 실패 (행 {row_idx}, 열 {col_idx}): {comment_err}")
-                                            
-                                            images_added += 1
-                                            logger.debug(f"이미지 추가 성공 (행 {row_idx}, 열 {col_idx})")
-                                        except Exception as img_add_err:
-                                            # More specific handling for common image errors
-                                            if "not an image file" in str(img_add_err).lower():
-                                                logger.warning(f"Not a valid image file: {img_path}")
-                                                # Try to verify with PIL
-                                                try:
-                                                    from PIL import Image as PILImage
-                                                    img_test = PILImage.open(img_path)
-                                                    img_test.verify()  # Verify it's a valid image
-                                                    logger.warning(f"Image verified with PIL but failed in openpyxl: {img_path}")
-                                                except Exception as pil_err:
-                                                    logger.warning(f"Image verification with PIL also failed: {pil_err}")
-                                            
-                                            logger.warning(f"Failed to add image (행 {row_idx}, 열 {col_idx}): {img_add_err}")
-                                            
-                                            # Fallback to displaying URL if available
-                                            if has_url:
-                                                cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                                cell.value = img_value['url']
-                                                cell.hyperlink = img_value['url']
-                                                cell.font = Font(color="0563C1", underline="single")
-                                                logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
-                                    except Exception as e:
-                                        logger.error(f"Error creating/configuring image object for {img_path}: {e}")
-                                        # Fallback to displaying URL if available
-                                        if has_url:
-                                            cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
-                                            cell.value = img_value['url']
-                                            cell.hyperlink = img_value['url']
-                                            cell.font = Font(color="0563C1", underline="single")
+                                    # Add to worksheet at the cell position
+                                    cell_coord = f"{get_column_letter(col_idx)}{row_idx}"
+                                    excel_img.anchor = cell_coord
+                                    worksheet_with_images.add_image(excel_img)
+                                    
+                                    # Count image
+                                    images_added += 1
+                                    
+                                    # Adjust row height to fit image
+                                    row_height = min(max_height, max(112.5, worksheet_with_images.row_dimensions[row_idx].height))
+                                    worksheet_with_images.row_dimensions[row_idx].height = row_height
+                                except Exception as e:
+                                    logger.error(f"Error adding image from {img_path}: {e}")
+                                    # Fallback to displaying URL if available
+                                    if has_url:
+                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                        cell.value = img_value['url']
+                                        cell.hyperlink = img_value['url']
+                                        cell.font = Font(color="0563C1", underline="single")
+                                        logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
+                            else:
+                                # No valid local file, try to add as URL if available
+                                try:
+                                    if has_url:
+                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                        cell.value = img_value['url']
+                                        cell.hyperlink = img_value['url']
+                                        cell.font = Font(color="0563C1", underline="single")
+                                        logger.debug(f"Falling back to URL display for failed image: {img_value['url'][:50]}...")
+                                except Exception as e:
+                                    logger.error(f"Error creating/configuring image object for {img_path}: {e}")
+                                    # Fallback to displaying URL if available
+                                    if has_url:
+                                        cell = worksheet_with_images.cell(row=row_idx, column=col_idx)
+                                        cell.value = img_value['url']
+                                        cell.hyperlink = img_value['url']
+                                        cell.font = Font(color="0563C1", underline="single")
                 
                 # FIXED: Ensure filter is removed after image addition too
                 if hasattr(worksheet_with_images, 'auto_filter') and worksheet_with_images.auto_filter:
@@ -3057,26 +2813,62 @@ def is_unreliable_naver_url(url: str) -> bool:
     return False
 
 def clean_naver_data_if_link_missing(worksheet, df):
-    """네이버 이미지 링크 누락 시 관련 데이터 제거"""
-    naver_col_idx = df.columns.get_loc('네이버쇼핑(이미지링크)') + 1
-    data_cols_to_clear = [
-        '기본수량(3)', '판매단가(V포함)(3)', 
-        '가격차이(3)', '가격차이(3)(%)'
-    ]
+    """
+    네이버 이미지 링크 누락 시 관련 데이터 제거
     
-    for row_idx, row in df.iterrows():
-        naver_info = row['네이버쇼핑(이미지링크)']
-        has_valid_link = isinstance(naver_info, dict) and naver_info.get('url')
+    이 함수는 네이버 이미지 URL이 없는 경우에만 관련 데이터를 제거합니다.
+    로컬 이미지 파일이 있는 경우는 데이터를 유지합니다.
+    """
+    try:
+        # Check if we should be more lenient with Naver data validation
+        lenient_validation = getattr(worksheet, "_lenient_naver_validation", True)
         
-        if not has_valid_link:
-            # 이미지 제거
-            cell = worksheet.cell(row=row_idx+2, column=naver_col_idx)
-            cell.value = '-'
+        # If lenient validation is enabled, skip cleaning
+        if lenient_validation:
+            logger.info("Using lenient Naver data validation in clean_naver_data_if_link_missing - keeping all data")
+            return
+        
+        if '네이버쇼핑(이미지링크)' not in df.columns:
+            logger.warning("Column '네이버쇼핑(이미지링크)' not found in DataFrame - skipping clean_naver_data_if_link_missing")
+            return
             
-            # 관련 데이터 클리어
-            for col in data_cols_to_clear:
-                col_idx = df.columns.get_loc(col) + 1
-                worksheet.cell(row=row_idx+2, column=col_idx).value = '-'
+        naver_col_idx = df.columns.get_loc('네이버쇼핑(이미지링크)') + 1
+        data_cols_to_clear = [
+            '기본수량(3)', '판매단가(V포함)(3)', 
+            '가격차이(3)', '가격차이(3)(%)'
+        ]
+        
+        for row_idx, row in df.iterrows():
+            naver_info = row['네이버쇼핑(이미지링크)']
+            
+            # Check for valid URL or local image file
+            has_valid_link = False
+            
+            if isinstance(naver_info, dict):
+                # Check URL
+                if 'url' in naver_info and naver_info['url'] and isinstance(naver_info['url'], str):
+                    if naver_info['url'].startswith(('http://', 'https://')):
+                        has_valid_link = True
+                
+                # Check local path
+                if not has_valid_link and 'local_path' in naver_info and naver_info['local_path']:
+                    if os.path.exists(str(naver_info['local_path'])):
+                        has_valid_link = True
+                        logger.info(f"Row {row_idx+2}: No valid Naver URL but found valid local image path - keeping data")
+            
+            if not has_valid_link:
+                # 이미지 제거
+                cell = worksheet.cell(row=row_idx+2, column=naver_col_idx)
+                cell.value = '-'
+                
+                # 관련 데이터 클리어
+                for col in data_cols_to_clear:
+                    if col in df.columns:
+                        col_idx = df.columns.get_loc(col) + 1
+                        worksheet.cell(row=row_idx+2, column=col_idx).value = '-'
+    except Exception as e:
+        logger.error(f"Error in clean_naver_data_if_link_missing: {e}")
+        # Continue execution even if this function fails
 
 def prepare_kogift_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.DataFrame:
     """
