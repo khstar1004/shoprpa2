@@ -156,6 +156,7 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     2. Only removes rows where BOTH Koreagift and Naver data are missing
     3. Uses a configurable price difference threshold (default -0.5%)
     4. Still keeps rows with valid data even if they have front URLs
+    5. Removes rows where company image (해오름) is missing, empty or just "-"
     
     The price threshold can be adjusted by setting filter_upload_data._price_threshold 
     before calling the function.
@@ -240,14 +241,35 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         if front_url_count > 0:
             logging.warning(f"Found {front_url_count} rows with 'front/' URLs, but keeping them in the data.")
     
+    # --- 4. NEW: Filter out rows where company image is missing, empty, or just "-" ---
+    company_img_col = '해오름(이미지링크)'  # Upload file column name
+    
+    # For result file, column names are different
+    if company_img_col not in filtered_df.columns and '본사 이미지' in filtered_df.columns:
+        company_img_col = '본사 이미지'
+    
+    empty_company_img_mask = pd.Series(True, index=filtered_df.index)  # Default to True if column missing
+    
+    if company_img_col in filtered_df.columns:
+        # Check if company image is empty or just "-"
+        empty_company_img_mask = filtered_df[company_img_col].isna() | (filtered_df[company_img_col] == '') | (filtered_df[company_img_col] == '-')
+        
+        # Count rows to be removed due to this condition
+        rows_to_remove_empty_company = empty_company_img_mask.sum()
+        if rows_to_remove_empty_company > 0:
+            logging.info(f"Will remove {rows_to_remove_empty_company} rows where company image is missing, empty, or just '-'")
+    
     # Combine filtering conditions:
     # 1. Remove rows where both Kogift and Naver links are missing
     # 2. Keep rows that have EITHER Kogift price < -1 OR Naver price < -1
+    # 3. Remove rows where company image is missing, empty, or just "-"
     rows_to_keep_mask = (
         # Don't keep row if both links are missing
         (~missing_links_mask) &
         # AND only keep row if either Kogift or Naver has a price difference < -1
-        (kogift_price_valid | naver_price_valid)
+        (kogift_price_valid | naver_price_valid) &
+        # AND don't keep row if company image is missing, empty, or just "-"
+        ~empty_company_img_mask
     )
     
     # Apply the filter
@@ -260,6 +282,8 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
         logging.info(f"  - {missing_links_mask.sum()} rows identified with both Koreagift and Naver links missing")
         logging.info(f"  - {(~kogift_price_valid & ~is_kogift_missing).sum()} rows with Koreagift price difference >= {FIXED_PRICE_THRESHOLD}")
         logging.info(f"  - {(~naver_price_valid & ~is_naver_missing).sum()} rows with Naver price difference >= {FIXED_PRICE_THRESHOLD}")
+        if company_img_col in filtered_df.columns:
+            logging.info(f"  - {empty_company_img_mask.sum()} rows with missing, empty, or '-' company image")
         logging.info(f"  - {front_url_mask.sum()} rows had 'front/' URLs (but were not removed for this reason)")
     else:
         logging.info("Upload filter: No rows removed.")
