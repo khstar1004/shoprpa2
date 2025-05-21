@@ -54,60 +54,40 @@ def clean_naver_data(df):
         return df
 
     # Define Naver-related column names
-    naver_image_columns = ['네이버 이미지', '네이버쇼핑(이미지링크)']
-    naver_price_columns = ['판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', '네이버 링크']
+    naver_image_column = '네이버쇼핑(이미지링크)'
+    naver_price_columns = ['네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', '네이버 링크']
     
     # Track changes for logging
-    rows_missing_image = 0
-    rows_missing_price = 0
     rows_filtered = 0
-    rows_fully_processed = 0
 
     # Process each row in the DataFrame
     for idx, row in df.iterrows():
-        has_valid_naver_image = False
-        has_naver_price_data = False
+        # Check if 네이버쇼핑(이미지링크) is empty or None
+        has_naver_image = False
         
-        # Check if any Naver image column has valid data
-        for col in naver_image_columns:
-            if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '-':
-                cell_value = row[col]
-                
-                # Check if it has an actual URL
-                if isinstance(cell_value, dict) and 'url' in cell_value:
-                    url = cell_value.get('url')
-                    if isinstance(url, str) and url.strip():
-                        has_valid_naver_image = True
-                        break
-                elif isinstance(cell_value, str) and cell_value.strip() and cell_value != '-':
-                    has_valid_naver_image = True
+        if naver_image_column in df.columns:
+            cell_value = row.get(naver_image_column)
+            if pd.notna(cell_value) and cell_value != '' and cell_value != '-':
+                has_naver_image = True
+        
+        # If no Naver image, clear all Naver price data
+        if not has_naver_image:
+            has_price_data = False
+            
+            # Check if any price data exists before clearing
+            for col in naver_price_columns:
+                if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '' and row.get(col) != '-':
+                    has_price_data = True
                     break
-
-        # Check if any Naver price column has data
-        for col in naver_price_columns:
-            if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '-':
-                has_naver_price_data = True
-                break
-        
-        # Filter case: No valid Naver image but has price data
-        if not has_valid_naver_image:
-            # Clear all Naver price data
+            
+            # Clear all Naver price columns
             for col in naver_price_columns:
                 if col in df.columns:
                     df.at[idx, col] = '-'
             
-            if has_naver_price_data:
+            if has_price_data:
                 rows_filtered += 1
-        
-        # Track statistics
-        if not has_valid_naver_image and has_naver_price_data:
-            rows_missing_image += 1
-        if has_valid_naver_image and not has_naver_price_data:
-            rows_missing_price += 1
-        if has_valid_naver_image and has_naver_price_data:
-            rows_fully_processed += 1
 
-    logger.info(f"Naver data analysis: {rows_missing_image} rows missing image URLs, {rows_missing_price} rows missing price data, {rows_fully_processed} rows with complete data")
     logger.info(f"Filtered {rows_filtered} rows with price data but no Naver image URL")
     
     return df
