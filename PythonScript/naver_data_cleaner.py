@@ -3,8 +3,42 @@ import logging
 import os
 import re
 import glob
+import configparser
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+def get_config(config_path='../config.ini'):
+    """Load configuration from config.ini file."""
+    script_dir = Path(__file__).parent
+    paths_to_try = [
+        script_dir / config_path,
+        script_dir.parent / 'config.ini'
+    ]
+    
+    conf = configparser.ConfigParser()
+    loaded_path = None
+    for p_try in paths_to_try:
+        if p_try.exists():
+            conf.read(p_try, encoding='utf-8')
+            loaded_path = p_try
+            break
+            
+    if not loaded_path:
+        project_root_config = Path(os.getcwd()).parent / 'config.ini'
+        if project_root_config.exists():
+             conf.read(project_root_config, encoding='utf-8')
+             loaded_path = project_root_config
+        else: 
+            default_config_path = Path('config.ini')
+            if default_config_path.exists():
+                conf.read(default_config_path, encoding='utf-8')
+                loaded_path = default_config_path
+            else:
+                 logger.error(f"Config file not found at {paths_to_try} or {project_root_config} or {default_config_path}")
+                 raise FileNotFoundError(f"Config file not found.")
+    logger.info(f"Loaded config from: {loaded_path}")
+    return conf
 
 def clean_naver_data(df):
     """
@@ -18,9 +52,56 @@ def clean_naver_data(df):
     """
     if df.empty:
         return df
+
+    # Define Naver-related column names
+    naver_image_columns = ['네이버 이미지', '네이버쇼핑(이미지링크)']
+    naver_price_columns = ['판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', '네이버 링크']
     
-    # Simply return the DataFrame without cleaning to avoid issues
-    logger.info("Skipping Naver data cleaning to avoid potential issues")
+    # Track changes for logging
+    rows_cleaned_missing_image = 0
+    rows_cleaned_missing_data = 0
+
+    # Case 1: Clear price data when image URL is missing
+    for idx, row in df.iterrows():
+        has_valid_naver_image = False
+        
+        # Check if any Naver image column has valid data
+        for col in naver_image_columns:
+            if col in df.columns and pd.notna(row.get(col)):
+                cell_value = row[col]
+                if isinstance(cell_value, dict):
+                    url = cell_value.get('url')
+                    if isinstance(url, str) and url.strip():
+                        has_valid_naver_image = True
+                        break
+                elif isinstance(cell_value, str) and cell_value.strip() and cell_value != '-':
+                    has_valid_naver_image = True
+                    break
+
+        # If no valid Naver image found, clear all Naver-related data
+        if not has_valid_naver_image:
+            for col in naver_price_columns:
+                if col in df.columns:
+                    df.at[idx, col] = '-'
+            rows_cleaned_missing_image += 1
+
+    # Case 2: Clear image data when price/product information is missing
+    for idx, row in df.iterrows():
+        has_valid_price_data = False
+        
+        # Check for basic price data (at least one price column should have data)
+        required_price_column = '판매단가3 (VAT포함)'
+        if required_price_column in df.columns and pd.notna(row.get(required_price_column)) and row.get(required_price_column) != '-':
+            has_valid_price_data = True
+            
+        # If no valid price data found but there's an image, clear the image data
+        if not has_valid_price_data:
+            for col in naver_image_columns:
+                if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '-':
+                    df.at[idx, col] = '-'
+                    rows_cleaned_missing_data += 1
+
+    logger.info(f"Cleaned Naver data: {rows_cleaned_missing_image} rows due to missing image URLs, {rows_cleaned_missing_data} rows due to missing price data")
     return df
 
 def get_invalid_naver_rows(df):
@@ -35,10 +116,11 @@ def get_invalid_naver_rows(df):
         list: List of row indices with invalid Naver data
     """
     # Return empty list to avoid marking rows as invalid
-    logger.info("Skipping invalid Naver row detection")
+    # logger.info("Skipping invalid Naver row detection") # Keep this disabled for now
+    logger.info("get_invalid_naver_rows called. Currently, it returns an empty list.")
     return []
 
-def fix_missing_naver_images(df, result_file=True):
+def fix_missing_naver_images(df, result_file=True, config_obj=None):
     """
     Fix Naver images that have URLs but are not displaying in Excel by finding 
     matching local images in the Naver image directory.
@@ -49,6 +131,7 @@ def fix_missing_naver_images(df, result_file=True):
     Args:
         df (pd.DataFrame): DataFrame containing product data with Naver images
         result_file (bool): True if this is the result file (with images), False for upload file
+        config_obj (configparser.ConfigParser): Config object to use for Naver image directory
         
     Returns:
         pd.DataFrame: DataFrame with fixed Naver image paths
@@ -58,13 +141,42 @@ def fix_missing_naver_images(df, result_file=True):
     
     # No longer skip processing for upload file to ensure all images are processed
     
+    if config_obj:
+        config = config_obj
+    else:
+        try:
+            config = get_config()
+        except FileNotFoundError:
+            logger.error("fix_missing_naver_images: Config file not found. Cannot determine Naver image directory.")
+            return df # Return df as is if config cannot be loaded
+
     # Define possible Naver image paths, trying multiple standard locations
+    image_main_dir_str = config.get('Paths', 'image_main_dir', fallback='C:\\\\RPA\\\\Image\\\\Main')
+    user_home_dir_str = config.get('Paths', 'user_home_dir', fallback=str(Path.home())) # Get user home if specified
+    
+    # Construct paths using Path objects for reliability
+    base_naver_image_dir = Path(image_main_dir_str) / 'Naver'
+    
+    # Alternative path based on a common user structure if needed (example)
+    # desktop_rpa_path = Path(user_home_dir_str) / 'Desktop' / 'RPA2' / 'shoprpa2' / 'Image' / 'Main' / 'Naver'
+    # script_relative_path = Path(__file__).resolve().parent.parent / 'Image' / 'Main' / 'Naver'
+    
     possible_naver_paths = [
-        os.path.join('C:\\RPA\\Image\\Main', 'Naver'),
-        os.path.join('C:\\Users\\USER2\\Desktop\\RPA2\\shoprpa2\\Image\\Main', 'Naver'),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Image', 'Main', 'Naver')
+        base_naver_image_dir,
+        # desktop_rpa_path, # Example, can be enabled if this is a common structure
+        # script_relative_path # Relative to script location
     ]
     
+    # Add paths from the original hardcoded list if they are different and might be relevant as fallbacks
+    original_hardcoded_paths = [
+        Path('C:\\\\RPA\\\\Image\\\\Main') / 'Naver', # Already covered by base_naver_image_dir if config matches
+        Path('C:\\\\Users\\\\USER2\\\\Desktop\\\\RPA2\\\\shoprpa2\\\\Image\\\\Main') / 'Naver',
+        Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'Image' / 'Main' / 'Naver' # Script relative, similar to script_relative_path
+    ]
+    for p in original_hardcoded_paths:
+        if p not in possible_naver_paths:
+            possible_naver_paths.append(p)
+
     # Find first existing path
     naver_image_dir = None
     for path in possible_naver_paths:
@@ -74,7 +186,7 @@ def fix_missing_naver_images(df, result_file=True):
             break
     
     if not naver_image_dir:
-        logger.warning(f"No Naver image directory found in standard locations. Images may not display correctly.")
+        logger.warning(f"No Naver image directory found in standard locations: {possible_naver_paths}. Images may not display correctly.")
         return df
     
     # Get list of all available Naver image files

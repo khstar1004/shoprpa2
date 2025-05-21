@@ -45,7 +45,7 @@ from .upload_filter import apply_filter_to_upload_excel
 from .excel_formatter import apply_excel_formatting
 from .fix_kogift_images import fix_excel_kogift_images
 from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
-# from .naver_data_cleaner import fix_missing_naver_images  # Temporarily disabled due to local image issues
+from .naver_data_cleaner import fix_missing_naver_images # Re-enabled import
 
 # Global configuration
 warnings.filterwarnings('ignore')
@@ -933,8 +933,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                             try:
                                 # Temporarily disabled fix_missing_naver_images due to local image issues
                                 # df_to_save = fix_missing_naver_images(df_to_save, result_file=True)
+                                # if progress_queue:
+                                # progress_queue.emit("status", "Naver image fixing temporarily disabled")
+                                
+                                # Pass the config object to the function
+                                df_to_save = fix_missing_naver_images(df_to_save, result_file=True, config_obj=config) 
+                                logging.info("Attempted to fix missing Naver images.")
                                 if progress_queue:
-                                    progress_queue.emit("status", "Naver image fixing temporarily disabled")
+                                    progress_queue.emit("status", "Naver image paths checked and updated.")
                             except Exception as fix_err:
                                 logging.warning(f"Non-critical error in fix_missing_naver_images: {fix_err}. Continuing with current data.")
                                 # Continue with the original DataFrame
@@ -1179,7 +1185,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                                 # fixed_result_df = fix_missing_naver_images(result_df, result_file=True)
                                                 # Save back to the same file
                                                 # fixed_result_df.to_excel(result_path, index=False)
-                                                logging.info("Naver image fixing temporarily disabled")
+                                                # logging.info("Naver image fixing temporarily disabled")
+
+                                                # Pass the config object to the function
+                                                fixed_result_df = fix_missing_naver_images(result_df, result_file=True, config_obj=config)
+                                                fixed_result_df.to_excel(result_path, index=False)
+                                                logging.info(f"Naver image paths in result file {result_path} checked and updated.")
                                             except Exception as result_fix_err:
                                                 logging.warning(f"Non-critical error fixing Naver images in result file: {result_fix_err}. Proceeding without this fix.")
                                         
@@ -1193,7 +1204,14 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                                 # fixed_upload_df = fix_missing_naver_images(upload_df, result_file=True)
                                                 # Save back to the same file
                                                 # fixed_upload_df.to_excel(upload_path, index=False)
-                                                logging.info("Naver image fixing temporarily disabled")
+                                                # logging.info("Naver image fixing temporarily disabled")
+
+                                                # Pass the config object to the function for upload file as well, 
+                                                # but with result_file=False (as original logic might have intended to differentiate)
+                                                # Note: fix_missing_naver_images currently doesn't use result_file much internally after recent changes.
+                                                fixed_upload_df = fix_missing_naver_images(upload_df, result_file=False, config_obj=config)
+                                                fixed_upload_df.to_excel(upload_path, index=False)
+                                                logging.info(f"Naver image paths in upload file {upload_path} checked and updated.")
                                             except Exception as upload_fix_err:
                                                 logging.warning(f"Non-critical error fixing Naver images in upload file: {upload_fix_err}. Proceeding without this fix.")
                                     except Exception as fix_err:

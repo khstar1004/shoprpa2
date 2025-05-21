@@ -26,6 +26,9 @@ import openpyxl
 from openpyxl.styles import PatternFill
 import ast
 import shutil
+import configparser
+from urllib.parse import urlparse
+from typing import Optional
 
 # Set up logging
 logging.basicConfig(
@@ -37,6 +40,84 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('fix_kogift_images')
+
+def get_config(config_path='../config.ini'):
+    """Load configuration from config.ini file."""
+    # Try to find config.ini relative to this script, then one level up.
+    script_dir = Path(__file__).parent
+    paths_to_try = [
+        script_dir / config_path,
+        script_dir.parent / 'config.ini'
+    ]
+    
+    conf = configparser.ConfigParser()
+    loaded_path = None
+    for p_try in paths_to_try:
+        if p_try.exists():
+            conf.read(p_try, encoding='utf-8')
+            loaded_path = p_try
+            break
+            
+    if not loaded_path:
+        # Fallback for when script is run from a different context (e.g. main_rpa.py)
+        # In this case, assume config.ini is in the root of the project (one level above PythonScript)
+        project_root_config = Path(os.getcwd()).parent / 'config.ini'
+        if project_root_config.exists():
+             conf.read(project_root_config, encoding='utf-8')
+             loaded_path = project_root_config
+        else: # Final fallback
+            default_config_path = Path('config.ini') # current working directory
+            if default_config_path.exists():
+                conf.read(default_config_path, encoding='utf-8')
+                loaded_path = default_config_path
+            else:
+                 logger.error(f"Config file not found at {paths_to_try} or {project_root_config} or {default_config_path}")
+                 raise FileNotFoundError(f"Config file not found.")
+    logger.info(f"Loaded config from: {loaded_path}")
+    return conf
+
+def find_local_image_by_url(url: str, base_image_dir: Path) -> Optional[str]:
+    """Attempts to find a local image file based on its URL filename."""
+    if not url or not isinstance(url, str) or not base_image_dir.exists():
+        return None
+    
+    try:
+        url_filename = Path(urlparse(url).path).name
+        if not url_filename:
+            return None
+
+        # Search for the filename (and common variations) in the base_image_dir
+        # This is a simple search, can be expanded with glob or recursive search if needed
+        possible_files = [
+            base_image_dir / url_filename,
+            base_image_dir / url_filename.lower(),
+        ]
+        # Check for common image extensions if original URL filename doesn't have one or is generic
+        if '.' not in url_filename:
+            for ext in ['.jpg', '.png', '.jpeg', '.gif']:
+                possible_files.append(base_image_dir / (url_filename + ext))
+                possible_files.append(base_image_dir / (url_filename.lower() + ext))
+
+        for p_file in possible_files:
+            if p_file.exists() and p_file.is_file():
+                logger.info(f"Found matching local image for URL '{url}' at '{p_file}'")
+                return str(p_file)
+        
+        # Fallback: search with glob for partial matches if direct name fails
+        # (e.g. if downloaded file has a prefix or slightly different name)
+        # Use the part of the filename without extension for broader matching
+        url_filename_stem = Path(url_filename).stem
+        if url_filename_stem:
+            for ext_pattern in ['*.jpg', '*.png', '*.jpeg', '*.gif']:
+                for found_file in base_image_dir.glob(f"*{url_filename_stem}*{ext_pattern}"):
+                    if found_file.is_file():
+                        logger.info(f"Found glob matching local image for URL '{url}' at '{found_file}' (stem: {url_filename_stem})")
+                        return str(found_file)
+
+    except Exception as e:
+        logger.error(f"Error while trying to find local image for URL '{url}' in '{base_image_dir}': {e}")
+    
+    return None
 
 def find_appropriate_price(quantity_prices, target_quantity):
     """
@@ -251,19 +332,41 @@ def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity
     logger.warning(f"{row_identifier}: Could not find or parse any valid quantity-price tier data from any known column.")
     return None # Explicitly return None if no valid data is found
 
-def fix_excel_kogift_images(input_file, output_file=None):
+def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
     """
     Fix Kogift images and pricing in Excel files.
     
     Args:
         input_file: Path to input Excel file
         output_file: Path to output Excel file (optional)
+        config_obj: Optional pre-loaded ConfigParser object
         
     Returns:
         str: Path to output file if successful, None otherwise
     """
     try:
         logger.info(f"Reading Excel file: {input_file}")
+        
+        if config_obj:
+            config = config_obj
+        else:
+            config = get_config()
+
+        image_main_dir_str = config.get('Paths', 'image_main_dir', fallback='C:\\\\RPA\\\\Image\\\\Main')
+        kogift_image_base_dir = Path(image_main_dir_str) / 'Kogift'
+
+        if not kogift_image_base_dir.exists():
+            logger.error(f"CRITICAL: Kogift image base directory does not exist: {kogift_image_base_dir}")
+            # Decide if to create it or fail
+            try:
+                kogift_image_base_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created Kogift image base directory: {kogift_image_base_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create Kogift image base directory {kogift_image_base_dir}: {e}")
+                # Proceeding without a valid kogift_image_base_dir will likely cause issues
+                # For now, we set it to None as per original logic's fallback, but with a critical error logged.
+                # This allows the price fixing part to potentially still run.
+                # return None # Optionally, hard fail if image directory is critical
         
         # Set output file path if not specified
         if not output_file:
@@ -284,11 +387,13 @@ def fix_excel_kogift_images(input_file, output_file=None):
         workbook = openpyxl.load_workbook(input_file)
         sheet = workbook.active
         
-        # 고려기프트 이미지 디렉토리 경로 확인
-        kogift_image_dir = os.path.join('C:\\\\', 'RPA', 'Image', 'Main', 'Kogift')
-        if not os.path.exists(kogift_image_dir):
-            logger.warning(f"고려기프트 이미지 디렉토리가 없습니다: {kogift_image_dir}")
-            kogift_image_dir = None
+        # Use the dynamically determined kogift_image_base_dir
+        # kogift_image_dir is now a Path object or None if creation failed
+        active_kogift_image_dir = str(kogift_image_base_dir) if kogift_image_base_dir and kogift_image_base_dir.exists() else None
+
+        if not active_kogift_image_dir:
+            logger.warning(f"Kogift image directory is not available. Image fixing will be skipped or limited.")
+            # kogift_image_dir = None # Ensure it's None if not active_kogift_image_dir
         
         # Map column names (accounting for variations in column names)
         column_mapping = {
@@ -372,6 +477,8 @@ def fix_excel_kogift_images(input_file, output_file=None):
         update_count = 0
         price_diffs_updated = 0
         wrong_image_count = 0
+        filtered_by_missing_data = 0
+        filtered_by_missing_image = 0
         
         # 특별히 관심 있는 수량 값들 추적
         small_quantity_handling = {}  # 수량이 작은 행 처리 결과 추적
@@ -383,27 +490,137 @@ def fix_excel_kogift_images(input_file, output_file=None):
             if kogift_link_col and kogift_link_col in row:
                 has_kogift_link = not pd.isna(row[kogift_link_col]) and row[kogift_link_col] != '-'
             
-            if not has_kogift_link:
+            # 필수 상품 정보 (수량과 기본 가격)가 있는지 체크
+            has_required_data = False
+            if quantity_col and quantity_col in row and pd.notna(row[quantity_col]) and row[quantity_col] != '-':
+                if base_price_col and base_price_col in row and pd.notna(row[base_price_col]) and row[base_price_col] != '-':
+                    has_required_data = True
+            
+            # 케이스 1: 이미지 링크만 있고 상품 정보가 없는 경우
+            if has_kogift_link and not has_required_data:
+                logger.warning(f"Row {idx+1}: Kogift link exists but missing required product data. Clearing Kogift data.")
+                xl_row = idx + 2
+                
+                # Kogift 링크 지우기
+                if kogift_link_col in columns_found and real_column_indices.get('고려기프트 상품링크'):
+                    sheet.cell(row=xl_row, column=real_column_indices['고려기프트 상품링크']).value = '-'
+                
+                # Kogift 이미지 지우기
+                if kogift_image_col in columns_found and real_column_indices.get('고려기프트 이미지'):
+                    sheet.cell(row=xl_row, column=real_column_indices['고려기프트 이미지']).value = '-'
+                
+                # Kogift 관련 가격 정보 지우기
+                if price2_col in columns_found and real_column_indices.get('판매가(V포함)(2)'):
+                    sheet.cell(row=xl_row, column=real_column_indices['판매가(V포함)(2)']).value = '-'
+                if price_diff_col in columns_found and real_column_indices.get('가격차이(2)'):
+                    sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)']).value = '-'
+                if price_diff_pct_col in columns_found and real_column_indices.get('가격차이(2)(%)'):
+                    sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)(%)']).value = '-'
+                if quantity2_col in columns_found and real_column_indices.get('기본수량(2)'):
+                    sheet.cell(row=xl_row, column=real_column_indices['기본수량(2)']).value = '-'
+                
+                filtered_by_missing_data += 1
                 continue
+            
+            # 케이스 2: 상품 정보는 있지만 Kogift 링크가 없는 경우
+            if has_required_data and not has_kogift_link:
+                # 이미지나 가격 정보가 있다면 지우기
+                xl_row = idx + 2
+                
+                has_kogift_image = False
+                if kogift_image_col in columns_found and kogift_image_col in row:
+                    cell_value = row[kogift_image_col]
+                    if isinstance(cell_value, dict) or (isinstance(cell_value, str) and cell_value.strip() and cell_value != '-'):
+                        has_kogift_image = True
+                
+                has_kogift_price = False
+                if price2_col in columns_found and pd.notna(row.get(price2_col)) and row.get(price2_col) != '-':
+                    has_kogift_price = True
+                
+                if has_kogift_image or has_kogift_price:
+                    logger.warning(f"Row {idx+1}: Missing Kogift link but has Kogift image or price data. Clearing Kogift data.")
+                    
+                    # Kogift 이미지 지우기
+                    if has_kogift_image and real_column_indices.get('고려기프트 이미지'):
+                        sheet.cell(row=xl_row, column=real_column_indices['고려기프트 이미지']).value = '-'
+                    
+                    # Kogift 관련 가격 정보 지우기
+                    if price2_col in columns_found and real_column_indices.get('판매가(V포함)(2)'):
+                        sheet.cell(row=xl_row, column=real_column_indices['판매가(V포함)(2)']).value = '-'
+                    if price_diff_col in columns_found and real_column_indices.get('가격차이(2)'):
+                        sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)']).value = '-'
+                    if price_diff_pct_col in columns_found and real_column_indices.get('가격차이(2)(%)'):
+                        sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)(%)']).value = '-'
+                    if quantity2_col in columns_found and real_column_indices.get('기본수량(2)'):
+                        sheet.cell(row=xl_row, column=real_column_indices['기본수량(2)']).value = '-'
+                    
+                    filtered_by_missing_image += 1
+                    continue
+            
+            # 링크도 없고 상품 정보도 없으면 처리할 필요 없음
+            if not has_kogift_link and not has_required_data:
+                continue
+            
+            # 여기부터는 기존 로직 계속 (링크도 있고 상품 정보도 있는 정상 케이스)
             
             # 이미지 데이터 검증
             if kogift_image_col and kogift_image_col in row:
                 image_data = parse_complex_value(row[kogift_image_col])
                 if isinstance(image_data, dict):
                     local_path = image_data.get('local_path') or image_data.get('image_path')
-                    if local_path and isinstance(local_path, str):
-                        # 이미지가 올바른 디렉토리에 있는지 확인
-                        if kogift_image_dir and not local_path.replace('\\', '/').startswith(kogift_image_dir.replace('\\', '/')):
+                    image_url = image_data.get('url')
+                    
+                    correct_path_found = False
+                    if local_path and isinstance(local_path, str) and Path(local_path).exists():
+                        if active_kogift_image_dir and local_path.replace('\\\\', '/').startswith(active_kogift_image_dir.replace('\\\\', '/')):
+                            correct_path_found = True
+                        elif not active_kogift_image_dir: # No dir to check against, assume path is fine if it exists
+                             correct_path_found = True
+
+
+                    if not correct_path_found:
+                        logger.warning(f"Row {idx+1}: Kogift image local_path '{local_path}' is invalid or not in correct directory.")
+                        new_local_path = None
+                        if image_url and active_kogift_image_dir: # Try to find by URL if dir exists
+                            logger.info(f"Attempting to find local Kogift image for URL: {image_url}")
+                            new_local_path = find_local_image_by_url(image_url, kogift_image_base_dir)
+                        
+                        if new_local_path:
+                            logger.info(f"Row {idx+1}: Found replacement Kogift image path: {new_local_path}")
+                            image_data['local_path'] = new_local_path
+                            image_data['original_path'] = new_local_path # Update original_path too
+                            # Update the DataFrame as well so it's reflected if df is used later (e.g. for re-saving)
+                            # This requires careful handling if df is used to write back directly.
+                            # For now, we focus on sheet modification.
+                            correct_path_found = True 
+                            # If you need to update the df for subsequent saves:
+                            # df.at[idx, kogift_image_col] = image_data 
+                        else:
+                            logger.warning(f"Row {idx+1}: Could not find a valid local Kogift image. Clearing image cell.")
                             wrong_image_count += 1
-                            logger.warning(f"잘못된 고려기프트 이미지 경로 (행 {idx+1}): {local_path}")
-                            
-                            # 이미지 데이터 초기화
-                            xl_row = idx + 2  # Excel은 1-based indexing이고 헤더가 있으므로 +2
+                            xl_row = idx + 2
                             kogift_image_idx = real_column_indices.get('고려기프트 이미지')
                             if kogift_image_idx:
-                                sheet.cell(row=xl_row, column=kogift_image_idx).value = '-'
-                            continue
-            
+                                sheet.cell(row=xl_row, column=kogift_image_idx).value = '-' # Clear cell
+                            # Continue to next item in row, or skip price update for this product?
+                            # Current logic has `continue` if image path is bad.
+                            # If we clear the cell, we might still want to process prices.
+                            # For now, let's keep the original flow of skipping if image is problematic after attempting fix.
+                            # However, if the goal is just to fix path or clear, then don't 'continue' outer loop.
+                            # The original code had a 'continue' here. If we clear the cell, we shouldn't 'continue'.
+                            # Let's assume for now if image can't be fixed, it's cleared, and price fixing proceeds.
+                            # The original 'continue' was inside the "if kogift_image_dir and not local_path..." block
+                            # Let's replicate that by setting a flag and continuing if not fixed.
+                            pass # Image cell is cleared, proceed to price fixing for this row
+
+                    # This `continue` was from original logic if image path was bad. 
+                    # If we cleared the cell, we may not want to skip price processing.
+                    # For now, if after attempting fix, it's still not `correct_path_found`, we skip.
+                    # This is equivalent to the old logic's `continue` if image path bad.
+                    if not correct_path_found and (local_path and isinstance(local_path, str)): # only if path was initially bad
+                         logger.warning(f"Row {idx+1}: Skipping price update for Kogift item due to unresolved image path issue: {local_path}")
+                         continue
+
             # 기본수량 확인
             base_quantity = None
             if quantity_col and quantity_col in row and pd.notna(row[quantity_col]):
@@ -533,7 +750,7 @@ def fix_excel_kogift_images(input_file, output_file=None):
                 
                 update_count += 1
                 logger.debug(f"Updated row {idx+1}: Quantity {base_quantity}, Price {price_with_vat}, Tier {actual_quantity}")
-        
+
         # 특별 케이스 처리 결과 요약
         if small_quantity_handling:
             logger.info("\n===== 적은 수량 특별 처리 결과 요약 =====")
@@ -544,6 +761,10 @@ def fix_excel_kogift_images(input_file, output_file=None):
                 logger.info(f"  비고: {case_data['note']}")
                 logger.info("-" * 40)
             logger.info("========================================")
+        
+        # 필터링 결과 로그
+        if filtered_by_missing_data > 0 or filtered_by_missing_image > 0:
+            logger.info(f"필터링 결과: 이미지만 있고 상품 데이터 없는 행 {filtered_by_missing_data}개, 상품 데이터만 있고 이미지 없는 행 {filtered_by_missing_image}개가 정리되었습니다.")
         
         # Save the modified workbook
         workbook.save(output_file)
@@ -578,6 +799,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Load config for standalone execution
+    try:
+        config = get_config()
+    except FileNotFoundError:
+        return 1 # Exit if config is not found
+
     # Validate input file
     input_file = args.input
     if not os.path.exists(input_file):
@@ -592,7 +819,7 @@ def main():
     logger.info(f"Output file: {output_file or 'Will be auto-generated'}")
     
     # Call the fix function
-    result = fix_excel_kogift_images(input_file, output_file)
+    result = fix_excel_kogift_images(input_file, output_file, config_obj=config)
     
     if result:
         logger.info(f"Successfully fixed Kogift images and pricing. Output saved to: {result}")
