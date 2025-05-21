@@ -52,9 +52,8 @@ def create_excel_with_placed_images(df, output_excel_path):
     logger.info(f"임시 이미지 폴더 생성: {temp_dir}")
     
     try:
-        # 5. 이미지 컬럼의 URL은 Excel에 저장 시 빈 문자열로 대체
-        for col in image_columns:
-            df_copy[col] = ''  # URL 텍스트를 빈 문자열로 설정
+        # 5. 수정: URL 텍스트 유지 (URL을 빈 문자열로 설정하는 코드 제거)
+        # 원본 URL 텍스트는 그대로 유지하고 이미지만 덮음
         
         # 6. 기본 Excel 파일 생성
         logger.info(f"기본 Excel 파일 생성: {output_excel_path}")
@@ -128,8 +127,8 @@ def create_excel_with_placed_images(df, output_excel_path):
                     # 이미지 배치
                     ws.add_image(img_obj, cell_address)
                     
-                    # 이미지 배치 셀의 텍스트 값 비우기
-                    ws[cell_address].value = None
+                    # 수정: 셀의 URL 텍스트 유지 (셀 값을 비우는 코드 제거)
+                    # 셀 값은 그대로 유지하여 URL 텍스트가 보이도록 함
                     
                     logger.debug(f"이미지 배치 완료: 셀 {cell_address}")
                     
