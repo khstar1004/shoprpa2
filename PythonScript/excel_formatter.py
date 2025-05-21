@@ -36,6 +36,26 @@ def format_upload_excel(file_path):
         max_row = sheet.max_row
         max_col = sheet.max_column
         
+        # Upload file column names that need to be right-aligned
+        right_align_columns = ['본사 기본수량', '판매단가1(VAT포함)', '고려 기본수량', '판매단가2(VAT포함)', 
+                               '고려 가격차이', '고려 가격차이(%)', '네이버 기본수량', '판매단가3 (VAT포함)', 
+                               '네이버 가격차이', '네이버가격차이(%)']
+        right_align_column_indices = []
+        
+        # Image column names for the upload file
+        image_columns = ['해오름(이미지링크)', '고려기프트(이미지링크)', '네이버쇼핑(이미지링크)']
+        image_column_indices = []
+        
+        # Find column indices for special formatting
+        for col in range(1, max_col + 1):
+            header_value = sheet.cell(row=1, column=col).value
+            if header_value in right_align_columns:
+                right_align_column_indices.append(col)
+                logging.debug(f"Found upload right-align column at index {col}: {header_value}")
+            if header_value in image_columns:
+                image_column_indices.append(col)
+                logging.debug(f"Found upload image column at index {col}: {header_value}")
+        
         # Format headers (first row)
         sheet.row_dimensions[1].height = 34.5  # Header height
         
@@ -85,9 +105,15 @@ def format_upload_excel(file_path):
                         width = min(max(7, length * 0.6), 14)
             else:
                 width = 7  # Default width
+            
+            # Adjust width for image columns
+            if col in image_column_indices:
+                width = 21.44  # Same width as result file for image columns
+                logging.debug(f"Set upload column {col} width to 21.44 for image")
                 
             # Set the column width
             sheet.column_dimensions[get_column_letter(col)].width = width
+            logging.debug(f"Set upload column {col} width to {width}")
         
         # 2) Set "fit to cell" for data rows
         for row in range(2, max_row + 1):
@@ -96,7 +122,13 @@ def format_upload_excel(file_path):
             
             for col in range(1, max_col + 1):
                 cell = sheet.cell(row=row, column=col)
-                cell.alignment = Alignment(wrap_text=True)
+                
+                # Apply right alignment to numeric columns
+                if col in right_align_column_indices:
+                    cell.alignment = Alignment(horizontal='right', vertical='center')
+                else:
+                    cell.alignment = Alignment(wrap_text=True, vertical='center')
+                
                 cell.border = thin_border
         
         # Save the workbook
