@@ -62,11 +62,12 @@ def clean_naver_data(df):
 
     # Process each row in the DataFrame
     for idx, row in df.iterrows():
-        # Check if 네이버쇼핑(이미지링크) is empty or None
+        # Check if 네이버쇼핑(이미지링크) is empty or None or '-'
         has_naver_image = False
         
         if naver_image_column in df.columns:
             cell_value = row.get(naver_image_column)
+            # Check if cell has valid content (not empty, None, or '-')
             if pd.notna(cell_value) and cell_value != '' and cell_value != '-':
                 has_naver_image = True
         
@@ -80,13 +81,14 @@ def clean_naver_data(df):
                     has_price_data = True
                     break
             
-            # Clear all Naver price columns
+            # Clear all Naver price columns by setting them to '-'
             for col in naver_price_columns:
                 if col in df.columns:
                     df.at[idx, col] = '-'
             
             if has_price_data:
                 rows_filtered += 1
+                logger.info(f"Cleared Naver price data for row {idx} (no Naver image)")
 
     logger.info(f"Filtered {rows_filtered} rows with price data but no Naver image URL")
     

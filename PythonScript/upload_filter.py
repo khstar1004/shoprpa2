@@ -9,6 +9,33 @@ import asyncio
 from urllib.parse import urljoin
 import datetime
 
+# Import the naver_data_cleaner function with fallback options
+try:
+    from .naver_data_cleaner import clean_naver_data
+except ImportError:
+    try:
+        # Try absolute import if relative import fails
+        from PythonScript.naver_data_cleaner import clean_naver_data
+    except ImportError:
+        # Define a fallback function if import fails
+        def clean_naver_data(df):
+            logging.warning("Could not import clean_naver_data - using fallback implementation")
+            if df.empty:
+                return df
+            
+            # Simple fallback implementation
+            naver_image_column = '네이버쇼핑(이미지링크)'
+            naver_price_columns = ['네이버 기본수량', '판매단가3 (VAT포함)', '네이버 가격차이', '네이버가격차이(%)', '네이버 공급사명', '네이버 링크']
+            
+            if naver_image_column in df.columns:
+                for idx, row in df.iterrows():
+                    cell_value = row.get(naver_image_column)
+                    if pd.isna(cell_value) or cell_value == '' or cell_value == '-':
+                        for col in naver_price_columns:
+                            if col in df.columns:
+                                df.at[idx, col] = '-'
+            return df
+
 # Define expected column names from the final Excel output
 # Adjust these if the actual column names in the generated Excel differ
 KOREAGIFT_LINK_COL = '고려 링크'
@@ -362,6 +389,10 @@ def apply_filter_to_upload_excel(upload_file_path: str, config: configparser.Con
         
         # Process front URLs without removing rows
         df_filtered = filter_front_urls_from_upload_data(df_filtered)
+        
+        # Apply clean_naver_data to ensure no price data exists for rows without Naver images
+        logging.info("Applying Naver data cleaning to ensure price data is cleared for rows without images")
+        df_filtered = clean_naver_data(df_filtered)
         
         # Calculate rows removed
         rows_removed = original_rows - len(df_filtered)
