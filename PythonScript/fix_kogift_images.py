@@ -496,37 +496,24 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
                 if base_price_col and base_price_col in row and pd.notna(row[base_price_col]) and row[base_price_col] != '-':
                     has_required_data = True
             
-            # 케이스 1: 이미지 링크만 있고 상품 정보가 없는 경우
+            # 케이스 1: 이미지 링크만 있고 상품 정보가 완전히 없는 경우에만 필터링
+            # 그렇지 않으면 가능한 많은 정보를 유지하도록 변경
             if has_kogift_link and not has_required_data:
-                logger.warning(f"Row {idx+1}: Kogift link exists but missing required product data. Clearing Kogift data.")
-                xl_row = idx + 2
-                
-                # Kogift 링크 지우기
-                if kogift_link_col in columns_found and real_column_indices.get('고려기프트 상품링크'):
-                    sheet.cell(row=xl_row, column=real_column_indices['고려기프트 상품링크']).value = '-'
-                
-                # Kogift 이미지 지우기
-                if kogift_image_col in columns_found and real_column_indices.get('고려기프트 이미지'):
-                    sheet.cell(row=xl_row, column=real_column_indices['고려기프트 이미지']).value = '-'
-                
-                # Kogift 관련 가격 정보 지우기
-                if price2_col in columns_found and real_column_indices.get('판매가(V포함)(2)'):
-                    sheet.cell(row=xl_row, column=real_column_indices['판매가(V포함)(2)']).value = '-'
-                if price_diff_col in columns_found and real_column_indices.get('가격차이(2)'):
-                    sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)']).value = '-'
-                if price_diff_pct_col in columns_found and real_column_indices.get('가격차이(2)(%)'):
-                    sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)(%)']).value = '-'
-                if quantity2_col in columns_found and real_column_indices.get('기본수량(2)'):
-                    sheet.cell(row=xl_row, column=real_column_indices['기본수량(2)']).value = '-'
-                
-                filtered_by_missing_data += 1
-                continue
+                # 링크는 있지만 상품 정보는 완전히 없어야 함
+                # 수량이 있고 가격만 없는 경우는 계속 진행
+                if quantity_col and not (quantity_col in row and pd.notna(row[quantity_col]) and row[quantity_col] != '-'):
+                    logger.warning(f"Row {idx+1}: Kogift link exists but completely missing product data (no quantity). Marking for review but preserving data.")
+                    filtered_by_missing_data += 1
+                    # 데이터를 제거하지 않고 로그만 남김
+                    
+                    # 원래 코드는 여기서 모든 데이터를 지웠지만, 이제는 보존함:
+                    # xl_row = idx + 2
+                    # 고려기프트 링크, 이미지, 가격 정보 지우기
             
             # 케이스 2: 상품 정보는 있지만 Kogift 링크가 없는 경우
+            # 링크가 없더라도 다른 정보가 있으면 유지
             if has_required_data and not has_kogift_link:
-                # 이미지나 가격 정보가 있다면 지우기
-                xl_row = idx + 2
-                
+                # 이미지나 가격 정보가 있는지 체크
                 has_kogift_image = False
                 if kogift_image_col in columns_found and kogift_image_col in row:
                     cell_value = row[kogift_image_col]
@@ -537,25 +524,11 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
                 if price2_col in columns_found and pd.notna(row.get(price2_col)) and row.get(price2_col) != '-':
                     has_kogift_price = True
                 
+                # 이미지나 가격 정보가 있지만 링크가 없으면 경고만 기록하고 데이터는 유지
                 if has_kogift_image or has_kogift_price:
-                    logger.warning(f"Row {idx+1}: Missing Kogift link but has Kogift image or price data. Clearing Kogift data.")
-                    
-                    # Kogift 이미지 지우기
-                    if has_kogift_image and real_column_indices.get('고려기프트 이미지'):
-                        sheet.cell(row=xl_row, column=real_column_indices['고려기프트 이미지']).value = '-'
-                    
-                    # Kogift 관련 가격 정보 지우기
-                    if price2_col in columns_found and real_column_indices.get('판매가(V포함)(2)'):
-                        sheet.cell(row=xl_row, column=real_column_indices['판매가(V포함)(2)']).value = '-'
-                    if price_diff_col in columns_found and real_column_indices.get('가격차이(2)'):
-                        sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)']).value = '-'
-                    if price_diff_pct_col in columns_found and real_column_indices.get('가격차이(2)(%)'):
-                        sheet.cell(row=xl_row, column=real_column_indices['가격차이(2)(%)']).value = '-'
-                    if quantity2_col in columns_found and real_column_indices.get('기본수량(2)'):
-                        sheet.cell(row=xl_row, column=real_column_indices['기본수량(2)']).value = '-'
-                    
+                    logger.warning(f"Row {idx+1}: Missing Kogift link but has Kogift image or price data. Keeping data for review.")
                     filtered_by_missing_image += 1
-                    continue
+                    # 데이터를 제거하지 않고 로그만 남김
             
             # 링크도 없고 상품 정보도 없으면 처리할 필요 없음
             if not has_kogift_link and not has_required_data:
@@ -577,7 +550,6 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
                         elif not active_kogift_image_dir: # No dir to check against, assume path is fine if it exists
                              correct_path_found = True
 
-
                     if not correct_path_found:
                         logger.warning(f"Row {idx+1}: Kogift image local_path '{local_path}' is invalid or not in correct directory.")
                         new_local_path = None
@@ -589,37 +561,20 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
                             logger.info(f"Row {idx+1}: Found replacement Kogift image path: {new_local_path}")
                             image_data['local_path'] = new_local_path
                             image_data['original_path'] = new_local_path # Update original_path too
-                            # Update the DataFrame as well so it's reflected if df is used later (e.g. for re-saving)
-                            # This requires careful handling if df is used to write back directly.
-                            # For now, we focus on sheet modification.
                             correct_path_found = True 
                             # If you need to update the df for subsequent saves:
                             # df.at[idx, kogift_image_col] = image_data 
                         else:
-                            logger.warning(f"Row {idx+1}: Could not find a valid local Kogift image. Clearing image cell.")
+                            logger.warning(f"Row {idx+1}: Could not find a valid local Kogift image. Will use URL only.")
                             wrong_image_count += 1
-                            xl_row = idx + 2
-                            kogift_image_idx = real_column_indices.get('고려기프트 이미지')
-                            if kogift_image_idx:
-                                sheet.cell(row=xl_row, column=kogift_image_idx).value = '-' # Clear cell
-                            # Continue to next item in row, or skip price update for this product?
-                            # Current logic has `continue` if image path is bad.
-                            # If we clear the cell, we might still want to process prices.
-                            # For now, let's keep the original flow of skipping if image is problematic after attempting fix.
-                            # However, if the goal is just to fix path or clear, then don't 'continue' outer loop.
-                            # The original code had a 'continue' here. If we clear the cell, we shouldn't 'continue'.
-                            # Let's assume for now if image can't be fixed, it's cleared, and price fixing proceeds.
-                            # The original 'continue' was inside the "if kogift_image_dir and not local_path..." block
-                            # Let's replicate that by setting a flag and continuing if not fixed.
-                            pass # Image cell is cleared, proceed to price fixing for this row
-
-                    # This `continue` was from original logic if image path was bad. 
-                    # If we cleared the cell, we may not want to skip price processing.
-                    # For now, if after attempting fix, it's still not `correct_path_found`, we skip.
-                    # This is equivalent to the old logic's `continue` if image path bad.
-                    if not correct_path_found and (local_path and isinstance(local_path, str)): # only if path was initially bad
-                         logger.warning(f"Row {idx+1}: Skipping price update for Kogift item due to unresolved image path issue: {local_path}")
-                         continue
+                            # Instead of clearing the cell, keep the URL at least
+                            # Only create a warning but don't clear data
+                            
+                    # Keep processing even if image path wasn't found
+                    # Remove this check to allow price processing even with image issues
+                    # if not correct_path_found and (local_path and isinstance(local_path, str)): 
+                    #     logger.warning(f"Row {idx+1}: Skipping price update for Kogift item due to unresolved image path issue: {local_path}")
+                    #     continue
 
             # 기본수량 확인
             base_quantity = None
@@ -642,7 +597,10 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
             quantity_prices = extract_quantity_prices_from_row(row.copy()) # Pass a copy to avoid SettingWithCopyWarning if row is a slice
             
             if not quantity_prices:
-                logger.warning(f"Row {idx+1} (Product: '{row.get('상품명', 'Unknown')}'): No valid crawled quantity-price data found. Skipping price update for this row.")
+                logger.warning(f"Row {idx+1} (Product: '{row.get('상품명', 'Unknown')}'): No valid crawled quantity-price data found. Continuing with available data.")
+                # Don't skip - continue with any available data
+                # continue
+                # Just continue to the next row, but don't exit the loop entirely
                 continue
             
             # 로그 출력
@@ -764,7 +722,8 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
         
         # 필터링 결과 로그
         if filtered_by_missing_data > 0 or filtered_by_missing_image > 0:
-            logger.info(f"필터링 결과: 이미지만 있고 상품 데이터 없는 행 {filtered_by_missing_data}개, 상품 데이터만 있고 이미지 없는 행 {filtered_by_missing_image}개가 정리되었습니다.")
+            logger.info(f"잠재적 문제 항목: 이미지만 있고 상품 데이터 없는 행 {filtered_by_missing_data}개, 상품 데이터만 있고 이미지 없는 행 {filtered_by_missing_image}개가 있습니다.")
+            logger.info("이 항목들은 이전에는 제거되었지만, 현재는 데이터를 유지합니다.")
         
         # Save the modified workbook
         workbook.save(output_file)
