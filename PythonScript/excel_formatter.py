@@ -136,8 +136,9 @@ def format_result_excel(file_path):
         max_row = sheet.max_row
         max_col = sheet.max_column
         
-        # Column names that need to be right-aligned
-        right_align_columns = ['기본수량(1)', '기본수량(2)', '판매가(V포함)(2)', '기본수량(3)']
+        # Column names that need to be right-aligned (matches the result file's actual column names)
+        right_align_columns = ['기본수량(1)', '판매단가(V포함)', '기본수량(2)', '판매가(V포함)(2)', '가격차이(2)', '가격차이(2)(%)', 
+                              '기본수량(3)', '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)']
         right_align_column_indices = []
         
         # Image column names that need wider width
@@ -149,14 +150,20 @@ def format_result_excel(file_path):
             header_value = sheet.cell(row=1, column=col).value
             if header_value in right_align_columns:
                 right_align_column_indices.append(col)
+                logging.debug(f"Found right-align column at index {col}: {header_value}")
             if header_value in image_columns:
                 image_column_indices.append(col)
+                logging.debug(f"Found image column at index {col}: {header_value}")
         
         # Format headers (first row)
+        sheet.row_dimensions[1].height = 34.5  # Set header row height
+        gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        
         for col in range(1, max_col + 1):
             cell = sheet.cell(row=1, column=col)
             cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
             cell.border = thin_border
+            cell.fill = gray_fill  # Add gray background to header row
         
         # Format data rows
         for row in range(2, max_row + 1):
@@ -180,9 +187,37 @@ def format_result_excel(file_path):
             if col in image_column_indices:
                 # Image columns: width 21.44
                 sheet.column_dimensions[get_column_letter(col)].width = 21.44
+                logging.debug(f"Set column {col} width to 21.44 for image")
             else:
                 # Standard columns: width 7
                 sheet.column_dimensions[get_column_letter(col)].width = 7
+                
+                # Get header text to adjust width if needed
+                header_cell = sheet.cell(row=1, column=col)
+                header_text = str(header_cell.value) if header_cell.value else ""
+                
+                # Adjust width for longer headers (similar to upload_excel logic)
+                if header_text:
+                    length = len(header_text)
+                    has_korean = any('\uAC00' <= char <= '\uD7A3' for char in header_text)
+                    
+                    if has_korean:
+                        if length <= 4:
+                            width = 7
+                        elif length <= 8:
+                            width = 9
+                        else:
+                            width = min(max(7, length * 0.9), 16)
+                    else:
+                        if length <= 7:
+                            width = 7
+                        elif length <= 14:
+                            width = 9
+                        else:
+                            width = min(max(7, length * 0.6), 14)
+                            
+                    sheet.column_dimensions[get_column_letter(col)].width = width
+                    logging.debug(f"Adjusted column {col} width to {width} based on header length")
         
         # Save the workbook
         wb.save(file_path)
@@ -205,10 +240,16 @@ def apply_excel_formatting(result_path=None, upload_path=None):
         total_files += 1
         if format_result_excel(result_path):
             success_count += 1
+            logging.info(f"Successfully applied formatting to result file: {result_path}")
+        else:
+            logging.error(f"Failed to apply formatting to result file: {result_path}")
             
     if upload_path:
         total_files += 1
         if format_upload_excel(upload_path):
             success_count += 1
+            logging.info(f"Successfully applied formatting to upload file: {upload_path}")
+        else:
+            logging.error(f"Failed to apply formatting to upload file: {upload_path}")
             
     return success_count, total_files 
