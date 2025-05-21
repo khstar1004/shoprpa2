@@ -90,12 +90,14 @@ def clean_naver_data(df):
                 break
         
         # Filter case: No valid Naver image but has price data
-        if not has_valid_naver_image and has_naver_price_data:
-            rows_filtered += 1
+        if not has_valid_naver_image:
             # Clear all Naver price data
             for col in naver_price_columns:
                 if col in df.columns:
                     df.at[idx, col] = '-'
+            
+            if has_naver_price_data:
+                rows_filtered += 1
         
         # Track statistics
         if not has_valid_naver_image and has_naver_price_data:
