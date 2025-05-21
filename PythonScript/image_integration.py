@@ -493,7 +493,7 @@ def find_best_image_matches(product_names: List[str],
 
         # Fallback for Kogift with even more lenient threshold if still no match
         if not kogift_match and config:
-            super_lenient_threshold = config.getfloat('Matching', 'minimum_match_confidence', fallback=0.001)
+            super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
             logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Kogift images for '{product_name}'")
             kogift_result = find_best_match_for_product(
                 product_tokens, kogift_images, used_kogift, 
@@ -517,7 +517,7 @@ def find_best_image_matches(product_names: List[str],
                 
         # Fallback for Naver with even more lenient threshold if still no match
         if not naver_match and config:
-            super_lenient_threshold = config.getfloat('Matching', 'minimum_match_confidence', fallback=0.001)
+            super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
             logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Naver images for '{product_name}'")
             naver_result = find_best_match_for_product(
                 product_tokens, naver_images, used_naver, 
