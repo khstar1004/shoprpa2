@@ -60,21 +60,20 @@ def clean_naver_data(df):
     # Track changes for logging
     rows_missing_image = 0
     rows_missing_price = 0
+    rows_filtered = 0
     rows_fully_processed = 0
 
-    # Case 1: Clear price data ONLY when image URL is completely missing
-    # (not just invalid or with low similarity)
+    # Process each row in the DataFrame
     for idx, row in df.iterrows():
         has_valid_naver_image = False
-        has_naver_data = False
+        has_naver_price_data = False
         
-        # Check if any Naver image column has data (even if it might be filtered later)
+        # Check if any Naver image column has valid data
         for col in naver_image_columns:
             if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '-':
-                has_naver_data = True
                 cell_value = row[col]
                 
-                # Check if it has an actual URL (but don't filter based on validity yet)
+                # Check if it has an actual URL
                 if isinstance(cell_value, dict) and 'url' in cell_value:
                     url = cell_value.get('url')
                     if isinstance(url, str) and url.strip():
@@ -84,41 +83,31 @@ def clean_naver_data(df):
                     has_valid_naver_image = True
                     break
 
-        # If no valid Naver image found but there are price columns with data,
-        # we'll track this but NOT clear the data yet - similarity filtering
-        # will handle this later
-        if not has_valid_naver_image and has_naver_data:
-            # Keep track for logging, but don't clear the data
-            rows_missing_image += 1
-    
-    # Case 2: Track rows with price data missing but don't clear the image
-    # Let the image similarity filtering handle this later
-    for idx, row in df.iterrows():
-        has_valid_price_data = False
-        has_naver_image = False
-        
-        # Check if there's image data
-        for col in naver_image_columns:
+        # Check if any Naver price column has data
+        for col in naver_price_columns:
             if col in df.columns and pd.notna(row.get(col)) and row.get(col) != '-':
-                has_naver_image = True
+                has_naver_price_data = True
                 break
-                
-        # Check if there's price data
-        required_price_column = '판매단가3 (VAT포함)'
-        if required_price_column in df.columns and pd.notna(row.get(required_price_column)) and row.get(required_price_column) != '-':
-            has_valid_price_data = True
-            
-        # Track this situation but don't clear data
-        if has_naver_image and not has_valid_price_data:
+        
+        # Filter case: No valid Naver image but has price data
+        if not has_valid_naver_image and has_naver_price_data:
+            rows_filtered += 1
+            # Clear all Naver price data
+            for col in naver_price_columns:
+                if col in df.columns:
+                    df.at[idx, col] = '-'
+        
+        # Track statistics
+        if not has_valid_naver_image and has_naver_price_data:
+            rows_missing_image += 1
+        if has_valid_naver_image and not has_naver_price_data:
             rows_missing_price += 1
-            
-        # Count fully processed rows with both data types
-        if has_naver_image and has_valid_price_data:
+        if has_valid_naver_image and has_naver_price_data:
             rows_fully_processed += 1
 
     logger.info(f"Naver data analysis: {rows_missing_image} rows missing image URLs, {rows_missing_price} rows missing price data, {rows_fully_processed} rows with complete data")
+    logger.info(f"Filtered {rows_filtered} rows with price data but no Naver image URL")
     
-    # We're no longer aggressively filtering - image similarity filtering will handle this
     return df
 
 def get_invalid_naver_rows(df):
