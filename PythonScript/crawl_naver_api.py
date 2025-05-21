@@ -1519,6 +1519,9 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     result_data['네이버 쇼핑 링크'] = first_item.get('link', '')
     result_data['공급사 상품링크'] = first_item.get('mallProductUrl', first_item.get('link', ''))
     
+    # Add 공급사명 (supplier name) explicitly to ensure it's properly propagated
+    result_data['공급사명'] = first_item.get('mallName', first_item.get('seller_name', ''))
+    
     # Create 네이버 이미지 entry
     result_data['네이버 이미지'] = {
         'url': image_api_url,

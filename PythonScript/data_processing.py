@@ -479,10 +479,20 @@ def format_product_data_for_output(input_df: pd.DataFrame,
                     if '공급사명' in df.columns:
                         if 'mall_name' in item:
                             df.at[idx, '공급사명'] = item['mall_name']
+                        elif 'mallName' in item:
+                            df.at[idx, '공급사명'] = item['mallName']
+                        elif 'seller_name' in item:
+                            df.at[idx, '공급사명'] = item['seller_name']
+                        elif 'api_seller_name' in item:
+                            df.at[idx, '공급사명'] = item['api_seller_name']
                             
                     if '공급사 상품링크' in df.columns:
                         if 'mall_link' in item:
                             df.at[idx, '공급사 상품링크'] = item['mall_link']
+                        elif 'mallProductUrl' in item:
+                            df.at[idx, '공급사 상품링크'] = item['mallProductUrl']
+                        elif 'seller_link' in item:
+                            df.at[idx, '공급사 상품링크'] = item['seller_link']
                     
                     # Update Naver price information (V포함)(3)
                     if '판매단가(V포함)(3)' in df.columns:
