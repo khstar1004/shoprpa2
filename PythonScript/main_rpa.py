@@ -46,6 +46,7 @@ from .excel_formatter import apply_excel_formatting
 from .fix_kogift_images import fix_excel_kogift_images
 from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
 from .naver_data_cleaner import fix_missing_naver_images # Re-enabled import
+from .excel_image_placer import create_excel_with_placed_images # 이미지 배치 함수 추가
 
 # Global configuration
 warnings.filterwarnings('ignore')
@@ -1218,6 +1219,21 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                         logging.error(f"Error fixing Naver images in Excel files: {fix_err}", exc_info=True)
                                         # Don't stop the process for Naver image errors - continue with other steps
                                     # --- End Naver Image Fix ---
+
+                                    # --- Place Images in Excel (NEW) ---
+                                    try:
+                                        # 결과 Excel 파일에 이미지 배치
+                                        if result_path and os.path.exists(result_path):
+                                            logging.info(f"결과 파일 이미지 배치 시작: {result_path}")
+                                            # 결과 Excel 파일 로드
+                                            result_df = pd.read_excel(result_path)
+                                            # 이미지 배치 실행
+                                            create_excel_with_placed_images(result_df, result_path)
+                                            logging.info(f"결과 파일 이미지 배치 완료: {result_path}")
+                                    except Exception as image_place_err:
+                                        logging.error(f"Excel 이미지 배치 중 오류 발생: {image_place_err}", exc_info=True)
+                                        # 이미지 배치 실패는 치명적인 오류가 아니므로 계속 진행
+                                    # --- End Image Placement ---
 
                                     # --- Apply Excel Formatting (NEW) ---
                                     try:
