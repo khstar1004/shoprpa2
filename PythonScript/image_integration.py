@@ -282,12 +282,12 @@ def find_best_image_matches(product_names: List[str],
                            haereum_images: Dict[str, Dict], 
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
-                           similarity_threshold: float = 0.2,  # Lowered from 0.4 to find more matches
+                           similarity_threshold: float = 0.4,  # 높게 조정 (0.2에서 0.4로)
                            config: Optional[configparser.ConfigParser] = None,
                            df: Optional[pd.DataFrame] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
     Find the best matching images for each product name from Haereum, Kogift, and Naver images.
-    Now using lower thresholds to ensure more matches are found.
+    Using higher thresholds for more strict matching.
     
     Args:
         product_names: List of product names to match
@@ -651,12 +651,23 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.3,  # 임계값 상향 조정 (0.2에서 0.3으로)
+                               similarity_threshold: float = 0.45,  # 임계값 상향 조정 (0.3에서 0.45으로)
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
-    Find the best matching image for a product using text-based matching.
-    Uses name_for_matching field in the image metadata.
+    Find the best matching image for a product based on name tokens.
+    Updated with higher thresholds for stricter matching.
+    
+    Args:
+        product_tokens: Tokens of the product name
+        image_info: Dictionary of image metadata
+        used_images: Set of already used image paths
+        similarity_threshold: Minimum similarity score for matching
+        source_name_for_log: Source name for logging
+        config: Configuration object for retrieving settings
+        
+    Returns:
+        Tuple of (best_match_path, similarity_score) or None if no match found
     """
     if not product_tokens:
         return None
@@ -769,7 +780,7 @@ def find_best_match_with_enhanced_matcher(
     enhanced_matcher: Any = None
 ) -> Optional[Tuple[str, float]]:
     """
-    Enhanced image matching with extremely low thresholds to find any potential match.
+    Enhanced image matching with stricter thresholds for higher quality matches.
     """
     if not enhanced_matcher:
         logging.warning("Enhanced image matcher not available. Falling back to text-based matching.")
@@ -781,9 +792,9 @@ def find_best_match_with_enhanced_matcher(
     best_match = None
     best_score = 0
     
-    # Using even more reduced thresholds to find more potential matches
-    high_confidence_threshold = 0.15   # Further reduced from 0.20
-    min_confidence_threshold = 0.00001  # Super low threshold to accept almost any match
+    # Using higher thresholds for stricter matching
+    high_confidence_threshold = 0.30   # 0.15에서 0.30으로 상향
+    min_confidence_threshold = 0.15    # 0.00001에서 0.15로 대폭 상향
     
     gpu_info = "GPU enabled" if getattr(enhanced_matcher, 'use_gpu', False) else "CPU mode"
     logging.info(f"Running enhanced matching on {len(target_images)} target images against source: {os.path.basename(source_img_path)} ({gpu_info})")

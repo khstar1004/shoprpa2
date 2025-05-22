@@ -47,7 +47,7 @@ from .fix_kogift_images import fix_excel_kogift_images
 from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
 from .naver_data_cleaner import fix_missing_naver_images # Re-enabled import
 from .excel_image_placer import create_excel_with_placed_images # 이미지 배치 함수 추가
-from .price_difference_filter import filter_by_price_difference # 가격차이 필터링 함수 추가
+from .price_difference_filter import filter_by_price_difference, apply_kogift_data_filter # 가격차이 필터링 함수 추가
 
 # Global configuration
 warnings.filterwarnings('ignore')
@@ -1190,6 +1190,29 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     except Exception as price_filter_err:
                                         logging.error(f"Error applying price difference filter to upload file {upload_path}: {price_filter_err}", exc_info=True)
                                     # --- End Price Difference Filter ---
+                                    
+                                    # --- Apply Kogift Data Filter (Clear Kogift data when image is missing) ---
+                                    try:
+                                        # Apply to result file
+                                        if result_path and isinstance(result_path, str) and os.path.exists(result_path):
+                                            logging.info(f"Applying Kogift data filter to result file: {result_path}")
+                                            result_kogift_filter_applied = apply_kogift_data_filter(result_path, config)
+                                            if result_kogift_filter_applied:
+                                                logging.info("Kogift data filter successfully applied to result file.")
+                                            else:
+                                                logging.warning("Kogift data filter could not be applied to the result file.")
+                                        
+                                        # Apply to upload file
+                                        if upload_path and isinstance(upload_path, str) and os.path.exists(upload_path):
+                                            logging.info(f"Applying Kogift data filter to upload file: {upload_path}")
+                                            upload_kogift_filter_applied = apply_kogift_data_filter(upload_path, config)
+                                            if upload_kogift_filter_applied:
+                                                logging.info("Kogift data filter successfully applied to upload file.")
+                                            else:
+                                                logging.warning("Kogift data filter could not be applied to the upload file.")
+                                    except Exception as kogift_filter_err:
+                                        logging.error(f"Error applying Kogift data filter: {kogift_filter_err}", exc_info=True)
+                                    # --- End Kogift Data Filter ---
                                     
                                     # --- Try to fix Naver images in both files ---
                                     try:
