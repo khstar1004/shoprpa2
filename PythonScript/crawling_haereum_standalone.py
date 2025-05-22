@@ -910,14 +910,9 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
         # 상품명을 해시값으로 변환 (MD5) - 16자로 통일
         name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
         
-        # URL의 해시값 (8자로 통일) - URL이 없는 경우 랜덤 해시 생성
-        if image_url and image_url.strip():
-            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
-        else:
-            # URL이 없는 경우 랜덤 해시 생성
-            import secrets
-            url_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
-            logger.info(f"Using random hash for missing URL: {url_hash}")
+        # 랜덤 해시값 (8자로 통일) - URL 해시 대신 랜덤 사용
+        import secrets
+        random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
         
         # Get file extension from URL if available, otherwise default to .jpg
         if image_url:
@@ -941,7 +936,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             ext = '.jpg'
             
         # Create final filename - 새로운 형식으로 변경
-        filename = f"haereum_{name_hash}_{url_hash}{ext}"
+        filename = f"haereum_{name_hash}_{random_hash}{ext}"
         local_path = os.path.join(main_dir, filename)
         final_image_path = local_path
         

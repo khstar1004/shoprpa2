@@ -542,8 +542,9 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                 # 일관된 길이를 위해 패딩 추가
                 sanitized_name = sanitized_name.ljust(30, '_')
         
-        # URL의 고유 해시 생성 (파일명 중복 방지)
-        url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
+        # 랜덤 해시 생성 (8자로 통일) - URL 해시 대신 랜덤 사용
+        import secrets
+        random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
         
         # 상품명 해시값 생성 (MD5) - 16자로 통일
         name_hash = hashlib.md5(product_name.encode('utf-8', errors='ignore')).hexdigest()[:16]
@@ -556,7 +557,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             file_ext = '.jpg'
         
         # 새로운 형식으로 파일명 생성 (사이트이름_상품명해시_고유식별자)
-        filename = f"naver_{name_hash}_{url_hash}{file_ext}"
+        filename = f"naver_{name_hash}_{random_hash}{file_ext}"
         local_path = os.path.join(save_dir, filename)
         final_image_path = local_path
         

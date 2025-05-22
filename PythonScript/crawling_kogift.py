@@ -207,11 +207,12 @@ def download_image(url: str, save_dir: str, product_name: Optional[str] = None, 
             # 상품명 해시값 생성 (MD5) - 16자로 통일
             name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
             
-            # URL 해시값 (8자로 통일)
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+            # 랜덤 해시값 (8자로 통일) - URL 해시 대신 랜덤 사용
+            import secrets
+            random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
             
             # 새로운 형식으로 파일명 생성
-            file_name = f"kogift_{name_hash}_{url_hash}{original_ext}"
+            file_name = f"kogift_{name_hash}_{random_hash}{original_ext}"
         else:
             # 상품명이 없는 경우 기존 방식 유지 (fallback)
             url_hash = hashlib.md5(url.encode()).hexdigest()[:10]

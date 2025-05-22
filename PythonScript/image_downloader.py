@@ -276,8 +276,9 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
     else:
         source_prefix = "other"
     
-    # URL 해시 생성 (8자로 통일)
-    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+    # 랜덤 해시 생성 (8자로 통일) - URL 해시 대신 랜덤 사용
+    import secrets
+    random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
     
     # 상품명이 제공된 경우 해시 생성 (16자로 통일)
     if product_name:
@@ -304,7 +305,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
         ext = '.' + ext
     
     # 새로운 형식으로 파일명 생성
-    filename = f"{source_prefix}_{name_hash}_{url_hash}{ext}"
+    filename = f"{source_prefix}_{name_hash}_{random_hash}{ext}"
     image_path = save_dir / filename
     
     # For jclgift URLs, also save a copy in Main folder without nobg
@@ -391,12 +392,12 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
                 # Update extension based on actual format
                 proper_ext = f".{img_format}" if img_format != 'jpeg' else '.jpg'
                 if proper_ext != ext:
-                    filename = f"{source_prefix}_{name_hash}_{url_hash[:8]}{proper_ext}"
+                    filename = f"{source_prefix}_{name_hash}_{random_hash}{proper_ext}"
                     image_path = save_dir / filename
                     
                     # Update main_path too if applicable
                     if create_nobg_version:
-                        main_filename = f"{source_prefix}_{name_hash}_{url_hash[:8]}{proper_ext}"
+                        main_filename = f"{source_prefix}_{name_hash}_{random_hash}{proper_ext}"
                         main_path = main_dir / main_filename
                 
                 # Use semaphore for file operations to prevent race conditions
