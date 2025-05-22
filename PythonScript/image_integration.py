@@ -194,35 +194,7 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                 filename = os.path.basename(img_path)
                 file_root, file_ext = os.path.splitext(filename)
                 
-                # Use filename as unique key for matching purposes
-                # Remove prefix (haereum_, kogift_, naver_) if present
-                if file_root.startswith(f"{prefix}_"):
-                    name_for_matching = file_root[len(f"{prefix}_"):]
-                else:
-                    name_for_matching = file_root
-                
-                # Remove _nobg suffix for matching
-                if name_for_matching.endswith('_nobg'):
-                    name_for_matching = name_for_matching[:-5]
-                
-                # Prepare a clean name for display and matching
-                clean_name = name_for_matching.replace('_', ' ').strip()
-                
-                # Create metadata entry
-                image_info[img_path] = {
-                    'path': str(img_path),  # Store the absolute path as string for direct access
-                    'original_path': str(original_jpg_path or original_png_path or img_path),  # Prefer JPG for original path
-                    'original_name': filename,
-                    'nobg_png_path': str(nobg_png_path) if nobg_png_path else None,
-                    'nobg_jpg_path': str(nobg_jpg_path) if nobg_jpg_path else None,
-                    'has_nobg': nobg_png_path is not None or nobg_jpg_path is not None,
-                    'name_for_matching': name_for_matching,
-                    'clean_name': clean_name,
-                    'source': prefix,
-                    'is_jpg': file_ext.lower() in ['.jpg', '.jpeg'],
-                    'is_original': not file_root.endswith('_nobg'),
-                    'url': None  # Initialize URL field, will be populated later if needed
-                }
+                # Use filename as unique key for matching purposes                # Remove prefix (haereum_, kogift_, naver_) if present                if file_root.startswith(f"{prefix}_"):                    name_for_matching = file_root[len(f"{prefix}_"):]                else:                    name_for_matching = file_root                                # Remove _nobg suffix for matching                if name_for_matching.endswith('_nobg'):                    name_for_matching = name_for_matching[:-5]                                # Extract 16-digit product hash from filename                product_hash = extract_product_hash_from_filename(filename)                                # Prepare a clean name for display and matching                clean_name = name_for_matching.replace('_', ' ').strip()                                # Create metadata entry                image_info[img_path] = {                    'path': str(img_path),  # Store the absolute path as string for direct access                    'original_path': str(original_jpg_path or original_png_path or img_path),  # Prefer JPG for original path                    'original_name': filename,                    'nobg_png_path': str(nobg_png_path) if nobg_png_path else None,                    'nobg_jpg_path': str(nobg_jpg_path) if nobg_jpg_path else None,                    'has_nobg': nobg_png_path is not None or nobg_jpg_path is not None,                    'name_for_matching': name_for_matching,                    'clean_name': clean_name,                    'source': prefix,                    'is_jpg': file_ext.lower() in ['.jpg', '.jpeg'],                    'is_original': not file_root.endswith('_nobg'),                    'url': None,  # Initialize URL field, will be populated later if needed                    'product_hash': product_hash  # Store the 16-digit product hash for matching                }
                 
                 # Debug some sample entries
                 if len(image_info) <= 2 or len(image_info) % 50 == 0:
@@ -378,8 +350,123 @@ def find_best_image_matches(product_names: List[str],
         logging.debug(f"Processing product: {product_name}")
         product_tokens = product_name.split()
         
-        # Get exact product name matches first
-        # For Haereum: Try direct matching with Enhanced Matcher if available
+        # --- STEP 1: Hash-based filtering ---
+        # Try hash-based matching first for fast and accurate matching
+        haereum_match = None
+        haereum_score = 0
+        kogift_match = None
+        kogift_score = 0
+        naver_match = None
+        naver_score = 0
+        
+        # Generate product hash for matching
+        product_hash = generate_product_name_hash(product_name)
+        
+        if product_hash:
+            logging.debug(f"Generated hash {product_hash} for product '{product_name}'")
+            
+            # Find hash-matching images from each source
+            hash_haereum_candidates = []
+            hash_kogift_candidates = []
+            hash_naver_candidates = []
+            
+            # Check Haereum images for hash match
+            for h_path, h_info in haereum_images.items():
+                if h_path not in used_haereum:
+                    img_hash = h_info.get('product_hash')
+                    if img_hash and img_hash == product_hash:
+                        hash_haereum_candidates.append((h_path, h_info))
+            
+            # Check Kogift images for hash match
+            for k_path, k_info in kogift_images.items():
+                if k_path not in used_kogift:
+                    img_hash = k_info.get('product_hash')
+                    if img_hash and img_hash == product_hash:
+                        hash_kogift_candidates.append((k_path, k_info))
+            
+            # Check Naver images for hash match
+            for n_path, n_info in naver_images.items():
+                if n_path not in used_naver:
+                    img_hash = n_info.get('product_hash')
+                    if img_hash and img_hash == product_hash:
+                        hash_naver_candidates.append((n_path, n_info))
+            
+            logging.debug(f"Hash matching found: Haereum={len(hash_haereum_candidates)}, "
+                         f"Kogift={len(hash_kogift_candidates)}, Naver={len(hash_naver_candidates)}")
+            
+            # --- STEP 2: Image similarity check (0.8 threshold) for hash matches ---
+            if enhanced_matcher and (hash_haereum_candidates or hash_kogift_candidates or hash_naver_candidates):
+                logging.info(f"Applying 0.8 image similarity threshold to hash matches for '{product_name}'")
+                
+                # Start with Haereum as reference if available
+                if hash_haereum_candidates:
+                    h_path, h_info = hash_haereum_candidates[0]  # Take first hash match
+                    haereum_ref_path = h_info.get('path', h_path)
+                    
+                    # Check Kogift hash candidates with image similarity
+                    for k_path, k_info in hash_kogift_candidates:
+                        kogift_img_path = k_info.get('path', k_path)
+                        if os.path.exists(haereum_ref_path) and os.path.exists(kogift_img_path):
+                            img_sim = enhanced_matcher.calculate_similarity(haereum_ref_path, kogift_img_path)
+                            logging.debug(f"Hash+Image similarity check: Haereum vs Kogift = {img_sim:.3f}")
+                            if img_sim >= 0.8:
+                                kogift_match = k_path
+                                kogift_score = img_sim
+                                used_kogift.add(k_path)
+                                logging.info(f"Hash+Image match found for Kogift: {os.path.basename(k_path)} (similarity: {img_sim:.3f})")
+                                break
+                    
+                    # Check Naver hash candidates with image similarity
+                    for n_path, n_info in hash_naver_candidates:
+                        naver_img_path = n_info.get('path', n_path)
+                        if os.path.exists(haereum_ref_path) and os.path.exists(naver_img_path):
+                            img_sim = enhanced_matcher.calculate_similarity(haereum_ref_path, naver_img_path)
+                            logging.debug(f"Hash+Image similarity check: Haereum vs Naver = {img_sim:.3f}")
+                            if img_sim >= 0.8:
+                                naver_match = n_path
+                                naver_score = img_sim
+                                used_naver.add(n_path)
+                                logging.info(f"Hash+Image match found for Naver: {os.path.basename(n_path)} (similarity: {img_sim:.3f})")
+                                break
+                    
+                    # Use the Haereum reference image
+                    haereum_match = h_path
+                    haereum_score = 0.95  # High score for hash match
+                    used_haereum.add(h_path)
+                    logging.info(f"Hash match found for Haereum: {os.path.basename(h_path)}")
+                
+                # If Haereum not found but Kogift or Naver found, use them as reference
+                elif hash_kogift_candidates or hash_naver_candidates:
+                    ref_path = None
+                    if hash_kogift_candidates:
+                        k_path, k_info = hash_kogift_candidates[0]
+                        ref_path = k_info.get('path', k_path)
+                        kogift_match = k_path
+                        kogift_score = 0.95
+                        used_kogift.add(k_path)
+                        logging.info(f"Hash match found for Kogift: {os.path.basename(k_path)}")
+                    
+                    if hash_naver_candidates:
+                        n_path, n_info = hash_naver_candidates[0]
+                        if not ref_path:
+                            ref_path = n_info.get('path', n_path)
+                        naver_match = n_path
+                        naver_score = 0.95
+                        used_naver.add(n_path)
+                        logging.info(f"Hash match found for Naver: {os.path.basename(n_path)}")
+            
+            # If hash matching with image similarity was successful, skip to next product
+            if haereum_match or kogift_match or naver_match:
+                logging.info(f"Hash-based matching successful for '{product_name}', skipping fallback methods")
+                best_matches.append((
+                    (haereum_match, haereum_score) if haereum_match else None,
+                    (kogift_match, kogift_score) if kogift_match else None,
+                    (naver_match, naver_score) if naver_match else None
+                ))
+                continue
+        
+        # --- STEP 3: Fallback to original matching logic ---
+        # Reset variables for fallback matching
         haereum_match = None
         haereum_score = 0
         
@@ -1942,6 +2029,63 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
     except Exception as e:
         logging.error(f"Error calculating text similarity: {e}")
         return 0.0
+
+def extract_product_hash_from_filename(filename: str) -> Optional[str]:
+    """
+    파일명에서 16자리 상품명 해시값을 추출합니다.
+        
+    파일명 패턴:
+    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
+    - prefix_[16자해시].jpg
+        
+    Args:
+        filename: 이미지 파일명
+            
+    Returns:
+        16자리 상품명 해시값 또는 None
+    """
+    try:
+        # 확장자 제거
+        name_without_ext = os.path.splitext(os.path.basename(filename))[0]
+        
+        # '_'로 분리
+        parts = name_without_ext.split('_')
+        
+        # prefix_hash_random 또는 prefix_hash 패턴 확인
+        if len(parts) >= 2:
+            # prefix를 제거하고 두 번째 부분이 16자리 해시인지 확인
+            potential_hash = parts[1]
+            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                return potential_hash.lower()
+        
+        # 전체가 16자리 해시인 경우도 확인 (prefix가 없는 경우)
+        if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
+            return name_without_ext.lower()
+                    
+        return None
+    except Exception as e:
+        logging.debug(f"Error extracting hash from filename {filename}: {e}")
+        return None
+
+def generate_product_name_hash(product_name: str) -> str:
+    """
+    상품명으로부터 16자리 해시값을 생성합니다.
+        
+    Args:
+        product_name: 상품명
+            
+    Returns:
+        16자리 해시값
+    """
+    try:
+        # 상품명 정규화 (공백 제거, 소문자 변환)
+        normalized_name = ''.join(product_name.split()).lower()
+        # MD5 해시 생성 후 첫 16자리 사용
+        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
+        return hash_obj.hexdigest()[:16]
+    except Exception as e:
+        logging.error(f"Error generating hash for product name {product_name}: {e}")
+        return ""
 
 # 모듈 테스트용 코드
 if __name__ == "__main__":

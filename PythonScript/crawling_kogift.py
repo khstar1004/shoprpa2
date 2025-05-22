@@ -214,10 +214,9 @@ def download_image(url: str, save_dir: str, product_name: Optional[str] = None, 
             # 새로운 형식으로 파일명 생성
             file_name = f"kogift_{name_hash}_{random_hash}{original_ext}"
         else:
-            # 상품명이 없는 경우 기존 방식 유지 (fallback)
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-            random_hash = hashlib.md5(str(random.random()).encode()).hexdigest()[:10]
-            file_name = f"kogift_{url_hash}_{random_hash}{original_ext}"
+            # 상품명이 없는 경우는 오류 상황
+            logger.error(f"❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")
+            return None
     
     # Create save directory if it doesn't exist
     try:

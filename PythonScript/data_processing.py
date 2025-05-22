@@ -289,7 +289,17 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         kogift_price_count = 0
         
         for idx, row in df.iterrows():
+            # ✅ 수정: Excel 원본 상품명을 우선적으로 사용하고 검증
             product_name = row.get('상품명')
+            
+            # 상품명이 없으면 오류 출력
+            if not product_name or pd.isna(product_name) or str(product_name).strip() == '':
+                logging.error(f"❌ Row {idx}: 상품명이 없습니다. Excel 파일의 '상품명' 컬럼을 확인하세요. Row data: {dict(row)}")
+                continue
+                
+            # 상품명을 문자열로 변환하고 공백 제거
+            product_name = str(product_name).strip()
+            
             if product_name in kogift_results:
                 # Get first matching result from Kogift
                 kogift_data = kogift_results[product_name]
@@ -459,7 +469,17 @@ def format_product_data_for_output(input_df: pd.DataFrame,
         naver_price_count = 0
         
         for idx, row in df.iterrows():
+            # ✅ 수정: Excel 원본 상품명을 우선적으로 사용하고 검증
             product_name = row.get('상품명')
+            
+            # 상품명이 없으면 오류 출력
+            if not product_name or pd.isna(product_name) or str(product_name).strip() == '':
+                logging.error(f"❌ Row {idx}: 상품명이 없습니다. Excel 파일의 '상품명' 컬럼을 확인하세요.")
+                continue
+                
+            # 상품명을 문자열로 변환하고 공백 제거
+            product_name = str(product_name).strip()
+            
             if product_name in naver_results:
                 # Get first matching result from Naver
                 naver_data = naver_results[product_name]

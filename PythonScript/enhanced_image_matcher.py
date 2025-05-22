@@ -1227,12 +1227,7 @@ class EnhancedImageMatcher:
             # Actual cache files will be cleaned up based on cache settings
 
 
-# Helper function to get the common file extension
-def get_file_extension(path: str) -> str:
-    """Extract file extension from path or URL"""
-    parsed = urlparse(path)
-    _, ext = os.path.splitext(parsed.path)
-    return ext.lower() or '.jpg'
+# Helper function to get the common file extensiondef get_file_extension(path: str) -> str:    """Extract file extension from path or URL"""    parsed = urlparse(path)    _, ext = os.path.splitext(parsed.path)    return ext.lower() or '.jpg'def extract_product_hash_from_filename(filename: str) -> Optional[str]:    """    파일명에서 16자리 상품명 해시값을 추출합니다.            파일명 패턴:    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)    - prefix_[16자해시].jpg            Args:        filename: 이미지 파일명                Returns:        16자리 상품명 해시값 또는 None    """    try:        # 확장자 제거        name_without_ext = os.path.splitext(os.path.basename(filename))[0]                # '_'로 분리        parts = name_without_ext.split('_')                # prefix_hash_random 또는 prefix_hash 패턴 확인        if len(parts) >= 2:            # prefix를 제거하고 두 번째 부분이 16자리 해시인지 확인            potential_hash = parts[1]            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):                return potential_hash.lower()                # 전체가 16자리 해시인 경우도 확인 (prefix가 없는 경우)        if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):            return name_without_ext.lower()                            return None    except Exception as e:        logger.debug(f"Error extracting hash from filename {filename}: {e}")        return Nonedef generate_product_name_hash(product_name: str) -> str:    """    상품명으로부터 16자리 해시값을 생성합니다.            Args:        product_name: 상품명                Returns:        16자리 해시값    """    try:        # 상품명 정규화 (공백 제거, 소문자 변환)        normalized_name = ''.join(product_name.split()).lower()        # MD5 해시 생성 후 첫 16자리 사용        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))        return hash_obj.hexdigest()[:16]    except Exception as e:        logger.error(f"Error generating hash for product name {product_name}: {e}")        return ""
     
 
 # Function to match product images with batch processing capability

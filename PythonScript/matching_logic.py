@@ -906,6 +906,7 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
 def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: ProductMatcher, source: str) -> Optional[Dict]:
     """
     Find the best matching product from a list of candidates.
+    Enhanced with hash-based filtering and improved image similarity threshold.
     
     Args:
         haereum_product: The reference product (Haereum)
@@ -926,6 +927,27 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
         
     logging.debug(f"Finding best match for '{product_name}' from {len(candidates)} {source} candidates")
     
+    # --- STEP 1: Hash-based filtering ---
+    # First filter candidates by product name hash to reduce search space
+    hash_filtered_candidates = []
+    target_hash = generate_product_name_hash(product_name)
+    
+    if target_hash:
+        for candidate in candidates:
+            candidate_img_path = candidate.get('image_path')
+            if candidate_img_path:
+                candidate_hash = extract_product_hash_from_filename(candidate_img_path)
+                if candidate_hash and candidate_hash == target_hash:
+                    hash_filtered_candidates.append(candidate)
+        
+        if hash_filtered_candidates:
+            logging.debug(f"Hash filtering reduced candidates from {len(candidates)} to {len(hash_filtered_candidates)} for '{product_name}'")
+            candidates = hash_filtered_candidates
+        else:
+            logging.debug(f"No hash matches found for '{product_name}' (hash: {target_hash}), using all candidates")
+    else:
+        logging.warning(f"Could not generate hash for product '{product_name}', skipping hash filtering")
+    
     best_match = None
     best_text_sim = 0
     best_img_sim = 0
@@ -935,10 +957,14 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
     category = haereum_product.get('중분류카테고리') or haereum_product.get('카테고리(중분류)')
     text_threshold, img_threshold = matcher.get_thresholds_for_category(category)
     
+    # Enhanced thresholds with user requirements
+    # Set image similarity threshold to 0.8 as requested
+    img_threshold = max(img_threshold, 0.8)
+    
     # FIXED: Add stricter thresholds for Naver matches since they tend to be less reliable
     if source == 'naver':
         text_threshold = max(text_threshold, 0.5)  # Use at least 0.5 for Naver text matching
-        img_threshold = max(img_threshold, 0.3)    # Use at least 0.3 for Naver image matching
+        img_threshold = max(img_threshold, 0.8)    # Keep 0.8 minimum for image matching
     
     for candidate in candidates:
         candidate_name = candidate.get('name', '')
@@ -955,6 +981,7 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
             logging.debug(f"Skipping {source} candidate '{candidate_name[:30]}...' due to low text similarity: {text_sim:.3f}")
             continue
             
+        # --- STEP 2: Image similarity check with 0.8 threshold ---
         # Calculate image similarity if images are available
         img_sim = 0
         haereum_img_path = haereum_product.get('image_path')
@@ -962,6 +989,15 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
         
         if haereum_img_path and candidate_img_path:
             img_sim = matcher.calculate_image_similarity(haereum_img_path, candidate_img_path)
+            
+            # Apply 0.8 image similarity threshold as requested
+            if img_sim < 0.8:
+                logging.debug(f"Skipping {source} candidate '{candidate_name[:30]}...' due to low image similarity: {img_sim:.3f} < 0.8")
+                continue
+        else:
+            # If no images available, skip this candidate (since image matching is crucial)
+            logging.debug(f"Skipping {source} candidate '{candidate_name[:30]}...' due to missing image paths")
+            continue
             
         # Calculate combined score with adjustable weights
         # FIXED: Adjust weights based on source
@@ -986,7 +1022,7 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
     # Log the best match found
     if best_match:
         name_snippet = best_match.get('name', '')[:30]
-        logging.debug(f"Best {source} match for '{product_name[:30]}': '{name_snippet}' (Text: {best_text_sim:.3f}, Image: {best_img_sim:.3f}, Combined: {best_combined:.3f})")
+        logging.info(f"Best {source} match for '{product_name[:30]}': '{name_snippet}' (Text: {best_text_sim:.3f}, Image: {best_img_sim:.3f}, Combined: {best_combined:.3f})")
         
         # FIXED: Additional verification for Naver matches
         if source == 'naver':
@@ -996,11 +1032,6 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
             # If combined score is too low, reject the match
             if best_combined < min_combined_threshold:
                 logging.warning(f"Rejecting Naver match '{name_snippet}' due to low combined score: {best_combined:.3f} < {min_combined_threshold:.3f}")
-                return None
-                
-            # If text similarity is too low but combined score is ok, ensure image similarity is high enough
-            if best_text_sim < text_threshold and best_img_sim < 0.5:
-                logging.warning(f"Rejecting Naver match with low text similarity ({best_text_sim:.3f}) and insufficient image similarity ({best_img_sim:.3f})")
                 return None
                 
             # Check for price consistency if available
@@ -1025,7 +1056,7 @@ def _find_best_match(haereum_product: Dict, candidates: List[Dict], matcher: Pro
         }
     
     # Return None if no suitable match found
-    logging.debug(f"No suitable {source} match found for '{product_name}'")
+    logging.debug(f"No suitable {source} match found for '{product_name}' (checked {len(candidates)} candidates)")
     return None
 
 # Wrapper for ProcessPoolExecutor compatibility
@@ -1741,3 +1772,101 @@ def post_process_matching_results(df, config):
         logging.error(f"Error in filter_dataframe: {e}", exc_info=True)
         # Return original DataFrame on error to ensure no data loss
         return df
+
+def extract_product_hash_from_filename(filename: str) -> Optional[str]:
+    """
+    파일명에서 상품명 해시값을 추출합니다.
+        
+    파일명 패턴:
+    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
+    - prefix_[16자해시].jpg
+        
+    Args:
+        filename: 이미지 파일명
+            
+    Returns:
+        16자리 상품명 해시값 또는 None
+    """
+    try:
+        # 확장자 제거
+        name_without_ext = os.path.splitext(os.path.basename(filename))[0]
+        
+        # '_'로 분리
+        parts = name_without_ext.split('_')
+        
+        # prefix_hash_random 또는 prefix_hash 패턴 확인
+        if len(parts) >= 2:
+            # prefix를 제거하고 두 번째 부분이 16자리 해시인지 확인
+            potential_hash = parts[1]
+            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                return potential_hash.lower()
+        
+        # prefix_hash 패턴도 확인 (랜덤 부분이 없는 경우)
+        if len(parts) == 2:
+            potential_hash = parts[1]
+            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                return potential_hash.lower()
+                
+        # 전체가 16자리 해시인 경우도 확인 (prefix가 없는 경우)
+        if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
+            return name_without_ext.lower()
+                    
+        return None
+    except Exception as e:
+        logging.debug(f"Error extracting hash from filename {filename}: {e}")
+        return None
+
+def generate_product_name_hash(product_name: str) -> str:
+    """
+    상품명으로부터 해시값을 생성합니다.
+    다른 스크립트들과 동일한 방식으로 생성.
+        
+    Args:
+        product_name: 상품명
+            
+    Returns:
+        16자리 해시값
+    """
+    try:
+        # 상품명 정규화 (공백 제거, 소문자 변환)
+        normalized_name = ''.join(product_name.split()).lower()
+        # MD5 해시 생성 후 첫 16자리 사용
+        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
+        return hash_obj.hexdigest()[:16]
+    except Exception as e:
+        logging.error(f"Error generating hash for product name {product_name}: {e}")
+        return ""
+
+def filter_images_by_hash(haereum_product_name: str, candidate_images: List[str]) -> List[str]:
+    """
+    해시값을 기반으로 이미지 후보군을 필터링합니다.
+        
+    Args:
+        haereum_product_name: 해오름 상품명
+        candidate_images: 후보 이미지 경로 리스트
+            
+    Returns:
+        해시값이 일치하는 이미지 경로 리스트
+    """
+    try:
+        # 해오름 상품명의 해시값 생성 (16자리)
+        target_hash = generate_product_name_hash(haereum_product_name)
+        if not target_hash:
+            logging.warning(f"Could not generate hash for product: {haereum_product_name}")
+            return candidate_images  # 해시 생성 실패시 모든 후보 반환
+                
+        filtered_images = []
+        for img_path in candidate_images:
+            # 파일명에서 해시 추출 (16자리)
+            img_hash = extract_product_hash_from_filename(img_path)
+            if img_hash and img_hash == target_hash:
+                filtered_images.append(img_path)
+                        
+        logging.debug(f"Hash filtering for '{haereum_product_name}' (hash: {target_hash}): "
+                     f"{len(filtered_images)}/{len(candidate_images)} images matched")
+                
+        return filtered_images
+            
+    except Exception as e:
+        logging.error(f"Error filtering images by hash for {haereum_product_name}: {e}")
+        return candidate_images  # 오류시 모든 후보 반환
