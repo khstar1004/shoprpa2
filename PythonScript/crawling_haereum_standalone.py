@@ -1302,6 +1302,79 @@ async def try_direct_product_code_fallback(page: Page, keyword: str, config: con
             return {"url": "default", "local_path": default_image_path, "source": "haereum_default"}
         return None
 
+async def setup_page_optimizations(page: Page):
+    """Set up page optimizations and resource blocking."""
+    try:
+        # Store the original route handler to prevent memory leaks
+        original_route_handler = None
+        
+        async def handle_route(route):
+            try:
+                # Get the request URL
+                url = route.request.url
+                
+                # Skip if page is closed
+                if page.is_closed():
+                    logger.warning(f"Page is closed, skipping route for: {url}")
+                    return
+                
+                # Block unnecessary resources
+                if should_block_request(url):
+                    try:
+                        await route.abort()
+                    except Exception as abort_err:
+                        logger.debug(f"Error aborting route: {abort_err}")
+                    return
+                
+                # Continue the request
+                try:
+                    await route.continue_()
+                except Exception as continue_err:
+                    logger.warning(f"Error continuing route: {continue_err}")
+                    # Try fallback if continue fails
+                    try:
+                        if not page.is_closed():
+                            await route.continue_()
+                    except Exception as fallback_err:
+                        logger.error(f"Failed to continue request in fallback: {fallback_err}")
+            except Exception as e:
+                logger.error(f"Error in route handler for {url}: {e}")
+                # Don't try to continue if there's an error
+                return
+        
+        # Set up route handler
+        await page.route("**/*", handle_route)
+        
+        # Optimize page settings
+        await page.set_viewport_size({"width": 1280, "height": 800})
+        await page.set_extra_http_headers({
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        })
+        
+        # Disable unnecessary features
+        await page.evaluate("""
+            () => {
+                // Disable animations
+                document.body.style.setProperty('animation', 'none', 'important');
+                document.body.style.setProperty('transition', 'none', 'important');
+                
+                // Disable unnecessary features
+                window.Notification = undefined;
+                window.webkitNotifications = undefined;
+                window.navigator.vibrate = undefined;
+                window.navigator.getBattery = undefined;
+                window.navigator.geolocation = undefined;
+            }
+        """)
+        
+    except Exception as e:
+        logger.error(f"Error setting up page optimizations: {e}")
+        # Don't re-raise the exception, just log it
+
 # Example usage (Updated for ConfigParser)
 async def _test_main():
     from playwright.async_api import async_playwright
