@@ -208,12 +208,13 @@ def get_image_path(url: str) -> str:
     
     return str(image_path)
 
-async def download_image(session: aiohttp.ClientSession, url: str, retry_count: int = 0) -> Tuple[str, bool, str]:
+async def download_image(session: aiohttp.ClientSession, url: str, product_name: Optional[str] = None, retry_count: int = 0) -> Tuple[str, bool, str]:
     """Download an image from a URL and save it locally.
     
     Args:
         session: The aiohttp client session to use for requests.
         url: The URL of the image to download.
+        product_name: Optional product name for filename creation.
         retry_count: Current retry attempt (used internally for recursion).
         
     Returns:
@@ -264,8 +265,26 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         logger.warning(f"URL source undetermined, saving to Kogift directory: {url}")
         save_dir = KOGIFT_IMAGE_DIR
     
-    # Generate a filename based on URL hash
-    url_hash = hashlib.md5(url.encode()).hexdigest()
+    # Generate a filename based on URL hash and product name
+    # 사이트 식별자 결정
+    if "jclgift" in url.lower():
+        source_prefix = "haereum"
+    elif "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
+        source_prefix = "kogift"
+    elif "pstatic.net" in url.lower() or "naver" in url.lower():
+        source_prefix = "naver"
+    else:
+        source_prefix = "other"
+    
+    # URL 해시 생성 (8자로 통일)
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+    
+    # 상품명이 제공된 경우 해시 생성 (16자로 통일)
+    if product_name:
+        name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+    else:
+        # 상품명이 없는 경우 랜덤 값으로 대체
+        name_hash = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
     
     # Get file extension from URL
     parsed_url = urlparse(url)
@@ -284,17 +303,8 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     if not ext.startswith('.'):
         ext = '.' + ext
     
-    # Create a filename with source info
-    if "jclgift" in url.lower():
-        source_prefix = "haereum"
-    elif "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
-        source_prefix = "kogift"
-    elif "pstatic" in url.lower() or "naver" in url.lower():
-        source_prefix = "naver"
-    else:
-        source_prefix = "other"
-        
-    filename = f"{source_prefix}_{url_hash[:10]}{ext}"
+    # 새로운 형식으로 파일명 생성
+    filename = f"{source_prefix}_{name_hash}_{url_hash}{ext}"
     image_path = save_dir / filename
     
     # For jclgift URLs, also save a copy in Main folder without nobg
@@ -302,8 +312,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
     if "jclgift" in url.lower():
         # save_dir is already C:\RPA\Image\Main\Haereum, so no need to recalculate
         main_dir = save_dir 
-        main_filename = f"{source_prefix}_{url_hash[:10]}{ext}"
-        main_path = main_dir / main_filename
+        main_path = main_dir / filename
         create_nobg_version = True
     
     # Check if file already exists and is of sufficient size
@@ -343,7 +352,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                 if retry_count < MAX_RETRIES:
                     logger.warning(f"Got HTTP {response.status} for {url}, retrying ({retry_count + 1}/{MAX_RETRIES})...")
                     await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
-                    return await download_image(session, url, retry_count + 1)
+                    return await download_image(session, url, product_name, retry_count + 1)
                 else:
                     return url, False, f"HTTP error {response.status} after {MAX_RETRIES} retries"
             
@@ -355,7 +364,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                 logger.warning(f"Non-image content type: {content_type} for {url}")
                 if retry_count < MAX_RETRIES:
                     await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
-                    return await download_image(session, url, retry_count + 1)
+                    return await download_image(session, url, product_name, retry_count + 1)
                 else:
                     return url, False, f"Non-image content type: {content_type}"
             
@@ -377,17 +386,17 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                     logger.warning(f"Image dimensions too small: {width}x{height} for {url}")
                     if not is_kogift and not is_jclgift and retry_count < MAX_RETRIES:
                         await asyncio.sleep(0.5 * (retry_count + 1))
-                        return await download_image(session, url, retry_count + 1)
+                        return await download_image(session, url, product_name, retry_count + 1)
                     
                 # Update extension based on actual format
                 proper_ext = f".{img_format}" if img_format != 'jpeg' else '.jpg'
                 if proper_ext != ext:
-                    filename = f"{source_prefix}_{url_hash[:10]}{proper_ext}"
+                    filename = f"{source_prefix}_{name_hash}_{url_hash[:8]}{proper_ext}"
                     image_path = save_dir / filename
                     
                     # Update main_path too if applicable
                     if create_nobg_version:
-                        main_filename = f"{source_prefix}_{url_hash[:10]}{proper_ext}"
+                        main_filename = f"{source_prefix}_{name_hash}_{url_hash[:8]}{proper_ext}"
                         main_path = main_dir / main_filename
                 
                 # Use semaphore for file operations to prevent race conditions
@@ -423,7 +432,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
                 logger.warning(f"Invalid image data for {url}: {img_err}")
                 if retry_count < MAX_RETRIES:
                     await asyncio.sleep(0.5 * (retry_count + 1))
-                    return await download_image(session, url, retry_count + 1)
+                    return await download_image(session, url, product_name, retry_count + 1)
                 else:
                     return url, False, f"Invalid image data: {img_err}"
     
@@ -431,7 +440,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         if retry_count < MAX_RETRIES:
             logger.warning(f"Connection error for {url}, retrying ({retry_count + 1}/{MAX_RETRIES}): {e}")
             await asyncio.sleep(0.5 * (retry_count + 1))
-            return await download_image(session, url, retry_count + 1)
+            return await download_image(session, url, product_name, retry_count + 1)
         else:
             logger.error(f"Connection error for {url} after {MAX_RETRIES} retries: {e}")
             return url, False, f"Connection error: {e}"
@@ -440,17 +449,22 @@ async def download_image(session: aiohttp.ClientSession, url: str, retry_count: 
         logger.error(f"Unexpected error downloading {url}: {e}")
         return url, False, f"Unexpected error: {e}"
 
-async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
+async def download_images(image_urls: List[str], product_names: Optional[Dict[str, str]] = None) -> Dict[str, Optional[str]]:
     """Download multiple images asynchronously.
     
     Args:
         image_urls: List of image URLs to download.
+        product_names: Dictionary mapping image URLs to product names (optional).
         
     Returns:
         Dictionary mapping original URLs to local file paths.
     """
     if not image_urls:
         return {}
+    
+    # 제품명 딕셔너리가 제공되지 않은 경우 빈 딕셔너리 생성
+    if product_names is None:
+        product_names = {}
     
     # Normalize all URLs first - fix backslashes
     normalized_urls = []
@@ -515,7 +529,11 @@ async def download_images(image_urls: List[str]) -> Dict[str, Optional[str]]:
     
     async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
         # Create tasks for downloading each image
-        tasks = [download_image(session, url) for url in normalized_urls]
+        tasks = []
+        for url in normalized_urls:
+            # Get product name for this URL if available
+            product_name = product_names.get(url)
+            tasks.append(download_image(session, url, product_name))
         
         # Wait for all tasks to complete
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -575,8 +593,10 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
         
     logger.info(f"Pre-downloading images for {len(product_list)} 고려기프트 products")
     
-    # 모든 이미지 URL 추출
+    # 모든 이미지 URL 추출 및 상품명 매핑
     image_urls = []
+    product_names = {}
+    
     for product in product_list:
         if not isinstance(product, dict):
             continue
@@ -590,6 +610,10 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
                 
         if img_url:
             image_urls.append(img_url)
+            
+            # 상품명 저장 (있는 경우)
+            if 'name' in product and product['name']:
+                product_names[img_url] = product['name']
     
     if not image_urls:
         logger.warning("No image URLs found in the product list")
@@ -646,8 +670,8 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
                 if (invalid_count + error_count) > len(urls_to_verify) // 2:
                     logger.error(f"More than 50% of Kogift image URLs are problematic! Consider checking the source.")
     
-    # 이미지 다운로드
-    image_paths = await download_images(unique_urls)
+    # 이미지 다운로드 - 상품명 정보 전달
+    image_paths = await download_images(unique_urls, product_names)
     
     # 성공적으로 다운로드한 이미지 수 계산
     success_count = sum(1 for path in image_paths.values() if path is not None)
@@ -658,6 +682,7 @@ async def predownload_kogift_images(product_list: List[Dict]) -> Dict[str, Optio
 async def download_all_images(products: List[Dict]) -> Dict[str, Optional[str]]:
     """모든 제품의 이미지를 다운로드하는 함수"""
     image_urls = []
+    product_names = {}  # URL to product name mapping
     
     # 제품 목록에서 이미지 URL 추출
     for product in products:
@@ -666,12 +691,16 @@ async def download_all_images(products: List[Dict]) -> Dict[str, Optional[str]]:
             image_url = product.get('image') or product.get('image_url') or product.get('imageUrl') or product.get('img_url')
             if image_url:
                 image_urls.append(image_url)
+                
+                # 상품명 매핑 저장
+                if 'name' in product and product['name']:
+                    product_names[image_url] = product['name']
     
     # 중복 제거
     image_urls = list(set(image_urls))
     
-    # 이미지 다운로드 실행
-    return await download_images(image_urls)
+    # 이미지 다운로드 실행 - 상품명 정보 전달
+    return await download_images(image_urls, product_names)
 
 async def main():
     """테스트 함수"""

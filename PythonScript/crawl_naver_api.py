@@ -545,6 +545,9 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         # URL의 고유 해시 생성 (파일명 중복 방지)
         url_hash = hashlib.md5(url.encode('utf-8', errors='ignore')).hexdigest()[:8]
         
+        # 상품명 해시값 생성 (MD5) - 16자로 통일
+        name_hash = hashlib.md5(product_name.encode('utf-8', errors='ignore')).hexdigest()[:16]
+        
         # URL에서 파일 확장자 추출
         parsed_url = urlparse(url)
         file_ext = os.path.splitext(parsed_url.path)[1].lower()
@@ -552,8 +555,8 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
         if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
             file_ext = '.jpg'
         
-        # 일관된 형식의 파일명 생성 (출처 정보 포함)
-        filename = f"naver_{sanitized_name}_{url_hash}{file_ext}"
+        # 새로운 형식으로 파일명 생성 (사이트이름_상품명해시_고유식별자)
+        filename = f"naver_{name_hash}_{url_hash}{file_ext}"
         local_path = os.path.join(save_dir, filename)
         final_image_path = local_path
         

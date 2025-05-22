@@ -870,12 +870,12 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
 
 async def download_image_to_main(image_url: str, product_name: str, config: configparser.ConfigParser, product_code: Optional[str] = None, max_retries: int = 3) -> Optional[str]:
     """Downloads an image from a URL, saves it to the 'Main/Haereum' directory with a structured name, and returns the local path."""
-    if not image_url or not image_url.strip():
-        logger.warning("Empty image URL provided to download_image_to_main")
+    if not product_name or not product_name.strip():
+        logger.warning("Product name is required for download_image_to_main")
         return None
 
     # --- Added Check: Ensure it's a product image URL ---
-    if '/upload/product/' not in image_url or '/upload/ad_new/' in image_url:
+    if image_url and ('/upload/product/' not in image_url or '/upload/ad_new/' in image_url):
         logger.warning(f"Skipping non-product or ad image URL: {image_url}")
         return None
     # --- End Added Check ---
@@ -907,14 +907,25 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     
     # Generate a safe filename
     try:
-        # Use product name to generate a safe filename
-        safe_name = re.sub(r'[^\\w\\-_.]', '_', product_name)[:50]  # Limit length
-        url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
+        # 상품명을 해시값으로 변환 (MD5) - 16자로 통일
+        name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
         
-        # Get file extension from URL
-        parsed_url = urlparse(image_url)
-        _, ext = os.path.splitext(parsed_url.path)
-        ext = ext.lower() or ".jpg"  # Default to .jpg if no extension
+        # URL의 해시값 (8자로 통일) - URL이 없는 경우 랜덤 해시 생성
+        if image_url and image_url.strip():
+            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
+        else:
+            # URL이 없는 경우 랜덤 해시 생성
+            import secrets
+            url_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
+            logger.info(f"Using random hash for missing URL: {url_hash}")
+        
+        # Get file extension from URL if available, otherwise default to .jpg
+        if image_url:
+            parsed_url = urlparse(image_url)
+            _, ext = os.path.splitext(parsed_url.path)
+            ext = ext.lower() or ".jpg"  # Default to .jpg if no extension
+        else:
+            ext = ".jpg"  # Default extension when no URL
         
         # Check for invalid extensions
         if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
@@ -929,9 +940,8 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             logger.info(f"Will convert {ext} image to JPG format during download")
             ext = '.jpg'
             
-        # Create final filename
-        code_suffix = f"_CODE{product_code}" if product_code else ""
-        filename = f"haereum_{safe_name}{code_suffix}_{url_hash}{ext}"
+        # Create final filename - 새로운 형식으로 변경
+        filename = f"haereum_{name_hash}_{url_hash}{ext}"
         local_path = os.path.join(main_dir, filename)
         final_image_path = local_path
         
@@ -962,6 +972,11 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     except Exception as e:
         logger.error(f"Error generating filename: {e}")
         return None
+    
+    # If no URL provided, return the generated path without downloading
+    if not image_url or not image_url.strip():
+        logger.info(f"No URL provided, returning generated path: {local_path}")
+        return local_path
     
     # Download the image with concurrency control
     try:

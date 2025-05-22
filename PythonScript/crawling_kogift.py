@@ -183,7 +183,7 @@ PAGE_TIMEOUT = 120000  # 2 minutes
 NAVIGATION_TIMEOUT = 60000  # 1 minute
 
 # --- Helper function to download images ---
-def download_image(url: str, save_dir: str, file_name: Optional[str] = None) -> Optional[str]:
+def download_image(url: str, save_dir: str, product_name: Optional[str] = None, file_name: Optional[str] = None) -> Optional[str]:
     """Download an image from a URL and save it to the specified disk directory."""
     if not url or not save_dir:
         logger.warning("URL or save directory not provided to download_image")
@@ -198,12 +198,25 @@ def download_image(url: str, save_dir: str, file_name: Optional[str] = None) -> 
     
     # Extract filename from URL if not provided
     if not file_name:
-        # URL의 해시값을 사용하여 고유한 파일명 생성
-        url_hash = hashlib.md5(url.encode()).hexdigest()
+        # Get file extension
         original_ext = os.path.splitext(urlparse(url).path)[1].lower()
         if not original_ext or original_ext not in ['.jpg', '.jpeg', '.png']:
             original_ext = '.jpg'
-        file_name = f"kogift_{url_hash}{original_ext}"
+            
+        if product_name:
+            # 상품명 해시값 생성 (MD5) - 16자로 통일
+            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+            
+            # URL 해시값 (8자로 통일)
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+            
+            # 새로운 형식으로 파일명 생성
+            file_name = f"kogift_{name_hash}_{url_hash}{original_ext}"
+        else:
+            # 상품명이 없는 경우 기존 방식 유지 (fallback)
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+            random_hash = hashlib.md5(str(random.random()).encode()).hexdigest()[:10]
+            file_name = f"kogift_{url_hash}_{random_hash}{original_ext}"
     
     # Create save directory if it doesn't exist
     try:
@@ -412,13 +425,14 @@ def download_image(url: str, save_dir: str, file_name: Optional[str] = None) -> 
     logger.error(f"Failed to download image after {max_attempts} attempts: {url}")
     return None
 
-def download_images_batch(img_urls, save_dir='downloaded_images', max_workers=10):
+def download_images_batch(img_urls, save_dir='downloaded_images', product_name=None, max_workers=10):
     """
     Download multiple images in parallel using a thread pool.
     
     Args:
         img_urls: List of image URLs to download
         save_dir: Directory to save the images
+        product_name: Product name for generating filename
         max_workers: Maximum number of concurrent downloads
         
     Returns:
@@ -430,7 +444,7 @@ def download_images_batch(img_urls, save_dir='downloaded_images', max_workers=10
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_url = {
-            executor.submit(download_image, url, save_dir): url 
+            executor.submit(download_image, url, save_dir, product_name): url 
             for url in img_urls if url
         }
         

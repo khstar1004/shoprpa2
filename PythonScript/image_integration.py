@@ -1741,6 +1741,115 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
     
     return result_df
 
+def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
+    """
+    Filter images based on similarity scores and URL validity.
+    
+    Args:
+        df: DataFrame containing image data
+        config: Configuration settings
+        
+    Returns:
+        Filtered DataFrame
+    """
+    logger.info("Filtering images based on similarity scores...")
+    
+    # Get similarity threshold from config
+    try:
+        similarity_threshold = config.getfloat('ImageFiltering', 'similarity_threshold', fallback=0.4)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        similarity_threshold = 0.4  # Default threshold
+    
+    # Create a copy of the DataFrame to avoid modifying the original
+    filtered_df = df.copy()
+    
+    # Process each row
+    for idx in range(len(filtered_df)):
+        # Check each image source
+        for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+            if col_name in filtered_df.columns:
+                image_data = filtered_df.at[idx, col_name]
+                
+                # Skip if no image data
+                if not isinstance(image_data, dict):
+                    continue
+                
+                # Get similarity score
+                score = image_data.get('score', 0.0)
+                
+                # Filter out low similarity scores
+                if score < similarity_threshold:
+                    logger.info(f"Filtering out {col_name} for row {idx} due to low similarity score: {score:.3f}")
+                    filtered_df.at[idx, col_name] = None
+    
+    return filtered_df
+
+def create_excel_with_images(df: pd.DataFrame, output_file: str):
+    """
+    Create an Excel file with embedded images.
+    
+    Args:
+        df: DataFrame containing image data
+        output_file: Path to output Excel file
+    """
+    logger.info(f"Creating Excel file with images: {output_file}")
+    
+    # Create a new Excel writer
+    writer = pd.ExcelWriter(output_file, engine='openpyxl')
+    
+    # Write the DataFrame to Excel
+    df.to_excel(writer, index=False, sheet_name='Images')
+    
+    # Get the worksheet
+    worksheet = writer.sheets['Images']
+    
+    # Process each row
+    for idx in range(len(df)):
+        row_num = idx + 2  # Excel rows start at 1, and we have a header row
+        
+        # Process each image column
+        for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
+            if col_name in df.columns:
+                image_data = df.at[idx, col_name]
+                
+                # Skip if no image data
+                if not isinstance(image_data, dict):
+                    continue
+                
+                # Get image path
+                image_path = image_data.get('local_path')
+                if not image_path or not os.path.exists(str(image_path)):
+                    continue
+                
+                # Add image to Excel
+                try:
+                    img = Image.open(str(image_path))
+                    img_width, img_height = img.size
+                    
+                    # Resize image if too large
+                    max_width = 200
+                    if img_width > max_width:
+                        ratio = max_width / img_width
+                        img_width = max_width
+                        img_height = int(img_height * ratio)
+                    
+                    # Create image cell
+                    cell = worksheet.cell(row=row_num, column=df.columns.get_loc(col_name) + 1)
+                    cell.value = f"Image: {os.path.basename(str(image_path))}"
+                    
+                    # Add image
+                    img = openpyxl.drawing.image.Image(str(image_path))
+                    img.width = img_width
+                    img.height = img_height
+                    worksheet.add_image(img, cell.coordinate)
+                    
+                except Exception as e:
+                    logger.error(f"Error adding image to Excel: {e}")
+    
+    # Save the Excel file
+    writer.close()
+    logger.info(f"Excel file created successfully: {output_file}")
+
 def calculate_text_similarity(text1: str, text2: str) -> float:
     """
     Calculate text similarity between two strings.
