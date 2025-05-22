@@ -47,7 +47,8 @@ from crawling_kogift import should_block_request, setup_page_optimizations
 # 로거 설정
 logger = logging.getLogger(__name__)
 
-# Global semaphore for file operations
+# Global semaphore for ALL operations (file operations AND web scraping)
+# 모든 작업을 순차적으로 처리하여 IP 차단 방지
 file_semaphore = asyncio.Semaphore(1)
 
 # Constants moved to config or passed in scrape_haereum_data
@@ -59,15 +60,19 @@ file_semaphore = asyncio.Semaphore(1)
 # PATTERNS = ...
 
 # Add browser context timeout settings
-BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes (reduced from 10)
-PAGE_TIMEOUT = 180000  # 3 minutes (reduced from 5)
-NAVIGATION_TIMEOUT = 90000  # 1.5 minutes (reduced from 2)
-WAIT_TIMEOUT = 20000  # 20 seconds (reduced from 30)
+BROWSER_CONTEXT_TIMEOUT = 300000  # 5 minutes
+PAGE_TIMEOUT = 240000  # 4 minutes (increased)
+NAVIGATION_TIMEOUT = 120000  # 2 minutes (increased)
+WAIT_TIMEOUT = 30000  # 30 seconds (increased)
 
 # Add retry settings
 MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
-RETRY_BACKOFF_FACTOR = 2  # Exponential backoff factor
+RETRY_DELAY = 15  # seconds (더 증가)
+RETRY_BACKOFF_FACTOR = 2.0  # Exponential backoff factor (증가)
+
+# IP 차단 감지 후 대기 시간
+IP_BLOCK_WAIT_TIME = 120  # 2분 대기 (IP 차단 감지 시)
+MIN_SCRAPE_INTERVAL = 10  # 각 요청 사이 최소 10초 대기
 
 def _normalize_text(text: str) -> str:
     """Normalizes text (remove extra whitespace)."""
@@ -93,9 +98,10 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
     Returns:
         이미지 URL과 로컬 경로를 포함하는 딕셔너리 또는 None
     """
-    # Create a new semaphore for this function call
-    max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=2)
-    scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows
+    # 순차 처리를 위해 전역 세마포어 사용 (IP 차단 방지)
+    global file_semaphore  # 이미 정의된 세마포어 재사용
+    # 항상 1로 강제 설정하여 동시 접속 방지
+    scraping_semaphore = file_semaphore  # 파일 작업과 크롤링에 동일 세마포어 사용하여 순차 실행 보장
     
     retry_count = 0
     last_error = None
@@ -142,22 +148,42 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                                 logger.warning(f"Could not parse browser arguments: {arg_err}. Using defaults.")
                                 browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
                             
-                            # Launch a new browser
-                            try:
-                                headless = config.getboolean('Playwright', 'playwright_headless', fallback=True)
-                                browser = await playwright.chromium.launch(
-                                    headless=headless,
-                                    args=browser_args,
-                                    timeout=60000  # 1 minute timeout for browser launch
-                                )
-                                logger.info("🟢 Successfully launched a new browser instance for Haereum")
-                            except Exception as launch_err:
-                                logger.error(f"Failed to launch new browser for Haereum: {launch_err}")
-                                # Use default image if configured
-                                if use_default_image and default_image_path and os.path.exists(default_image_path):
-                                    logger.info(f"Using default image after browser launch failure: {default_image_path}")
-                                    return {"url": "default", "local_path": default_image_path, "source": "haereum_default"}
-                                return None
+                                                            # Launch a new browser
+                                try:
+                                    headless = config.getboolean('Playwright', 'playwright_headless', fallback=True)
+                                    
+                                    # Add SwiftShader flag which fixes WebGL deprecated warnings
+                                    if "--enable-unsafe-swiftshader" not in browser_args:
+                                        browser_args.append("--enable-unsafe-swiftshader")
+                                    
+                                    # Add additional stability flags
+                                    stability_flags = [
+                                        "--disable-background-timer-throttling",
+                                        "--disable-backgrounding-occluded-windows",
+                                        "--disable-breakpad",
+                                        "--disable-component-extensions-with-background-pages",
+                                        "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+                                        "--disable-ipc-flooding-protection",
+                                        "--disable-renderer-backgrounding"
+                                    ]
+                                    
+                                    for flag in stability_flags:
+                                        if flag not in browser_args:
+                                            browser_args.append(flag)
+                                            
+                                    browser = await playwright.chromium.launch(
+                                        headless=headless,
+                                        args=browser_args,
+                                        timeout=90000  # 1.5 minute timeout for browser launch (increased)
+                                    )
+                                    logger.info("🟢 Successfully launched a new browser instance for Haereum")
+                                except Exception as launch_err:
+                                    logger.error(f"Failed to launch new browser for Haereum: {launch_err}")
+                                    # Use default image if configured
+                                    if use_default_image and default_image_path and os.path.exists(default_image_path):
+                                        logger.info(f"Using default image after browser launch failure: {default_image_path}")
+                                        return {"url": "default", "local_path": default_image_path, "source": "haereum_default"}
+                                    return None
                         else:
                             # Skip this attempt if we couldn't reconnect
                             logger.error(f"🔴 Browser is not connected and cannot be recreated for Haereum scrape.")
@@ -172,35 +198,112 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     if context_delay > 0:
                         await asyncio.sleep(context_delay / 1000)  # Convert ms to seconds
                     
-                    # Create a new context with proper settings
+                    # Create a new context with improved settings
                     context = await browser.new_context(
                         user_agent=user_agent,
-                        viewport={'width': 1920, 'height': 1080}
+                        viewport={'width': 1280, 'height': 800},  # Reduced resolution for stability
+                        java_script_enabled=True,  # Ensure JS is enabled
+                        bypass_csp=True,  # Bypass Content Security Policy for better compatibility
+                        ignore_https_errors=True,  # Ignore HTTPS errors
                     )
+                    
+                    # Set context timeout
+                    context.set_default_timeout(BROWSER_CONTEXT_TIMEOUT)
                     
                     # Create a new page with increased timeouts
                     page = await context.new_page()
-                    page.set_default_timeout(config.getint('Playwright', 'playwright_default_timeout_ms', fallback=120000))
-                    page.set_default_navigation_timeout(config.getint('Playwright', 'playwright_navigation_timeout_ms', fallback=60000))
-
+                    page.set_default_timeout(PAGE_TIMEOUT)
+                    page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
+                    
+                    # Enable JavaScript error logging
+                    await page.evaluate("""
+                        window.addEventListener('error', (event) => {
+                            console.error('JavaScript error:', event.message);
+                        });
+                    """)
+                    
+                    # Optimize page performance
                     if config.getboolean('Playwright', 'playwright_block_resources', fallback=True):
                         await setup_page_optimizations(page)
+                        
+                    # Add cleanup handler to ensure page is properly closed
+                    page.on("close", lambda: logger.debug("Page closed event triggered"))
 
                     # ----- 중요 변경 부분: 항상 메인 페이지로 이동하여 검색 -----
                     logger.info(f"🌐 메인 사이트로 이동: {haereum_main_url}")
                     
-                    # Add retry logic for the initial navigation
-                    for nav_attempt in range(3):
+                    # Improved retry logic for the initial navigation with longer timeouts
+                    for nav_attempt in range(4): # Increased retries
                         try:
-                            await page.goto(haereum_main_url, wait_until="domcontentloaded", 
-                                          timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=90000))
-                            # Short pause after navigation to allow page to stabilize
-                            await page.wait_for_timeout(5000)
-                            break  # Break out of retry loop if successful
+                            # First try to clear the context if not the first attempt
+                            if nav_attempt > 0:
+                                try:
+                                    # Clear cookies, storage and permissions
+                                    await context.clear_cookies()
+                                    await context.clear_permissions()
+                                    logger.info(f"Context cleared before retry #{nav_attempt+1}")
+                                    # Add longer pause between retries
+                                    await asyncio.sleep(5)
+                                except Exception as clear_err:
+                                    logger.warning(f"Error clearing context: {clear_err}")
+                            
+                            # Use a less strict wait_until policy for more reliable loading
+                            await page.goto(
+                                haereum_main_url, 
+                                wait_until="load", # Changed from "domcontentloaded" to "load" for more complete page loading
+                                timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=120000) # Increased timeout
+                            )
+                            
+                            # Longer pause after navigation to allow page to fully stabilize
+                            await page.wait_for_timeout(8000) # Increased from 5000ms
+                            
+                            # Verify the page loaded correctly and check for IP 차단 감지
+                            try:
+                                await page.wait_for_selector('body', timeout=5000)
+                                
+                                # IP 차단 감지 - 페이지 내용 확인
+                                page_content = await page.content()
+                                
+                                # IP 차단 메시지 패턴 (차단 메시지가 있는지 확인)
+                                ip_block_patterns = [
+                                    "접속이 차단되었습니다",
+                                    "access denied",
+                                    "blocked",
+                                    "too many requests",
+                                    "access temporarily restricted",
+                                    "비정상적인 접속",
+                                    "일시적으로 접속이 제한",
+                                    "차단된 IP"
+                                ]
+                                
+                                # IP 차단 확인
+                                is_blocked = any(pattern.lower() in page_content.lower() for pattern in ip_block_patterns)
+                                
+                                if is_blocked:
+                                    logger.warning(f"⚠️ IP 차단 감지됨. {IP_BLOCK_WAIT_TIME}초 대기 후 재시도...")
+                                    await asyncio.sleep(IP_BLOCK_WAIT_TIME)
+                                    if nav_attempt < 3:
+                                        continue
+                                    else:
+                                        raise PlaywrightError("IP 차단으로 인해 접속 불가")
+                                
+                                logger.info(f"✅ Page navigation successful on attempt {nav_attempt+1}")
+                                # 성공해도 최소 대기 시간 적용 (IP 차단 방지)
+                                await asyncio.sleep(MIN_SCRAPE_INTERVAL)
+                                break  # Break out of retry loop if successful
+                            except Exception as verify_err:
+                                logger.warning(f"Page verification failed: {verify_err}")
+                                if nav_attempt < 3:
+                                    # 실패해도 대기 시간 적용 (연속 요청 방지)
+                                    await asyncio.sleep(MIN_SCRAPE_INTERVAL * (nav_attempt + 1))
+                                    continue
+                                else:
+                                    raise
+                                
                         except PlaywrightError as nav_err:
-                            if nav_attempt < 2:  # Try again if we haven't reached max retries
-                                logger.warning(f"Navigation error (attempt {nav_attempt+1}/3): {nav_err}")
-                                await asyncio.sleep(2)  # Wait before retry
+                            if nav_attempt < 3:  # Try again if we haven't reached max retries
+                                logger.warning(f"Navigation error (attempt {nav_attempt+1}/4): {nav_err}")
+                                await asyncio.sleep(5 * (nav_attempt + 1))  # Progressively longer waits before retry
                             else:
                                 raise  # Re-raise on final attempt
                     
@@ -721,14 +824,37 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         continue
                     raise
                 finally:
-                    # Ensure proper cleanup
+                    # Enhanced cleanup to prevent resource leaks
                     try:
-                        if 'page' in locals():
-                            await page.close()
-                        if 'context' in locals():
-                            await context.close()
+                        if 'page' in locals() and page:
+                            try:
+                                # First try to remove all listeners to prevent callback errors
+                                page.remove_listener("close", lambda: None)
+                                # Then close with a timeout
+                                await asyncio.wait_for(page.close(), timeout=5.0)
+                                logger.debug("Page closed successfully")
+                            except asyncio.TimeoutError:
+                                logger.warning("Page close timed out, continuing with context cleanup")
+                            except Exception as page_err:
+                                logger.warning(f"⚠️ Error closing page: {page_err}")
+                        
+                        if 'context' in locals() and context:
+                            try:
+                                # Try to clear context data first
+                                await context.clear_cookies()
+                                # Then close with a timeout
+                                await asyncio.wait_for(context.close(), timeout=5.0)
+                                logger.debug("Context closed successfully")
+                            except asyncio.TimeoutError:
+                                logger.warning("Context close timed out")
+                            except Exception as ctx_err:
+                                logger.warning(f"⚠️ Error closing context: {ctx_err}")
+                        
+                        # Force garbage collection to release memory
+                        import gc
+                        gc.collect()
                     except Exception as e:
-                        logger.warning(f"⚠️ Error during cleanup: {e}")
+                        logger.warning(f"⚠️ Error during enhanced cleanup: {e}")
 
         except Exception as e:
             last_error = e
@@ -1261,16 +1387,16 @@ async def _test_main():
         start_time = time.time()
         
         try:
-            # 동시 작업 제한 세마포어
-            max_windows = 1  # 동시 연결 수를 1로 줄임
-            scraping_semaphore = asyncio.Semaphore(max_windows)
+            # 순차 처리 강제화 (IP 차단 방지)
+            # 동시 작업을 절대 허용하지 않음
+            scraping_semaphore = asyncio.Semaphore(1)
             
-            # 배치 크기 설정 (작은 배치로 나누어 처리)
-            batch_size = 1  # 배치 크기도 1로 줄임
+            # 한 번에 하나씩만 처리
+            batch_size = 1
             results = []
             
-            # 배치 간 대기 시간 늘림
-            batch_delay = 5  # 배치 간 5초 대기
+            # 배치 간 대기 시간 크게 늘림
+            batch_delay = 30  # 배치 간 30초 대기 (IP 차단 방지)
             
             # 배치 단위로 처리
             for batch_start in range(0, len(product_codes), batch_size):
@@ -1284,10 +1410,19 @@ async def _test_main():
                 for product_code in batch:
                     async def scrape_with_semaphore(code):
                         async with scraping_semaphore:
-                            # 각 요청 전에 짧은 대기 시간 추가
-                            await asyncio.sleep(2)  # 요청 간 2초 대기
-                            # 키워드는 비워두고 상품 코드로만 검색
-                            return (code, await scrape_haereum_data(browser, "", config, product_code=code))
+                            # 각 요청 전에 충분한 대기 시간 추가 (IP 차단 방지)
+                            logger.info(f"상품코드 '{code}' 크롤링 전 {MIN_SCRAPE_INTERVAL}초 대기...")
+                            await asyncio.sleep(MIN_SCRAPE_INTERVAL)  # 요청 간 최소 10초 대기
+                            
+                            # 상품 코드로만 검색 시작
+                            logger.info(f"상품코드 '{code}' 크롤링 시작")
+                            result = await scrape_haereum_data(browser, "", config, product_code=code)
+                            
+                            # 크롤링 후 추가 대기 시간
+                            logger.info(f"상품코드 '{code}' 크롤링 완료, 다음 요청 전 추가 대기...")
+                            await asyncio.sleep(MIN_SCRAPE_INTERVAL)  # 요청 후에도 대기
+                            
+                            return (code, result)
                     task = asyncio.create_task(scrape_with_semaphore(product_code))
                     batch_tasks.append(task)
                 
