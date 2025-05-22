@@ -990,12 +990,17 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
                 
             total_images += 1
             
-            # 상품명 추출 (엑셀의 "상품명" 칼럼 값)
-            product_name = product.get('name') or product.get('product_name') or product.get('title')
+            # 엑셀의 원본 상품명 사용 (해시값 통일을 위해)
+            product_name = product.get('original_excel_product_name')
             
             if not product_name:
-                logger.warning(f"상품명을 찾을 수 없음, URL: {img_url}")
-                continue
+                # Fallback: 웹사이트에서 스크래핑한 상품명 사용
+                product_name = product.get('name') or product.get('product_name') or product.get('title')
+                if product_name:
+                    logger.warning(f"엑셀 원본 상품명이 없어 웹사이트 상품명 사용: {product_name}")
+                else:
+                    logger.warning(f"상품명을 찾을 수 없음, URL: {img_url}")
+                    continue
             
             # 개별 이미지 다운로드 (상품명 전달)
             try:
@@ -1302,6 +1307,10 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
         logger.info(f"Removed {len(raw_kogift_urls) - len(unique_kogift_urls)} duplicate Kogift base URLs. Using: {unique_kogift_urls}")
     else:
         logger.info(f"Using Kogift base URLs: {unique_kogift_urls}")
+
+    # 엑셀의 원본 상품명 저장 (이미지 다운로드용)
+    original_excel_product_name = original_keyword1
+    logger.info(f"엑셀 원본 상품명 저장: '{original_excel_product_name}'")
 
     max_items_per_variation = get_max_items_per_variation(config)
     
@@ -1635,6 +1644,8 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         # item_data['name'] is already set
                                         item_data['supplier'] = supplier
                                         item_data['search_keyword'] = keyword
+                                        # 엑셀의 원본 상품명 저장 (이미지 다운로드용)
+                                        item_data['original_excel_product_name'] = original_excel_product_name
                                         
                                         # 가격 정보 처리 (목록 페이지에 표시된 기본 가격 - 특정 수량에 대한 가격이 아님)
                                         price_cleaned = re.sub(r'[^\d.]', '', price_text) if price_text else ""
