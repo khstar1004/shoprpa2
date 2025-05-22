@@ -979,27 +979,37 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
     
     # 이미지 다운로드 처리
     if download_enabled:
-        # 유효한 이미지 URL만 수집
-        valid_urls = []
-        url_to_product_map = {}
+        # 각 상품별로 개별 이미지 다운로드 (상품명별로 처리)
+        download_success_count = 0
+        total_images = 0
         
         for product in product_list:
             img_url = product.get('image')
-            if img_url:
-                valid_urls.append(img_url)
-                url_to_product_map[img_url] = product
+            if not img_url:
+                continue
+                
+            total_images += 1
+            
+            # 상품명 추출 (엑셀의 "상품명" 칼럼 값)
+            product_name = product.get('name') or product.get('product_name') or product.get('title')
+            
+            if not product_name:
+                logger.warning(f"상품명을 찾을 수 없음, URL: {img_url}")
+                continue
+            
+            # 개별 이미지 다운로드 (상품명 전달)
+            try:
+                local_path = download_image(img_url, images_dir, product_name)
+                if local_path:
+                    product['local_image_path'] = local_path
+                    download_success_count += 1
+                    logger.debug(f"이미지 다운로드 성공: {product_name} -> {local_path}")
+                else:
+                    logger.warning(f"이미지 다운로드 실패: {product_name}, URL: {img_url}")
+            except Exception as e:
+                logger.error(f"이미지 다운로드 오류: {product_name}, URL: {img_url}, 오류: {e}")
         
-        logger.info(f"총 {len(valid_urls)}개 이미지 다운로드 시작")
-        
-        # 이미지 일괄 다운로드
-        downloaded_images = download_images_batch(valid_urls, save_dir=images_dir)
-        
-        # 다운로드된 이미지 경로를 제품 데이터에 추가
-        for url, local_path in downloaded_images.items():
-            if url in url_to_product_map:
-                url_to_product_map[url]['local_image_path'] = local_path
-        
-        logger.info(f"이미지 다운로드 완료: {len(downloaded_images)}/{len(valid_urls)} 성공")
+        logger.info(f"이미지 다운로드 완료: {download_success_count}/{total_images} 성공")
     
     # 샘플링 비율에 따라 URL 검증 (기존 코드는 주석 처리)
     if verify_enabled and sample_percent > 0 and not download_enabled:
