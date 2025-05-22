@@ -242,21 +242,12 @@ def filter_upload_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # Combine filtering conditions:
     # 1. Remove rows where both Kogift and Naver links are missing
-    # 2. Keep rows only if BOTH Kogift and Naver have price differences < -1
-    # For rows with only one link present, require that link's price difference to be < -1
+    # 2. Keep rows that have EITHER Kogift price < -1 OR Naver price < -1
     rows_to_keep_mask = (
         # Don't keep row if both links are missing
         (~missing_links_mask) &
-        # AND 
-        (
-            # If Kogift link exists, its price difference must be < -1
-            ((~is_kogift_missing) & kogift_price_valid) |
-            # If Naver link exists, its price difference must be < -1
-            ((~is_naver_missing) & naver_price_valid) |
-            # Keep rows where one link is missing (but not both) and the other link has valid price
-            (is_kogift_missing & naver_price_valid) |
-            (is_naver_missing & kogift_price_valid)
-        )
+        # AND only keep row if either Kogift or Naver has a price difference < -1
+        (kogift_price_valid | naver_price_valid)
     )
     
     # Apply the filter

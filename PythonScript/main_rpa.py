@@ -47,6 +47,7 @@ from .fix_kogift_images import fix_excel_kogift_images
 from .naver_data_cleaner import clean_naver_data, get_invalid_naver_rows
 from .naver_data_cleaner import fix_missing_naver_images # Re-enabled import
 from .excel_image_placer import create_excel_with_placed_images # 이미지 배치 함수 추가
+from .price_difference_filter import filter_by_price_difference # 가격차이 필터링 함수 추가
 
 # Global configuration
 warnings.filterwarnings('ignore')
@@ -1173,6 +1174,22 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                                     except Exception as filter_err:
                                         logging.error(f"Error applying filter to upload file {upload_path}: {filter_err}", exc_info=True)
                                     # --- End Apply Filter ---
+                                    
+                                    # --- Apply Price Difference Filter to Upload File (Remove rows with price difference >= -1) ---
+                                    try:
+                                        # Check if upload path is valid before filtering
+                                        if upload_path and isinstance(upload_path, str):
+                                            logging.info(f"Applying price difference filter to upload file: {upload_path}")
+                                            price_filter_applied = filter_by_price_difference(upload_path, config)
+                                            if price_filter_applied:
+                                                logging.info("Price difference filter successfully applied to upload file.")
+                                            else:
+                                                logging.warning("Price difference filter could not be applied to the upload file. Proceeding without this filter.")
+                                        else:
+                                            logging.warning(f"Invalid or missing upload path ({upload_path}), skipping price difference filter.")
+                                    except Exception as price_filter_err:
+                                        logging.error(f"Error applying price difference filter to upload file {upload_path}: {price_filter_err}", exc_info=True)
+                                    # --- End Price Difference Filter ---
                                     
                                     # --- Try to fix Naver images in both files ---
                                     try:
