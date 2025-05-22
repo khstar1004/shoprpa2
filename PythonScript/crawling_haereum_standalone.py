@@ -26,6 +26,7 @@ import aiohttp
 import aiofiles
 import hashlib
 from PIL import Image
+import argparse
 
 # Ensure utils can be imported if run directly
 # Assuming utils.py is in the same directory or Python path is set correctly
@@ -1249,171 +1250,265 @@ async def try_direct_product_code_fallback(page: Page, keyword: str, config: con
 async def _test_main():
     from playwright.async_api import async_playwright
     from utils import load_config # Import config loader
+    import sys
+    import os.path
     
+    # Set up logging first
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
+    
+    # 테스트할 상품 코드 목록
+    product_codes = [
+        # 사용자 제공 코드
+        "442416", "442414", "442413", "442412", "442411", 
+        "442409", "442405", "442404", "442403",
+        # 샘플 입력 파일의 코드
+        "439522", "439508", "439503", "438769", "436090", "436088"
+    ]
+    
+    # 헤드리스 모드 설정 (기본값: True)
+    headless_mode = True
+    
+    # 명령줄 인수 처리 (단순화된 방식)
+    if len(sys.argv) > 1:
+        # 헤드리스 모드 설정 확인
+        if '--no-headless' in sys.argv:
+            headless_mode = False
+            logging.info("브라우저 표시 모드로 실행합니다 (헤드리스 모드 비활성화)")
+        
+        # 특정 상품 코드만 테스트할 경우
+        for arg in sys.argv:
+            if arg.startswith('--codes='):
+                codes = arg.replace('--codes=', '').split(',')
+                if codes:
+                    product_codes = [code.strip() for code in codes]
+                    logging.info(f"지정된 상품 코드로 테스트합니다: {product_codes}")
+    
+    logging.info(f"테스트 설정: {len(product_codes)}개 상품 코드, 헤드리스 모드: {headless_mode}")
+    
+    # 설정 로드
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
     config = load_config(config_path)
     if not config.sections():
-        print(f"Test Error: Could not load config from {config_path}")
+        logger.error(f"설정 파일을 로드할 수 없습니다: {config_path}")
         return
     
-    # Set up a default image for testing
+    # 기본 이미지 설정
     if not config.has_section('Paths'):
         config.add_section('Paths')
     
-    # Create a default image path if not already set
+    # 기본 이미지 경로 설정 (없는 경우)
     if not config.has_option('Paths', 'default_image_path'):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         default_img_dir = os.path.join(script_dir, '..', 'images', 'defaults')
         os.makedirs(default_img_dir, exist_ok=True)
         
-        # Check if a default image exists
+        # 기본 이미지 확인
         default_img_path = os.path.join(default_img_dir, 'haereum_default.jpg')
         if not os.path.exists(default_img_path):
-            # Create a simple default image (black 100x100 square)
             try:
                 from PIL import Image
                 img = Image.new('RGB', (100, 100), color = 'black')
                 img.save(default_img_path)
-                logger.info(f"Created default test image at: {default_img_path}")
+                logger.info(f"기본 테스트 이미지 생성: {default_img_path}")
             except Exception as e:
-                logger.error(f"Could not create default image: {e}")
+                logger.error(f"기본 이미지를 생성할 수 없습니다: {e}")
                 default_img_path = None
                 
-        # Set the default image path in config
+        # 기본 이미지 경로 설정
         if default_img_path:
             config.set('Paths', 'default_image_path', default_img_path)
-            logger.info(f"Set default_image_path to: {default_img_path}")
     
-    # Enable default image usage
+    # 기본 이미지 사용 설정
     if not config.has_section('Matching'):
         config.add_section('Matching')
     config.set('Matching', 'use_default_image_when_not_found', 'True')
     
-    # Make sure we use the current config.ini settings for browser launching
+    # 브라우저 설정
     if not config.has_section('Playwright'):
         config.add_section('Playwright')
+    config.set('Playwright', 'playwright_headless', str(headless_mode).lower())
+    config.set('Playwright', 'playwright_max_concurrent_windows', '2')
     
-    # Set headless mode for testing - use value from config if exists
-    if not config.has_option('Playwright', 'playwright_headless'):
-        config.set('Playwright', 'playwright_headless', 'true')  # Default to headless for tests
-        
-    # Set conservative browser limits to avoid resource issues
-    if not config.has_option('Playwright', 'playwright_max_concurrent_windows'):
-        config.set('Playwright', 'playwright_max_concurrent_windows', '2')  # Limit concurrent windows
-        
-    # Updated test keywords based on user's request
-    test_product_codes = [
-        "179879",
-        "170480",
-        "169514",
-        "119387",
-        "119386",
-        "119385"
-    ]
-    
-    logger.info(f"--- Running Parallel Test for Haereum Gift with {len(test_product_codes)} product codes ---")
+    logger.info(f"=== 해오름 이미지 스크래퍼 테스트 시작 ({len(product_codes)}개 상품 코드) ===")
     
     async with async_playwright() as p:
         browser = None
         try:
-            # Get browser arguments from config if available
-            browser_args = []
-            try:
-                browser_args_str = config.get('Playwright', 'playwright_browser_args', fallback='[]')
-                import json
-                browser_args = json.loads(browser_args_str)
-            except Exception:
-                browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
-                
-            headless_mode = config.getboolean('Playwright', 'playwright_headless', fallback=True)
-            max_windows = config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=2)
+            # 브라우저 인수 설정
+            browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
             
-            logger.info(f"Launching browser (headless: {headless_mode}, max_windows: {max_windows})")
+            logger.info(f"브라우저 시작 중 (헤드리스: {headless_mode})")
             browser = await p.chromium.launch(
                 headless=headless_mode,
                 args=browser_args,
-                timeout=60000  # 1 minute timeout for browser launch
+                timeout=60000  # 브라우저 시작 제한시간: 1분
             )
         except Exception as browser_err:
-            logger.error(f"Failed to launch browser: {browser_err}")
+            logger.error(f"브라우저 시작 실패: {browser_err}")
             return
              
         start_time = time.time()
         
         try:
-            # Create tasks for parallel execution with semaphore and chunking
+            # 동시 연결 수 및 요청 간격 설정 수정
+            # 동시 작업 제한 세마포어 - 1로 변경하여 한 번에 하나의 연결만 허용
+            max_windows = 1  # 동시 연결 수를 1로 줄임
             scraping_semaphore = asyncio.Semaphore(max_windows)
             
-            # Split product codes into smaller batches to avoid overloading the browser
-            batch_size = 2  # Process 2 product codes at a time maximum
+            # 배치 크기 설정 (작은 배치로 나누어 처리)
+            batch_size = 1  # 배치 크기도 1로 줄임
             results = []
             
-            for batch_start in range(0, len(test_product_codes), batch_size):
-                batch_end = min(batch_start + batch_size, len(test_product_codes))
-                batch = test_product_codes[batch_start:batch_end]
+            # 배치 간 대기 시간 늘림
+            batch_delay = 5  # 배치 간 5초 대기
+            
+            # 배치 단위로 처리
+            for batch_start in range(0, len(product_codes), batch_size):
+                batch_end = min(batch_start + batch_size, len(product_codes))
+                batch = product_codes[batch_start:batch_end]
                 
-                logger.info(f"Processing batch of {len(batch)} product codes ({batch_start+1}-{batch_end} of {len(test_product_codes)})")
+                logger.info(f"배치 처리 중: {len(batch)}개 상품 코드 ({batch_start+1}-{batch_end}/{len(product_codes)})")
                 
-                # Create tasks for this batch
+                # 배치 작업 생성
                 batch_tasks = []
                 for product_code in batch:
                     async def scrape_with_semaphore(code):
                         async with scraping_semaphore:
+                            # 각 요청 전에 짧은 대기 시간 추가
+                            await asyncio.sleep(2)  # 요청 간 2초 대기
+                            # 키워드는 비워두고 상품 코드로만 검색
                             return (code, await scrape_haereum_data(browser, "", config, product_code=code))
                     task = asyncio.create_task(scrape_with_semaphore(product_code))
                     batch_tasks.append(task)
                 
-                # Wait for this batch to complete
+                # 배치 작업 실행 및 결과 수집
                 batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
                 results.extend(batch_results)
                 
-                # Add a small delay between batches to avoid resource spikes
-                if batch_end < len(test_product_codes):
-                    logger.info(f"Batch complete. Waiting before starting next batch...")
-                    await asyncio.sleep(3)
+                # 배치 간 긴 대기 시간
+                if batch_end < len(product_codes):
+                    logger.info(f"배치 완료. 다음 배치 시작 전 {batch_delay}초 대기...")
+                    await asyncio.sleep(batch_delay)  # 배치 간 대기 시간 늘림
             
-            # Process and display results
-            print("\n--- Parallel Scraping Test Results ---")
+            # 결과 출력
+            print("\n" + "="*80)
+            print(f"해오름 이미지 스크래퍼 테스트 결과")
+            print("="*80)
+            
             success_count = 0
             error_count = 0
+            not_found_count = 0
+            default_count = 0
             
-            for result in results:
+            # 이미지 파일 확인 함수 추가
+            def check_image_file(file_path):
+                try:
+                    if not file_path or not os.path.exists(file_path):
+                        return False, "파일 없음", 0, "N/A"
+                    
+                    file_size = os.path.getsize(file_path)
+                    if file_size == 0:
+                        return False, "파일 크기 0", 0, "N/A"
+                    
+                    # 이미지 형식 확인 (선택적)
+                    try:
+                        from PIL import Image
+                        img = Image.open(file_path)
+                        img_format = img.format
+                        img_size = img.size
+                        return True, "정상", file_size, f"{img_format} ({img_size[0]}x{img_size[1]})"
+                    except Exception as img_err:
+                        return True, f"파일 있음 (이미지 확인 오류: {img_err})", file_size, "N/A"
+                        
+                except Exception as e:
+                    return False, f"확인 오류: {e}", 0, "N/A"
+            
+            # 상품 코드로 정렬하여 출력
+            sorted_results = sorted(results, key=lambda x: x[0] if isinstance(x, tuple) and len(x) == 2 else "")
+            
+            for result in sorted_results:
                 if isinstance(result, Exception):
                     error_count += 1
-                    print(f"❌ Error: {str(result)}")
+                    print(f"❌ 오류: {str(result)}")
                 elif isinstance(result, tuple) and len(result) == 2:
                     product_code, data = result
                     if isinstance(data, Exception):
                         error_count += 1
-                        print(f"❌ Error for product code '{product_code}': {str(data)}")
+                        print(f"❌ 상품 코드 '{product_code}' 처리 중 오류: {str(data)}")
                     elif data and data.get("url"):
-                        success_count += 1
-                        print(f"✅ Success for product code '{product_code}':")
-                        print(f"  - Image URL: {data.get('url')}")
-                        print(f"  - Local path: {data.get('local_path')}")
-                        print(f"  - Source: {data.get('source')}")
+                        if data.get("source") == "haereum_default":
+                            default_count += 1
+                            print(f"⚠️ 상품 코드 '{product_code}': 기본 이미지 사용")
+                            file_exists, status, file_size, img_info = check_image_file(data.get('local_path'))
+                            print(f"   경로: {data.get('local_path', 'N/A')}")
+                            print(f"   상태: {status} {'✅' if file_exists else '❌'}")
+                            print(f"   크기: {file_size:,} 바이트")
+                        else:
+                            success_count += 1
+                            url = data.get('url')
+                            local_path = data.get('local_path')
+                            method = data.get('method', '알 수 없음')
+                            
+                            # 파일 상태 확인
+                            file_exists, status, file_size, img_info = check_image_file(local_path)
+                            file_icon = '✅' if file_exists else '❌'
+                            
+                            print(f"✅ 상품 코드 '{product_code}': 이미지 찾음")
+                            print(f"   URL: {url}")
+                            print(f"   경로: {local_path}")
+                            print(f"   파일 상태: {status} {file_icon} ({file_size:,} 바이트)")
+                            if img_info != "N/A":
+                                print(f"   이미지 정보: {img_info}")
+                            print(f"   검색방법: {method}")
                     else:
-                        print(f"❌ No results found for product code '{product_code}'")
+                        not_found_count += 1
+                        print(f"❓ 상품 코드 '{product_code}': 이미지를 찾을 수 없음")
                 else:
-                    print(f"❌ Unexpected result format: {result}")
-                print("---------------------------")
+                    print(f"❌ 예상치 못한 결과 형식: {result}")
+                print("-" * 80)
             
-            print(f"Summary: {success_count} successes, {error_count} errors out of {len(test_product_codes)} product codes")
+            # 파일 존재 여부에 대한 통계 계산
+            valid_files = 0
+            total_files = success_count + default_count
+            total_size = 0
+            
+            for result in sorted_results:
+                if isinstance(result, tuple) and len(result) == 2:
+                    _, data = result
+                    if isinstance(data, dict) and data.get("local_path"):
+                        path = data.get("local_path")
+                        if os.path.exists(path) and os.path.getsize(path) > 0:
+                            valid_files += 1
+                            total_size += os.path.getsize(path)
+            
+            print(f"요약: {len(product_codes)}개 상품 코드 테스트")
+            print(f"  ✅ 성공: {success_count}개 ({success_count/len(product_codes)*100:.1f}%)")
+            print(f"  ⚠️ 기본 이미지: {default_count}개 ({default_count/len(product_codes)*100:.1f}%)")
+            print(f"  ❓ 찾지 못함: {not_found_count}개 ({not_found_count/len(product_codes)*100:.1f}%)")
+            print(f"  ❌ 오류: {error_count}개 ({error_count/len(product_codes)*100:.1f}%)")
+            print(f"  📊 다운로드 통계: {valid_files}/{total_files} 파일 존재 ({valid_files/total_files*100:.1f}% 성공)")
+            if valid_files > 0:
+                print(f"  📁 전체 다운로드 크기: {total_size:,} 바이트 (평균: {total_size/valid_files:,.1f} 바이트/파일)")
+            print(f"  ⏱️ 총 소요 시간: {time.time() - start_time:.2f}초")
+            print("="*80)
                 
         except Exception as e:
-            logger.error(f"Error during test: {e}")
+            logger.error(f"테스트 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             if browser:
                 try:
                     await browser.close()
                 except Exception as close_err:
-                    logger.warning(f"Error closing browser: {close_err}")
-            
-        end_time = time.time()
-        logger.info(f"Parallel scraping took {end_time - start_time:.2f} seconds.")
+                    logger.warning(f"브라우저 종료 중 오류: {close_err}")
 
 if __name__ == "__main__":
-    # To run this test: python PythonScript/crawling_haereum_standalone.py
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
-    logger.info("Running Haereum parallel test...")
+    # 실행 방법: python PythonScript/crawling_haereum_standalone.py
+    # Or with specific product codes: python PythonScript/crawling_haereum_standalone.py --codes=439522,439508
+    # Or with a file: python PythonScript/crawling_haereum_standalone.py --file path/to/products.xlsx
+    # Or in non-headless mode: python PythonScript/crawling_haereum_standalone.py --no-headless
+    import sys
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
+    logger.info("해오름 이미지 테스트를 시작합니다...")
     asyncio.run(_test_main()) 

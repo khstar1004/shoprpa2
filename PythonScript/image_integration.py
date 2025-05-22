@@ -443,13 +443,13 @@ def find_best_image_matches(product_names: List[str],
                 
                 logging.info(f"Selected Haereum image for '{product_name}': {os.path.basename(haereum_match)} (text similarity: {haereum_score:.3f})")
         
-        # Now, using the matched Haereum image, try to find matching Kogift and Naver images
+        # Now, try to find matching Kogift and Naver images
         kogift_match = None
         kogift_score = 0
         naver_match = None
         naver_score = 0
         
-        # Only perform matching with other sources if we have a Haereum match
+        # If we have a Haereum match and enhanced_matcher, use image-based matching
         if haereum_match and enhanced_matcher:
             # Get the actual file path from the haereum match info
             haereum_path = haereum_images[haereum_match].get('path', haereum_match)
@@ -478,9 +478,13 @@ def find_best_image_matches(product_names: List[str],
             else:
                 logging.info(f"No Naver match found for '{product_name}' with enhanced matcher")
         else:
-            logging.warning(f"Skipping Kogift/Naver matching for '{product_name}' - No Haereum match or no enhanced matcher")
+            # If no Haereum match or no enhanced matcher, log but continue with text-based matching
+            if not haereum_match:
+                logging.info(f"No Haereum match found for '{product_name}'. Will still attempt Kogift/Naver matching.")
+            elif not enhanced_matcher:
+                logging.info(f"Enhanced matcher not available for '{product_name}'. Will use text-based matching.")
         
-        # Fallback for Kogift if no match with enhanced matcher
+        # ALWAYS try fallback text-based matching for Kogift if no match with enhanced matcher
         if not kogift_match:
             logging.info(f"Trying fallback text-based matching for Kogift images for '{product_name}'")
             kogift_result = find_best_match_for_product(
@@ -491,23 +495,7 @@ def find_best_image_matches(product_names: List[str],
                 kogift_match, kogift_score = kogift_result
                 used_kogift.add(kogift_match)
 
-        # Fallback for Kogift with even more lenient threshold if still no match
-        # 비활성화: super_lenient 매칭 제거
-        """
-        if not kogift_match and config:
-            super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
-            logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Kogift images for '{product_name}'")
-            kogift_result = find_best_match_for_product(
-                product_tokens, kogift_images, used_kogift, 
-                super_lenient_threshold, "Kogift_Lenient", config)
-                
-            if kogift_result:
-                kogift_match, kogift_score = kogift_result
-                used_kogift.add(kogift_match)
-                logging.info(f"Found Kogift match with super lenient threshold: {os.path.basename(kogift_match)} ({kogift_score:.4f})")
-        """
-                
-        # Fallback for Naver if no match with enhanced matcher
+        # ALWAYS try fallback text-based matching for Naver if no match with enhanced matcher
         if not naver_match:
             logging.info(f"Trying fallback text-based matching for Naver images for '{product_name}'")
             naver_result = find_best_match_for_product(
@@ -517,24 +505,8 @@ def find_best_image_matches(product_names: List[str],
             if naver_result:
                 naver_match, naver_score = naver_result
                 used_naver.add(naver_match)
-                
-        # Fallback for Naver with even more lenient threshold if still no match
-        # 비활성화: super_lenient 매칭 제거
-        """
-        if not naver_match and config:
-            super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
-            logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Naver images for '{product_name}'")
-            naver_result = find_best_match_for_product(
-                product_tokens, naver_images, used_naver, 
-                super_lenient_threshold, "Naver_Lenient", config)
-                
-            if naver_result:
-                naver_match, naver_score = naver_result
-                used_naver.add(naver_match)
-                logging.info(f"Found Naver match with super lenient threshold: {os.path.basename(naver_match)} ({naver_score:.4f})")
-        """
         
-        # If there is no Haereum match but we have Kogift or Naver, try to find Haereum match using reverse matching
+        # If there is no Haereum match, try to find one using any available match as a reference
         if not haereum_match and (kogift_match or naver_match) and enhanced_matcher:
             source_img_path = None
             
@@ -553,99 +525,47 @@ def find_best_image_matches(product_names: List[str],
             elif naver_match:
                 source_img_path = naver_images[naver_match].get('path', naver_match)
                 source_name = "Naver"
-            
-            if source_img_path and os.path.exists(source_img_path):
-                logging.info(f"Trying reverse matching from {source_name} to find Haereum image for '{product_name}'")
+                
+            if source_img_path:
+                logging.info(f"Trying to find Haereum match using {source_name} image as reference for '{product_name}'")
                 haereum_result = find_best_match_with_enhanced_matcher(
                     source_img_path, haereum_images, used_haereum, enhanced_matcher)
                     
                 if haereum_result:
                     haereum_match, haereum_score = haereum_result
                     used_haereum.add(haereum_match)
-                    logging.info(f"Found Haereum match using reverse {source_name} matching: {os.path.basename(haereum_match)} ({haereum_score:.3f})")
-        
-        # Now, try reverse matching
-        if not haereum_match and (kogift_match or naver_match):
-            # Try to find Haereum match using reverse image matching from either Kogift or Naver
-            reverse_source = None
-            reverse_source_name = None
-            
-            # Prefer Kogift for reverse matching (usually better quality)
-            if kogift_match and kogift_score > 0.01:
-                reverse_source = kogift_match
-                reverse_source_name = "Kogift"
-            elif naver_match and naver_score > 0.01:
-                reverse_source = naver_match
-                reverse_source_name = "Naver"
+                    logging.info(f"Found Haereum match using {source_name} reference for '{product_name}': {os.path.basename(haereum_match)} (score: {haereum_score:.3f})")
+                    
+        # Fallback to full text search for Haereum if still not found (try to find any match)
+        if not haereum_match:
+            logging.info(f"Trying fallback text-based matching for Haereum images for '{product_name}'")
+            # Use a very low threshold to increase chances of finding any match
+            haereum_text_sim_threshold = 0.05  # Very low threshold as Haereum should always have a match
+            haereum_result = find_best_match_for_product(
+                product_tokens, haereum_images, used_haereum, 
+                haereum_text_sim_threshold, "Haereum_Fallback", config)
                 
-            if reverse_source and enhanced_matcher:
-                # Get actual path for the source image
-                source_path = None
-                if reverse_source_name == "Kogift" and reverse_source in kogift_images:
-                    source_path = kogift_images[reverse_source].get('path', reverse_source)
-                elif reverse_source_name == "Naver" and reverse_source in naver_images:
-                    source_path = naver_images[reverse_source].get('path', reverse_source)
-                
-                if source_path and os.path.exists(source_path):
-                    # Filter Haereum targets - try to prioritize product code matches
-                    filtered_haereum = {}
-                    
-                    # Try to extract product code from source or DataFrame
-                    row_idx = product_names.index(product_name) if product_name in product_names else -1
-                    row_code = None
-                    if row_idx >= 0 and row_idx < len(df) and 'Code' in df.columns:
-                        row_code = str(df.iloc[row_idx]['Code']) if not pd.isna(df.iloc[row_idx]['Code']) else None
-                    
-                    if row_code:
-                        # Filter by product code first
-                        for h_path, h_info in haereum_images.items():
-                            if h_path in used_haereum:
-                                continue
-                                
-                            # Check product code in file name
-                            file_name = os.path.basename(h_path)
-                            code_match = re.search(r'CODE(\d+)', file_name)
-                            file_code = code_match.group(1) if code_match else None
-                            
-                            # Check product code in image info
-                            info_code = str(h_info.get('product_code', '')) if 'product_code' in h_info else None
-                            
-                            # If we have a code match, only use this target
-                            if (file_code and file_code == row_code) or (info_code and info_code == row_code):
-                                filtered_haereum = {h_path: h_info}  # Use only this candidate
-                                logging.info(f"Reverse matching: Found exact product code match for '{product_name}': Code={row_code}")
-                                break
-                    
-                    # If no code matches, use all available Haereum images for matching
-                    if not filtered_haereum:
-                        filtered_haereum = {h_path: h_info for h_path, h_info in haereum_images.items() 
-                                          if h_path not in used_haereum}
-                    
-                    logging.info(f"Trying reverse matching from {reverse_source_name} to find Haereum image for '{product_name}'")
-                    reverse_result = find_best_match_with_enhanced_matcher(
-                        source_path, filtered_haereum, used_haereum, enhanced_matcher
-                    )
-                    
-                    if reverse_result:
-                        haereum_match, haereum_score = reverse_result
-                        used_haereum.add(haereum_match)
-                        logging.info(f"Found Haereum match using reverse {reverse_source_name} matching: {os.path.basename(haereum_match)} ({haereum_score:.3f})")
-                    else:
-                        logging.info(f"No Haereum match found using reverse {reverse_source_name} matching")
+            if haereum_result:
+                haereum_match, haereum_score = haereum_result
+                used_haereum.add(haereum_match)
+                logging.info(f"Found Haereum match with text fallback for '{product_name}': {os.path.basename(haereum_match)} (score: {haereum_score:.3f})")
+            else:
+                # If still no match, try to get any random unused Haereum image as a last resort
+                logging.warning(f"No Haereum match found for '{product_name}' even with text fallback. Attempting to assign any available Haereum image.")
+                available_haereum = [path for path in haereum_images if path not in used_haereum]
+                if available_haereum:
+                    haereum_match = available_haereum[0]  # Just take the first available
+                    haereum_score = 0.01  # Very low score to indicate this is a desperate assignment
+                    used_haereum.add(haereum_match)
+                    logging.warning(f"Assigned random unused Haereum image to '{product_name}': {os.path.basename(haereum_match)} (desperate assignment)")
         
-        # Log final match set
-        h_text = '없음' if not haereum_match else os.path.basename(haereum_match)
-        k_text = '없음' if not kogift_match else os.path.basename(kogift_match)
-        n_text = '없음' if not naver_match else os.path.basename(naver_match)
+        # Add the best matches to the result list
+        best_matches.append((
+            (haereum_match, haereum_score) if haereum_match else None,
+            (kogift_match, kogift_score) if kogift_match else None,
+            (naver_match, naver_score) if naver_match else None
+        ))
         
-        logging.info(f"Final Match Set for '{product_name}': Haereum='{h_text}' ({haereum_score:.3f}), Kogift='{k_text}' ({kogift_score:.3f}), Naver='{n_text}' ({naver_score:.3f})")
-        
-        # Store the (path, score) tuples
-        h_match_data = (haereum_match, haereum_score) if haereum_match else None
-        k_match_data = (kogift_match, kogift_score) if kogift_match else None
-        n_match_data = (naver_match, naver_score) if naver_match else None
-        best_matches.append((h_match_data, k_match_data, n_match_data))
-    
     return best_matches
 
 def find_best_match_for_product(product_tokens: List[str], 
@@ -1049,6 +969,8 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
     세 가지 이미지 소스(해오름, 고려기프트, 네이버)의 이미지를 DataFrame에 통합합니다.
     상품별로 일관된 이미지 매칭을 보장합니다.
     
+    Note: Haereum images (본사 이미지) are ALWAYS included, regardless of matching scores.
+    
     Args:
         df: 처리할 DataFrame (data_processing.py의 format_product_data_for_output을 거친 상태여야 함)
         config: 설정 파일
@@ -1232,6 +1154,9 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         mismatch_count = 0
         naver_mismatch_count = 0
         
+        # Keep track of used Haereum images
+        used_haereum_images = set()
+        
         for idx, (match_set, product_name) in enumerate(zip(verified_matches, product_names)):
             if idx >= len(result_df):
                 continue
@@ -1243,10 +1168,13 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                 if haereum_data and isinstance(haereum_data, tuple) and len(haereum_data) >= 2:
                     haereum_path, haereum_score = haereum_data[:2]  # Correctly extract path and score
                     if haereum_path and haereum_path in haereum_images:
+                        used_haereum_images.add(haereum_path)
                         haereum_image_info_from_metadata = haereum_images[haereum_path] # Metadata from disk scan
                         
+                        # Determine web URL for the Haereum image
                         current_haereum_url = None
-                        # 1. Check URL from the dictionary in the input df's '본사 이미지' column
+                        
+                        # 1. Try extracting from existing image dict in the input df
                         if idx < len(df) and '본사 이미지' in df.columns and isinstance(df.iloc[idx].get('본사 이미지'), dict):
                             url_from_dict = df.iloc[idx]['본사 이미지'].get('url')
                             if isinstance(url_from_dict, str) and url_from_dict.startswith(('http://', 'https://')):
@@ -1438,6 +1366,52 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             if not pd.notna(current_shopping_link_val) or current_shopping_link_val in ['', '-', 'None', None] or current_shopping_link_val != final_product_page_link:
                                 result_df.at[idx, shopping_link_col_in_result_df] = final_product_page_link
         
+        # Final check: Ensure EVERY row has a Haereum image 
+        # If any row is missing a Haereum image, assign a random one
+        haereum_count_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '본사 이미지'], dict))
+        haereum_added_count = 0
+        
+        # Get available Haereum images that haven't been used yet
+        available_haereum = [path for path in haereum_images if path not in used_haereum_images]
+        if not available_haereum and haereum_images:
+            # If all images are used but we still need more, reset and use them again
+            available_haereum = list(haereum_images.keys())
+            logging.warning(f"All Haereum images have been used. Reusing images for remaining rows.")
+        
+        for idx in range(len(result_df)):
+            if idx >= len(result_df):
+                continue
+                
+            # Check if this row is missing a Haereum image
+            if not isinstance(result_df.at[idx, '본사 이미지'], dict):
+                product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Row {idx+1}"
+                logging.warning(f"Row {idx} ('{product_name}'): Missing Haereum image. Assigning random image.")
+                
+                # Assign a random Haereum image
+                if available_haereum:
+                    haereum_path = available_haereum.pop(0)  # Take the first available
+                    if not available_haereum and haereum_images:
+                        # If we ran out, reset the list
+                        available_haereum = list(haereum_images.keys())
+                    
+                    haereum_image_info_from_metadata = haereum_images[haereum_path]
+                    
+                    # Create image data
+                    image_data = {
+                        'url': haereum_image_info_from_metadata.get('url', ''), 
+                        'local_path': haereum_image_info_from_metadata.get('path', haereum_path),
+                        'source': 'haereum',
+                        'product_name': product_name,
+                        'similarity': 0.01,  # Very low score to indicate this is a desperate assignment
+                        'original_path': haereum_path
+                    }
+                    result_df.at[idx, '본사 이미지'] = image_data
+                    haereum_added_count += 1
+        
+        # Log the results of ensuring Haereum images
+        haereum_count_after = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '본사 이미지'], dict))
+        logging.info(f"Haereum image count: {haereum_count_before} -> {haereum_count_after} (Added {haereum_added_count} random images)")
+        
         # 이미지 경로 불일치 수정 (로컬 파일이 이동된 경우)
         for idx in range(len(result_df)):
             if idx >= len(result_df):
@@ -1498,285 +1472,6 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
     except Exception as e:
         logging.error(f"통합: 이미지 통합 중 오류 발생: {e}", exc_info=True)
         return df
-
-def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
-    """
-    Filter images based on similarity scores to ensure high quality matches.
-    
-    This removes images with similarity scores below a certain threshold.
-    
-    Args:
-        df: DataFrame with image similarity scores
-        config: Configuration settings
-        
-    Returns:
-        DataFrame with filtered images
-    """
-    if df.empty:
-        return df
-        
-    result_df = df.copy()
-    
-    # Define columns that should be cleared if image is filtered out
-    kogift_columns = ['고려기프트 이미지', '고려기프트 상품링크', '고려기프트 상품코드', '판매단가(V포함)(1)', '기본수량(1)']
-    naver_columns = ['네이버 이미지', '네이버 쇼핑 링크', '공급사 상품링크', '공급사명', '판매단가(V포함)(3)', '기본수량(3)']
-    
-    # Try to get thresholds from config first
-    try:
-        # 임계값을 더 높게 설정
-        kogift_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.3)
-        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.3) 
-    except (configparser.NoSectionError, configparser.NoOptionError):
-        # 기본 임계값도 더 높게 설정
-        kogift_threshold = 0.3
-        naver_threshold = 0.3
-    
-    # Ensure thresholds aren't too high (could happen if config values are wrong)
-    kogift_threshold = min(kogift_threshold, 0.8)
-    # For Naver, use the threshold as is from config, or default 0.3.
-    naver_threshold_from_config = naver_threshold # Preserve the value read from config or default
-    naver_threshold_final = min(naver_threshold_from_config, 0.8) 
-    
-    logging.info(f"이미지 유사도 임계값 적용: 고려기프트 {kogift_threshold}, 네이버 {naver_threshold_final} (config value was: {naver_threshold_from_config}, capped at 0.8 if higher)")
-    
-    # Count images before filtering
-    kogift_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-    naver_before = sum(1 for i in range(len(result_df)) if isinstance(result_df.at[i, '네이버 이미지'], dict))
-    
-    kogift_filtered = 0
-    naver_filtered = 0
-    
-    for i in range(len(result_df)):
-        # Process Kogift images
-        if '고려기프트 이미지' in result_df.columns and isinstance(result_df.at[i, '고려기프트 이미지'], dict):
-            k_img = result_df.at[i, '고려기프트 이미지']
-            similarity = k_img.get('similarity', 1.0)  # Default to 1.0 if not found
-            
-            # Only clear if similarity is absolutely terrible (for Kogift, as per original logic)
-            # Or if it's below the specified kogift_threshold
-            if similarity < kogift_threshold: # Use the threshold
-                for col in kogift_columns: # kogift_columns is defined in the original function
-                    if col in result_df.columns:
-                        result_df.at[i, col] = '-' # Or None, consistent with how data is cleared
-                kogift_filtered += 1
-                logging.debug(f"Row {i}: Kogift image filtered out due to low similarity ({similarity} < {kogift_threshold})")
-
-        # Process Naver images - This is the new part based on user request
-        if '네이버 이미지' in result_df.columns and isinstance(result_df.at[i, '네이버 이미지'], dict):
-            n_img = result_df.at[i, '네이버 이미지']
-            similarity = n_img.get('similarity', 1.0) # Default to 1.0 if not found
-
-            if similarity < naver_threshold_final:
-                # Clear Naver image and related data if similarity is below threshold
-                for col in naver_columns: # naver_columns is defined in the original function
-                    if col in result_df.columns:
-                        result_df.at[i, col] = '-' # Or None
-                naver_filtered += 1
-                logging.info(f"Row {i}: Naver image filtered out due to low similarity ({similarity:.4f} < {naver_threshold_final}). Product: {n_img.get('product_name', 'N/A')}")
-    
-    # Count images after filtering
-    kogift_after = sum(1 for i in range(len(result_df)) if '고려기프트 이미지' in result_df.columns and isinstance(result_df.at[i, '고려기프트 이미지'], dict))
-    naver_after = sum(1 for i in range(len(result_df)) if '네이버 이미지' in result_df.columns and isinstance(result_df.at[i, '네이버 이미지'], dict))
-    
-    logging.info(f"이미지 필터링 결과: 고려기프트 {kogift_before} -> {kogift_after} ({kogift_filtered}개 필터링됨), 네이버 {naver_before} -> {naver_after} ({naver_filtered}개 필터링됨)")
-    
-    return result_df
-
-def create_excel_with_images(df, output_file):
-    """이미지가 포함된 엑셀 파일 생성"""
-    try:
-        # '번호' 컬럼이 없으면 추가
-        if '번호' not in df.columns:
-            df['번호'] = range(1, len(df) + 1)
-        
-        # 임시 디렉토리 생성
-        temp_dir = Path("temp_images")
-        temp_dir.mkdir(exist_ok=True)
-        
-        # 워크북 생성
-        wb = Workbook()
-        ws = wb.active
-        
-        # 사용 가능한 컬럼 확인
-        available_columns = df.columns.tolist()
-        logging.info(f"엑셀 생성: 사용 가능한 컬럼: {available_columns}")
-        
-        # 기본 헤더 및 데이터 컬럼 정의 (Use new column names)
-        base_headers = ['번호', '상품명']
-        optional_headers = ['파일명', '본사 이미지', '고려기프트 이미지', '네이버 이미지', '이미지_유사도']
-        
-        # 실제 사용할 헤더 목록 생성
-        headers = base_headers + [h for h in optional_headers if h in available_columns]
-        
-        # 헤더 작성
-        for col, header in enumerate(headers, 1):
-            ws.cell(row=1, column=col, value=header)
-        
-        # 행 높이 설정
-        ws.row_dimensions[1].height = 30  # 헤더 행 높이
-        for row in range(2, len(df) + 2):
-            ws.row_dimensions[row].height = 200  # 데이터 행 높이 (doubled from 100)
-        
-        # 열 너비 설정
-        column_widths = {}
-        for i, header in enumerate(headers):
-            col_letter = get_column_letter(i+1)
-            if header == '번호':
-                column_widths[col_letter] = 5
-            elif header == '상품명':
-                column_widths[col_letter] = 30
-            elif header == '파일명':
-                column_widths[col_letter] = 30
-            else:
-                column_widths[col_letter] = 30  # Image columns width doubled from 15
-        
-        for col, width in column_widths.items():
-            ws.column_dimensions[col].width = width
-        
-        # 데이터 및 이미지 추가
-        for row_idx, (_, row) in enumerate(df.iterrows(), 2):
-            # 기본 데이터 추가
-            col_idx = 1
-            
-            # 번호 추가
-            ws.cell(row=row_idx, column=col_idx, value=row['번호'])
-            col_idx += 1
-            
-            # 상품명 추가
-            ws.cell(row=row_idx, column=col_idx, value=row['상품명'])
-            col_idx += 1
-            
-            # 파일명 추가 (있을 경우)
-            if '파일명' in available_columns:
-                ws.cell(row=row_idx, column=col_idx, value=row['파일명'])
-                col_idx += 1
-            
-            # 이미지 데이터 처리
-            image_columns = {}
-            # Use new image column names
-            for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
-                if col_name in available_columns:
-                    image_columns[col_name] = row.get(col_name)
-            
-            # 이미지 추가
-            for col_name, img_data in image_columns.items():
-                if pd.isna(img_data) or img_data is None:
-                    ws.cell(row=row_idx, column=col_idx, value="")
-                    col_idx += 1
-                    continue
-                
-                try:
-                    # 이미지 경로 추출
-                    img_path = None
-                    if isinstance(img_data, dict):
-                        # excel_utils.py 형식의 딕셔너리 처리
-                        
-                        # IMPORTANT: For Haereum (본사) images, ALWAYS use original_path instead of local_path
-                        # to ensure we use the JPG instead of _nobg version
-                        if col_name == '본사 이미지':
-                            # First try original_path, then local_path
-                            if 'original_path' in img_data and img_data.get('original_path') and os.path.exists(img_data.get('original_path')):
-                                img_path = img_data.get('original_path')
-                                logger.info(f"Using original_path for Haereum image: {img_path}")
-                            elif 'local_path' in img_data and img_data.get('local_path'):
-                                original_jpg_path = None
-                                local_path = img_data.get('local_path', '')
-                                
-                                # If local_path is a _nobg.png file, try to find the corresponding JPG
-                                if local_path and '_nobg.png' in local_path:
-                                    original_jpg_path = local_path.replace('_nobg.png', '.jpg')
-                                    if os.path.exists(original_jpg_path):
-                                        img_path = original_jpg_path
-                                        logger.info(f"Found original JPG from _nobg.png path: {img_path}")
-                                    else:
-                                        img_path = local_path  # Fallback to _nobg.png if JPG not found
-                                else:
-                                    img_path = local_path  # Use local_path as is
-                            # If still no path but URL exists, try to use URL for local download
-                            elif 'url' in img_data and img_data.get('url'):
-                                img_url = img_data.get('url')
-                                # Just set img_path to None here, we'll handle URL in the next section
-                                img_path = None
-                        else:  # For non-Haereum images (Kogift and Naver)
-                            # Try local_path first, then path, then url
-                            if 'local_path' in img_data and img_data.get('local_path') and os.path.exists(img_data.get('local_path')):
-                                img_path = img_data.get('local_path')
-                            elif 'path' in img_data and img_data.get('path') and os.path.exists(str(img_data.get('path'))):
-                                img_path = str(img_data.get('path'))
-                            elif 'original_path' in img_data and img_data.get('original_path') and os.path.exists(img_data.get('original_path')):
-                                img_path = img_data.get('original_path')
-                            
-                        # If still no valid path but URL exists, set to URL for later display
-                        if not img_path and 'url' in img_data:
-                            # URL만 있는 경우 셀에 URL 표시
-                            ws.cell(row=row_idx, column=col_idx, value=img_data['url'])
-                            col_idx += 1
-                            continue
-                    elif isinstance(img_data, str):
-                        # String could be a direct path or URL
-                        if os.path.exists(img_data):
-                            img_path = img_data
-                        elif img_data.startswith(('http://', 'https://')):
-                            # It's a URL, display it as text
-                            ws.cell(row=row_idx, column=col_idx, value=img_data)
-                            col_idx += 1
-                            continue
-                        else:
-                            # Not a valid path or URL
-                            ws.cell(row=row_idx, column=col_idx, value=img_data)
-                            col_idx += 1
-                            continue
-                    
-                    if img_path and os.path.exists(img_path):
-                        try:
-                            # Additional check for Haereum images to replace _nobg with JPG
-                            if col_name == '본사 이미지' and '_nobg' in str(img_path):
-                                original_jpg = str(img_path).replace('_nobg.png', '.jpg')
-                                if os.path.exists(original_jpg):
-                                    logger.info(f"Replacing _nobg version with original JPG: {original_jpg}")
-                                    img_path = original_jpg
-                            
-                            # 이미지 파일 복사
-                            img = Image(img_path)
-                            # 이미지 크기 조정 (최대 200x200, doubled from 100x100)
-                            img.width = 200
-                            img.height = 200
-                            # 이미지 추가
-                            ws.add_image(img, f"{get_column_letter(col_idx)}{row_idx}")
-                            ws.cell(row=row_idx, column=col_idx, value="")  # 이미지가 있으면 셀 값 비움
-                        except Exception as e:
-                            logging.warning(f"이미지 추가 실패 ({img_path}): {e}")
-                            # 이미지 추가 실패 시 경로나 URL 표시
-                            if isinstance(img_data, dict):
-                                ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', str(img_path)))
-                            else:
-                                ws.cell(row=row_idx, column=col_idx, value=str(img_path))
-                    else:
-                        # 이미지 파일이 없는 경우 URL이나 경로 표시
-                        if isinstance(img_data, dict):
-                            ws.cell(row=row_idx, column=col_idx, value=img_data.get('url', ''))
-                        else:
-                            ws.cell(row=row_idx, column=col_idx, value=str(img_data))
-                except Exception as e:
-                    logging.error(f"이미지 처리 중 오류 발생 ({col_name}): {e}")
-                    ws.cell(row=row_idx, column=col_idx, value="이미지 처리 오류")
-                
-                col_idx += 1
-            
-            # 이미지 유사도 추가 (있을 경우)
-            if '이미지_유사도' in available_columns:
-                ws.cell(row=row_idx, column=col_idx, value=row['이미지_유사도'])
-                col_idx += 1
-        
-        # 엑셀 파일 저장
-        wb.save(output_file)
-        logging.info(f"이미지가 포함된 엑셀 파일이 저장되었습니다: {output_file}")
-        
-        # 임시 디렉토리 정리
-        shutil.rmtree(temp_dir)
-        
-    except Exception as e:
-        logging.error(f"엑셀 파일 생성 중 오류 발생: {e}", exc_info=True)
 
 def improved_kogift_image_matching(df: pd.DataFrame) -> pd.DataFrame:
     """
