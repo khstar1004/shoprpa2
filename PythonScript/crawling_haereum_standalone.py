@@ -47,8 +47,7 @@ from crawling_kogift import should_block_request, setup_page_optimizations
 # 로거 설정
 logger = logging.getLogger(__name__)
 
-# Global semaphore for ALL operations (file operations AND web scraping)
-# 모든 작업을 순차적으로 처리하여 IP 차단 방지
+# Global semaphore for file operations
 file_semaphore = asyncio.Semaphore(1)
 
 # Constants moved to config or passed in scrape_haereum_data
@@ -67,12 +66,8 @@ WAIT_TIMEOUT = 30000  # 30 seconds (increased)
 
 # Add retry settings
 MAX_RETRIES = 3
-RETRY_DELAY = 15  # seconds (더 증가)
-RETRY_BACKOFF_FACTOR = 2.0  # Exponential backoff factor (증가)
-
-# IP 차단 감지 후 대기 시간
-IP_BLOCK_WAIT_TIME = 120  # 2분 대기 (IP 차단 감지 시)
-MIN_SCRAPE_INTERVAL = 10  # 각 요청 사이 최소 10초 대기
+RETRY_DELAY = 10  # seconds (increased)
+RETRY_BACKOFF_FACTOR = 1.5  # Exponential backoff factor (reduced)
 
 def _normalize_text(text: str) -> str:
     """Normalizes text (remove extra whitespace)."""
@@ -98,10 +93,10 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
     Returns:
         이미지 URL과 로컬 경로를 포함하는 딕셔너리 또는 None
     """
-    # 순차 처리를 위해 전역 세마포어 사용 (IP 차단 방지)
-    global file_semaphore  # 이미 정의된 세마포어 재사용
-    # 항상 1로 강제 설정하여 동시 접속 방지
-    scraping_semaphore = file_semaphore  # 파일 작업과 크롤링에 동일 세마포어 사용하여 순차 실행 보장
+    # Create a new semaphore for this function call
+    # Force lower concurrency (1) to prevent connection issues
+    max_windows = min(1, config.getint('Playwright', 'playwright_max_concurrent_windows', fallback=1))
+    scraping_semaphore = asyncio.Semaphore(max_windows)  # Use config value for max concurrent windows but cap at 1
     
     retry_count = 0
     last_error = None
@@ -174,7 +169,7 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                                     browser = await playwright.chromium.launch(
                                         headless=headless,
                                         args=browser_args,
-                                        timeout=90000  # 1.5 minute timeout for browser launch (increased)
+                                        timeout=120000  # 2 minute timeout for browser launch (increased)
                                     )
                                     logger.info("🟢 Successfully launched a new browser instance for Haereum")
                                 except Exception as launch_err:
@@ -248,54 +243,28 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                                     logger.warning(f"Error clearing context: {clear_err}")
                             
                             # Use a less strict wait_until policy for more reliable loading
-                            await page.goto(
-                                haereum_main_url, 
-                                wait_until="load", # Changed from "domcontentloaded" to "load" for more complete page loading
-                                timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=120000) # Increased timeout
-                            )
+                            try:
+                                await page.goto(
+                                    haereum_main_url, 
+                                    wait_until="domcontentloaded", # Change from "load" to "domcontentloaded"
+                                    timeout=config.getint('ScraperSettings', 'navigation_timeout', fallback=120000) 
+                                )
+                            except PlaywrightError as goto_err:
+                                logger.warning(f"Initial navigation error: {goto_err}, trying simpler approach")
+                                # Fallback to a simpler navigation approach
+                                await page.goto(haereum_main_url, timeout=120000)
                             
                             # Longer pause after navigation to allow page to fully stabilize
-                            await page.wait_for_timeout(8000) # Increased from 5000ms
+                            await page.wait_for_timeout(10000) # Increased from 8000ms
                             
-                            # Verify the page loaded correctly and check for IP 차단 감지
+                            # Verify the page loaded correctly by checking for a basic element
                             try:
-                                await page.wait_for_selector('body', timeout=5000)
-                                
-                                # IP 차단 감지 - 페이지 내용 확인
-                                page_content = await page.content()
-                                
-                                # IP 차단 메시지 패턴 (차단 메시지가 있는지 확인)
-                                ip_block_patterns = [
-                                    "접속이 차단되었습니다",
-                                    "access denied",
-                                    "blocked",
-                                    "too many requests",
-                                    "access temporarily restricted",
-                                    "비정상적인 접속",
-                                    "일시적으로 접속이 제한",
-                                    "차단된 IP"
-                                ]
-                                
-                                # IP 차단 확인
-                                is_blocked = any(pattern.lower() in page_content.lower() for pattern in ip_block_patterns)
-                                
-                                if is_blocked:
-                                    logger.warning(f"⚠️ IP 차단 감지됨. {IP_BLOCK_WAIT_TIME}초 대기 후 재시도...")
-                                    await asyncio.sleep(IP_BLOCK_WAIT_TIME)
-                                    if nav_attempt < 3:
-                                        continue
-                                    else:
-                                        raise PlaywrightError("IP 차단으로 인해 접속 불가")
-                                
+                                await page.wait_for_selector('body', timeout=10000) # Increased timeout
                                 logger.info(f"✅ Page navigation successful on attempt {nav_attempt+1}")
-                                # 성공해도 최소 대기 시간 적용 (IP 차단 방지)
-                                await asyncio.sleep(MIN_SCRAPE_INTERVAL)
                                 break  # Break out of retry loop if successful
                             except Exception as verify_err:
                                 logger.warning(f"Page verification failed: {verify_err}")
                                 if nav_attempt < 3:
-                                    # 실패해도 대기 시간 적용 (연속 요청 방지)
-                                    await asyncio.sleep(MIN_SCRAPE_INTERVAL * (nav_attempt + 1))
                                     continue
                                 else:
                                     raise
@@ -830,9 +799,11 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                             try:
                                 # First try to remove all listeners to prevent callback errors
                                 page.remove_listener("close", lambda: None)
-                                # Then close with a timeout
-                                await asyncio.wait_for(page.close(), timeout=5.0)
-                                logger.debug("Page closed successfully")
+                                # Check if page is still connected before trying to close
+                                if browser.is_connected():
+                                    # Then close with a timeout
+                                    await asyncio.wait_for(page.close(run_before_unload=False), timeout=5.0)
+                                    logger.debug("Page closed successfully")
                             except asyncio.TimeoutError:
                                 logger.warning("Page close timed out, continuing with context cleanup")
                             except Exception as page_err:
@@ -840,11 +811,13 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         
                         if 'context' in locals() and context:
                             try:
-                                # Try to clear context data first
-                                await context.clear_cookies()
-                                # Then close with a timeout
-                                await asyncio.wait_for(context.close(), timeout=5.0)
-                                logger.debug("Context closed successfully")
+                                # Only attempt to clear context data if browser is still connected
+                                if browser.is_connected():
+                                    # Try to clear context data first
+                                    await context.clear_cookies()
+                                    # Then close with a timeout
+                                    await asyncio.wait_for(context.close(), timeout=5.0)
+                                    logger.debug("Context closed successfully")
                             except asyncio.TimeoutError:
                                 logger.warning("Context close timed out")
                             except Exception as ctx_err:
@@ -1011,11 +984,12 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                             
                             logger.info(f"Downloading from: {current_url} (attempt {attempt+1}/{max_retries})")
                             
-                            async with session.get(current_url, timeout=30, headers=headers, ssl=False) as response:
+                            # 최적화: 타임아웃 감소 및 연결 재사용
+                            async with session.get(current_url, timeout=15, headers=headers, ssl=False) as response:
                                 if response.status != 200:
                                     logger.warning(f"HTTP error {response.status} downloading image (attempt {attempt+1}/{max_retries}): {current_url}")
                                     if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
+                                        await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                         continue
                                     break  # Try next URL variant
                                     
@@ -1024,7 +998,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                 if not content_type.startswith('image/'):
                                     logger.warning(f"Non-image content type: {content_type} for URL: {current_url}")
                                     if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
+                                        await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                         continue
                                     break  # Try next URL variant
                                     
@@ -1033,7 +1007,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                 if len(data) < 100:  # Too small to be a valid image
                                     logger.warning(f"Downloaded image too small: {len(data)} bytes from URL: {current_url}")
                                     if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
+                                        await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                         continue
                                     break  # Try next URL variant
                                     
@@ -1105,7 +1079,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                         if os.path.exists(temp_path):
                                             os.remove(temp_path)
                                         if attempt < max_retries - 1:
-                                            await asyncio.sleep(1 * (attempt + 1))
+                                            await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                             continue
                                         break  # Try next URL variant
                                 except Exception as f_err:
@@ -1116,13 +1090,13 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
                                         except:
                                             pass
                                     if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
+                                        await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                         continue
                                     break  # Try next URL variant
                         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                             logger.warning(f"Network error downloading image (attempt {attempt+1}/{max_retries}): {e}")
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(1 * (attempt + 1))
+                                await asyncio.sleep(0.5 * (attempt + 1))  # 대기 시간 감소
                                 continue
                             break  # Try next URL variant
                     
@@ -1378,7 +1352,7 @@ async def _test_main():
             browser = await p.chromium.launch(
                 headless=headless_mode,
                 args=browser_args,
-                timeout=60000  # 1분 타임아웃
+                timeout=120000  # 2분 타임아웃 (increased)
             )
         except Exception as browser_err:
             logger.error(f"브라우저 시작 실패: {browser_err}")
@@ -1387,53 +1361,63 @@ async def _test_main():
         start_time = time.time()
         
         try:
-            # 순차 처리 강제화 (IP 차단 방지)
-            # 동시 작업을 절대 허용하지 않음
-            scraping_semaphore = asyncio.Semaphore(1)
+            # 동시 작업 제한 세마포어 - IP 차단 방지를 위해 1로 제한
+            max_windows = 1  # 동시 연결 수를 1로 제한
+            scraping_semaphore = asyncio.Semaphore(max_windows)
             
-            # 한 번에 하나씩만 처리
-            batch_size = 1
+            # 배치 크기 설정 - 안전한 처리 위해 1로 제한
+            batch_size = 1  # 배치 크기를 1로 제한
             results = []
             
-            # 배치 간 대기 시간 크게 늘림
-            batch_delay = 30  # 배치 간 30초 대기 (IP 차단 방지)
+            # 배치 간 대기 시간 - IP 차단 방지를 위해 충분한 대기 시간 설정
+            batch_delay = 5  # 배치 간 5초 대기
+            
+            # Add a check for browser connection and reconnect if needed
+            async def ensure_browser_connected():
+                nonlocal browser
+                try:
+                    if not browser or not browser.is_connected():
+                        logger.warning("Browser connection lost, attempting to reconnect...")
+                        browser = await p.chromium.launch(
+                            headless=headless_mode,
+                            args=browser_args,
+                            timeout=120000
+                        )
+                        logger.info("Browser reconnected successfully")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to reconnect browser: {e}")
+                    return False
+            
+            # 안전한 처리를 위한 작업 생성 함수
+            async def create_scraping_task(code):
+                async with scraping_semaphore:
+                    # IP 차단 방지를 위한 충분한 대기 시간
+                    await asyncio.sleep(2)  # 요청 간 2초 대기
+                    # 키워드는 비워두고 상품 코드로만 검색
+                    return (code, await scrape_haereum_data(browser, "", config, product_code=code))
             
             # 배치 단위로 처리
             for batch_start in range(0, len(product_codes), batch_size):
+                # Ensure browser is connected before starting new batch
+                if not await ensure_browser_connected():
+                    logger.error("Cannot proceed with batch due to browser connection issues")
+                    break
+                    
                 batch_end = min(batch_start + batch_size, len(product_codes))
                 batch = product_codes[batch_start:batch_end]
                 
                 logger.info(f"배치 처리 중: {len(batch)}개 상품 코드 ({batch_start+1}-{batch_end}/{len(product_codes)})")
                 
-                # 배치 작업 생성
-                batch_tasks = []
-                for product_code in batch:
-                    async def scrape_with_semaphore(code):
-                        async with scraping_semaphore:
-                            # 각 요청 전에 충분한 대기 시간 추가 (IP 차단 방지)
-                            logger.info(f"상품코드 '{code}' 크롤링 전 {MIN_SCRAPE_INTERVAL}초 대기...")
-                            await asyncio.sleep(MIN_SCRAPE_INTERVAL)  # 요청 간 최소 10초 대기
-                            
-                            # 상품 코드로만 검색 시작
-                            logger.info(f"상품코드 '{code}' 크롤링 시작")
-                            result = await scrape_haereum_data(browser, "", config, product_code=code)
-                            
-                            # 크롤링 후 추가 대기 시간
-                            logger.info(f"상품코드 '{code}' 크롤링 완료, 다음 요청 전 추가 대기...")
-                            await asyncio.sleep(MIN_SCRAPE_INTERVAL)  # 요청 후에도 대기
-                            
-                            return (code, result)
-                    task = asyncio.create_task(scrape_with_semaphore(product_code))
-                    batch_tasks.append(task)
-                
-                # 배치 작업 실행 및 결과 수집
+                # 배치 작업 생성 및 실행
+                batch_tasks = [create_scraping_task(code) for code in batch]
                 batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
                 results.extend(batch_results)
                 
-                # 배치 간 긴 대기 시간
+                # 배치 간 충분한 대기 시간
                 if batch_end < len(product_codes):
                     logger.info(f"배치 완료. 다음 배치 시작 전 {batch_delay}초 대기...")
-                    await asyncio.sleep(batch_delay)  # 배치 간 대기 시간 늘림
+                    await asyncio.sleep(batch_delay)
             
             # 결과 출력
             print("\n" + "="*80)
