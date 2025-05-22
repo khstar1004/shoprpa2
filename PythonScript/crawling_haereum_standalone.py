@@ -308,27 +308,35 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                         await page.wait_for_timeout(100)  # Check every 100ms
                     
                     # Fill the search input with the search term (product code or keyword)
-                    await search_input.fill(search_term, 
-                                          timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
-                    logger.info(f"⌨️ 검색창에 검색어 입력: '{search_term}'")
+                    try:
+                        await search_input.fill(search_term, 
+                                              timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
+                        logger.info(f"⌨️ 검색창에 검색어 입력: '{search_term}'")
+                    except Exception as e:
+                        logger.error(f"검색어 입력 실패: {e}")
+                        raise
 
                     # Wait for the search button to be present and visible
-                    search_button = page.locator('input[type="image"][src*="b_search.gif"]')
-                    await search_button.wait_for(state="visible", 
-                                               timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
-                    
-                    # Wait for the button to be enabled with timeout
-                    start_time = time.time()
-                    while time.time() - start_time < wait_timeout / 1000:  # Convert ms to seconds
-                        if await search_button.is_enabled():
-                            break
-                        await page.wait_for_timeout(100)  # Check every 100ms
-                    
-                    # Click the search button and wait for navigation
-                    await search_button.click(timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
-                    # Reduced wait time (1 second) before checking for errors or results
-                    await page.wait_for_timeout(1000)
-                    logger.info("🔍 검색 버튼 클릭 완료, 검색 결과 확인 중...")
+                    try:
+                        search_button = page.locator('input[type="image"][src*="b_search.gif"]')
+                        await search_button.wait_for(state="visible", 
+                                                   timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
+                        
+                        # Wait for the button to be enabled with timeout
+                        start_time = time.time()
+                        while time.time() - start_time < wait_timeout / 1000:  # Convert ms to seconds
+                            if await search_button.is_enabled():
+                                break
+                            await page.wait_for_timeout(100)  # Check every 100ms
+                        
+                        # Click the search button and wait for navigation
+                        await search_button.click(timeout=config.getint('ScraperSettings', 'action_timeout', fallback=30000))
+                        # Reduced wait time (1 second) before checking for errors or results
+                        await page.wait_for_timeout(1000)
+                        logger.info("🔍 검색 버튼 클릭 완료, 검색 결과 확인 중...")
+                    except Exception as e:
+                        logger.error(f"검색 버튼 클릭 실패: {e}")
+                        raise
                     
                     # --- Check for specific ADODB server error --- (Added)
                     try:
@@ -797,31 +805,43 @@ async def scrape_haereum_data(browser: Browser, keyword: str, config: configpars
                     try:
                         if 'page' in locals() and page:
                             try:
-                                # First try to remove all listeners to prevent callback errors
-                                page.remove_listener("close", lambda: None)
                                 # Check if page is still connected before trying to close
-                                if browser.is_connected():
+                                if not page.is_closed():
+                                    # First try to remove all listeners to prevent callback errors
+                                    try:
+                                        page.remove_listener("close", lambda: None)
+                                    except:
+                                        pass
                                     # Then close with a timeout
-                                    await asyncio.wait_for(page.close(run_before_unload=False), timeout=5.0)
-                                    logger.debug("Page closed successfully")
-                            except asyncio.TimeoutError:
-                                logger.warning("Page close timed out, continuing with context cleanup")
-                            except Exception as page_err:
-                                logger.warning(f"⚠️ Error closing page: {page_err}")
+                                    try:
+                                        await asyncio.wait_for(page.close(run_before_unload=False), timeout=5.0)
+                                        logger.debug("Page closed successfully")
+                                    except asyncio.TimeoutError:
+                                        logger.warning("Page close timed out, continuing with context cleanup")
+                                    except Exception as page_err:
+                                        logger.warning(f"⚠️ Error closing page: {page_err}")
+                            except Exception as e:
+                                logger.debug(f"Page already closed or error: {e}")
                         
                         if 'context' in locals() and context:
                             try:
                                 # Only attempt to clear context data if browser is still connected
-                                if browser.is_connected():
-                                    # Try to clear context data first
-                                    await context.clear_cookies()
+                                if browser and browser.is_connected() and not context.is_closed():
+                                    try:
+                                        # Try to clear context data first
+                                        await context.clear_cookies()
+                                    except:
+                                        pass
                                     # Then close with a timeout
-                                    await asyncio.wait_for(context.close(), timeout=5.0)
-                                    logger.debug("Context closed successfully")
-                            except asyncio.TimeoutError:
-                                logger.warning("Context close timed out")
-                            except Exception as ctx_err:
-                                logger.warning(f"⚠️ Error closing context: {ctx_err}")
+                                    try:
+                                        await asyncio.wait_for(context.close(), timeout=5.0)
+                                        logger.debug("Context closed successfully")
+                                    except asyncio.TimeoutError:
+                                        logger.warning("Context close timed out")
+                                    except Exception as ctx_err:
+                                        logger.warning(f"⚠️ Error closing context: {ctx_err}")
+                            except Exception as e:
+                                logger.debug(f"Context already closed or error: {e}")
                         
                         # Force garbage collection to release memory
                         import gc
