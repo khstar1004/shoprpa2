@@ -492,6 +492,8 @@ def find_best_image_matches(product_names: List[str],
                 used_kogift.add(kogift_match)
 
         # Fallback for Kogift with even more lenient threshold if still no match
+        # 비활성화: super_lenient 매칭 제거
+        """
         if not kogift_match and config:
             super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
             logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Kogift images for '{product_name}'")
@@ -503,6 +505,7 @@ def find_best_image_matches(product_names: List[str],
                 kogift_match, kogift_score = kogift_result
                 used_kogift.add(kogift_match)
                 logging.info(f"Found Kogift match with super lenient threshold: {os.path.basename(kogift_match)} ({kogift_score:.4f})")
+        """
                 
         # Fallback for Naver if no match with enhanced matcher
         if not naver_match:
@@ -516,6 +519,8 @@ def find_best_image_matches(product_names: List[str],
                 used_naver.add(naver_match)
                 
         # Fallback for Naver with even more lenient threshold if still no match
+        # 비활성화: super_lenient 매칭 제거
+        """
         if not naver_match and config:
             super_lenient_threshold = config.getfloat('ImageMatching', 'minimum_match_confidence', fallback=0.05)
             logging.info(f"Trying super lenient fallback (threshold={super_lenient_threshold}) for Naver images for '{product_name}'")
@@ -527,6 +532,7 @@ def find_best_image_matches(product_names: List[str],
                 naver_match, naver_score = naver_result
                 used_naver.add(naver_match)
                 logging.info(f"Found Naver match with super lenient threshold: {os.path.basename(naver_match)} ({naver_score:.4f})")
+        """
         
         # If there is no Haereum match but we have Kogift or Naver, try to find Haereum match using reverse matching
         if not haereum_match and (kogift_match or naver_match) and enhanced_matcher:
@@ -645,7 +651,7 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.2,  # Lowered from 0.4
+                               similarity_threshold: float = 0.3,  # 임계값 상향 조정 (0.2에서 0.3으로)
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
@@ -1506,22 +1512,17 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     
     # Try to get thresholds from config first
     try:
-        # Set very low thresholds to ensure images are kept
-        kogift_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.01)
-        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.01) # Keep this for Naver
+        # 임계값을 더 높게 설정
+        kogift_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.3)
+        naver_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.3) 
     except (configparser.NoSectionError, configparser.NoOptionError):
-        # Default thresholds - set very low
-        kogift_threshold = 0.01
-        naver_threshold = 0.01 # Keep this for Naver
+        # 기본 임계값도 더 높게 설정
+        kogift_threshold = 0.3
+        naver_threshold = 0.3
     
     # Ensure thresholds aren't too high (could happen if config values are wrong)
-    kogift_threshold = min(kogift_threshold, 0.1)
-    # For Naver, use the threshold as is from config, or default 0.01.
-    # Let's ensure it's not overly aggressive by capping it if it's very high, but generally respect config.
-    # User wants to clear low similarity Naver images, so the threshold from config matters.
-    # Example: if config has naver_similarity_threshold = 0.5, use 0.5.
-    # If config is missing, it defaults to 0.01.
-    # Let's use a moderate cap for safety if config value is extreme, e.g. 0.8
+    kogift_threshold = min(kogift_threshold, 0.8)
+    # For Naver, use the threshold as is from config, or default 0.3.
     naver_threshold_from_config = naver_threshold # Preserve the value read from config or default
     naver_threshold_final = min(naver_threshold_from_config, 0.8) 
     
