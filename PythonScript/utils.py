@@ -689,16 +689,48 @@ def generate_keyword_variations(product_name: str, max_variations: int = 4) -> L
 # --- Image Preprocessing Function --- 
 async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]]:
     """Internal helper for running download and optional bg removal for one image."""
-    idx, row_id, image_url, save_dir, prefix, config, client = args
+    # Handle variable length args tuple
+    idx = args[0]
+    row_id = args[1]
+    image_url = args[2]
+    save_dir = args[3]
+    prefix = args[4]
+    config = args[5]
+    client = args[6]
+    # The product_name might be passed as the 8th element
+    product_name = args[7] if len(args) > 7 else None
     
     if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith('http'):
         return row_id, None
 
     try:
-        # Generate filename
-        url_hash = hashlib.md5(image_url.encode()).hexdigest()[:10]
+        # Get product name for consistent naming across sources
+        if product_name is None:
+            # If product_name was not provided, try to get it from row_id if it's a Series
+            if isinstance(row_id, pd.Series):
+                # Try common product name column names
+                for col in ['상품명', 'product_name', 'name', 'title', 'item_name']:
+                    if col in row_id and not pd.isna(row_id[col]):
+                        product_name = row_id[col]
+                        break
         
-        # Basic file extension extraction and sanitization
+        # Generate filename components
+        if product_name:
+            # Generate consistent hash from product name (same as in Haereum and Kogift)
+            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+        else:
+            # Fallback to row_id-based naming if product_name not available
+            if isinstance(row_id, (int, float)):
+                row_id_str = str(int(row_id))
+            else:
+                row_id_str = str(row_id).replace(os.path.sep, '_').replace(' ', '_')[:30]
+            name_hash = row_id_str
+            
+        # Generate a random hash for the second part (same as Haereum/Kogift)
+        import secrets
+        random_hash = secrets.token_hex(4)  # 8-character random hash
+        
+        # Extract file extension
         file_ext = os.path.splitext(urlparse(image_url).path)[1]
         file_ext = ''.join(c for c in file_ext if c.isalnum() or c == '.')[:5].lower()
         
@@ -708,23 +740,17 @@ async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]
             file_ext = '.jpg'
             logging.debug(f"Using default .jpg extension for URL: {image_url}")
         
-        # Clean row_id to ensure it's valid for filenames
-        if isinstance(row_id, (int, float)):
-            row_id_str = str(int(row_id))
-        else:
-            row_id_str = str(row_id).replace(os.path.sep, '_').replace(' ', '_')[:30]
-        
-        # Create a properly formatted filename
-        target_filename = f"{prefix}_{row_id_str}_{url_hash}{file_ext}"
+        # Create the filename with the same pattern as Haereum/Kogift: prefix_namehash_randomhash.ext
+        target_filename = f"{prefix}_{name_hash}_{random_hash}{file_ext}"
         target_path = Path(save_dir) / target_filename
         
-        logging.debug(f"Processing image for ID {row_id_str}: {image_url} -> {target_path}")
+        logging.debug(f"Processing image for ID {row_id}: {image_url} -> {target_path}")
         
         # Download the image
         download_success = await download_image_async(image_url, target_path, client, config)
         
         if not download_success:
-            logging.warning(f"Failed download for ID {row_id_str} from {image_url}")
+            logging.warning(f"Failed download for ID {row_id} from {image_url}")
             return row_id, None
         
         # Save both the original path and the potentially background-removed path    
@@ -811,7 +837,8 @@ async def preprocess_and_download_images(
     id_column_name: str,
     prefix: str,
     config: configparser.ConfigParser,
-    max_workers: Optional[int] = None
+    max_workers: Optional[int] = None,
+    product_name_column: Optional[str] = None
 ) -> Dict[Any, Optional[str]]:
     """
     Downloads images specified in a DataFrame column asynchronously, saves them
@@ -824,6 +851,7 @@ async def preprocess_and_download_images(
         prefix (str): Prefix used for subfolder name (e.g., 'haereum', 'input') and filename.
         config (configparser.ConfigParser): Configuration object.
         max_workers (Optional[int]): Max concurrent download workers. If None, uses default.
+        product_name_column (Optional[str]): Name of the column containing product names for consistent naming.
 
     Returns:
         Dict[Any, Optional[str]]: Dictionary mapping row IDs to the local path of the
@@ -841,6 +869,14 @@ async def preprocess_and_download_images(
     if prefix == 'kogift_pre':
         logging.warning(f"Replacing 'kogift_pre' prefix with 'kogift' for better compatibility")
         prefix = 'kogift'
+
+    # Auto-detect product name column if not provided but needed for consistent naming
+    if product_name_column is None:
+        for col in ['상품명', 'product_name', 'name', 'title', 'item_name']:
+            if col in df.columns:
+                product_name_column = col
+                logging.info(f"Auto-detected product name column: '{product_name_column}'")
+                break
 
     # Determine the correct save directory (image_main_dir / prefix)
     try:
@@ -868,6 +904,7 @@ async def preprocess_and_download_images(
         for idx, row in df.iterrows():
             image_url = row.get(url_column_name)
             row_id = row.get(id_column_name)
+            
             # Basic validation
             if pd.isna(image_url) or not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')) or pd.isna(row_id):
                 continue
@@ -881,8 +918,15 @@ async def preprocess_and_download_images(
                 logging.debug(f"Skipping non-image URL {image_url} (ext='{url_ext}') for row {row_id}")
                 continue
 
-            # Prepare arguments for the wrapper function
-            args = (idx, row_id, image_url, save_dir, prefix, config, client)
+            # Get product name for consistent filename generation
+            product_name = None
+            if product_name_column and product_name_column in df.columns:
+                product_name = row.get(product_name_column)
+                if pd.isna(product_name):
+                    product_name = None
+            
+            # Prepare arguments for the wrapper function, including product_name as 8th parameter
+            args = (idx, row_id, image_url, save_dir, prefix, config, client, product_name)
             tasks.append(_process_single_image_wrapper(args))
 
         logging.info(f"Submitting {len(tasks)} image processing tasks for prefix '{prefix}'.")

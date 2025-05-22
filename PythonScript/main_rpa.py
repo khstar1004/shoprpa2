@@ -293,7 +293,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     id_column_name='Code',
                     prefix='input',
                     config=config,
-                    max_workers=download_workers
+                    max_workers=download_workers,
+                    product_name_column='상품명'  # Use product name for consistent image naming
                 )
                 processed_count = len(input_file_image_map)
             else:
@@ -681,7 +682,8 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     id_column_name='id',
                     prefix='kogift',
                     config=config,
-                    max_workers=download_workers
+                    max_workers=download_workers,
+                    product_name_column=None  # No product name column in the temp_df, will fallback to URL-based naming
                 )
                 
                 download_success = len(kogift_image_map)
