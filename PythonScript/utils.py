@@ -214,7 +214,7 @@ def get_async_httpx_client(config: configparser.ConfigParser, user_agent: Option
 
 # --- File Utilities ---
 
-def download_image(url: str, save_path: Union[str, Path], config: configparser.ConfigParser) -> bool:
+def download_image(url: str, save_path: Union[str, Path], config: configparser.ConfigParser, headers: dict = None) -> bool:
     """Downloads image using requests session, validates, returns success bool."""
     if pd.isna(url) or not isinstance(url, str) or not url.startswith('http'):
         logging.debug(f"Skipping download: Invalid URL '{url}'")
@@ -263,15 +263,19 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
     if is_kogift:
         if not url.startswith('https://'):
             url = 'https://' + url.lstrip('/')
-        # Add specific headers for koreagift
-        headers = {
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://koreagift.com/'
-        }
-    else:
-        headers = {}
+    
+    # Use provided headers or set default ones
+    if headers is None:
+        if is_kogift:
+            # Add specific headers for koreagift
+            headers = {
+                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': 'https://koreagift.com/'
+            }
+        else:
+            headers = {}
 
     for attempt in range(max_retries):
         try:
@@ -301,8 +305,11 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
                         time.sleep(retry_delay * (attempt + 1))
                         continue
 
-            # Create a temporary file for downloading
-            temp_path = save_path.with_suffix('.tmp')
+            # Create a temporary file for downloading with simplified naming
+            import uuid
+            temp_filename = f"{save_path.stem}_{uuid.uuid4().hex[:8]}.tmp"
+            temp_path = save_path.parent / temp_filename
+            
             with open(temp_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
@@ -340,10 +347,13 @@ def download_image(url: str, save_path: Union[str, Path], config: configparser.C
                             time.sleep(retry_delay * (attempt + 1))
                             continue
 
-                # If all validations pass, move temp file to final location
+                # If all validations pass, move temp file to final location using shutil.move
+                # for better cross-platform compatibility and to handle file locking issues
                 if os.path.exists(save_path):
                     os.remove(save_path)
-                os.rename(temp_path, save_path)
+                
+                import shutil
+                shutil.move(str(temp_path), str(save_path))
                 
                 logging.debug(f"Image validated and saved successfully: {save_path}")
                 return True

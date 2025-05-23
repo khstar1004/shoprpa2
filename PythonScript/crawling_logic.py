@@ -2,6 +2,7 @@ import os
 import logging
 import hashlib
 import time
+import requests
 from urllib.parse import urlparse
 import pandas as pd
 import asyncio
@@ -644,17 +645,85 @@ def _process_single_haoreum_image(product_code, image_info, config):
                 headers = {
                     'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
                     'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Referer': 'https://www.haereumgift.co.kr/',
+                    'sec-ch-ua': '"Google Chrome";v="93", " Not;A Brand";v="99", "Chromium";v="93"',
+                    'sec-ch-ua-mobile': '?0',
+                    'sec-ch-ua-platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'image',
+                    'Sec-Fetch-Mode': 'no-cors',
+                    'Sec-Fetch-Site': 'same-origin',
+                    'Connection': 'keep-alive',
+                    'Cache-Control': 'max-age=0'
                 }
                 
-                # Use utils.download_image function with proper headers
-                from utils import download_image
+                # Use direct requests to download image with proper error handling
+                import tempfile
+                import shutil
                 
-                # Pass headers to the download function
-                downloaded = download_image(image_url, main_img_path, config=config, headers=headers)
+                # Create temporary file in the same directory to avoid cross-device issues
+                with tempfile.NamedTemporaryFile(dir=haereum_dir, suffix='.tmp', delete=False) as temp_file:
+                    temp_path = temp_file.name
                 
-                if downloaded:
-                    logging.debug(f"🟡 Downloaded Haereum image to main folder: {main_img_path}")
+                try:
+                    # Download to temporary file first using requests with proper settings
+                    max_retries = 3
+                    retry_delay = 1.0
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            response = requests.get(image_url, headers=headers, timeout=(5.0, 15.0), stream=True)
+                            response.raise_for_status()
+                            
+                            # Check content type
+                            content_type = response.headers.get('Content-Type', '')
+                            if not content_type.startswith('image/'):
+                                logging.warning(f"🟡 Non-image content type: {content_type} for URL: {image_url}")
+                            
+                            # Write to temp file
+                            with open(temp_path, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            
+                            # Validate downloaded file
+                            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 100:
+                                # Validate it's a proper image
+                                try:
+                                    from PIL import Image
+                                    with Image.open(temp_path) as img:
+                                        img.verify()
+                                    
+                                    # Move temp file to final location
+                                    shutil.move(temp_path, main_img_path)
+                                    logging.debug(f"🟡 Downloaded Haereum image to main folder: {main_img_path}")
+                                    break  # Success, exit retry loop
+                                    
+                                except Exception as img_err:
+                                    logging.warning(f"🟡 Invalid image file: {img_err}")
+                                    if attempt < max_retries - 1:
+                                        time.sleep(retry_delay * (attempt + 1))
+                                        continue
+                                    else:
+                                        return product_code, None
+                            else:
+                                logging.warning(f"🟡 Downloaded file too small or missing: {temp_path}")
+                                if attempt < max_retries - 1:
+                                    time.sleep(retry_delay * (attempt + 1))
+                                    continue
+                                else:
+                                    return product_code, None
+                                    
+                        except requests.exceptions.RequestException as req_err:
+                            logging.warning(f"🟡 Request error (attempt {attempt + 1}/{max_retries}): {req_err}")
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay * (attempt + 1))
+                                continue
+                            else:
+                                return product_code, None
+                    else:
+                        # If we get here, all download attempts failed
+                        logging.warning(f"🟡 Failed to download Haereum image after {max_retries} attempts: {image_url}")
+                        return product_code, None
                     
                     # Try background removal if requested
                     if use_bg_removal:
@@ -670,9 +739,15 @@ def _process_single_haoreum_image(product_code, image_info, config):
                             logging.warning(f"🟡 Error during background removal: {bg_err}. Using original image.")
                     
                     return product_code, final_image_path
-                else:
-                    logging.warning(f"🟡 Failed to download Haereum image: {image_url}")
-                    return product_code, None
+                        
+                finally:
+                    # Clean up temp file if it still exists
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    except:
+                        pass
+                        
             except Exception as dl_err:
                 logging.error(f"🟡 Error downloading Haereum image from {image_url}: {dl_err}")
                 return product_code, None

@@ -6,7 +6,7 @@ import logging
 from urllib.parse import urlparse, urljoin
 import re
 from typing import Optional, List, Dict, Any, Tuple
-from utils import generate_keyword_variations
+from utils import generate_keyword_variations, generate_product_name_hash
 import configparser # Import configparser
 import os
 import time
@@ -28,7 +28,6 @@ from selenium.common.exceptions import (
 )
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from image_downloader import predownload_kogift_images, verify_image_url
 import argparse
 from pathlib import Path
 from PIL import Image
@@ -37,6 +36,7 @@ import hashlib
 import json
 import threading
 import glob
+import uuid
 
 # Global lock for file operations to prevent concurrent access conflicts
 _file_locks = {}
@@ -244,7 +244,7 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
         return None
         
     if not product_name:
-        logger.error("❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")
+        logger.error(f"❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")
         return None
 
     try:
@@ -276,15 +276,8 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
         
         # Generate filename using the same method as naver/haereum
         try:
-            # 상품명 해시값 생성 (MD5) - 16자로 통일
-            try:
-                from utils import generate_product_name_hash
-                name_hash = generate_product_name_hash(product_name)
-            except ImportError:
-                logger.warning("Could not import generate_product_name_hash, using fallback method")
-                # 상품명 정규화 (공백 제거, 소문자 변환)
-                normalized_name = ''.join(product_name.split()).lower()
-                name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
+            # 상품명 해시값 생성 (MD5) - utils.py의 generate_product_name_hash와 동일한 방식
+            name_hash = generate_product_name_hash(product_name)
             
             # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
             normalized_name = ''.join(product_name.split()).lower()
@@ -338,21 +331,14 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
                 
                 return os.path.abspath(final_image_path)
 
-            # Generate unique temporary filename with process and thread info for uniqueness
-            import threading
-            thread_id = threading.get_ident()
-            process_id = os.getpid()
-            temp_path = f"{local_path}.{process_id}.{thread_id}.{time.time_ns()}.tmp"
+            # Generate simplified temporary filename to avoid Windows path issues
+            temp_filename = f"{filename}.{uuid.uuid4().hex[:8]}.tmp"
+            temp_path = os.path.join(save_dir, temp_filename)
             
-            # Ensure temp file doesn't already exist
-            temp_counter = 0
-            original_temp_path = temp_path
-            while os.path.exists(temp_path):
-                temp_counter += 1
-                temp_path = f"{original_temp_path}.{temp_counter}"
-                if temp_counter > 100:  # Safety check
-                    logger.error(f"Could not create unique temp file name for {local_path}")
-                    return None
+            # Ensure temp file doesn't already exist (should be very rare with UUID)
+            if os.path.exists(temp_path):
+                temp_filename = f"{filename}.{uuid.uuid4().hex[:8]}.{time.time_ns()}.tmp"
+                temp_path = os.path.join(save_dir, temp_filename)
 
             try:
                 # Download the image using aiohttp (same as naver/haereum)
@@ -431,17 +417,17 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
                                                     continue
                                                 break
                                             
-                                        # Atomic move: temp file to final location
-                                        # Check one more time if final file was created by another process
+                                        # Use shutil.move instead of os.rename for better cross-platform compatibility
+                                        # and to handle potential file locking issues on Windows
                                         if not os.path.exists(local_path):
                                             try:
-                                                # Use os.rename for atomic operation on same filesystem
-                                                os.rename(temp_path, local_path)
+                                                import shutil
+                                                shutil.move(temp_path, local_path)
                                                 logger.debug(f"✅ 이미지 다운로드 성공: {local_path}")
                                                 download_success = True
                                                 break  # Success!
-                                            except OSError as rename_err:
-                                                logger.warning(f"Error renaming temp file to final path: {rename_err}")
+                                            except (OSError, IOError) as move_err:
+                                                logger.warning(f"Error moving temp file to final path: {move_err}")
                                                 # Clean up temp file
                                                 if os.path.exists(temp_path):
                                                     try:
