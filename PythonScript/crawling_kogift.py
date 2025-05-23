@@ -183,125 +183,262 @@ PAGE_TIMEOUT = 120000  # 2 minutes
 NAVIGATION_TIMEOUT = 60000  # 1 minute
 
 # --- Helper function to download images ---
-def download_image(url: str, save_dir: str, product_name: Optional[str] = None, file_name: Optional[str] = None) -> Optional[str]:
-    """Download an image from a URL and save it to the specified disk directory."""
-    if not url:
-        logger.error("❌ URL이 제공되지 않았습니다.")
+async def download_image(url: str, save_dir: str, product_name: Optional[str] = None, config: configparser.ConfigParser = None, max_retries: int = 3) -> Optional[str]:
+    """
+    Download a single Kogift image to the specified directory with enhanced processing.
+    Uses the same approach as Naver and Haereum for consistency.
+    
+    Args:
+        url (str): The image URL to download.
+        save_dir (str): The directory to save the image in.
+        product_name (str): The product name for generating the filename.
+        config (configparser.ConfigParser): ConfigParser object containing configuration.
+        max_retries (int): Maximum number of retry attempts.
+        
+    Returns:
+        Optional[str]: The local path to the downloaded image, or None if download failed.
+    """
+    if not url or not save_dir:
+        logger.warning("Empty URL or save directory provided to download_image.")
         return None
-    
-    # Extract filename from URL if not provided
-    if not file_name:
-        # Get file extension
-        original_ext = os.path.splitext(urlparse(url).path)[1].lower()
-        if not original_ext or original_ext not in ['.jpg', '.jpeg', '.png']:
-            original_ext = '.jpg'
-            
-        if product_name:
-            # Import utils function for consistent filename generation
-            try:
-                from utils import generate_consistent_filename
-                file_name = generate_consistent_filename(product_name, "kogift", original_ext)
-            except ImportError:
-                logger.warning("Could not import generate_consistent_filename from utils, using fallback method")
-                # 기존 방식으로 폴백 - 하지만 일관된 해시 사용
-                name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
-                second_hash = hashlib.md5(product_name.encode()).hexdigest()[16:24]
-                file_name = f"kogift_{name_hash}_{second_hash}{original_ext}"
-        else:
-            # 상품명이 없는 경우는 오류 상황
-            logger.error(f"❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")
-            return None
-    
-    # Create save directory if it doesn't exist
-    try:
-        os.makedirs(save_dir, exist_ok=True)
-    except PermissionError:
-        logger.error(f"Permission denied when creating directory: {save_dir}")
-        return None
-    
-    # Generate file path and check if it exists
-    file_path = os.path.join(save_dir, file_name)
-    if os.path.exists(file_path):
-        # Check if file size is > 0 to consider it valid
-        if os.path.getsize(file_path) > 0:
-            logger.debug(f"Image already exists: {file_path}")
-            return file_path
-    
-    # Create a unique temporary file path
-    temp_file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{random.randint(1000, 9999)}.tmp")
-    
-    # Download the image
-    try:
-        # Add headers for Kogift
-        headers = {
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://koreagift.com/'
-        }
         
-        response = requests.get(url, headers=headers, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        # Check content type
-        content_type = response.headers.get('Content-Type', '')
-        if not content_type.startswith('image/'):
-            logger.warning(f"Non-image content type: {content_type}")
-        
-        # Save the image
-        with open(temp_file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        # Verify the downloaded file
-        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) < 100:  # Less than 100 bytes
-            logger.error(f"❌ 다운로드된 파일이 너무 작거나 존재하지 않습니다: {temp_file_path}")
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-            return None
-        
-        # Verify it's a valid image
-        try:
-            with Image.open(temp_file_path) as img:
-                img.verify()
-                # Check dimensions
-                img = Image.open(temp_file_path)
-                if img.width < 10 or img.height < 10:
-                    logger.error(f"❌ 이미지 크기가 너무 작습니다: {img.width}x{img.height}")
-                    os.remove(temp_file_path)
-                    return None
-        except Exception as e:
-            logger.error(f"❌ 유효하지 않은 이미지 파일입니다: {e}")
-            os.remove(temp_file_path)
-            return None
-        
-        # Move temp file to final location
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        os.rename(temp_file_path, file_path)
-        
-        logger.debug(f"✅ 이미지 다운로드 성공: {file_path}")
-        return file_path
-        
-    except requests.RequestException as e:
-        logger.error(f"❌ 이미지 다운로드 실패: {e}")
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        return None
-    except Exception as e:
-        logger.error(f"❌ 예상치 못한 오류 발생: {e}")
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+    if not product_name:
+        logger.error("❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")
         return None
 
-def download_images_batch(img_urls, save_dir='downloaded_images', product_name=None, max_workers=10):
+    try:
+        # Ensure URL is properly encoded and valid
+        if not (url.startswith('http://') or url.startswith('https://')):
+            logger.warning(f"Invalid URL format: {url}")
+            return None
+
+        # Create save directory if it doesn't exist
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # Verify directory is writable
+            if not os.access(save_dir, os.W_OK):
+                logger.error(f"Image directory is not writable: {save_dir}")
+                return None
+                
+            # Check for use_background_removal setting
+            if config:
+                use_bg_removal = config.getboolean('Matching', 'use_background_removal', fallback=True)
+            else:
+                use_bg_removal = False
+        except Exception as e:
+            logger.error(f"Error accessing config or creating image directory: {e}")
+            return None
+        
+        # Generate filename using the same method as naver/haereum
+        try:
+            # 상품명 해시값 생성 (MD5) - 16자로 통일
+            try:
+                from utils import generate_product_name_hash
+                name_hash = generate_product_name_hash(product_name)
+            except ImportError:
+                logger.warning("Could not import generate_product_name_hash, using fallback method")
+                # 상품명 정규화 (공백 제거, 소문자 변환)
+                normalized_name = ''.join(product_name.split()).lower()
+                name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
+            
+            # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
+            normalized_name = ''.join(product_name.split()).lower()
+            second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
+            
+            # URL에서 파일 확장자 추출
+            parsed_url = urlparse(url)
+            file_ext = os.path.splitext(parsed_url.path)[1].lower()
+            # 확장자가 없거나 유효하지 않은 경우 기본값 사용
+            if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+                file_ext = '.jpg'
+            
+            # 새로운 형식으로 파일명 생성 (사이트이름_상품명해시_고유식별자)
+            filename = f"kogift_{name_hash}_{second_hash}{file_ext}"
+            local_path = os.path.join(save_dir, filename)
+            final_image_path = local_path
+            
+        except Exception as e:
+            logger.error(f"Error generating filename: {e}")
+            return None
+        
+        # 이미 파일이 존재하는 경우 중복 다운로드 방지
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            logger.debug(f"Image already exists: {local_path}")
+            
+            # 배경 제거 버전이 이미 있는지 확인
+            if use_bg_removal:
+                bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                if os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0:
+                    final_image_path = bg_removed_path
+                    logger.debug(f"Using existing background-removed image: {final_image_path}")
+                else:
+                    # 배경 제거 버전이 없으면 생성 시도
+                    try:
+                        from image_utils import remove_background
+                        if remove_background(local_path, bg_removed_path):
+                            final_image_path = bg_removed_path
+                            logger.debug(f"Background removed for existing Kogift image: {final_image_path}")
+                        else:
+                            logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
+                    except Exception as bg_err:
+                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+            
+            return os.path.abspath(final_image_path)
+
+        # Download the image using aiohttp (same as naver/haereum)
+        import aiohttp
+        import asyncio
+        
+        # Generate unique temporary filename
+        temp_path = f"{local_path}.{time.time_ns()}.tmp"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Try different URL variants if the original fails
+                url_variants = [url]
+                
+                # Download with retries
+                download_success = False
+                
+                for current_url in url_variants:
+                    for attempt in range(max_retries):
+                        try:
+                            # Add headers for Kogift
+                            headers = {
+                                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Referer': 'https://koreagift.com/',
+                                'Connection': 'keep-alive',
+                                'Cache-Control': 'max-age=0'
+                            }
+                            
+                            logger.debug(f"Downloading image: attempt {attempt+1}/{max_retries}: {current_url}")
+                            
+                            async with session.get(current_url, timeout=30, headers=headers) as response:
+                                if response.status != 200:
+                                    logger.warning(f"HTTP error {response.status} downloading image (attempt {attempt+1}/{max_retries}): {current_url}")
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 * (attempt + 1))
+                                        continue
+                                    break
+                                    
+                                # Check content type
+                                content_type = response.headers.get('Content-Type', '')
+                                if not content_type.startswith('image/'):
+                                    logger.warning(f"Non-image content type: {content_type} for URL: {current_url}")
+                                    # For kogift, proceed anyway as they might return incorrect content-type
+                                    
+                                # Download image data
+                                data = await response.read()
+                                if len(data) < 100:  # Too small to be a valid image
+                                    logger.warning(f"Downloaded image too small: {len(data)} bytes from URL: {current_url}")
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 * (attempt + 1))
+                                        continue
+                                    break
+                                    
+                                # Save to temporary file
+                                with open(temp_path, 'wb') as f:
+                                    f.write(data)
+                                
+                                # Validate image
+                                try:
+                                    from PIL import Image
+                                    with Image.open(temp_path) as img:
+                                        img.verify()
+                                        # Re-open to check dimensions
+                                        img = Image.open(temp_path)
+                                        if img.width < 10 or img.height < 10:
+                                            logger.warning(f"Image dimensions too small: {img.width}x{img.height}")
+                                            if attempt < max_retries - 1:
+                                                os.remove(temp_path)
+                                                await asyncio.sleep(1 * (attempt + 1))
+                                                continue
+                                            break
+                                        
+                                    # Move temp file to final location
+                                    if os.path.exists(local_path):
+                                        os.remove(local_path)
+                                    os.rename(temp_path, local_path)
+                                    
+                                    logger.debug(f"✅ 이미지 다운로드 성공: {local_path}")
+                                    download_success = True
+                                    break  # Success!
+                                    
+                                except Exception as img_err:
+                                    logger.warning(f"Invalid image file: {img_err}")
+                                    if os.path.exists(temp_path):
+                                        os.remove(temp_path)
+                                    if attempt < max_retries - 1:
+                                        await asyncio.sleep(1 * (attempt + 1))
+                                        continue
+                                    break
+                                    
+                        except Exception as e:
+                            logger.warning(f"Error downloading image (attempt {attempt+1}/{max_retries}): {e}")
+                            if os.path.exists(temp_path):
+                                try:
+                                    os.remove(temp_path)
+                                except:
+                                    pass
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(1 * (attempt + 1))
+                                continue
+                            break
+                    
+                    if download_success:
+                        break  # Don't try other URL variants if successful
+                
+                if not download_success:
+                    logger.error(f"❌ 모든 시도 실패: {url}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"❌ 예상치 못한 오류 발생: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            return None
+        
+        # Background removal if enabled
+        if use_bg_removal and os.path.exists(local_path):
+            try:
+                bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                if bg_removed_path.endswith('_nobg.jpg'):
+                    bg_removed_path = bg_removed_path.replace('_nobg.jpg', '_nobg.png')
+                
+                from image_utils import remove_background
+                if remove_background(local_path, bg_removed_path):
+                    final_image_path = bg_removed_path
+                    logger.debug(f"Background removed successfully: {final_image_path}")
+                else:
+                    logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
+                    final_image_path = local_path
+            except Exception as bg_err:
+                logger.warning(f"Error during background removal: {bg_err}. Using original image.")
+                final_image_path = local_path
+        else:
+            final_image_path = local_path
+            
+        return os.path.abspath(final_image_path)
+        
+    except Exception as e:
+        logger.error(f"❌ 전체 다운로드 프로세스 실패: {e}")
+        return None
+
+async def download_images_batch(img_urls, save_dir='downloaded_images', product_name=None, config=None, max_workers=10):
     """
-    Download multiple images in parallel using a thread pool.
+    Download multiple images in parallel using asyncio.
     
     Args:
         img_urls: List of image URLs to download
         save_dir: Directory to save the images
         product_name: Product name for generating filename
+        config: Configuration object
         max_workers: Maximum number of concurrent downloads
         
     Returns:
@@ -311,20 +448,31 @@ def download_images_batch(img_urls, save_dir='downloaded_images', product_name=N
     
     logger.info(f"Downloading {len(img_urls)} images to {save_dir}")
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_url = {
-            executor.submit(download_image, url, save_dir, product_name): url 
-            for url in img_urls if url
-        }
+    # Create semaphore to limit concurrent downloads
+    semaphore = asyncio.Semaphore(max_workers)
+    
+    async def download_with_semaphore(url):
+        async with semaphore:
+            return await download_image(url, save_dir, product_name, config)
+    
+    # Create tasks for all downloads
+    tasks = []
+    for url in img_urls:
+        if url:
+            tasks.append(download_with_semaphore(url))
+    
+    # Execute all downloads concurrently
+    if tasks:
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
         
-        for future in future_to_url:
-            url = future_to_url[future]
-            try:
-                path = future.result()
-                if path:
-                    results[url] = path
-            except Exception as e:
-                logger.error(f"Error downloading image {url}: {e}")
+        # Map results back to URLs
+        for i, result in enumerate(results_list):
+            if i < len(img_urls) and img_urls[i]:
+                if isinstance(result, str):  # Successful download returns path
+                    results[img_urls[i]] = result
+                elif isinstance(result, Exception):
+                    logger.error(f"Error downloading image {img_urls[i]}: {result}")
+                # None results (failed downloads) are simply not added to results
     
     success_count = len(results)
     logger.info(f"Downloaded {success_count}/{len(img_urls)} images successfully")
@@ -887,7 +1035,7 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
             
             # 개별 이미지 다운로드 (상품명 전달)
             try:
-                local_path = download_image(img_url, images_dir, product_name)
+                local_path = await download_image(img_url, images_dir, product_name, config)
                 if local_path:
                     product['local_image_path'] = local_path
                     download_success_count += 1
@@ -1832,54 +1980,64 @@ def test_kogift_scraper():
     # --- Helper tests inside test_kogift_scraper() ---
     # 1) Image download test (synchronous)
     def test_image_download():
-        logger.info("=== TESTING IMAGE DOWNLOAD FUNCTIONALITY ===")
-        
-        test_urls = [
-            "https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg",  # 올바른 형식 (ez 포함)
-            "https://koreagift.com/upload/mall/shop_1736386408518966_0.jpg",     # 잘못된 형식 (ez 미포함)
-            "https://adpanchok.co.kr/upload/mall/shop_1234567890_0.jpg",         # 애드판촉 이미지
-            "https://koreagift.com/ez/upload/no_image.jpg"                       # 존재하지 않는 이미지
-        ]
-        
+        """이미지 다운로드 테스트 및 정규화 확인"""
         print(f"\n{'=' * 70}")
-        print(f"🔍 이미지 URL 정규화 및 다운로드 테스트 (총 {len(test_urls)}개 URL)")
+        print(f"🖼️ 고려기프트 이미지 다운로드 테스트")
         print(f"{'=' * 70}")
         
-        # 테스트 디렉토리 설정
-        save_dir = os.path.join(config.get('Paths','image_target_dir',fallback='downloaded_images'), 'kogift_test_images')
-        os.makedirs(save_dir, exist_ok=True)
-        print(f"📁 테스트 이미지 저장 경로: {save_dir}")
+        # 동기적으로 async 함수를 호출하기 위한 래퍼
+        def sync_download_image(url, save_dir, product_name):
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(download_image(url, save_dir, product_name, config))
+            finally:
+                loop.close()
         
-        # 결과 요약을 위한 카운터
+        # 테스트용 이미지 URL들
+        test_urls = [
+            "https://koreagift.com/upload/mall/shop_1735274388623093_0.jpg",
+            "https://koreagift.com/upload/mall/shop_1735274388623093_1.jpg",
+            "https://koreagift.com/ez/upload/mall/shop_1735274388623093_0.jpg",
+            "https://adpanchok.co.kr/upload/mall/shop_1735267708606983_0.jpg",
+            "https://adpanchok.co.kr/ez/upload/mall/shop_1735267708606983_0.jpg"
+        ]
+        
+        # 다운로드 디렉토리 생성
+        save_dir = "test_kogift_images"
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 테스트 결과 변수
+        total_urls = len(test_urls)
+        normalized_count = 0
         successful_downloads = 0
         failed_downloads = 0
-        normalized_count = 0
         
-        # 각 URL에 대한 테스트 수행
+        print(f"총 {total_urls}개 URL 테스트 시작...")
+        print()
+        
         for i, url in enumerate(test_urls):
-            print(f"\n[테스트 {i+1}/{len(test_urls)}]")
-            print(f"원본 URL: {url}")
+            print(f"[{i+1}/{total_urls}] 테스트 URL: {url}")
             
             # URL 정규화
-            norm_url, valid = normalize_kogift_image_url(url)
+            normalized_url, is_valid = normalize_kogift_image_url(url)
+            print(f"정규화 결과: {normalized_url}")
+            print(f"유효성: {'✅ 유효' if is_valid else '❌ 무효'}")
             
-            if norm_url != url:
+            if is_valid:
                 normalized_count += 1
-                print(f"정규화 URL: {norm_url} (변경됨)")
+                norm_url = normalized_url
             else:
-                print(f"정규화 URL: {norm_url} (변경 없음)")
-                
-            print(f"URL 유효성: {'✅ 유효함' if valid else '❌ 유효하지 않음'}")
-            
-            if not valid:
+                print(f"⚠️ 무효한 URL이므로 다운로드를 건너뜁니다.")
                 failed_downloads += 1
-                print(f"⚠️ 유효하지 않은 URL - 다운로드 건너뜀")
+                print()
                 continue
                 
             # 이미지 다운로드
             print(f"이미지 다운로드 시도 중...")
             test_filename = f"test_{i+1}_{hashlib.md5(url.encode()).hexdigest()[:6]}.jpg"
-            path = download_image(norm_url, save_dir, test_filename)
+            path = sync_download_image(norm_url, save_dir, test_filename)
             
             if path:
                 successful_downloads += 1
@@ -1927,521 +2085,16 @@ def test_kogift_scraper():
     async def test_product_info(browser):
         logger.info("=== TESTING PRODUCT INFORMATION RETRIEVAL ===")
         
+        # 동기적으로 async 함수를 호출하기 위한 래퍼
+        def sync_download_image(url, save_dir, product_name):
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(download_image(url, save_dir, product_name, config))
+            finally:
+                loop.close()
+        
         # Use specified search terms
         test_keywords = args.search_terms
         
-        # 이미지 저장 디렉토리 생성 (테스트용)
-        test_image_dir = os.path.join(config.get('Paths', 'image_target_dir', fallback='downloaded_images'), 'kogift_test')
-        os.makedirs(test_image_dir, exist_ok=True)
-        
-        for keyword in test_keywords:
-            logger.info(f"\n--- Searching for '{keyword}' ---")
-            try:
-                # Pass the custom quantities to scrape_data
-                df = await scrape_data(browser, keyword, config=config, 
-                                 custom_quantities=args.quantity, 
-                                 fetch_price_tables=True)  # 테이블 데이터도 가져오기
-                
-                if df.empty:
-                    print(f"No products found for '{keyword}'")
-                    continue
-                    
-                print(f"Found {len(df)} products for '{keyword}'")
-                
-                # Display image URLs and prices for each product
-                for idx, row in df.iterrows():
-                    print(f"\n{'=' * 70}")
-                    print(f"Product {idx+1}: {row.get('name', 'Unknown Name')}")
-                    print(f"  URL: {row.get('href', 'N/A')}")
-                    print(f"  Supplier: {row.get('supplier', 'Unknown')}")
-                    
-                    # 이미지 정보 출력 및 테스트 다운로드
-                    img_url = row.get('image_url')
-                    if img_url:
-                        norm_url, valid = normalize_kogift_image_url(img_url)
-                        print(f"  Image URL: {img_url}")
-                        print(f"  Normalized URL: {norm_url}")
-                        print(f"  Image URL valid: {'Yes' if valid else 'No'}")
-                        
-                        # 이미지 다운로드 테스트
-                        if valid:
-                            print("  Testing image download...")
-                            product_name_hash = hashlib.md5(row.get('name', '').encode()).hexdigest()[:8]
-                            img_filename = f"test_{idx}_{product_name_hash}.jpg"
-                            
-                            download_path = download_image(norm_url, test_image_dir, img_filename)
-                            if download_path:
-                                img_size = os.path.getsize(download_path) if os.path.exists(download_path) else 0
-                                print(f"  ✅ Image downloaded: {os.path.basename(download_path)} ({img_size/1024:.1f} KB)")
-                            else:
-                                print(f"  ❌ Failed to download image")
-                    else:
-                        print(f"  ❌ No image URL available")
-                    
-                    print(f"\n  Price Information:")
-                    print(f"  Basic Price (excl. VAT): {row.get('price', 'N/A')} KRW")
-                    print(f"  Basic Price (incl. VAT): {row.get('price_with_vat', 'N/A')} KRW")
-                    
-                    # 수량별 가격 정보 상세 분석 및 표시
-                    if 'quantity_prices' in row and row['quantity_prices']:
-                        print("\n  Quantity-based prices:")
-                        print("  " + "-" * 68)
-                        print("  | {:^8} | {:^12} | {:^12} | {:^28} |".format("수량", "단가(VAT제외)", "단가(VAT포함)", "비고"))
-                        print("  " + "-" * 68)
-                        
-                        # 수량 순서대로 정렬하여 표시
-                        sorted_quantities = sorted(row['quantity_prices'].keys())
-                        
-                        for qty in sorted_quantities:
-                            price_info = row['quantity_prices'][qty]
-                            price = price_info['price']
-                            price_with_vat = price_info['price_with_vat']
-                            
-                            # 비고 정보 구성
-                            if price_info.get('exact_match', False):
-                                note = "정확한 수량 일치"
-                            elif 'note' in price_info:
-                                note = price_info['note']
-                            elif 'actual_quantity' in price_info:
-                                note = f"근사값 (실제 수량: {price_info['actual_quantity']}개)"
-                            else:
-                                note = "-"
-                                
-                            print("  | {:>8,d} | {:>12,d} | {:>12,d} | {:<28} |".format(
-                                qty, price, price_with_vat, note))
-                        
-                        print("  " + "-" * 68)
-                        
-                        # 수량별 가격 변화 추이 분석
-                        if len(sorted_quantities) > 1:
-                            min_qty = min(sorted_quantities)
-                            max_qty = max(sorted_quantities)
-                            min_price = row['quantity_prices'][min_qty]['price']
-                            max_price = row['quantity_prices'][max_qty]['price']
-                            
-                            if min_price > max_price:
-                                price_trend = f"수량이 증가할수록 단가 감소 ({min_price}원 → {max_price}원), 할인율: {(1 - max_price/min_price)*100:.1f}%"
-                            elif min_price < max_price:
-                                price_trend = f"수량이 증가할수록 단가 증가 ({min_price}원 → {max_price}원), 상승률: {(max_price/min_price - 1)*100:.1f}%"
-                            else:
-                                price_trend = "수량에 관계없이 단가 일정"
-                                
-                            print(f"\n  가격 추이 분석: {price_trend}")
-                    else:
-                        print("\n  ❌ No quantity-based price information available")
-                    
-                    # 수량과 가격 조합이 적절한지 검증
-                    if 'price' in row and 'quantity_prices' in row and row['quantity_prices']:
-                        min_qty_price = min([info['price'] for info in row['quantity_prices'].values()])
-                        base_price = row.get('price', 0)
-                        
-                        if abs(min_qty_price - base_price) > base_price * 0.1:  # 10% 이상 차이
-                            print(f"\n  ⚠️ Warning: Base price ({base_price}원) differs significantly from minimum quantity price ({min_qty_price}원)")
-                    
-                    print(f"{'=' * 70}")
-                    
-                    # Limit display to first 3 products per keyword to avoid too much output
-                    if idx >= 2:
-                        print(f"... and {len(df) - 3} more products")
-                        break
-            except Exception as e:
-                print(f"Error searching for '{keyword}': {e}")
-                logger.error(f"Error during test_product_info for keyword '{keyword}': {e}", exc_info=True)
-                print(f"Skipping to next keyword...")
-                continue
-
-    # 3) Custom quantities pricing test (requires browser)
-    async def test_custom_quantities(browser): # Accepts the main browser instance
-        logger.info("=== TESTING CUSTOM QUANTITIES FUNCTIONALITY ===")
-        
-        special_test_cases = [
-            {
-                "keyword": "람프로스 아트콜라 자개 명함케이스 경주",
-                "test_quantities": [30, 50, 100, 150, 200],
-                "expected_prices": {
-                    30: {"price": 15900, "price_with_vat": round(15900 * 1.1)},
-                    50: {"price": 15900, "price_with_vat": round(15900 * 1.1)},
-                    100: {"price": 15400, "price_with_vat": round(15400 * 1.1)},
-                    150: {"price": 15400, "price_with_vat": round(15400 * 1.1)},
-                    200: {"price": 15100, "price_with_vat": round(15100 * 1.1)}
-                },
-                "target_product_name_substring": "람프로스 아트콜라 자개 명함케이스 경주",
-                "expected_min_qty_in_table": 50
-            },
-            {
-                "keyword": "애니클리어 방수 가방 드라이백 10L",
-                "test_quantities": [30, 50, 70, 100], # Testing 30, 50, between 50-100, and 100
-                "expected_prices": {
-                    30: {"price": 6500, "price_with_vat": round(6500 * 1.1)}, # Price for 30 from image
-                    50: {"price": 6300, "price_with_vat": round(6300 * 1.1)}, # Price for 50 from image
-                    70: {"price": 6300, "price_with_vat": round(6300 * 1.1)}, # Should take price of 50 tier
-                    100: {"price": 6150, "price_with_vat": round(6150 * 1.1)} # Price for 100 from image
-                },
-                "target_product_name_substring": "애니클리어 방수 가방 드라이백 10L",
-                "expected_min_qty_in_table": 30 # Minimum quantity in the table is 30
-            }
-        ]
-
-        if args.search_terms:
-            general_test_keyword = args.search_terms[0]
-            if not any(tc["keyword"] == general_test_keyword for tc in special_test_cases):
-                special_test_cases.append({
-                    "keyword": general_test_keyword,
-                    "test_quantities": args.quantity, 
-                    "expected_prices": None, 
-                    "target_product_name_substring": None, 
-                    "expected_min_qty_in_table": None
-                })
-
-        for test_case_idx, test_case in enumerate(special_test_cases):
-            keyword = test_case["keyword"]
-            quantities_to_test = test_case["test_quantities"]
-            expected_prices_map = test_case["expected_prices"]
-            target_product_name_substring = test_case["target_product_name_substring"]
-            expected_min_qty_in_table = test_case["expected_min_qty_in_table"]
-
-            logger.info(f"\n--- Custom Quantities Test Case #{test_case_idx + 1}: Keyword '{keyword}' ---")
-            logger.info(f"Testing with quantities: {quantities_to_test}")
-            if expected_prices_map:
-                logger.info(f"Expected prices: {expected_prices_map}")
-
-            # Browser management variables for this specific test case iteration
-            p_local = None
-            browser_local_instance = None # This will hold a new browser if the main one is down
-            active_browser_for_this_case = browser # Default to the passed-in main browser
-
-            try:
-                if not active_browser_for_this_case or not active_browser_for_this_case.is_connected():
-                    logger.warning("Main browser is not connected. Attempting to create a new local browser for this test case...")
-                    from playwright.async_api import async_playwright
-                    p_local = await async_playwright().start() # Store playwright instance for stopping
-                    browser_local_instance = await p_local.chromium.launch(
-                        headless=args.headless, 
-                        args=json.loads(config.get('Playwright', 'playwright_browser_args', fallback='[]')), 
-                        timeout=60000
-                    )
-                    active_browser_for_this_case = browser_local_instance
-                    logger.info("Successfully created a local browser instance for this test case.")
-                
-                # scrape_data manages its own contexts and pages based on the browser instance it receives.
-                # We do not need to create a context or page here in the test function itself for scrape_data.
-                logger.info(f"Calling scrape_data for keyword '{keyword}' with custom quantities: {quantities_to_test}")
-                df_results = await scrape_data(active_browser_for_this_case, keyword, config=config, 
-                                         custom_quantities=quantities_to_test, 
-                                         fetch_price_tables=True)
-
-                if df_results.empty:
-                    print(f"❌ No products found for keyword '{keyword}' during custom quantity test.")
-                    logger.warning(f"No products returned by scrape_data for '{keyword}'.")
-                    if expected_prices_map:
-                         print(f"    ❌ TEST CASE FAILED for '{keyword}' due to no products found.")
-                    continue 
-
-                product_row_to_test = None
-                if target_product_name_substring:
-                    escaped_substring = re.escape(target_product_name_substring)
-                    matching_rows = df_results[df_results['name'].str.contains(escaped_substring, case=False, na=False)]
-                    if not matching_rows.empty:
-                        product_row_to_test = matching_rows.iloc[0]
-                        logger.info(f"Found target product: '{product_row_to_test.get('name')}' for detailed checks.")
-                    else:
-                        print(f"❌ Target product containing '{target_product_name_substring}' not found in scrape_data results for keyword '{keyword}'.")
-                        print(f"  Available product names: {df_results['name'].tolist()}")
-                        if expected_prices_map:
-                            print(f"    ❌ TEST CASE FAILED for '{keyword}' due to target product not found.")
-                        continue 
-                elif not df_results.empty:
-                    product_row_to_test = df_results.iloc[0] 
-                    logger.info(f"No target product name substring specified. Testing first product found: '{product_row_to_test.get('name')}'.")
-                
-                if product_row_to_test is None:
-                    print(f"❌ No product selected for detailed testing for keyword '{keyword}'.")
-                    if expected_prices_map:
-                         print(f"    ❌ TEST CASE FAILED for '{keyword}' as no product could be selected for testing.")
-                    continue
-
-                product_name = product_row_to_test.get('name', 'Unknown Product')
-                product_url = product_row_to_test.get('href', 'N/A')
-                print(f"\n{'=' * 70}")
-                print(f"👉 VERIFYING PRODUCT: {product_name}")
-                print(f"   URL: {product_url}")
-                print(f"   Tested with Quantities: {quantities_to_test}")
-                print(f"{'-' * 70}")
-
-                if 'product_actual_price_tiers' in product_row_to_test and product_row_to_test['product_actual_price_tiers']:
-                    actual_tiers = product_row_to_test['product_actual_price_tiers']
-                    print("\n  [1] Actual Price Tiers (from extract_price_table):")
-                    print("  " + "-" * 40)
-                    print("  | {:>8} | {:>12} | {:>12} |".format("수량", "단가", "단가(VAT)"))
-                    print("  " + "-" * 40)
-                    sorted_actual_tiers_keys = sorted(actual_tiers.keys())
-                    for tier_qty in sorted_actual_tiers_keys:
-                        tier_info = actual_tiers[tier_qty]
-                        print("  | {:>8,d} | {:>12,d} | {:>12,d} |".format(
-                            tier_qty, tier_info['price'], tier_info['price_with_vat']))
-                    print("  " + "-" * 40)
-                    
-                    if expected_min_qty_in_table:
-                        actual_min_qty_from_table = min(actual_tiers.keys()) if actual_tiers else None
-                        if actual_min_qty_from_table == expected_min_qty_in_table:
-                            print(f"    ✅ PASS: Minimum quantity in extracted table ({actual_min_qty_from_table}) matches expected ({expected_min_qty_in_table}).")
-                        else:
-                            print(f"    ❌ FAIL: Minimum quantity in extracted table is {actual_min_qty_from_table}, expected {expected_min_qty_in_table}.")
-                            if expected_prices_map:
-                                print(f"    ❌ This might affect subsequent price calculations for quantities below table minimum.")
-                else:
-                    print("\n  [1] 'product_actual_price_tiers' not found or empty in the result.")
-                    if expected_prices_map and expected_min_qty_in_table is not None :
-                         print(f"    ❌ FAIL: Expected price tiers to be extracted for '{product_name}'.")
-
-                if 'quantity_prices' in product_row_to_test and product_row_to_test['quantity_prices']:
-                    retrieved_custom_qty_prices = product_row_to_test['quantity_prices']
-                    print("\n  [2] Derived Prices for Custom Quantities (from scrape_data logic):")
-                    all_custom_prices_match = True 
-                    for qty_to_check in quantities_to_test:
-                        if qty_to_check in retrieved_custom_qty_prices:
-                            price_info = retrieved_custom_qty_prices[qty_to_check]
-                            actual_price = price_info.get('price')
-                            actual_price_vat = price_info.get('price_with_vat')
-                            note = price_info.get('note', '')
-                            exact_match_flag = price_info.get('exact_match', False)
-                            actual_qty_used = price_info.get('actual_quantity', qty_to_check)
-
-                            print(f"  - QTY {qty_to_check}: Price={actual_price}, VATPrice={actual_price_vat}, MatchedTableQty={actual_qty_used}, Exact={exact_match_flag}, Note='{note}'")
-
-                            if expected_prices_map and qty_to_check in expected_prices_map:
-                                expected = expected_prices_map[qty_to_check]
-                                if actual_price == expected['price'] and actual_price_vat == expected['price_with_vat']:
-                                    print(f"      ✅ PASS: Expected Price={expected['price']}, VATPrice={expected['price_with_vat']}")
-                                else:
-                                    print(f"      ❌ FAIL: Expected Price={expected['price']} (got {actual_price}), VATPrice={expected['price_with_vat']} (got {actual_price_vat})")
-                                    all_custom_prices_match = False
-                        else:
-                             print(f"  - QTY {qty_to_check}: Price info not found in 'quantity_prices'.")
-                             if expected_prices_map and qty_to_check in expected_prices_map : 
-                                 print(f"      ❌ FAIL: Expected price for {qty_to_check} but it was not in 'quantity_prices'.")
-                                 all_custom_prices_match = False
-                    
-                    if expected_prices_map:
-                        if all_custom_prices_match:
-                            print("    ✅ All custom quantity prices matched expectations.")
-                        else:
-                            print("    ❌ Some custom quantity prices DID NOT match expectations.")
-                else:
-                    print("\n  [2] 'quantity_prices' field not found or empty in the result.")
-                    if expected_prices_map:
-                        print(f"    ❌ FAIL: Expected 'quantity_prices' to be populated for '{product_name}'.")
-                print(f"{'=' * 70}")
-
-            except Exception as e:
-                logger.error(f"Error during custom quantity test for keyword '{keyword}': {e}", exc_info=True)
-                print(f"❌ Test case for '{keyword}' failed with an exception: {e}")
-            finally:
-                # Only close the local browser instance if it was created for this test case
-                if browser_local_instance and browser_local_instance.is_connected():
-                    logger.info(f"Closing local browser instance for test case '{keyword}'.")
-                    await browser_local_instance.close()
-                if p_local: # If a local playwright instance was started, stop it.
-                    logger.info(f"Stopping local Playwright instance for test case '{keyword}'.")
-                    await p_local.stop()
-        logger.info("=== FINISHED CUSTOM QUANTITIES FUNCTIONALITY TEST ===")
-
-    # 4) Standard test dispatcher
-    async def run_standard_tests():
-        print(f"\n{'=' * 70}")
-        print(f"🧪 고려기프트 크롤링 테스트 시작")
-        print(f"{'=' * 70}")
-        print(f"테스트 유형: {args.test_type}")
-        print(f"검색어: {args.search_terms}")
-        print(f"테스트 수량: {args.quantity}")
-        
-        # 테스트 시작 시간 기록
-        start_time = time.time()
-        
-        async with async_playwright() as p:
-            # Use headless mode from args
-            headless = True
-            if hasattr(args, 'headless'):
-                headless = args.headless
-            else:
-                headless = config.getboolean('Playwright','playwright_headless',fallback=True)
-                
-            logger.info(f"브라우저 실행 중 (headless: {headless})")
-            
-            browser_args = []
-            try:
-                browser_args_str = config.get('Playwright', 'playwright_browser_args', fallback='[]')
-                import json
-                browser_args = json.loads(browser_args_str)
-            except Exception as arg_err:
-                logger.warning(f"브라우저 인수 파싱 오류, 기본값 사용: {arg_err}")
-                browser_args = ["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
-            
-            # 브라우저 실행
-            browser = await p.chromium.launch(
-                headless=headless,
-                args=browser_args,
-                timeout=60000  # 1분 타임아웃
-            )
-            
-            print(f"\n{'=' * 70}")
-            print(f"🔍 테스트 실행 순서")
-            print(f"{'=' * 70}")
-            
-            tests_to_run = []
-            if args.test_type in ['all', 'images']:
-                tests_to_run.append("1. 이미지 URL 정규화 및 다운로드 테스트")
-            if args.test_type in ['all', 'products']:
-                tests_to_run.append("2. 상품 검색 및 정보 조회 테스트")
-            if args.test_type in ['all', 'quantities']:
-                tests_to_run.append("3. 수량별 가격 조회 및 가격 테이블 테스트")
-                
-            for i, test in enumerate(tests_to_run):
-                print(f"  {test}")
-            
-            # 테스트 실행
-            test_results = {}
-            
-            if args.test_type in ['all', 'images']:
-                print(f"\n{'=' * 70}")
-                print(f"🖼️ 이미지 URL 정규화 및 다운로드 테스트 시작")
-                print(f"{'=' * 70}")
-                
-                img_test_start = time.time()
-                test_image_download()
-                img_test_time = time.time() - img_test_start
-                test_results['images'] = {'time': img_test_time, 'status': 'completed'}
-            
-            if args.test_type in ['all', 'products']:
-                print(f"\n{'=' * 70}")
-                print(f"📝 상품 검색 및 정보 조회 테스트 시작")
-                print(f"{'=' * 70}")
-                
-                prod_test_start = time.time()
-                await test_product_info(browser)
-                prod_test_time = time.time() - prod_test_start
-                test_results['products'] = {'time': prod_test_time, 'status': 'completed'}
-            
-            if args.test_type in ['all', 'quantities']:
-                print(f"\n{'=' * 70}")
-                print(f"📊 수량별 가격 조회 및 가격 테이블 테스트 시작")
-                print(f"{'=' * 70}")
-                
-                qty_test_start = time.time()
-                await test_custom_quantities(browser)
-                qty_test_time = time.time() - qty_test_start
-                test_results['quantities'] = {'time': qty_test_time, 'status': 'completed'}
-                
-            # 브라우저 종료
-            logger.info("브라우저 종료 중...")
-            await browser.close()
-            
-            # 테스트 결과 요약
-            total_time = time.time() - start_time
-            
-            print(f"\n{'=' * 70}")
-            print(f"📋 테스트 결과 요약")
-            print(f"{'=' * 70}")
-            print(f"총 테스트 실행 시간: {total_time:.2f}초")
-            
-            if test_results:
-                print(f"\n세부 테스트 실행 시간:")
-                for test_name, result in test_results.items():
-                    test_desc = {
-                        'images': '이미지 URL 및 다운로드 테스트',
-                        'products': '상품 검색 및 정보 조회 테스트',
-                        'quantities': '수량별 가격 조회 테스트'
-                    }.get(test_name, test_name)
-                    
-                    print(f"  - {test_desc}: {result['time']:.2f}초")
-            
-            print(f"\n✅ 테스트 완료")
-            print(f"{'=' * 70}")
-
-    # dispatch
-    print(f"Test mode: {args.test_type}")
-    print(f"Search terms: {args.search_terms}")
-    print(f"Test quantities: {args.quantity}")
-    if args.test_type == 'test2':
-        # TODO: Implement run_test2 or remove this branch if not needed
-        # import asyncio; asyncio.run(run_test2())
-        logger.warning("Test type 'test2' selected but run_test2 is not implemented.")
-    else:
-        import asyncio; asyncio.run(run_standard_tests())
-
-if __name__ == "__main__":
-    # If this file is run directly, run the test
-    if os.path.basename(__file__) == "crawling_kogift.py":
-        # Setup basic logging FOR THE TEST ONLY
-        # In production, logging is set up by initialize_environment
-        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-        logger.info("Running Kogift scraper test...")
-        
-        # Run the comprehensive test function
-        test_kogift_scraper()
-
-# --- 해오름 기프트 입력 데이터에서 수량 추출 함수 ---
-def extract_quantities_from_input(input_data: str) -> List[int]:
-    """
-    탭으로 구분된 입력 데이터에서 수량 컬럼을 찾아 유니크 수량 리스트를 반환합니다.
-    """
-    quantities = []
-    if not input_data:
-        return quantities
-    lines = input_data.strip().split('\n')
-    if len(lines) < 2:
-        return quantities
-    headers = lines[0].split('\t')
-    qty_idx = next((i for i, h in enumerate(headers) if '수량' in h), None)
-    if qty_idx is None:
-        return quantities
-    for row in lines[1:]:
-        cols = row.split('\t')
-        if len(cols) > qty_idx:
-            raw = ''.join(filter(str.isdigit, cols[qty_idx]))
-            if raw:
-                quantities.append(int(raw))
-    return sorted(set(quantities))
-
-# --- 해오름 기프트 입력 데이터에서 상품명/수량/단가 추출 함수 ---
-def extract_products_from_input(input_data: str) -> List[Dict[str, Any]]:
-    """
-    입력 데이터에서 상품명, 수량, 단가 컬럼을 파싱하여 딕셔너리 리스트로 반환합니다.
-    """
-    products = []
-    if not input_data:
-        return products
-    lines = input_data.strip().split('\n')
-    if len(lines) < 2:
-        return products
-    headers = lines[0].split('\t')
-    idx_name = next((i for i,h in enumerate(headers) if '상품명' in h), None)
-    idx_qty  = next((i for i,h in enumerate(headers) if '수량' in h), None)
-    
-    # 단가/가격 열 인덱스 찾기 - 더 포괄적인 키워드 사용
-    price_keywords = ['단가', '가격', 'price', '금액', '원가']
-    idx_prc = None
-    for keyword in price_keywords:
-        idx_prc = next((i for i,h in enumerate(headers) if keyword in h), None)
-        if idx_prc is not None:
-            break
-    
-    # 단가 열을 찾지 못한 경우, 가장 마지막 열이 단가일 가능성이 있음
-    if idx_prc is None and len(headers) > 2:
-        logger.warning(f"단가/가격 열을 찾을 수 없습니다. 마지막 열을 단가로 간주합니다.")
-        idx_prc = len(headers) - 1
-    
-    if idx_name is None:
-        return products
-    for row in lines[1:]:
-        cols = row.split('\t')
-        if len(cols) <= idx_name:
-            continue
-        item = {'name': cols[idx_name].strip()}
-        if idx_qty is not None and len(cols)>idx_qty:
-            raw_q=''.join(filter(str.isdigit,cols[idx_qty])); item['quantity']=int(raw_q) if raw_q else None
-        if idx_prc is not None and len(cols)>idx_prc:
-            raw_p=''.join(filter(str.isdigit,cols[idx_prc])); item['price']=int(raw_p) if raw_p else None
-        products.append(item)
-    return products
-
