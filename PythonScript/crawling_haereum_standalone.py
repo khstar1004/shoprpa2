@@ -1319,38 +1319,43 @@ async def setup_page_optimizations(page: Page):
         original_route_handler = None
         
         async def handle_route(route):
+            """Handle route requests with optimized resource blocking."""
             try:
-                # Get the request URL
-                url = route.request.url
+                request_url = route.request.url
                 
-                # Skip if page is closed
-                if page.is_closed():
-                    logger.warning(f"Page is closed, skipping route for: {url}")
-                    return
-                
-                # Block unnecessary resources
-                if should_block_request(url):
+                # Block unwanted resources
+                if any(pattern in request_url.lower() for pattern in [
+                    'google-analytics', 'googletagmanager', 'doubleclick',
+                    'facebook', 'analytics', 'tracker', 'adsbygoogle',
+                    '.css', '.woff', '.woff2', '.ttf', '.gif', '.mp4'
+                ]):
                     try:
                         await route.abort()
-                    except Exception as abort_err:
-                        logger.debug(f"Error aborting route: {abort_err}")
+                    except Exception:
+                        # If abort fails, try to continue as fallback
+                        try:
+                            await route.continue_()
+                        except Exception:
+                            # If both abort and continue fail, log and move on
+                            pass
                     return
-                
-                # Continue the request
+
+                # For non-blocked requests, try to continue
                 try:
                     await route.continue_()
-                except Exception as continue_err:
-                    logger.warning(f"Error continuing route: {continue_err}")
-                    # Try fallback if continue fails
-                    try:
-                        if not page.is_closed():
-                            await route.continue_()
-                    except Exception as fallback_err:
-                        logger.error(f"Failed to continue request in fallback: {fallback_err}")
+                except Exception as e:
+                    if "Target page, context or browser has been closed" in str(e):
+                        # This is an expected error during cleanup, no need to log as warning
+                        logging.debug(f"Route continue failed due to page/context closure: {e}")
+                    elif "object has been collected" in str(e):
+                        # Also an expected cleanup error
+                        logging.debug(f"Route continue failed due to object collection: {e}")
+                    else:
+                        # Log unexpected errors as warnings
+                        logging.warning(f"Error continuing route: {e}")
             except Exception as e:
-                logger.error(f"Error in route handler for {url}: {e}")
-                # Don't try to continue if there's an error
-                return
+                # Log any unexpected errors in the main handler
+                logging.error(f"Unexpected error in route handler: {e}")
         
         # Set up route handler
         await page.route("**/*", handle_route)

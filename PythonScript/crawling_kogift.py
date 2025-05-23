@@ -358,21 +358,36 @@ def should_block_request(url: str) -> bool:
 async def setup_page_optimizations(page: Page):
     """Applies optimizations like request blocking to a Playwright page."""
     async def handle_route(route):
+        """Handle route requests with optimized resource blocking."""
         try:
             if should_block_request(route.request.url):
-                await route.abort()
-            else:
-                await route.continue_()
-        except Exception as e:
-            logger.error(f"Error in route handler for {route.request.url}: {e}. Attempting to continue request.")
+                try:
+                    await route.abort()
+                except Exception:
+                    # If abort fails, try to continue as fallback
+                    try:
+                        await route.continue_()
+                    except Exception:
+                        # If both abort and continue fail, log and move on
+                        pass
+                return
+
+            # For non-blocked requests, try to continue
             try:
-                # Fallback: try to continue the request if abort/continue failed
-                if not route.request.is_navigation_request(): # Avoid continuing navigation requests that might have caused issues
-                    await route.continue_()
-            except Exception as e_continue:
-                logger.error(f"Failed to continue request in fallback: {e_continue}")
-                # If continuing also fails, there's little more we can do here for this specific route.
-                # The main error handler for setup_page_optimizations will catch issues with setting up the route.
+                await route.continue_()
+            except Exception as e:
+                if "Target page, context or browser has been closed" in str(e):
+                    # This is an expected error during cleanup, no need to log as warning
+                    logging.debug(f"Route continue failed due to page/context closure: {e}")
+                elif "object has been collected" in str(e):
+                    # Also an expected cleanup error
+                    logging.debug(f"Route continue failed due to object collection: {e}")
+                else:
+                    # Log unexpected errors as warnings
+                    logging.warning(f"Error continuing route: {e}")
+        except Exception as e:
+            # Log any unexpected errors in the main handler
+            logging.error(f"Unexpected error in route handler: {e}")
 
     try:
         await page.route("**/*", handle_route)

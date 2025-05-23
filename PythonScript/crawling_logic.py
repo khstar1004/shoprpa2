@@ -119,6 +119,9 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
         if browser:
             try:
                 if browser.is_connected():
+                    # Add a small delay to allow pending requests to complete
+                    await asyncio.sleep(0.5)
+                    
                     # Unroute all handlers from all pages before closing the browser
                     logging.info("Attempting to unroute all handlers from all pages in all contexts...")
                     for context in browser.contexts:
@@ -132,6 +135,12 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
                                     pass # Keep the default log message
                                 
                                 if not page.is_closed(): # Attempt unroute only if page is not closed
+                                    # First remove any existing route handlers
+                                    try:
+                                        await page.unroute("**/*")
+                                    except Exception:
+                                        pass
+                                    # Then try the general unroute_all
                                     logging.info(f"Calling page.unroute_all(behavior='ignoreErrors') for page: {page_url_for_log}")
                                     await page.unroute_all(behavior='ignoreErrors')
                                 else:
@@ -141,6 +150,9 @@ async def crawl_all_sources(product_rows: pd.DataFrame, config: configparser.Con
                                 logging.warning(f"Error during page.unroute_all() for page ({page_url_for_log}): {unroute_ex}")
                     logging.info("Finished attempting to unroute all pages.")
 
+                    # Add another small delay before closing
+                    await asyncio.sleep(0.5)
+                    
                     logging.info("Attempting to close shared Playwright browser...")
                     await browser.close()
                     logging.info("Closed shared Playwright browser.")
