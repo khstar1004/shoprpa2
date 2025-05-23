@@ -908,11 +908,18 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
     # Generate a safe filename
     try:
         # 상품명을 해시값으로 변환 (MD5) - 16자로 통일
-        name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+        try:
+            from utils import generate_product_name_hash
+            name_hash = generate_product_name_hash(product_name)
+        except ImportError:
+            logger.warning("Could not import generate_product_name_hash, using fallback method")
+            # 상품명 정규화 (공백 제거, 소문자 변환)
+            normalized_name = ''.join(product_name.split()).lower()
+            name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
         
-        # 랜덤 해시값 (8자로 통일) - URL 해시 대신 랜덤 사용
-        import secrets
-        random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
+        # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
+        normalized_name = ''.join(product_name.split()).lower()
+        second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
         
         # Get file extension from URL if available, otherwise default to .jpg
         if image_url:
@@ -936,7 +943,7 @@ async def download_image_to_main(image_url: str, product_name: str, config: conf
             ext = '.jpg'
             
         # Create final filename - 새로운 형식으로 변경
-        filename = f"haereum_{name_hash}_{random_hash}{ext}"
+        filename = f"haereum_{name_hash}_{second_hash}{ext}"
         local_path = os.path.join(main_dir, filename)
         final_image_path = local_path
         

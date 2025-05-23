@@ -1045,15 +1045,16 @@ def generate_consistent_filename(product_name: str, prefix: str, file_extension:
     if not product_name or not prefix:
         raise ValueError("Product name and prefix must not be empty")
         
-    # Generate hash from product name (16 characters)
-    name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+    # Use the same hash generation method as generate_product_name_hash for consistency
+    name_hash = generate_product_name_hash(product_name)
     
-    # Generate random hash (8 characters)
-    random_hash = secrets.token_hex(4)
+    # Generate second hash from product name (8 characters) - using the normalized name for consistency
+    normalized_name = ''.join(product_name.split()).lower()
+    second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
     
     # Ensure file extension starts with a dot
     if not file_extension.startswith('.'):
         file_extension = '.' + file_extension
         
     # Return formatted filename
-    return f"{prefix}_{name_hash}_{random_hash}{file_extension}"
+    return f"{prefix}_{name_hash}_{second_hash}{file_extension}"

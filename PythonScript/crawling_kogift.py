@@ -203,11 +203,10 @@ def download_image(url: str, save_dir: str, product_name: Optional[str] = None, 
                 file_name = generate_consistent_filename(product_name, "kogift", original_ext)
             except ImportError:
                 logger.warning("Could not import generate_consistent_filename from utils, using fallback method")
-                # 기존 방식으로 폴백
+                # 기존 방식으로 폴백 - 하지만 일관된 해시 사용
                 name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
-                import secrets
-                random_hash = secrets.token_hex(4)
-                file_name = f"kogift_{name_hash}_{random_hash}{original_ext}"
+                second_hash = hashlib.md5(product_name.encode()).hexdigest()[16:24]
+                file_name = f"kogift_{name_hash}_{second_hash}{original_ext}"
         else:
             # 상품명이 없는 경우는 오류 상황
             logger.error(f"❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")

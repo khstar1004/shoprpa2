@@ -26,7 +26,7 @@ try:
     # When imported as module
     from utils import (
         download_image_async, get_async_httpx_client, generate_keyword_variations, 
-        load_config, tokenize_korean, jaccard_similarity
+        load_config, tokenize_korean, jaccard_similarity, generate_product_name_hash
     )
     from image_utils import remove_background_async
     from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
@@ -543,11 +543,21 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
                 sanitized_name = sanitized_name.ljust(30, '_')
         
         # 랜덤 해시 생성 (8자로 통일) - URL 해시 대신 랜덤 사용
-        import secrets
-        random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
+        # import secrets
+        # random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
         
         # 상품명 해시값 생성 (MD5) - 16자로 통일
-        name_hash = hashlib.md5(product_name.encode('utf-8', errors='ignore')).hexdigest()[:16]
+        try:
+            name_hash = generate_product_name_hash(product_name)
+        except ImportError:
+            logging.warning("Could not import generate_product_name_hash, using fallback method")
+            # 상품명 정규화 (공백 제거, 소문자 변환)
+            normalized_name = ''.join(product_name.split()).lower()
+            name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
+        
+        # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
+        normalized_name = ''.join(product_name.split()).lower()
+        second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
         
         # URL에서 파일 확장자 추출
         parsed_url = urlparse(url)
@@ -557,7 +567,7 @@ async def download_naver_image(url: str, save_dir: str, product_name: str, confi
             file_ext = '.jpg'
         
         # 새로운 형식으로 파일명 생성 (사이트이름_상품명해시_고유식별자)
-        filename = f"naver_{name_hash}_{random_hash}{file_ext}"
+        filename = f"naver_{name_hash}_{second_hash}{file_ext}"
         local_path = os.path.join(save_dir, filename)
         final_image_path = local_path
         

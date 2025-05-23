@@ -281,8 +281,8 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
         source_prefix = "other"
     
     # 랜덤 해시 생성 (8자로 통일)
-    import secrets
-    random_hash = secrets.token_hex(4)
+    # import secrets
+    # random_hash = secrets.token_hex(4)
     
     # 상품명 해시 생성 (16자리)
     if product_name:
@@ -291,17 +291,24 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
             name_hash = generate_product_name_hash(product_name)
         except ImportError:
             logger.warning("Could not import generate_product_name_hash, using fallback method")
-            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+            # 상품명 정규화 (공백 제거, 소문자 변환)
+            normalized_name = ''.join(product_name.split()).lower()
+            name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
+            
+        # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
+        normalized_name = ''.join(product_name.split()).lower()
+        second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
     else:
         # 상품명이 없는 경우 URL 해시 사용
         name_hash = hashlib.md5(url.encode()).hexdigest()[:16]
-        logger.warning(f"No product name provided for {source_prefix} image, using URL hash")
+        second_hash = hashlib.md5(url.encode()).hexdigest()[16:24]
+        logger.warning(f"No product name provided for {url}, using URL-based hash")
     
     # 파일 확장자 결정
     ext = '.jpg'  # 기본값
     
     # 파일명 생성
-    filename = f"{source_prefix}_{name_hash}_{random_hash}{ext}"
+    filename = f"{source_prefix}_{name_hash}_{second_hash}{ext}"
     image_path = save_dir / filename
     
     # Create nobg version path if needed
@@ -309,7 +316,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
     if create_nobg_version:
         main_dir = save_dir
         main_path = main_dir / filename
-        nobg_filename = f"{source_prefix}_{name_hash}_{random_hash}_nobg.png"
+        nobg_filename = f"{source_prefix}_{name_hash}_{second_hash}_nobg.png"
         nobg_path = main_dir / nobg_filename
     
     # Download the image
@@ -344,14 +351,14 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
                 # Update extension based on actual format
                 proper_ext = f".{img_format}" if img_format != 'jpeg' else '.jpg'
                 if proper_ext != ext:
-                    filename = f"{source_prefix}_{name_hash}_{random_hash}{proper_ext}"
+                    filename = f"{source_prefix}_{name_hash}_{second_hash}{proper_ext}"
                     image_path = save_dir / filename
                     
                     # Update main_path too if applicable
                     if create_nobg_version:
-                        main_filename = f"{source_prefix}_{name_hash}_{random_hash}{proper_ext}"
+                        main_filename = f"{source_prefix}_{name_hash}_{second_hash}{proper_ext}"
                         main_path = main_dir / main_filename
-                        nobg_filename = f"{source_prefix}_{name_hash}_{random_hash}_nobg.png"
+                        nobg_filename = f"{source_prefix}_{name_hash}_{second_hash}_nobg.png"
                         nobg_path = main_dir / nobg_filename
                 
                 # Save the image
