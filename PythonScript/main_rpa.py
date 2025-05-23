@@ -651,16 +651,25 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         # 일반 로그 출력
         logging.info(f"읽어온 설정값: GPU={gpu_available}, 텍스트 임계치={config.getfloat('Matching', 'text_threshold', fallback=0.55)}, 이미지 임계치={config.getfloat('Matching', 'image_threshold', fallback=0.5)}")
 
-        # 고려기프트 이미지 다운로드 사전 확인 - 모든 이미지 다운로드
+        # 고려기프트 이미지 다운로드 사전 확인 - 이미 즉시 다운로드된 이미지 건너뛰기
         if kogift_map:
             logging.info("고려기프트 이미지 사전 다운로드 시작 (향상된 정확도를 위해 모든 이미지 다운로드)...")
             kogift_img_start_time = time.time()
             
-            # 다운로드할 이미지 URL 목록 생성
+            # 다운로드할 이미지 URL 목록 생성 (이미 다운로드된 것은 제외)
             img_urls_to_download = []
+            already_downloaded_count = 0
+            
             for name, items in kogift_map.items():
                 for item in items:
                     img_url = item.get('image_path') or item.get('src')
+                    
+                    # 이미 즉시 다운로드로 처리된 이미지인지 확인
+                    if item.get('local_image_path') and os.path.exists(item.get('local_image_path')):
+                        already_downloaded_count += 1
+                        logging.debug(f"이미 다운로드된 고려기프트 이미지 건너뜀: {item.get('local_image_path')}")
+                        continue
+                    
                     if img_url and isinstance(img_url, str) and img_url.startswith('http'):
                         # 고유 식별자 생성
                         item_id = hashlib.md5((img_url + name).encode()).hexdigest()[:10]
@@ -668,7 +677,7 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
             
             # 이미지 다운로드 실행
             if img_urls_to_download:
-                logging.info(f"사전 다운로드할 고려기프트 이미지: {len(img_urls_to_download)}개")
+                logging.info(f"사전 다운로드할 고려기프트 이미지: {len(img_urls_to_download)}개 (이미 다운로드됨: {already_downloaded_count}개)")
                 
                 # 임시 DataFrame 생성하여 기존 다운로드 함수 활용
                 temp_df = pd.DataFrame({
@@ -687,9 +696,13 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                 )
                 
                 download_success = len(kogift_image_map)
-                logging.info(f"고려기프트 이미지 사전 다운로드 완료: {download_success}/{len(img_urls_to_download)} 성공. 소요시간: {time.time() - kogift_img_start_time:.2f}초")
+                total_images = len(img_urls_to_download) + already_downloaded_count
+                logging.info(f"고려기프트 이미지 사전 다운로드 완료: {download_success + already_downloaded_count}/{total_images} 성공 (새로 다운로드: {download_success}, 기존: {already_downloaded_count}). 소요시간: {time.time() - kogift_img_start_time:.2f}초")
             else:
-                logging.warning("다운로드할 고려기프트 이미지 URL이 없습니다.")
+                if already_downloaded_count > 0:
+                    logging.info(f"모든 고려기프트 이미지가 이미 다운로드되어 있습니다: {already_downloaded_count}개")
+                else:
+                    logging.warning("다운로드할 고려기프트 이미지 URL이 없습니다.")
 
         # 4. Match Products with improved accuracy (longer but more accurate)
         step_start_time = time.time()

@@ -987,31 +987,41 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
     
     logger.info(f"고려기프트 상품 {len(product_list)}개의 이미지 처리 시작 (저장 경로: {images_dir})")
     
-    # 이미지 URL 표준화
-    for product in product_list:
-        # 'image' 또는 'image_url' 키에서 이미지 URL 찾기
-        img_url = product.get('image') or product.get('image_url') or product.get('src')
-        if img_url:
-            product['original_image'] = img_url  # 원본 URL 백업
+    # 검증 및 정규화 처리
+    if verify_enabled:
+        verified_count = 0
+        valid_count = 0
+        
+        for product in product_list:
+            img_url = product.get('image')
+            if not img_url:
+                continue
+                
+            verified_count += 1
             
-            # URL 표준화
-            normalized_url, is_valid = normalize_kogift_image_url(img_url)
-            
-            if normalized_url:
-                # 표준화된 URL 저장
-                product['image'] = normalized_url
-                product['image_url'] = normalized_url  # 호환성 유지
-                product['src'] = normalized_url  # 호환성 유지
-            else:
-                # 유효하지 않은 URL은 빈 문자열로 표시
-                product['image'] = ""
-                product['image_url'] = ""
-                product['src'] = ""
+            # 이미지 URL 검증 및 정규화
+            try:
+                normalized_url, is_valid = normalize_kogift_image_url(img_url)
+                if is_valid:
+                    product['image'] = normalized_url
+                    product['image_url'] = normalized_url
+                    valid_count += 1
+                else:
+                    logger.warning(f"무효한 이미지 URL: {img_url}")
+                    product['image'] = None
+                    product['image_url'] = None
+            except Exception as e:
+                logger.error(f"이미지 URL 정규화 오류: {img_url}, 오류: {e}")
+                product['image'] = None
+                product['image_url'] = None
+        
+        logger.info(f"이미지 URL 검증 완료: {verified_count}개 검증, {valid_count}개 유효")
     
     # 이미지 다운로드 처리
     if download_enabled:
         # 각 상품별로 개별 이미지 다운로드 (상품명별로 처리)
         download_success_count = 0
+        skipped_count = 0
         total_images = 0
         
         for product in product_list:
@@ -1020,6 +1030,12 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
                 continue
                 
             total_images += 1
+            
+            # 이미 즉시 다운로드로 처리된 이미지인지 확인
+            if product.get('local_image_path') and os.path.exists(product.get('local_image_path')):
+                logger.debug(f"이미 다운로드된 이미지 건너뜀: {product.get('local_image_path')}")
+                skipped_count += 1
+                continue
             
             # 엑셀의 원본 상품명 사용 (해시값 통일을 위해)
             product_name = product.get('original_excel_product_name')
@@ -1045,45 +1061,7 @@ async def verify_kogift_images(product_list: List[Dict], sample_percent: int = 1
             except Exception as e:
                 logger.error(f"이미지 다운로드 오류: {product_name}, URL: {img_url}, 오류: {e}")
         
-        logger.info(f"이미지 다운로드 완료: {download_success_count}/{total_images} 성공")
-    
-    # 샘플링 비율에 따라 URL 검증 (기존 코드는 주석 처리)
-    if verify_enabled and sample_percent > 0 and not download_enabled:
-        # 이미지가 있는 상품만 선택
-        products_with_images = [p for p in product_list if p.get('image')]
-        if not products_with_images:
-            return product_list
-            
-        # 검증할 상품 샘플링
-        sample_size = max(1, int(len(products_with_images) * sample_percent / 100))
-        sample_products = random.sample(products_with_images, min(sample_size, len(products_with_images)))
-        
-        logger.info(f"{sample_percent}% 샘플링으로 {len(sample_products)}개 이미지 URL 검증 시작")
-        
-        # 검증 결과 카운팅
-        verified_count = 0
-        failed_count = 0
-        
-        # 비동기 세션 생성
-        async with aiohttp.ClientSession() as session:
-            for product in sample_products:
-                img_url = product['image']
-                if not img_url:
-                    continue
-                
-                # 이미지 URL 실제 접근 검증
-                url, is_valid, reason = await verify_image_url(session, img_url)
-                
-                if is_valid:
-                    verified_count += 1
-                else:
-                    failed_count += 1
-                    # koreagift.com 실패 URL 처리
-                    if 'koreagift.com' in img_url and is_valid == False:
-                        # URL을 고쳐도 실패할 가능성이 높으므로 처리하지 않음
-                        pass
-        
-        logger.info(f"이미지 URL 검증 결과: 성공 {verified_count}, 실패 {failed_count}")
+        logger.info(f"이미지 다운로드 완료: {download_success_count}/{total_images} 성공, {skipped_count}개 건너뜀 (이미 다운로드됨)")
     
     return product_list
 
@@ -1660,15 +1638,47 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
                                         elif supplier == 'adpanchok':
                                             supplier = '애드판촉'
                                         
+                                        # ===== 네이버/해오름처럼 즉시 이미지 다운로드 =====
+                                        # 이미지 저장 디렉토리 설정
+                                        try:
+                                            base_image_dir = config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main')
+                                            kogift_image_dir = os.path.join(base_image_dir, 'kogift')
+                                            os.makedirs(kogift_image_dir, exist_ok=True)
+                                        except Exception as img_dir_err:
+                                            logger.warning(f"Error setting up image directory: {img_dir_err}")
+                                            kogift_image_dir = "downloaded_images"  # Fallback
+                                            os.makedirs(kogift_image_dir, exist_ok=True)
+                                        
+                                        # 즉시 이미지 다운로드 (네이버/해오름과 동일한 방식)
+                                        local_image_path = None
+                                        if valid_img_url and final_img_url:
+                                            try:
+                                                logger.info(f"Immediately downloading image for product: {item_data.get('name', 'Unknown')}")
+                                                local_image_path = await download_image(
+                                                    final_img_url, 
+                                                    kogift_image_dir, 
+                                                    original_excel_product_name,  # 엑셀 원본 상품명 사용 (해시 통일을 위해)
+                                                    config
+                                                )
+                                                if local_image_path:
+                                                    logger.info(f"Successfully downloaded Kogift image: {local_image_path}")
+                                                    item_data['local_image_path'] = local_image_path
+                                                else:
+                                                    logger.warning(f"Failed to download Kogift image: {final_img_url}")
+                                            except Exception as img_download_err:
+                                                logger.error(f"Error downloading Kogift image {final_img_url}: {img_download_err}")
+                                        
                                         # 유효한 이미지 URL만 저장
                                         if valid_img_url:
                                             item_data['image_path'] = final_img_url
                                             item_data['image_url'] = final_img_url
                                             item_data['src'] = final_img_url
+                                            item_data['image'] = final_img_url  # verify_kogift_images와 호환성을 위해
                                         else:
                                             item_data['image_path'] = None
                                             item_data['image_url'] = None
                                             item_data['src'] = None
+                                            item_data['image'] = None
                                         
                                         item_data['href'] = final_href_url
                                         item_data['link'] = final_href_url
