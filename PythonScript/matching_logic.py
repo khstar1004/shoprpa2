@@ -33,74 +33,51 @@ import multiprocessing
 # 항상 UTF-8 인코딩 사용
 DEFAULT_ENCODING = 'utf-8'
 
-# --- Hash-based filtering functions (moved to top for proper order) ---
-def generate_product_name_hash(product_name: str) -> str:
-    """
-    상품명으로부터 해시값을 생성합니다.
-    다른 스크립트들과 동일한 방식으로 생성.
-        
-    Args:
-        product_name: 상품명
-            
-    Returns:
-        16자리 해시값
-    """
+# --- Hash-based filtering functions (import from utils for consistency) ---
+try:
+    from .utils import generate_product_name_hash, extract_product_hash_from_filename
+    logging.info("Hash functions imported from utils module")
+except ImportError:
     try:
-        # 상품명 정규화 (공백 제거, 소문자 변환)
-        normalized_name = ''.join(product_name.split()).lower()
-        # MD5 해시 생성 후 첫 16자리 사용
-        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
-        return hash_obj.hexdigest()[:16]
-    except Exception as e:
-        logging.error(f"Error generating hash for product name {product_name}: {e}")
-        return ""
-
-def extract_product_hash_from_filename(filename: str) -> Optional[str]:
-    """
-    파일명에서 상품명 해시값을 추출합니다.
+        from utils import generate_product_name_hash, extract_product_hash_from_filename
+        logging.info("Hash functions imported from utils module (direct import)")
+    except ImportError:
+        logging.error("Failed to import hash functions from utils. Defining local fallback functions.")
         
-    파일명 패턴:
-    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
-    - prefix_[16자해시].jpg
+        def generate_product_name_hash(product_name: str) -> str:
+            """Fallback hash generation function"""
+            try:
+                normalized_name = ''.join(product_name.split()).lower()
+                hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
+                return hash_obj.hexdigest()[:16]
+            except Exception as e:
+                logging.error(f"Error generating hash for product name {product_name}: {e}")
+                return ""
         
-    Args:
-        filename: 이미지 파일명
-            
-    Returns:
-        16자리 상품명 해시값 또는 None
-    """
-    try:
-        # 확장자 제거
-        name_without_ext = os.path.splitext(os.path.basename(filename))[0]
-        
-        # '_'로 분리
-        parts = name_without_ext.split('_')
-        
-        # prefix_hash_random 또는 prefix_hash 패턴 확인
-        if len(parts) >= 2:
-            # prefix를 제거하고 두 번째 부분이 16자리 해시인지 확인
-            potential_hash = parts[1]
-            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
-                return potential_hash.lower()
-        
-        # prefix_hash 패턴도 확인 (랜덤 부분이 없는 경우)
-        if len(parts) == 2:
-            potential_hash = parts[1]
-            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
-                return potential_hash.lower()
-                
-        # 전체가 16자리 해시인 경우도 확인 (prefix가 없는 경우)
-        if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
-            return name_without_ext.lower()
-                    
-        return None
-    except Exception as e:
-        logging.debug(f"Error extracting hash from filename {filename}: {e}")
-        return None
+        def extract_product_hash_from_filename(filename: str) -> Optional[str]:
+            """Fallback hash extraction function"""
+            try:
+                name_without_ext = os.path.splitext(os.path.basename(filename))[0]
+                parts = name_without_ext.split('_')
+                if len(parts) >= 2:
+                    potential_hash = parts[1]
+                    if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                        return potential_hash.lower()
+                if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
+                    return name_without_ext.lower()
+                return None
+            except Exception as e:
+                logging.debug(f"Error extracting hash from filename {filename}: {e}")
+                return None
 
 def filter_images_by_hash(haereum_product_name: str, candidate_images: List[str]) -> List[str]:
     """
     해시값을 기반으로 이미지 후보군을 필터링합니다.
+    
+    개선사항:
+    - 더 정확한 로깅 시스템
+    - 성능 최적화된 필터링
+    - 에러 처리 강화
         
     Args:
         haereum_product_name: 해오름 상품명
@@ -110,26 +87,46 @@ def filter_images_by_hash(haereum_product_name: str, candidate_images: List[str]
         해시값이 일치하는 이미지 경로 리스트
     """
     try:
+        if not haereum_product_name or not candidate_images:
+            logging.debug(f"빈 입력값: 상품명='{haereum_product_name}', 후보 개수={len(candidate_images) if candidate_images else 0}")
+            return candidate_images or []
+        
         # 해오름 상품명의 해시값 생성 (16자리)
         target_hash = generate_product_name_hash(haereum_product_name)
         if not target_hash:
-            logging.warning(f"Could not generate hash for product: {haereum_product_name}")
+            logging.warning(f"상품 해시 생성 실패: {haereum_product_name}")
             return candidate_images  # 해시 생성 실패시 모든 후보 반환
+        
+        # 성능 최적화: 빈 리스트 미리 체크
+        if not candidate_images:
+            return []
                 
         filtered_images = []
+        hash_matches = 0
+        
         for img_path in candidate_images:
-            # 파일명에서 해시 추출 (16자리)
-            img_hash = extract_product_hash_from_filename(img_path)
-            if img_hash and img_hash == target_hash:
-                filtered_images.append(img_path)
-                        
-        logging.debug(f"Hash filtering for '{haereum_product_name}' (hash: {target_hash}): "
-                     f"{len(filtered_images)}/{len(candidate_images)} images matched")
+            try:
+                # 파일명에서 해시 추출 (16자리)
+                img_hash = extract_product_hash_from_filename(img_path)
+                if img_hash and img_hash == target_hash:
+                    filtered_images.append(img_path)
+                    hash_matches += 1
+            except Exception as e:
+                logging.debug(f"이미지 해시 추출 오류 '{img_path}': {e}")
+                continue
+        
+        # 결과 로깅 개선
+        if hash_matches > 0:
+            logging.info(f"✅ 해시 매칭 성공: '{haereum_product_name}' (해시: {target_hash[:8]}...) "
+                        f"-> {hash_matches}/{len(candidate_images)} 이미지 매칭")
+        else:
+            logging.debug(f"❌ 해시 매칭 실패: '{haereum_product_name}' (해시: {target_hash[:8]}...) "
+                         f"-> 0/{len(candidate_images)} 이미지 매칭")
                 
         return filtered_images
             
     except Exception as e:
-        logging.error(f"Error filtering images by hash for {haereum_product_name}: {e}")
+        logging.error(f"해시 기반 이미지 필터링 오류 '{haereum_product_name}': {e}")
         return candidate_images  # 오류시 모든 후보 반환
 
 # --- 나머지 코드는 그대로 유지 ---

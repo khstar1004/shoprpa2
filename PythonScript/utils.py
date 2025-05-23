@@ -1022,49 +1022,557 @@ def setup_logging(config: configparser.ConfigParser = None):
 
 def generate_product_name_hash(product_name: str) -> str:
     """
-    상품명으로부터 16자리 해시값을 생성합니다.
+    상품명으로부터 16자리 MD5 해시값을 생성합니다.
+    
+    이 함수는 모든 모듈에서 동일한 해시 생성 방식을 보장하기 위한 
+    중앙화된 해시 생성 함수입니다.
+    
+    정규화 과정:
+    1. 입력값 검증
+    2. 앞뒤 공백 제거
+    3. 내부 공백들을 모두 제거
+    4. 소문자 변환
+    5. 특수문자 정리 (한글, 영문, 숫자만 유지)
+    6. MD5 해시의 첫 16자리 반환
+        
+    Args:
+        product_name: 상품명
+            
+    Returns:
+        16자리 해시값 (실패 시 빈 문자열)
+        
+    Examples:
+        >>> generate_product_name_hash("테스트 상품 123")
+        "1a2b3c4d5e6f7890"
+        >>> generate_product_name_hash("  공백   있는   상품  ")
+        "abcdef1234567890"
+    """
+    try:
+        # 입력값 검증
+        if not product_name or not isinstance(product_name, str):
+            logging.debug(f"잘못된 상품명 입력: {repr(product_name)}")
+            return ""
+        
+        # 상품명 정규화
+        # 1. 앞뒤 공백 제거
+        normalized = product_name.strip()
+        
+        # 2. 내부 공백들을 모두 제거
+        normalized = ''.join(normalized.split())
+        
+        # 3. 소문자 변환
+        normalized = normalized.lower()
+        
+        # 4. 한글, 영문, 숫자만 유지 (브랜드명의 특수문자 고려)
+        # 연속된 특수문자는 제거하되 의미 있는 문자는 보존
+        import re
+        normalized = re.sub(r'[^\w가-힣]+', '', normalized)
+        
+        # 5. 빈 문자열 검증
+        if not normalized:
+            logging.debug(f"정규화 후 빈 문자열: '{product_name}'")
+            return ""
+        
+        # 6. MD5 해시 생성
+        hash_obj = hashlib.md5(normalized.encode('utf-8'))
+        hash_result = hash_obj.hexdigest()[:16]
+        
+        logging.debug(f"해시 생성: '{product_name}' -> '{normalized}' -> {hash_result}")
+        
+        return hash_result
+        
+    except Exception as e:
+        logging.error(f"상품명 해시 생성 오류 '{product_name}': {e}")
+        return ""
+
+
+def extract_product_hash_from_filename(filename: str) -> Optional[str]:
+    """
+    파일명에서 16자리 상품명 해시값을 추출합니다.
+    
+    지원되는 파일명 패턴:
+    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
+    - prefix_[16자해시].jpg (예: kogift_abcdef1234567890.png)
+    - [16자해시].jpg (prefix 없음)
+        
+    Args:
+        filename: 이미지 파일명 (경로 포함 가능)
+            
+    Returns:
+        16자리 상품명 해시값 또는 None
+        
+    Examples:
+        >>> extract_product_hash_from_filename("haereum_1234567890abcdef_12345678.jpg")
+        "1234567890abcdef"
+        >>> extract_product_hash_from_filename("kogift_abcdef1234567890.png")
+        "abcdef1234567890"
+        >>> extract_product_hash_from_filename("invalid_filename.jpg")
+        None
+    """
+    try:
+        if not filename or not isinstance(filename, str):
+            return None
+        
+        # 확장자 제거 및 파일명만 추출
+        name_without_ext = os.path.splitext(os.path.basename(filename))[0]
+        
+        # '_'로 분리
+        parts = name_without_ext.split('_')
+        
+        # 패턴 1: prefix_hash_random 또는 prefix_hash
+        if len(parts) >= 2:
+            # 두 번째 부분이 16자리 해시인지 확인
+            potential_hash = parts[1]
+            if _is_valid_16char_hash(potential_hash):
+                return potential_hash.lower()
+        
+        # 패턴 2: 전체가 16자리 해시인 경우 (prefix 없음)
+        if _is_valid_16char_hash(name_without_ext):
+            return name_without_ext.lower()
+                    
+        return None
+        
+    except Exception as e:
+        logging.debug(f"파일명 해시 추출 오류 '{filename}': {e}")
+        return None
+
+
+def _is_valid_16char_hash(text: str) -> bool:
+    """16자리 hex 문자열인지 검증하는 헬퍼 함수"""
+    return (len(text) == 16 and 
+            all(c in '0123456789abcdef' for c in text.lower()))
+
+
+def generate_consistent_filename(product_name: str, prefix: str, file_extension: str = ".jpg", 
+                               include_random: bool = True) -> str:
+    """
+    상품명을 기반으로 일관된 파일명을 생성합니다.
+    
+    생성 패턴:
+    - include_random=True: {prefix}_{16자해시}_{8자랜덤}.{확장자}
+    - include_random=False: {prefix}_{16자해시}.{확장자}
     
     Args:
         product_name: 상품명
+        prefix: 파일명 접두사 (예: "haereum", "kogift", "naver")
+        file_extension: 파일 확장자 (기본: ".jpg")
+        include_random: 랜덤 문자열 포함 여부 (기본: True)
         
     Returns:
-        16자리 해시값
+        일관된 형식의 파일명
+        
+    Examples:
+        >>> generate_consistent_filename("테스트 상품", "haereum")
+        "haereum_1a2b3c4d5e6f7890_a1b2c3d4.jpg"
+        >>> generate_consistent_filename("테스트 상품", "kogift", ".png", False)
+        "kogift_1a2b3c4d5e6f7890.png"
     """
     try:
-        # 상품명 정규화 (공백 제거, 소문자 변환)
-        normalized_name = ''.join(product_name.split()).lower()
-        # MD5 해시 생성 후 첫 16자리 사용
-        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
-        return hash_obj.hexdigest()[:16]
+        # 해시 생성
+        product_hash = generate_product_name_hash(product_name)
+        if not product_hash:
+            # 해시 생성 실패 시 타임스탬프 기반 대체
+            import time
+            product_hash = hashlib.md5(f"{product_name}_{time.time()}".encode()).hexdigest()[:16]
+            logging.warning(f"해시 생성 실패로 대체 해시 사용: {product_hash}")
+        
+        # 확장자 정리 (점이 없으면 추가)
+        if not file_extension.startswith('.'):
+            file_extension = '.' + file_extension
+        
+        # 파일명 구성
+        if include_random:
+            # 8자리 랜덤 문자열 생성
+            random_suffix = secrets.token_hex(4)  # 8자리 hex
+            filename = f"{prefix}_{product_hash}_{random_suffix}{file_extension}"
+        else:
+            filename = f"{prefix}_{product_hash}{file_extension}"
+        
+        logging.debug(f"파일명 생성: '{product_name}' -> {filename}")
+        return filename
+        
     except Exception as e:
-        logging.error(f"Error generating hash for product name {product_name}: {e}")
-        return ""
+        logging.error(f"파일명 생성 오류 '{product_name}': {e}")
+        # 최후의 수단: 타임스탬프 기반
+        import time
+        fallback_name = f"{prefix}_{int(time.time())}{file_extension}"
+        logging.warning(f"대체 파일명 사용: {fallback_name}")
+        return fallback_name
 
-def generate_consistent_filename(product_name: str, prefix: str, file_extension: str = ".jpg") -> str:
-    """Generate a consistent filename for a product image.
+
+# === 새로운 성능 모니터링 및 최적화 함수들 ===
+
+def monitor_system_performance(config: configparser.ConfigParser = None) -> Dict[str, Any]:
+    """
+    시스템 성능을 모니터링하고 최적화 제안을 제공합니다.
+    
+    Returns:
+        시스템 성능 정보와 최적화 제안이 담긴 딕셔너리
+    """
+    try:
+        import psutil
+        import platform
+        from datetime import datetime
+        
+        # 메모리 사용량 체크
+        memory = psutil.virtual_memory()
+        memory_percent = memory.percent
+        memory_available_gb = memory.available / (1024**3)
+        
+        # CPU 사용률 체크
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_count = psutil.cpu_count()
+        
+        # 디스크 사용량 체크
+        disk = psutil.disk_usage('C:\\' if platform.system() == 'Windows' else '/')
+        disk_percent = (disk.used / disk.total) * 100
+        disk_free_gb = disk.free / (1024**3)
+        
+        # GPU 정보 (가능한 경우)
+        gpu_info = "GPU 정보 없음"
+        try:
+            import tensorflow as tf
+            gpus = tf.config.list_physical_devices('GPU')
+            if gpus:
+                gpu_info = f"{len(gpus)}개 GPU 감지됨"
+            else:
+                gpu_info = "GPU 없음 (CPU 모드)"
+        except Exception:
+            gpu_info = "GPU 상태 확인 불가"
+        
+        # 성능 평가
+        performance_score = 100
+        recommendations = []
+        
+        if memory_percent > 85:
+            performance_score -= 30
+            recommendations.append("⚠️ 메모리 사용률 높음 (85% 이상) - 프로세스 재시작 권장")
+        elif memory_percent > 70:
+            performance_score -= 15
+            recommendations.append("💡 메모리 사용률 주의 (70% 이상) - 캐시 정리 권장")
+        
+        if cpu_percent > 80:
+            performance_score -= 20
+            recommendations.append("⚠️ CPU 사용률 높음 (80% 이상) - 작업 수 조정 권장")
+        
+        if disk_percent > 90:
+            performance_score -= 25
+            recommendations.append("🚨 디스크 공간 부족 (90% 이상) - 임시 파일 정리 필요")
+        elif disk_percent > 80:
+            performance_score -= 10
+            recommendations.append("💡 디스크 공간 주의 (80% 이상) - 정리 권장")
+        
+        if memory_available_gb < 2:
+            performance_score -= 20
+            recommendations.append("⚠️ 사용 가능한 메모리 부족 (2GB 미만)")
+        
+        # 최적화 제안
+        if cpu_count >= 8 and config:
+            max_workers = config.getint('Concurrency', 'max_match_workers', fallback=4)
+            if max_workers < cpu_count // 2:
+                recommendations.append(f"💡 멀티코어 활용도 개선 가능 - max_workers를 {cpu_count // 2}로 증가 권장")
+        
+        if performance_score >= 80:
+            status = "우수"
+            emoji = "🟢"
+        elif performance_score >= 60:
+            status = "양호"
+            emoji = "🟡"
+        else:
+            status = "주의 필요"
+            emoji = "🔴"
+        
+        return {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'performance_score': performance_score,
+            'status': status,
+            'emoji': emoji,
+            'system_metrics': {
+                'memory_percent': memory_percent,
+                'memory_available_gb': round(memory_available_gb, 2),
+                'cpu_percent': cpu_percent,
+                'cpu_count': cpu_count,
+                'disk_percent': round(disk_percent, 1),
+                'disk_free_gb': round(disk_free_gb, 2),
+                'gpu_info': gpu_info
+            },
+            'recommendations': recommendations
+        }
+        
+    except Exception as e:
+        logging.error(f"시스템 성능 모니터링 오류: {e}")
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+
+def optimize_memory_usage():
+    """메모리 사용량을 최적화합니다."""
+    try:
+        import gc
+        
+        # 가비지 컬렉션 수행
+        collected = gc.collect()
+        
+        # 메모리 상태 확인
+        import psutil
+        memory_after = psutil.virtual_memory()
+        
+        logging.info(f"🧹 메모리 최적화 완료: {collected}개 객체 정리, "
+                    f"사용률: {memory_after.percent:.1f}%, "
+                    f"가용: {memory_after.available / (1024**3):.2f}GB")
+        
+        return {
+            'objects_collected': collected,
+            'memory_percent': memory_after.percent,
+            'memory_available_gb': round(memory_after.available / (1024**3), 2)
+        }
+        
+    except Exception as e:
+        logging.error(f"메모리 최적화 오류: {e}")
+        return None
+
+
+def validate_configuration(config: configparser.ConfigParser) -> List[str]:
+    """
+    설정 파일의 유효성을 검증하고 개선 제안을 제공합니다.
+    
+    Returns:
+        검증 결과 및 제안사항 리스트
+    """
+    suggestions = []
+    
+    try:
+        # 경로 검증
+        paths_to_check = [
+            ('input_dir', 'Paths'),
+            ('output_dir', 'Paths'),
+            ('image_main_dir', 'Paths'),
+            ('temp_dir', 'Paths')
+        ]
+        
+        for path_key, section in paths_to_check:
+            try:
+                path_value = config.get(section, path_key)
+                if not os.path.exists(path_value):
+                    suggestions.append(f"❌ 경로 없음: {section}.{path_key} = {path_value}")
+                else:
+                    suggestions.append(f"✅ 경로 확인: {section}.{path_key}")
+            except (configparser.NoSectionError, configparser.NoOptionError):
+                suggestions.append(f"⚠️ 설정 누락: {section}.{path_key}")
+        
+        # 임계값 검증
+        try:
+            image_threshold = config.getfloat('Matching', 'image_threshold')
+            if image_threshold > 0.9:
+                suggestions.append("💡 image_threshold가 너무 높음 (0.8 권장)")
+            elif image_threshold < 0.3:
+                suggestions.append("💡 image_threshold가 너무 낮음 (0.4 이상 권장)")
+            else:
+                suggestions.append("✅ image_threshold 적절함")
+        except Exception:
+            suggestions.append("⚠️ image_threshold 설정 확인 필요")
+        
+        # 동시 실행 설정 검증
+        try:
+            import psutil
+            cpu_count = psutil.cpu_count()
+            max_workers = config.getint('Concurrency', 'max_match_workers', fallback=4)
+            
+            if max_workers > cpu_count:
+                suggestions.append(f"💡 max_match_workers({max_workers})가 CPU 코어수({cpu_count})보다 많음")
+            elif max_workers < cpu_count // 2:
+                suggestions.append(f"💡 max_match_workers({max_workers}) 증가로 성능 향상 가능 (추천: {cpu_count // 2})")
+            else:
+                suggestions.append("✅ 동시 실행 설정 적절함")
+        except Exception:
+            suggestions.append("⚠️ 동시 실행 설정 확인 필요")
+        
+        # GPU 설정 검증
+        try:
+            use_gpu = config.getboolean('Matching', 'use_gpu', fallback=False)
+            if use_gpu:
+                try:
+                    import tensorflow as tf
+                    gpus = tf.config.list_physical_devices('GPU')
+                    if gpus:
+                        suggestions.append(f"✅ GPU 설정 활성화 ({len(gpus)}개 GPU 감지)")
+                    else:
+                        suggestions.append("⚠️ GPU 사용 설정되었으나 GPU 감지되지 않음")
+                except Exception:
+                    suggestions.append("⚠️ GPU 상태 확인 불가")
+            else:
+                suggestions.append("💡 GPU 사용 비활성화 - 성능 향상을 위해 활성화 고려")
+        except Exception:
+            suggestions.append("⚠️ GPU 설정 확인 필요")
+        
+        return suggestions
+        
+    except Exception as e:
+        logging.error(f"설정 검증 오류: {e}")
+        return [f"❌ 설정 검증 중 오류 발생: {e}"]
+
+
+def cleanup_temp_files(config: configparser.ConfigParser, max_age_days: int = 7) -> Dict[str, Any]:
+    """
+    임시 파일들을 정리합니다.
     
     Args:
-        product_name: The name of the product
-        prefix: The prefix to use (e.g. 'kogift', 'haereum', etc.)
-        file_extension: The file extension to use (default: '.jpg')
+        config: 설정 객체
+        max_age_days: 삭제할 파일의 최대 나이 (일)
         
     Returns:
-        A consistent filename string
+        정리 결과 딕셔너리
     """
-    # Validate inputs
-    if not product_name or not prefix:
-        raise ValueError("Product name and prefix must not be empty")
+    try:
+        import time
+        from datetime import datetime, timedelta
         
-    # Use the same hash generation method as generate_product_name_hash for consistency
-    name_hash = generate_product_name_hash(product_name)
-    
-    # Generate second hash from product name (8 characters) - using the normalized name for consistency
-    normalized_name = ''.join(product_name.split()).lower()
-    second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
-    
-    # Ensure file extension starts with a dot
-    if not file_extension.startswith('.'):
-        file_extension = '.' + file_extension
+        temp_dir = config.get('Paths', 'temp_dir', fallback='C:\\RPA\\Temp')
         
-    # Return formatted filename
-    return f"{prefix}_{name_hash}_{second_hash}{file_extension}"
+        if not os.path.exists(temp_dir):
+            return {'error': f'임시 디렉토리가 존재하지 않음: {temp_dir}'}
+        
+        cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
+        deleted_files = []
+        deleted_size = 0
+        error_files = []
+        
+        for root, dirs, files in os.walk(temp_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    file_stat = os.stat(file_path)
+                    if file_stat.st_mtime < cutoff_time:
+                        file_size = file_stat.st_size
+                        os.remove(file_path)
+                        deleted_files.append(file_path)
+                        deleted_size += file_size
+                except Exception as e:
+                    error_files.append(f"{file_path}: {e}")
+        
+        # 빈 디렉토리 제거
+        for root, dirs, files in os.walk(temp_dir, topdown=False):
+            for dir_name in dirs:
+                dir_path = os.path.join(root, dir_name)
+                try:
+                    if not os.listdir(dir_path):  # 빈 디렉토리인지 확인
+                        os.rmdir(dir_path)
+                except Exception:
+                    pass  # 빈 디렉토리가 아니거나 권한 문제
+        
+        result = {
+            'deleted_files_count': len(deleted_files),
+            'deleted_size_mb': round(deleted_size / (1024 * 1024), 2),
+            'error_count': len(error_files),
+            'max_age_days': max_age_days,
+            'temp_directory': temp_dir
+        }
+        
+        if deleted_files:
+            logging.info(f"🧹 임시 파일 정리 완료: {len(deleted_files)}개 파일 삭제 "
+                        f"({result['deleted_size_mb']}MB 확보)")
+        
+        if error_files:
+            logging.warning(f"⚠️ 일부 파일 삭제 실패: {len(error_files)}개")
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"임시 파일 정리 오류: {e}")
+        return {'error': str(e)}
+
+
+def benchmark_system_performance(config: configparser.ConfigParser = None) -> Dict[str, Any]:
+    """
+    시스템 성능을 벤치마크하고 최적 설정을 제안합니다.
+    
+    Returns:
+        벤치마크 결과 및 최적화 제안
+    """
+    try:
+        import time
+        import hashlib
+        from datetime import datetime
+        
+        logging.info("🚀 시스템 성능 벤치마크 시작...")
+        
+        benchmark_results = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'tests': {},
+            'recommendations': []
+        }
+        
+        # 1. 해시 생성 성능 테스트
+        start_time = time.time()
+        test_strings = [f"테스트 상품 {i}" for i in range(1000)]
+        for test_str in test_strings:
+            generate_product_name_hash(test_str)
+        hash_time = time.time() - start_time
+        
+        benchmark_results['tests']['hash_generation'] = {
+            'time_seconds': round(hash_time, 3),
+            'ops_per_second': round(1000 / hash_time, 1) if hash_time > 0 else 'N/A'
+        }
+        
+        # 2. 메모리 할당 테스트
+        start_time = time.time()
+        large_list = [i for i in range(100000)]
+        del large_list
+        memory_time = time.time() - start_time
+        
+        benchmark_results['tests']['memory_allocation'] = {
+            'time_seconds': round(memory_time, 3)
+        }
+        
+        # 3. 파일 I/O 테스트
+        if config:
+            temp_dir = config.get('Paths', 'temp_dir', fallback='C:\\RPA\\Temp')
+            if os.path.exists(temp_dir):
+                test_file = os.path.join(temp_dir, 'benchmark_test.txt')
+                start_time = time.time()
+                with open(test_file, 'w', encoding='utf-8') as f:
+                    for i in range(1000):
+                        f.write(f"테스트 라인 {i}\n")
+                
+                with open(test_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                os.remove(test_file)
+                io_time = time.time() - start_time
+                
+                benchmark_results['tests']['file_io'] = {
+                    'time_seconds': round(io_time, 3)
+                }
+        
+        # 성능 등급 계산
+        total_score = 100
+        
+        if hash_time > 0.5:
+            total_score -= 20
+            benchmark_results['recommendations'].append("💡 해시 생성 성능 개선 필요")
+        
+        if memory_time > 0.1:
+            total_score -= 15
+            benchmark_results['recommendations'].append("💡 메모리 할당 성능 개선 필요")
+        
+        benchmark_results['overall_score'] = max(0, total_score)
+        
+        if total_score >= 80:
+            benchmark_results['grade'] = 'A (우수)'
+        elif total_score >= 60:
+            benchmark_results['grade'] = 'B (양호)'
+        else:
+            benchmark_results['grade'] = 'C (개선 필요)'
+        
+        logging.info(f"✅ 벤치마크 완료 - 전체 점수: {total_score}점 ({benchmark_results['grade']})")
+        
+        return benchmark_results
+        
+    except Exception as e:
+        logging.error(f"성능 벤치마크 오류: {e}")
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }

@@ -1161,25 +1161,82 @@ class EnhancedImageMatcher:
     def calculate_similarity(self, img_path1: str, img_path2: str, 
                            weights: Optional[Dict[str, float]] = None) -> float:
         """
-        Calculate combined similarity between two images
-        This is a wrapper around calculate_combined_similarity that returns just the score
+        두 이미지 간의 유사도를 계산합니다.
+        
+        개선사항:
+        - 빠른 유효성 검사 추가
+        - 향상된 캐시 로깅
+        - 높은 유사도 매치에 대한 상세 로깅
+        - 성능 최적화
+        
+        Args:
+            img_path1: 첫 번째 이미지 경로
+            img_path2: 두 번째 이미지 경로
+            weights: 각 방법별 가중치 딕셔너리
+            
+        Returns:
+            유사도 점수 (0.0 ~ 1.0)
         """
+        
+        # === 빠른 유효성 검사 ===
+        if not img_path1 or not img_path2:
+            logging.debug("이미지 경로 중 하나가 비어있음")
+            return 0.0
+            
+        if not os.path.exists(img_path1):
+            logging.debug(f"첫 번째 이미지가 존재하지 않음: {img_path1}")
+            return 0.0
+            
+        if not os.path.exists(img_path2):
+            logging.debug(f"두 번째 이미지가 존재하지 않음: {img_path2}")
+            return 0.0
+        
+        # 동일한 파일인 경우 즉시 반환
+        if os.path.abspath(img_path1) == os.path.abspath(img_path2):
+            logging.debug("동일한 파일 경로 - 완전 매치")
+            return 1.0
+        
+        start_time = time.time()
+        
         try:
-            # Try to get from cache first
+            # === 캐시 확인 ===
             cache_key = f"{img_path1}|{img_path2}"
-            cached_result = self.feature_cache.get(cache_key, "combined_similarity")
-            if cached_result is not None:
-                return float(cached_result)
-                
-            # Calculate similarity
-            combined_score, _ = self.calculate_combined_similarity(img_path1, img_path2, weights)
+            if self.feature_cache.enabled:
+                cached_result = self.feature_cache.get(cache_key, "similarity")
+                if cached_result is not None:
+                    elapsed = time.time() - start_time
+                    logging.debug(f"💾 캐시에서 유사도 반환: {cached_result:.3f} ({elapsed*1000:.1f}ms) "
+                                f"for {os.path.basename(img_path1)} vs {os.path.basename(img_path2)}")
+                    return float(cached_result)
             
-            # Cache the result
-            self.feature_cache.put(cache_key, "combined_similarity", combined_score)
+            # === 유사도 계산 ===
+            similarity_score, method_scores = self.calculate_combined_similarity(img_path1, img_path2, weights)
             
-            return combined_score
+            # === 캐시에 저장 ===
+            if self.feature_cache.enabled:
+                self.feature_cache.put(cache_key, "similarity", np.array([similarity_score]))
+            
+            elapsed = time.time() - start_time
+            
+            # === 향상된 로깅 ===
+            if similarity_score >= 0.7:
+                # 높은 유사도 매치에 대한 상세 로깅
+                method_details = ", ".join([f"{method}: {score:.3f}" for method, score in method_scores.items()])
+                logging.info(f"🎯 높은 유사도 매치 발견: {similarity_score:.3f} "
+                            f"({elapsed*1000:.1f}ms) - {os.path.basename(img_path1)} vs {os.path.basename(img_path2)}")
+                logging.info(f"    세부 점수: {method_details}")
+            elif similarity_score >= 0.3:
+                logging.debug(f"📊 중간 유사도: {similarity_score:.3f} ({elapsed*1000:.1f}ms) "
+                             f"- {os.path.basename(img_path1)} vs {os.path.basename(img_path2)}")
+            else:
+                logging.debug(f"📉 낮은 유사도: {similarity_score:.3f} ({elapsed*1000:.1f}ms)")
+            
+            return similarity_score
+            
         except Exception as e:
-            logger.error(f"Error calculating similarity between {img_path1} and {img_path2}: {e}")
+            elapsed = time.time() - start_time
+            logging.error(f"이미지 유사도 계산 오류 ({elapsed*1000:.1f}ms): {e}")
+            logging.debug(f"오류 상세 - 이미지1: {img_path1}, 이미지2: {img_path2}")
             return 0.0
             
     def is_match(self, img_path1: str, img_path2: str, threshold: Optional[float] = None) -> Tuple[bool, float, Dict[str, float]]:
