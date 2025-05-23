@@ -1031,34 +1031,29 @@ def generate_product_name_hash(product_name: str) -> str:
         return ""
 
 def generate_consistent_filename(product_name: str, prefix: str, file_extension: str = ".jpg") -> str:
-    """
-    상품명으로부터 일관된 파일명을 생성합니다.
-    형식: {prefix}_{상품명해시}_{랜덤해시}.{확장자}
+    """Generate a consistent filename for a product image.
     
     Args:
-        product_name: 상품명
-        prefix: 파일명 접두사 (예: haereum, kogift, naver)
-        file_extension: 파일 확장자 (기본값: .jpg)
+        product_name: The name of the product
+        prefix: The prefix to use (e.g. 'kogift', 'haereum', etc.)
+        file_extension: The file extension to use (default: '.jpg')
         
     Returns:
-        생성된 파일명
+        A consistent filename string
     """
-    try:
-        # 상품명 해시 생성 (16자리)
-        name_hash = generate_product_name_hash(product_name)
+    # Validate inputs
+    if not product_name or not prefix:
+        raise ValueError("Product name and prefix must not be empty")
         
-        # 랜덤 해시 생성 (8자리)
-        random_hash = secrets.token_hex(4)
+    # Generate hash from product name (16 characters)
+    name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+    
+    # Generate random hash (8 characters)
+    random_hash = secrets.token_hex(4)
+    
+    # Ensure file extension starts with a dot
+    if not file_extension.startswith('.'):
+        file_extension = '.' + file_extension
         
-        # 확장자 정리
-        if not file_extension.startswith('.'):
-            file_extension = '.' + file_extension
-        
-        # 파일명 생성
-        filename = f"{prefix}_{name_hash}_{random_hash}{file_extension}"
-        return filename
-    except Exception as e:
-        logging.error(f"Error generating filename for product {product_name}: {e}")
-        # 기본 파일명 반환
-        fallback_hash = hashlib.md5(str(time.time()).encode()).hexdigest()[:16]
-        return f"{prefix}_{fallback_hash}_{secrets.token_hex(4)}{file_extension}"
+    # Return formatted filename
+    return f"{prefix}_{name_hash}_{random_hash}{file_extension}"

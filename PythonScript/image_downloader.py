@@ -248,22 +248,26 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
     # Determine the appropriate directory based on URL
     if "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower():
         save_dir = KOGIFT_IMAGE_DIR # Use the globally defined Main/Kogift directory
+        is_kogift = True
     elif "jclgift" in url.lower():
         # Save jclgift images in a haereum directory within Main
         base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
         haereum_dir = base_main_dir / 'Haereum'  # Always use 'Haereum' with capital H
         haereum_dir.mkdir(parents=True, exist_ok=True)
         save_dir = haereum_dir
+        is_kogift = False
     elif "pstatic.net" in url.lower() or "naver" in url.lower():
         # Save Naver images in a naver directory within Main
         base_main_dir = KOGIFT_IMAGE_DIR.parent.parent / 'Main' # Get C:\RPA\Image\Main
         naver_dir = base_main_dir / 'Naver'  # Always use 'Naver' with capital N
         naver_dir.mkdir(parents=True, exist_ok=True)
         save_dir = naver_dir
+        is_kogift = False
     else:
         # Use generic directory for other URLs (default to Main/Kogift for safety, though unlikely)
         logger.warning(f"URL source undetermined, saving to Kogift directory: {url}")
         save_dir = KOGIFT_IMAGE_DIR
+        is_kogift = False
     
     # Generate a filename based on URL hash and product name
     # 사이트 식별자 결정
@@ -276,100 +280,48 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
     else:
         source_prefix = "other"
     
-    # 랜덤 해시 생성 (8자로 통일) - URL 해시 대신 랜덤 사용
+    # 랜덤 해시 생성 (8자로 통일)
     import secrets
-    random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
+    random_hash = secrets.token_hex(4)
     
-    # 상품명이 제공된 경우 해시 생성 (16자로 통일)
+    # 상품명 해시 생성 (16자리)
     if product_name:
-        name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+        try:
+            from utils import generate_product_name_hash
+            name_hash = generate_product_name_hash(product_name)
+        except ImportError:
+            logger.warning("Could not import generate_product_name_hash, using fallback method")
+            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
     else:
-        # 상품명이 없는 경우 랜덤 값으로 대체
-        name_hash = hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
+        # 상품명이 없는 경우 URL 해시 사용
+        name_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+        logger.warning(f"No product name provided for {source_prefix} image, using URL hash")
     
-    # Get file extension from URL
-    parsed_url = urlparse(url)
-    path = unquote(parsed_url.path)
-    _, ext = os.path.splitext(path)
+    # 파일 확장자 결정
+    ext = '.jpg'  # 기본값
     
-    # Handle problematic extensions
-    if ext.lower() in ['.asp', '.aspx', '.php', '.jsp', '.html', '.htm']:
-        ext = '.jpg'  # Default to jpg for non-image extensions
-    elif not ext:
-        ext = '.jpg'  # Default extension if none provided
-    elif len(ext) > 5:
-        ext = '.jpg'  # If extension is unusually long, use default
-    
-    # Ensure extension starts with a dot
-    if not ext.startswith('.'):
-        ext = '.' + ext
-    
-    # 새로운 형식으로 파일명 생성
+    # 파일명 생성
     filename = f"{source_prefix}_{name_hash}_{random_hash}{ext}"
     image_path = save_dir / filename
     
-    # For jclgift URLs, also save a copy in Main folder without nobg
-    create_nobg_version = False
-    if "jclgift" in url.lower():
-        # save_dir is already C:\RPA\Image\Main\Haereum, so no need to recalculate
-        main_dir = save_dir 
+    # Create nobg version path if needed
+    create_nobg_version = True  # Always create nobg version
+    if create_nobg_version:
+        main_dir = save_dir
         main_path = main_dir / filename
-        create_nobg_version = True
+        nobg_filename = f"{source_prefix}_{name_hash}_{random_hash}_nobg.png"
+        nobg_path = main_dir / nobg_filename
     
-    # Check if file already exists and is of sufficient size
-    if os.path.exists(image_path) and os.path.getsize(image_path) > 1000:  # 1KB minimum
-        logger.debug(f"Image already exists: {image_path}")
-        return url, True, str(image_path)
-    
-    # Process source-specific headers
-    headers = {}
-    is_jclgift = "jclgift" in url.lower()
-    is_kogift = "kogift" in url.lower() or "koreagift" in url.lower() or "adpanchok" in url.lower()
-    
-    if is_kogift:
-        headers = {
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://koreagift.com/'
-        }
-    elif is_jclgift:
-        headers = {
-            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://www.jclgift.com/'
-        }
-    
-    # Try to download the image
+    # Download the image
     try:
-        async with session.get(url, headers=headers, timeout=30) as response:
+        async with session.get(url, timeout=15) as response:
             if response.status != 200:
-                # Handle special cases for certain status codes
-                if response.status == 404:
-                    logger.warning(f"Image not found (404): {url}")
-                    return url, False, "404 Not Found"
-                    
+                error_msg = f"Failed to download image. Status: {response.status}"
                 if retry_count < MAX_RETRIES:
-                    logger.warning(f"Got HTTP {response.status} for {url}, retrying ({retry_count + 1}/{MAX_RETRIES})...")
-                    await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
+                    await asyncio.sleep(0.5 * (retry_count + 1))
                     return await download_image(session, url, product_name, retry_count + 1)
-                else:
-                    return url, False, f"HTTP error {response.status} after {MAX_RETRIES} retries"
+                return url, False, error_msg
             
-            # Check content type
-            content_type = response.headers.get('Content-Type', '')
-            is_naver = "pstatic.net" in url.lower()
-            
-            if not content_type.startswith('image/') and not is_naver and not is_kogift and not is_jclgift:
-                logger.warning(f"Non-image content type: {content_type} for {url}")
-                if retry_count < MAX_RETRIES:
-                    await asyncio.sleep(0.5 * (retry_count + 1))  # Exponential backoff
-                    return await download_image(session, url, product_name, retry_count + 1)
-                else:
-                    return url, False, f"Non-image content type: {content_type}"
-            
-            # Get content
             data = await response.read()
             
             # Verify data is an image before saving
@@ -385,7 +337,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
                 width, height = img.size
                 if width < 20 or height < 20:
                     logger.warning(f"Image dimensions too small: {width}x{height} for {url}")
-                    if not is_kogift and not is_jclgift and retry_count < MAX_RETRIES:
+                    if not is_kogift and retry_count < MAX_RETRIES:
                         await asyncio.sleep(0.5 * (retry_count + 1))
                         return await download_image(session, url, product_name, retry_count + 1)
                     
@@ -399,56 +351,45 @@ async def download_image(session: aiohttp.ClientSession, url: str, product_name:
                     if create_nobg_version:
                         main_filename = f"{source_prefix}_{name_hash}_{random_hash}{proper_ext}"
                         main_path = main_dir / main_filename
+                        nobg_filename = f"{source_prefix}_{name_hash}_{random_hash}_nobg.png"
+                        nobg_path = main_dir / nobg_filename
                 
-                # Use semaphore for file operations to prevent race conditions
-                async with file_semaphore:
-                    # Make sure parent directory exists
-                    os.makedirs(image_path.parent, exist_ok=True)
-                    
-                    # Write image to file
-                    async with aiofiles.open(image_path, 'wb') as f:
-                        await f.write(data)
-                    
-                    # If this is jclgift, also save to Main folder 
-                    if create_nobg_version:
-                        os.makedirs(main_path.parent, exist_ok=True)
-                        async with aiofiles.open(main_path, 'wb') as f:
-                            await f.write(data)
-                            
-                        # Also create a _nobg.png version for the background-removed image path
-                        # Ensure the base path exists before creating the nobg version path
-                        os.makedirs(main_path.parent, exist_ok=True) 
-                        nobg_path = main_path.with_suffix('').with_name(main_path.stem + "_nobg.png")
-                        # Copy the original data to the _nobg path placeholder
-                        async with aiofiles.open(nobg_path, 'wb') as f:
-                            await f.write(data)
+                # Save the image
+                with open(image_path, 'wb') as f:
+                    f.write(data)
+                
+                # Remove background if needed
+                if create_nobg_version:
+                    try:
+                        from image_utils import remove_background_async
+                        success = await remove_background_async(image_path, nobg_path)
+                        if not success:
+                            logger.warning(f"Failed to remove background for {image_path}")
+                    except Exception as e:
+                        logger.error(f"Error removing background: {e}")
                         
-                        # Return the Main path to use for images
-                        return url, True, str(main_path)
-                
-                # Return success with the path to the saved image
                 return url, True, str(image_path)
                 
-            except Exception as img_err:
-                logger.warning(f"Invalid image data for {url}: {img_err}")
+            except Exception as img_error:
+                error_msg = f"Invalid image data: {img_error}"
                 if retry_count < MAX_RETRIES:
                     await asyncio.sleep(0.5 * (retry_count + 1))
                     return await download_image(session, url, product_name, retry_count + 1)
-                else:
-                    return url, False, f"Invalid image data: {img_err}"
-    
-    except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                return url, False, error_msg
+                
+    except asyncio.TimeoutError:
+        error_msg = "Download timeout"
         if retry_count < MAX_RETRIES:
-            logger.warning(f"Connection error for {url}, retrying ({retry_count + 1}/{MAX_RETRIES}): {e}")
             await asyncio.sleep(0.5 * (retry_count + 1))
             return await download_image(session, url, product_name, retry_count + 1)
-        else:
-            logger.error(f"Connection error for {url} after {MAX_RETRIES} retries: {e}")
-            return url, False, f"Connection error: {e}"
-            
+        return url, False, error_msg
+        
     except Exception as e:
-        logger.error(f"Unexpected error downloading {url}: {e}")
-        return url, False, f"Unexpected error: {e}"
+        error_msg = f"Download error: {str(e)}"
+        if retry_count < MAX_RETRIES:
+            await asyncio.sleep(0.5 * (retry_count + 1))
+            return await download_image(session, url, product_name, retry_count + 1)
+        return url, False, error_msg
 
 async def download_images(image_urls: List[str], product_names: Optional[Dict[str, str]] = None) -> Dict[str, Optional[str]]:
     """Download multiple images asynchronously.

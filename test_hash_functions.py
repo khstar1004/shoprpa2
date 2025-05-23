@@ -3,36 +3,41 @@
 
 import sys
 import os
-sys.path.insert(0, 'PythonScript')
 
-from utils import generate_product_name_hash, generate_consistent_filename
+# Add the PythonScript directory to the Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'PythonScript'))
+
+from PythonScript.utils import generate_consistent_filename, generate_product_name_hash
 
 def test_hash_functions():
     """새로 추가한 해시 함수들을 테스트합니다."""
     
     print("=== 상품명 해시 생성 테스트 ===")
     
-    # 테스트 상품명들
-    test_product_names = [
-        '테스트 상품명 ABC',
-        '노트북 가방',
-        '마우스패드 세트',
-        '무선마우스',
-        '블루투스 스피커',
-        '고급 펜 세트'
+    # Test cases
+    test_cases = [
+        ("테스트 상품명", "kogift"),
+        ("Test Product Name", "haereum"),
+        ("상품명 with spaces", "naver"),
+        ("Product with numbers 123", "other")
     ]
     
-    for product_name in test_product_names:
-        hash_value = generate_product_name_hash(product_name)
-        kogift_filename = generate_consistent_filename(product_name, 'kogift', '.jpg')
-        haereum_filename = generate_consistent_filename(product_name, 'haereum', '.jpg')
-        naver_filename = generate_consistent_filename(product_name, 'naver', '.png')
+    for product_name, prefix in test_cases:
+        # Test generate_product_name_hash
+        name_hash = generate_product_name_hash(product_name)
+        print(f"\nProduct: {product_name}")
+        print(f"Name hash: {name_hash}")
         
-        print(f"\n상품명: {product_name}")
-        print(f"  해시값 (16자): {hash_value}")
-        print(f"  Kogift 파일명: {kogift_filename}")
-        print(f"  Haereum 파일명: {haereum_filename}")
-        print(f"  Naver 파일명: {naver_filename}")
+        # Test generate_consistent_filename
+        filename = generate_consistent_filename(product_name, prefix)
+        print(f"Generated filename: {filename}")
+        
+        # Verify filename format
+        parts = filename.split('_')
+        assert len(parts) == 3, f"Invalid filename format: {filename}"
+        assert parts[0] == prefix, f"Invalid prefix in filename: {filename}"
+        assert len(parts[1]) == 16, f"Invalid name hash length in filename: {filename}"
+        assert len(parts[2].split('.')[0]) == 8, f"Invalid random hash length in filename: {filename}"
     
     print("\n=== 동일 상품명 해시 일관성 테스트 ===")
     test_name = "일관성 테스트 상품"

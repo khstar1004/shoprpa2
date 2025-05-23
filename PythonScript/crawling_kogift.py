@@ -185,16 +185,9 @@ NAVIGATION_TIMEOUT = 60000  # 1 minute
 # --- Helper function to download images ---
 def download_image(url: str, save_dir: str, product_name: Optional[str] = None, file_name: Optional[str] = None) -> Optional[str]:
     """Download an image from a URL and save it to the specified disk directory."""
-    if not url or not save_dir:
-        logger.warning("URL or save directory not provided to download_image")
+    if not url:
+        logger.error("❌ URL이 제공되지 않았습니다.")
         return None
-    
-    # Normalize URL
-    if not url.startswith(('http://', 'https://')):
-        if url.startswith('//'):
-            url = f"https:{url}"
-        else:
-            url = f"https://{url}"
     
     # Extract filename from URL if not provided
     if not file_name:
@@ -238,194 +231,69 @@ def download_image(url: str, save_dir: str, product_name: Optional[str] = None, 
     # Create a unique temporary file path
     temp_file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{random.randint(1000, 9999)}.tmp")
     
-    # Try to download with retries and exponential backoff
-    max_attempts = 3
-    for attempt in range(max_attempts):
+    # Download the image
+    try:
+        # Add headers for Kogift
+        headers = {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://koreagift.com/'
+        }
+        
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Check content type
+        content_type = response.headers.get('Content-Type', '')
+        if not content_type.startswith('image/'):
+            logger.warning(f"Non-image content type: {content_type}")
+        
+        # Save the image
+        with open(temp_file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        # Verify the downloaded file
+        if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) < 100:  # Less than 100 bytes
+            logger.error(f"❌ 다운로드된 파일이 너무 작거나 존재하지 않습니다: {temp_file_path}")
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            return None
+        
+        # Verify it's a valid image
         try:
-            # Download image
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            }
-            response = requests.get(url, headers=headers, timeout=15, stream=True)
-            
-            # Check response
-            if not response.ok:
-                logger.warning(f"Failed to download image from {url} (attempt {attempt+1}): HTTP {response.status_code}")
-                # Exponential backoff for retry delay
-                delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                logger.debug(f"Retrying in {delay:.2f} seconds...")
-                time.sleep(delay)
-                continue
-            
-            # Validate content type
-            content_type = response.headers.get('Content-Type', '').lower()
-            if 'image' not in content_type and 'octet-stream' not in content_type:
-                # Some sites may return valid images without proper content type
-                if len(response.content) < 1000 and 'text/html' in content_type:
-                    logger.warning(f"Not an image (HTML page received): {url}")
-                    delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                    time.sleep(delay)
-                    continue
-            
-            # Write to temp file
-            try:
-                with open(temp_file_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                    f.flush()
-                
-                # Small delay after writing to ensure file handles are closed
-                time.sleep(0.2)  # Increased delay to ensure file handles are released
-            except (PermissionError, OSError) as e:
-                logger.warning(f"Error writing to temp file {temp_file_path}: {e}")
-                # Try a different temp filename
-                temp_file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{int(time.time())}_{random.randint(1000, 9999)}.tmp")
-                delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                time.sleep(delay)
-                continue
-            
-            # Validate image
-            try:
-                # Check file size
-                if os.path.getsize(temp_file_path) < 100:
-                    logger.warning(f"Downloaded file too small: {url}")
-                    try:
-                        os.remove(temp_file_path)
-                    except:
-                        pass
-                    delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                    time.sleep(delay)
-                    continue
-                
-                # Validate image with PIL
-                try:
-                    with Image.open(temp_file_path) as img:
-                        img.verify()  # Verify it's a valid image
-                    
-                    # Open again to check dimensions (verify closes the file)
-                    with Image.open(temp_file_path) as img:
-                        width, height = img.size
-                        if width < 10 or height < 10:
-                            logger.warning(f"Image too small ({width}x{height}): {url}")
-                            try:
-                                os.remove(temp_file_path)
-                            except:
-                                pass
-                            delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                            time.sleep(delay)
-                            continue
-                except Exception as img_err:
-                    logger.warning(f"Invalid image data: {img_err}")
-                    try:
-                        os.remove(temp_file_path)
-                    except:
-                        pass
-                    delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                    time.sleep(delay)
-                    continue
-                
-                # Try to move the temporary file to the final location
-                move_success = False
-                for move_attempt in range(3):
-                    try:
-                        # If file exists, try to remove it first
-                        if os.path.exists(file_path):
-                            try:
-                                os.remove(file_path)
-                                # Add additional delay after file removal
-                                time.sleep(0.5)
-                            except (OSError, PermissionError) as e:
-                                if "WinError 32" in str(e):  # File being used by another process
-                                    logger.warning(f"File in use (WinError 32): {file_path}")
-                                    # Create alternative filename with timestamp and random number
-                                    file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{int(time.time())}_{random.randint(1000, 9999)}{os.path.splitext(file_name)[1]}")
-                                    # Skip the remove operation and try with new filename
-                                    time.sleep(0.5)
-                                else:
-                                    logger.warning(f"Cannot remove existing file {file_path}: {e}")
-                                    # Create alternative filename
-                                    file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{int(time.time())}_{random.randint(1000, 9999)}{os.path.splitext(file_name)[1]}")
-                        
-                        # Try to rename (fastest method)
-                        os.rename(temp_file_path, file_path)
-                        move_success = True
-                        break
-                    except (OSError, PermissionError) as e:
-                        err_msg = str(e)
-                        logger.warning(f"OS error renaming file (attempt {move_attempt+1}): {err_msg}")
-                        
-                        # Handle "file in use" errors (Windows Error 32)
-                        if "WinError 32" in err_msg:
-                            logger.info(f"File in use (WinError 32), waiting before retry...")
-                            # Longer delay for file access issues
-                            time.sleep(1.5 + random.uniform(0, 1.0))
-                            # Create alternative filename with more randomness
-                            file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{int(time.time())}_{random.randint(10000, 99999)}{os.path.splitext(file_name)[1]}")
-                        else:
-                            time.sleep(0.8 + random.uniform(0, 0.7))
-                        
-                        # On the second attempt, try with shutil.move
-                        if move_attempt == 1:
-                            try:
-                                # Use copy2 + remove instead of move to reduce file locking issues
-                                shutil.copy2(temp_file_path, file_path)
-                                time.sleep(0.5)  # Wait before deleting source
-                                try:
-                                    os.remove(temp_file_path)
-                                except:
-                                    pass  # Ignore if temp file can't be deleted
-                                move_success = True
-                                break
-                            except Exception as e2:
-                                logger.warning(f"Shutil move error: {e2}")
-                                time.sleep(0.8 + random.uniform(0, 0.5))
-                
-                # If move failed, try copy + delete approach
-                if not move_success:
-                    try:
-                        # Try another unique filename for last attempt
-                        file_path = os.path.join(save_dir, f"{os.path.splitext(file_name)[0]}_{int(time.time())}_{random.randint(100000, 999999)}{os.path.splitext(file_name)[1]}")
-                        shutil.copy2(temp_file_path, file_path)
-                        time.sleep(0.5)  # Wait before trying to delete the source
-                        try:
-                            os.remove(temp_file_path)
-                        except:
-                            pass  # Ignore failure to delete temp file
-                        move_success = True
-                    except Exception as e:
-                        logger.error(f"OS error saving image to {temp_file_path} or {file_path} (attempt {attempt+1}): {e}")
-                        # Last resort - use temp file as actual file
-                        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
-                            logger.warning(f"Using temp file as final file: {temp_file_path}")
-                            file_path = temp_file_path
-                            move_success = True
-                
-                if move_success:
-                    logger.info(f"Downloaded image: {url} -> {file_path}")
-                    return file_path
-                
-            except Exception as e:
-                logger.warning(f"Invalid image data from {url}: {e}")
-                if os.path.exists(temp_file_path):
-                    try:
-                        os.remove(temp_file_path)
-                    except:
-                        pass
-                delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-                time.sleep(delay)
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Request error downloading {url} (attempt {attempt+1}): {e}")
-            delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-            time.sleep(delay)
+            with Image.open(temp_file_path) as img:
+                img.verify()
+                # Check dimensions
+                img = Image.open(temp_file_path)
+                if img.width < 10 or img.height < 10:
+                    logger.error(f"❌ 이미지 크기가 너무 작습니다: {img.width}x{img.height}")
+                    os.remove(temp_file_path)
+                    return None
         except Exception as e:
-            logger.error(f"Error downloading {url} (attempt {attempt+1}): {e}")
-            delay = 1.0 * (2 ** attempt) + random.uniform(0, 0.5)
-            time.sleep(delay)
-    
-    logger.error(f"Failed to download image after {max_attempts} attempts: {url}")
-    return None
+            logger.error(f"❌ 유효하지 않은 이미지 파일입니다: {e}")
+            os.remove(temp_file_path)
+            return None
+        
+        # Move temp file to final location
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        os.rename(temp_file_path, file_path)
+        
+        logger.debug(f"✅ 이미지 다운로드 성공: {file_path}")
+        return file_path
+        
+    except requests.RequestException as e:
+        logger.error(f"❌ 이미지 다운로드 실패: {e}")
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        return None
+    except Exception as e:
+        logger.error(f"❌ 예상치 못한 오류 발생: {e}")
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        return None
 
 def download_images_batch(img_urls, save_dir='downloaded_images', product_name=None, max_workers=10):
     """

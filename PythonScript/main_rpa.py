@@ -699,8 +699,9 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
         use_multiple_models = config.getboolean('ImageMatching', 'use_multiple_models', fallback=True)
         use_tfidf = config.getboolean('Matching', 'use_tfidf', fallback=True)
         
-        logging.info(f"[Step 5/7] Starting product matching with enhanced accuracy settings (GPU: {gpu_available}, CPU Workers: {matcher_workers})...")
-        if progress_queue: progress_queue.emit("status", "Matching products with enhanced accuracy (might take longer)...")
+        logging.info(f"[Step 5/7] Starting enhanced hash-based product matching (GPU: {gpu_available}, CPU Workers: {matcher_workers})...")
+        logging.info(f"🔍 Enhanced matching features: Hash filtering=✅, Image threshold=0.8, Ensemble={use_ensemble}")
+        if progress_queue: progress_queue.emit("status", "Enhanced hash-based matching starting (more accurate, efficient)...")
         matched_df = pd.DataFrame() # Initialize empty DataFrame
         try:
             # Ensure Haoreum DataFrame is valid before proceeding
@@ -710,6 +711,12 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
 
             # Log columns before matching
             logging.info(f"Columns in haoreum_df BEFORE matching: {haoreum_df.columns.tolist()}")
+            
+            # Log candidate statistics before matching
+            total_kogift_items = sum(len(items) for items in kogift_map.values() if isinstance(items, list))
+            total_naver_items = sum(len(items) for items in naver_map.values() if isinstance(items, list))
+            logging.info(f"📊 Candidate pool: Kogift={total_kogift_items} items from {len(kogift_map)} products, "
+                        f"Naver={total_naver_items} items from {len(naver_map)} products")
 
             # Use ThreadPoolExecutor instead of asyncio.to_thread
             with ThreadPoolExecutor(max_workers=matcher_workers) as executor:
@@ -734,7 +741,18 @@ async def main(config: configparser.ConfigParser, gpu_available: bool, progress_
                     raise Exception("Product matching returned no results")
                     
                 match_count = len(matched_df)
-                logging.info(f"[Step 5/7] Product matching finished. Matched {match_count} potential rows. Duration: {time.time() - step_start_time:.2f} sec")
+                elapsed_time = time.time() - step_start_time
+                
+                # Calculate and log matching efficiency statistics
+                successful_matches = len(matched_df[matched_df.get('매칭_여부', 'N') == 'Y']) if '매칭_여부' in matched_df.columns else 0
+                match_rate = (successful_matches / match_count * 100) if match_count > 0 else 0
+                
+                logging.info(f"[Step 5/7] ✅ Enhanced hash-based matching completed!")
+                logging.info(f"📈 Matching results: {successful_matches}/{match_count} products matched ({match_rate:.1f}% success rate)")
+                logging.info(f"⏱️ Processing time: {elapsed_time:.2f} seconds ({elapsed_time/match_count:.2f}s per product)")
+                
+                if progress_queue: 
+                    progress_queue.emit("status", f"Hash-based matching complete: {successful_matches}/{match_count} matched ({match_rate:.1f}%)")
 
         except Exception as match_err:
             logging.error(f"[Step 5/7] Error during product matching: {match_err}", exc_info=True)
