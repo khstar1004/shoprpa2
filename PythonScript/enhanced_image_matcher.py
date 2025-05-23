@@ -607,53 +607,74 @@ class EnhancedImageMatcher:
         Uses cv2.imdecode for robust Unicode path handling on Windows.
         """
         try:
+            # Normalize path
+            image_path = os.path.abspath(image_path).replace('\\', '/')
+            
             # Check if image exists
             if not os.path.exists(image_path):
                 logger.warning(f"Image does not exist: {image_path}")
                 return None, None
             
+            # Check file size
+            if os.path.getsize(image_path) == 0:
+                logger.warning(f"Image file is empty: {image_path}")
+                return None, None
+            
+            # Verify file extension
+            _, ext = os.path.splitext(image_path)
+            if ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif']:
+                logger.warning(f"Unsupported image format: {ext} for {image_path}")
+                return None, None
+            
             # Handle problematic file extensions before reading
-            _, file_ext = os.path.splitext(image_path)
-            if file_ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
+            if ext.lower() in ['.asp', '.aspx', '.php', '.jsp']:
                 # Create a copy with .jpg extension
                 new_path = os.path.splitext(image_path)[0] + '.jpg'
                 try:
                     if not os.path.exists(new_path):
                         import shutil
                         shutil.copy2(image_path, new_path)
-                    logger.info(f"Copied {file_ext} file to .jpg for processing: {new_path}")
+                    logger.info(f"Copied {ext} file to .jpg for processing: {new_path}")
                     image_path = new_path # Use the new path for reading
                 except Exception as copy_err:
                     logger.error(f"Error copying potentially problematic file {image_path} to {new_path}: {copy_err}")
-                    # Proceed with original path, but decoding might fail
+                    return None, None
 
             # Read the file into a numpy array
-            np_arr = np.fromfile(image_path, np.uint8)
-            if np_arr.size == 0:
-                logger.warning(f"Failed to read image file (empty): {image_path}")
-                return None, None
+            try:
+                np_arr = np.fromfile(image_path, np.uint8)
+                if np_arr.size == 0:
+                    logger.warning(f"Failed to read image file (empty): {image_path}")
+                    return None, None
 
-            # Decode the image using cv2.imdecode
-            img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if img is None:
-                logger.warning(f"Unable to decode image: {image_path}")
-                return None, None
+                # Decode the image using cv2.imdecode
+                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    logger.warning(f"Unable to decode image: {image_path}")
+                    return None, None
                 
-            # Get grayscale version
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-            # Apply contrast enhancement if enabled
-            if self.apply_clahe:
-                # Make sure clahe is initialized
-                if not hasattr(self, 'clahe') or self.clahe is None:
-                    self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                    logger.debug("Initialized CLAHE within _load_and_prepare_image")
-                gray = self.clahe.apply(gray)
-            
-            return img, gray
+                # Get grayscale version
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                
+                # Apply contrast enhancement if enabled
+                if self.apply_clahe:
+                    # Make sure clahe is initialized
+                    if not hasattr(self, 'clahe') or self.clahe is None:
+                        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                        logger.debug("Initialized CLAHE within _load_and_prepare_image")
+                    gray = self.clahe.apply(gray)
+                
+                return img, gray
+                
+            except cv2.error as cv_err:
+                logger.error(f"OpenCV error processing image {image_path}: {cv_err}")
+                return None, None
+            except Exception as read_err:
+                logger.error(f"Error reading image file {image_path}: {read_err}")
+                return None, None
             
         except Exception as e:
-            logger.error(f"Error loading image {image_path}: {e}")
+            logger.error(f"Unexpected error loading image {image_path}: {e}")
             return None, None
                 
     def calculate_sift_similarity(self, img_path1: str, img_path2: str) -> float:

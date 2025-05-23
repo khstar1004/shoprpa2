@@ -204,15 +204,17 @@ def download_image(url: str, save_dir: str, product_name: Optional[str] = None, 
             original_ext = '.jpg'
             
         if product_name:
-            # 상품명 해시값 생성 (MD5) - 16자로 통일
-            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
-            
-            # 랜덤 해시값 (8자로 통일) - URL 해시 대신 랜덤 사용
-            import secrets
-            random_hash = secrets.token_hex(4)  # 8자리 랜덤 해시 생성
-            
-            # 새로운 형식으로 파일명 생성
-            file_name = f"kogift_{name_hash}_{random_hash}{original_ext}"
+            # Import utils function for consistent filename generation
+            try:
+                from utils import generate_consistent_filename
+                file_name = generate_consistent_filename(product_name, "kogift", original_ext)
+            except ImportError:
+                logger.warning("Could not import generate_consistent_filename from utils, using fallback method")
+                # 기존 방식으로 폴백
+                name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
+                import secrets
+                random_hash = secrets.token_hex(4)
+                file_name = f"kogift_{name_hash}_{random_hash}{original_ext}"
         else:
             # 상품명이 없는 경우는 오류 상황
             logger.error(f"❌ 상품명이 제공되지 않았습니다. 이미지 다운로드를 건너뜁니다. URL: {url}")

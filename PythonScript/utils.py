@@ -20,6 +20,9 @@ from image_downloader import download_images, predownload_kogift_images
 import aiofiles
 import inspect
 from io import BytesIO
+import secrets
+import random
+import shutil
 
 # --- Configuration Loading ---
 
@@ -714,22 +717,6 @@ async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]
                         product_name = row_id[col]
                         break
         
-        # Generate filename components
-        if product_name:
-            # Generate consistent hash from product name (same as in Haereum and Kogift)
-            name_hash = hashlib.md5(product_name.encode()).hexdigest()[:16]
-        else:
-            # Fallback to row_id-based naming if product_name not available
-            if isinstance(row_id, (int, float)):
-                row_id_str = str(int(row_id))
-            else:
-                row_id_str = str(row_id).replace(os.path.sep, '_').replace(' ', '_')[:30]
-            name_hash = row_id_str
-            
-        # Generate a random hash for the second part (same as Haereum/Kogift)
-        import secrets
-        random_hash = secrets.token_hex(4)  # 8-character random hash
-        
         # Extract file extension
         file_ext = os.path.splitext(urlparse(image_url).path)[1]
         file_ext = ''.join(c for c in file_ext if c.isalnum() or c == '.')[:5].lower()
@@ -740,8 +727,19 @@ async def _process_single_image_wrapper(args: Tuple) -> Tuple[Any, Optional[str]
             file_ext = '.jpg'
             logging.debug(f"Using default .jpg extension for URL: {image_url}")
         
-        # Create the filename with the same pattern as Haereum/Kogift: prefix_namehash_randomhash.ext
-        target_filename = f"{prefix}_{name_hash}_{random_hash}{file_ext}"
+        # Generate filename using consistent method
+        if product_name:
+            target_filename = generate_consistent_filename(product_name, prefix, file_ext)
+        else:
+            # Fallback to row_id-based naming if product_name not available
+            if isinstance(row_id, (int, float)):
+                row_id_str = str(int(row_id))
+            else:
+                row_id_str = str(row_id).replace(os.path.sep, '_').replace(' ', '_')[:30]
+            
+            # Use generate_consistent_filename with row_id as product_name
+            target_filename = generate_consistent_filename(row_id_str, prefix, file_ext)
+            
         target_path = Path(save_dir) / target_filename
         
         logging.debug(f"Processing image for ID {row_id}: {image_url} -> {target_path}")
@@ -1011,3 +1009,56 @@ def setup_logging(config: configparser.ConfigParser = None):
     )
     
     logging.info(f"Logging initialized. Level: {log_level}, File: {log_file}")
+
+def generate_product_name_hash(product_name: str) -> str:
+    """
+    상품명으로부터 16자리 해시값을 생성합니다.
+    
+    Args:
+        product_name: 상품명
+        
+    Returns:
+        16자리 해시값
+    """
+    try:
+        # 상품명 정규화 (공백 제거, 소문자 변환)
+        normalized_name = ''.join(product_name.split()).lower()
+        # MD5 해시 생성 후 첫 16자리 사용
+        hash_obj = hashlib.md5(normalized_name.encode('utf-8'))
+        return hash_obj.hexdigest()[:16]
+    except Exception as e:
+        logging.error(f"Error generating hash for product name {product_name}: {e}")
+        return ""
+
+def generate_consistent_filename(product_name: str, prefix: str, file_extension: str = ".jpg") -> str:
+    """
+    상품명으로부터 일관된 파일명을 생성합니다.
+    형식: {prefix}_{상품명해시}_{랜덤해시}.{확장자}
+    
+    Args:
+        product_name: 상품명
+        prefix: 파일명 접두사 (예: haereum, kogift, naver)
+        file_extension: 파일 확장자 (기본값: .jpg)
+        
+    Returns:
+        생성된 파일명
+    """
+    try:
+        # 상품명 해시 생성 (16자리)
+        name_hash = generate_product_name_hash(product_name)
+        
+        # 랜덤 해시 생성 (8자리)
+        random_hash = secrets.token_hex(4)
+        
+        # 확장자 정리
+        if not file_extension.startswith('.'):
+            file_extension = '.' + file_extension
+        
+        # 파일명 생성
+        filename = f"{prefix}_{name_hash}_{random_hash}{file_extension}"
+        return filename
+    except Exception as e:
+        logging.error(f"Error generating filename for product {product_name}: {e}")
+        # 기본 파일명 반환
+        fallback_hash = hashlib.md5(str(time.time()).encode()).hexdigest()[:16]
+        return f"{prefix}_{fallback_hash}_{secrets.token_hex(4)}{file_extension}"

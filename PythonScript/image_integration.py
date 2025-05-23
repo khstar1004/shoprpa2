@@ -63,8 +63,8 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
     """
     image_info = {}
     
-    # This is critical - make sure image_dir is an absolute path
-    abs_image_dir = os.path.abspath(str(image_dir))
+    # Normalize path to use forward slashes
+    abs_image_dir = os.path.abspath(str(image_dir)).replace('\\', '/')
     logging.info(f"Preparing image metadata from directory: {abs_image_dir} (prefix: {prefix}, prefer_original: {prefer_original}, prefer_jpg: {prefer_jpg})")
     
     # Handle case where directory doesn't exist
@@ -72,22 +72,20 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
         logging.warning(f"Image directory does not exist: {abs_image_dir}")
         return {}
     
-    # Make sure we're dealing with a string path
-    image_dir_str = str(abs_image_dir)
-    
     # First look for image files in the directory
     all_image_files = []
     valid_extensions = ('.jpg', '.jpeg', '.png', '.gif')
     
     try:
-        # Get all image files
-        for root, _, files in os.walk(image_dir_str):
+        # Get all image files with normalized paths
+        for root, _, files in os.walk(abs_image_dir):
+            root = root.replace('\\', '/')  # Normalize path
             for file in files:
                 if file.lower().endswith(valid_extensions):
-                    full_path = os.path.join(root, file)
+                    full_path = os.path.join(root, file).replace('\\', '/')
                     all_image_files.append(full_path)
         
-        logging.info(f"Found {len(all_image_files)} total images in {image_dir_str}")
+        logging.info(f"Found {len(all_image_files)} total images in {abs_image_dir}")
         
         # Group images by base name (without _nobg suffix)
         image_groups = {}
@@ -194,30 +192,49 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                 filename = os.path.basename(img_path)
                 file_root, file_ext = os.path.splitext(filename)
                 
-                # Use filename as unique key for matching purposes                # Remove prefix (haereum_, kogift_, naver_) if present                if file_root.startswith(f"{prefix}_"):                    name_for_matching = file_root[len(f"{prefix}_"):]                else:                    name_for_matching = file_root                                # Remove _nobg suffix for matching                if name_for_matching.endswith('_nobg'):                    name_for_matching = name_for_matching[:-5]                                # Extract 16-digit product hash from filename                product_hash = extract_product_hash_from_filename(filename)                                # Prepare a clean name for display and matching                clean_name = name_for_matching.replace('_', ' ').strip()                                # Create metadata entry                image_info[img_path] = {                    'path': str(img_path),  # Store the absolute path as string for direct access                    'original_path': str(original_jpg_path or original_png_path or img_path),  # Prefer JPG for original path                    'original_name': filename,                    'nobg_png_path': str(nobg_png_path) if nobg_png_path else None,                    'nobg_jpg_path': str(nobg_jpg_path) if nobg_jpg_path else None,                    'has_nobg': nobg_png_path is not None or nobg_jpg_path is not None,                    'name_for_matching': name_for_matching,                    'clean_name': clean_name,                    'source': prefix,                    'is_jpg': file_ext.lower() in ['.jpg', '.jpeg'],                    'is_original': not file_root.endswith('_nobg'),                    'url': None,  # Initialize URL field, will be populated later if needed                    'product_hash': product_hash  # Store the 16-digit product hash for matching                }
+                # Create metadata dictionary
+                metadata = {
+                    'path': img_path,
+                    'filename': filename,
+                    'extension': file_ext.lower(),
+                    'is_original': not file_root.endswith('_nobg'),
+                    'original_jpg_path': original_jpg_path,
+                    'original_png_path': original_png_path,
+                    'nobg_jpg_path': nobg_jpg_path,
+                    'nobg_png_path': nobg_png_path,
+                    'source': prefix.rstrip('_'),
+                    'base_name': base_name
+                }
+                
+                # Store metadata in image_info dictionary
+                image_info[img_path] = metadata
                 
                 # Debug some sample entries
                 if len(image_info) <= 2 or len(image_info) % 50 == 0:
-                    logging.debug(f"Image metadata sample: {img_path} -> {image_info[img_path]}")
+                    logging.debug(f"Image metadata sample: {img_path} -> {metadata}")
             
             except Exception as e:
                 import traceback
                 stack_trace = traceback.format_exc()
                 logging.error(f"Error processing image file {base_name}: {e}")
                 logging.debug(f"Exception traceback: {stack_trace}")
+                continue  # Skip this image but continue processing others
         
         # Log summary
         logging.info(f"Processed {len(image_info)} {prefix} images")
         
         # Additional debug information
-        logging.debug(f"First 3 image keys in {prefix} image_info: {list(image_info.keys())[:3]}")
+        if image_info:
+            logging.debug(f"First 3 image keys in {prefix} image_info: {list(image_info.keys())[:3]}")
+        else:
+            logging.warning(f"No images were successfully processed for {prefix}")
         
         return image_info
         
     except Exception as e:
         import traceback
         stack_trace = traceback.format_exc()
-        logging.error(f"Error preparing image metadata from {image_dir_str}: {e}")
+        logging.error(f"Error preparing image metadata from {abs_image_dir}: {e}")
         logging.debug(f"Exception traceback: {stack_trace}")
         return {}
 

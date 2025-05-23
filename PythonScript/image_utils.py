@@ -337,23 +337,46 @@ def load_image_model(model_name: str = 'efficientnetb0') -> Union[tf.keras.Model
 
 def preprocess_image(img_path: str) -> Union[tf.Tensor, None]:
     """Loads and preprocesses an image for the EfficientNetB0 model."""
-    if not os.path.exists(img_path):
-        logging.warning(f"Image file not found for preprocessing: {img_path}")
-        return None
     try:
-        # Load image, ensuring it's RGB
-        img = tf.keras.preprocessing.image.load_img(img_path, target_size=(224, 224), color_mode='rgb')
-        img_array = tf.keras.preprocessing.image.img_to_array(img)
-        # Expand dimensions to create a batch of 1
-        img_batch = tf.expand_dims(img_array, 0)
-        # Preprocess using the specific function for EfficientNet
-        img_preprocessed = tf.keras.applications.efficientnet.preprocess_input(img_batch)
-        return img_preprocessed
+        # Normalize path
+        img_path = os.path.abspath(img_path).replace('\\', '/')
+        
+        if not os.path.exists(img_path):
+            logging.warning(f"Image file not found for preprocessing: {img_path}")
+            return None
+            
+        # Check file size
+        if os.path.getsize(img_path) == 0:
+            logging.warning(f"Image file is empty: {img_path}")
+            return None
+            
+        # Verify file extension
+        _, ext = os.path.splitext(img_path)
+        if ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif']:
+            logging.warning(f"Unsupported image format: {ext} for {img_path}")
+            return None
+            
+        try:
+            # Load image, ensuring it's RGB
+            img = tf.keras.preprocessing.image.load_img(img_path, target_size=(224, 224), color_mode='rgb')
+            img_array = tf.keras.preprocessing.image.img_to_array(img)
+            # Expand dimensions to create a batch of 1
+            img_batch = tf.expand_dims(img_array, 0)
+            # Preprocess using the specific function for EfficientNet
+            img_preprocessed = tf.keras.applications.efficientnet.preprocess_input(img_batch)
+            return img_preprocessed
+        except tf.errors.InvalidArgumentError as e:
+            logging.error(f"TensorFlow error processing image {img_path}: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"Error loading/preprocessing image {img_path}: {e}")
+            return None
+            
     except FileNotFoundError:
-         logging.error(f"Preprocessing failed: File not found at {img_path}")
-         return None
+        logging.error(f"Preprocessing failed: File not found at {img_path}")
+        return None
     except Exception as e:
-        logging.error(f"Error preprocessing image {img_path}: {e}", exc_info=True)
+        logging.error(f"Unexpected error preprocessing image {img_path}: {e}", exc_info=True)
         return None
 
 def get_enhanced_matcher(config: configparser.ConfigParser) -> Any:
