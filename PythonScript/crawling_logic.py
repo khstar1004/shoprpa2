@@ -583,22 +583,23 @@ def _process_single_haoreum_image(product_code, image_info, config):
         return product_code, None
         
     try:
-        # Sanitize product code if needed
+        # 해오름 이미지 파일명을 네이버/고려기프트와 동일한 방식으로 생성
         if product_code is None:
             sanitized_code = "unknown_product"
         else:
-            # Handle Korean characters by using hash instead
-            if isinstance(product_code, str) and any('\uAC00' <= c <= '\uD7A3' for c in product_code):
-                sanitized_code = hashlib.md5(product_code.encode('utf-8', errors='ignore')).hexdigest()[:16]
-                logging.debug(f"🟡 Using hash-based code for Korean product code: {sanitized_code}")
-            else:
-                # Ensure consistent product code format
-                sanitized_code = re.sub(r'[^\w\d-]', '_', str(product_code))[:30]
-                # Add padding to ensure consistent length
-                sanitized_code = sanitized_code.ljust(30, '_')
-        
-        # Create a consistent hash of URL for uniqueness
-        url_hash = hashlib.md5(image_url.encode('utf-8', errors='ignore')).hexdigest()[:8]
+            # 상품명을 정규화하여 해시 생성 (네이버/고려기프트와 동일)
+            try:
+                from utils import generate_product_name_hash
+                name_hash = generate_product_name_hash(str(product_code))
+            except ImportError:
+                logging.warning("Could not import generate_product_name_hash, using fallback method")
+                # 상품명 정규화 (공백 제거, 소문자 변환)
+                normalized_name = ''.join(str(product_code).split()).lower()
+                name_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[:16]
+            
+            # 두 번째 해시값도 상품명 기반으로 생성 (일관성을 위해)
+            normalized_name = ''.join(str(product_code).split()).lower()
+            second_hash = hashlib.md5(normalized_name.encode('utf-8')).hexdigest()[16:24]
         
         # Determine file extension from URL
         parsed_url = urlparse(image_url)
@@ -607,8 +608,8 @@ def _process_single_haoreum_image(product_code, image_info, config):
         if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
             file_ext = '.jpg'
         
-        # Include source information in the filename with consistent format
-        main_img_filename = f"haereum_{sanitized_code}_{url_hash}{file_ext}"
+        # 새로운 형식으로 파일명 생성 (네이버/고려기프트와 동일)
+        main_img_filename = f"haereum_{name_hash}_{second_hash}{file_ext}"
         main_img_path = os.path.join(haereum_dir, main_img_filename)
         final_image_path = main_img_path
 

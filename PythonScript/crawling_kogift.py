@@ -35,6 +35,46 @@ from PIL import Image
 import shutil
 import hashlib
 import json
+import threading
+import glob
+
+# Global lock for file operations to prevent concurrent access conflicts
+_file_locks = {}
+_file_locks_lock = threading.Lock()
+
+def get_file_lock(file_path: str) -> threading.Lock:
+    """Get or create a lock for a specific file path."""
+    with _file_locks_lock:
+        if file_path not in _file_locks:
+            _file_locks[file_path] = threading.Lock()
+        return _file_locks[file_path]
+
+def cleanup_temp_files(directory: str, max_age_minutes: int = 30):
+    """Clean up temporary files older than max_age_minutes."""
+    try:
+        current_time = time.time()
+        max_age_seconds = max_age_minutes * 60
+        
+        # Find all .tmp files in directory
+        temp_pattern = os.path.join(directory, "*.tmp")
+        temp_files = glob.glob(temp_pattern)
+        
+        cleaned_count = 0
+        for temp_file in temp_files:
+            try:
+                file_age = current_time - os.path.getmtime(temp_file)
+                if file_age > max_age_seconds:
+                    os.remove(temp_file)
+                    cleaned_count += 1
+                    logger.debug(f"Cleaned up old temp file: {temp_file}")
+            except Exception as e:
+                logger.debug(f"Error cleaning temp file {temp_file}: {e}")
+        
+        if cleaned_count > 0:
+            logger.info(f"Cleaned up {cleaned_count} old temporary files from {directory}")
+            
+    except Exception as e:
+        logger.warning(f"Error during temp file cleanup: {e}")
 
 # --- 해오름 기프트 입력 데이터에서 수량 추출 함수 ---
 
@@ -187,6 +227,7 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
     """
     Download a single Kogift image to the specified directory with enhanced processing.
     Uses the same approach as Naver and Haereum for consistency.
+    Includes file locking to prevent concurrent access conflicts.
     
     Args:
         url (str): The image URL to download.
@@ -215,6 +256,9 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
         # Create save directory if it doesn't exist
         try:
             os.makedirs(save_dir, exist_ok=True)
+            
+            # Clean up old temp files first
+            cleanup_temp_files(save_dir, max_age_minutes=10)
             
             # Verify directory is writable
             if not os.access(save_dir, os.W_OK):
@@ -262,162 +306,231 @@ async def download_image(url: str, save_dir: str, product_name: Optional[str] = 
             logger.error(f"Error generating filename: {e}")
             return None
         
-        # 이미 파일이 존재하는 경우 중복 다운로드 방지
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            logger.debug(f"Image already exists: {local_path}")
-            
-            # 배경 제거 버전이 이미 있는지 확인
-            if use_bg_removal:
-                bg_removed_path = local_path.replace('.', '_nobg.', 1)
-                if os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0:
-                    final_image_path = bg_removed_path
-                    logger.debug(f"Using existing background-removed image: {final_image_path}")
-                else:
-                    # 배경 제거 버전이 없으면 생성 시도
-                    try:
-                        from image_utils import remove_background
-                        if remove_background(local_path, bg_removed_path):
-                            final_image_path = bg_removed_path
-                            logger.debug(f"Background removed for existing Kogift image: {final_image_path}")
-                        else:
-                            logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
-                    except Exception as bg_err:
-                        logger.warning(f"Error during background removal: {bg_err}. Using original image.")
-            
-            return os.path.abspath(final_image_path)
-
-        # Download the image using aiohttp (same as naver/haereum)
-        import aiohttp
-        import asyncio
+        # Get file lock for this specific path to prevent concurrent access
+        file_lock = get_file_lock(local_path)
         
-        # Generate unique temporary filename
-        temp_path = f"{local_path}.{time.time_ns()}.tmp"
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Try different URL variants if the original fails
-                url_variants = [url]
+        # Use file lock to prevent concurrent downloads of the same file
+        with file_lock:
+            # Double-check if file exists after acquiring lock
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                logger.debug(f"Image already exists (checked with lock): {local_path}")
                 
-                # Download with retries
-                download_success = False
-                
-                for current_url in url_variants:
-                    for attempt in range(max_retries):
+                # 배경 제거 버전이 이미 있는지 확인
+                if use_bg_removal:
+                    bg_removed_path = local_path.replace('.', '_nobg.', 1)
+                    if bg_removed_path.endswith('_nobg.jpg'):
+                        bg_removed_path = bg_removed_path.replace('_nobg.jpg', '_nobg.png')
+                    
+                    if os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0:
+                        final_image_path = bg_removed_path
+                        logger.debug(f"Using existing background-removed image: {final_image_path}")
+                    else:
+                        # 배경 제거 버전이 없으면 생성 시도
                         try:
-                            # Add headers for Kogift
-                            headers = {
-                                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                'Referer': 'https://koreagift.com/',
-                                'Connection': 'keep-alive',
-                                'Cache-Control': 'max-age=0'
-                            }
-                            
-                            logger.debug(f"Downloading image: attempt {attempt+1}/{max_retries}: {current_url}")
-                            
-                            async with session.get(current_url, timeout=30, headers=headers) as response:
-                                if response.status != 200:
-                                    logger.warning(f"HTTP error {response.status} downloading image (attempt {attempt+1}/{max_retries}): {current_url}")
-                                    if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
-                                        continue
-                                    break
-                                    
-                                # Check content type
-                                content_type = response.headers.get('Content-Type', '')
-                                if not content_type.startswith('image/'):
-                                    logger.warning(f"Non-image content type: {content_type} for URL: {current_url}")
-                                    # For kogift, proceed anyway as they might return incorrect content-type
-                                    
-                                # Download image data
-                                data = await response.read()
-                                if len(data) < 100:  # Too small to be a valid image
-                                    logger.warning(f"Downloaded image too small: {len(data)} bytes from URL: {current_url}")
-                                    if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
-                                        continue
-                                    break
-                                    
-                                # Save to temporary file
-                                with open(temp_path, 'wb') as f:
-                                    f.write(data)
-                                
-                                # Validate image
-                                try:
-                                    from PIL import Image
-                                    with Image.open(temp_path) as img:
-                                        img.verify()
-                                        # Re-open to check dimensions
-                                        img = Image.open(temp_path)
-                                        if img.width < 10 or img.height < 10:
-                                            logger.warning(f"Image dimensions too small: {img.width}x{img.height}")
-                                            if attempt < max_retries - 1:
-                                                os.remove(temp_path)
-                                                await asyncio.sleep(1 * (attempt + 1))
-                                                continue
-                                            break
-                                        
-                                    # Move temp file to final location
-                                    if os.path.exists(local_path):
-                                        os.remove(local_path)
-                                    os.rename(temp_path, local_path)
-                                    
-                                    logger.debug(f"✅ 이미지 다운로드 성공: {local_path}")
-                                    download_success = True
-                                    break  # Success!
-                                    
-                                except Exception as img_err:
-                                    logger.warning(f"Invalid image file: {img_err}")
-                                    if os.path.exists(temp_path):
-                                        os.remove(temp_path)
-                                    if attempt < max_retries - 1:
-                                        await asyncio.sleep(1 * (attempt + 1))
-                                        continue
-                                    break
-                                    
-                        except Exception as e:
-                            logger.warning(f"Error downloading image (attempt {attempt+1}/{max_retries}): {e}")
-                            if os.path.exists(temp_path):
-                                try:
-                                    os.remove(temp_path)
-                                except:
-                                    pass
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(1 * (attempt + 1))
-                                continue
-                            break
-                    
-                    if download_success:
-                        break  # Don't try other URL variants if successful
+                            from image_utils import remove_background
+                            if remove_background(local_path, bg_removed_path):
+                                final_image_path = bg_removed_path
+                                logger.debug(f"Background removed for existing Kogift image: {final_image_path}")
+                            else:
+                                logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
+                        except Exception as bg_err:
+                            logger.warning(f"Error during background removal: {bg_err}. Using original image.")
                 
-                if not download_success:
-                    logger.error(f"❌ 모든 시도 실패: {url}")
+                return os.path.abspath(final_image_path)
+
+            # Generate unique temporary filename with process and thread info for uniqueness
+            import threading
+            thread_id = threading.get_ident()
+            process_id = os.getpid()
+            temp_path = f"{local_path}.{process_id}.{thread_id}.{time.time_ns()}.tmp"
+            
+            # Ensure temp file doesn't already exist
+            temp_counter = 0
+            original_temp_path = temp_path
+            while os.path.exists(temp_path):
+                temp_counter += 1
+                temp_path = f"{original_temp_path}.{temp_counter}"
+                if temp_counter > 100:  # Safety check
+                    logger.error(f"Could not create unique temp file name for {local_path}")
                     return None
+
+            try:
+                # Download the image using aiohttp (same as naver/haereum)
+                import aiohttp
+                import asyncio
+                
+                async with aiohttp.ClientSession() as session:
+                    # Try different URL variants if the original fails
+                    url_variants = [url]
                     
-        except Exception as e:
-            logger.error(f"❌ 예상치 못한 오류 발생: {e}")
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-            return None
+                    # Download with retries
+                    download_success = False
+                    
+                    for current_url in url_variants:
+                        for attempt in range(max_retries):
+                            try:
+                                # Add headers for Kogift
+                                headers = {
+                                    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                                    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                    'Referer': 'https://koreagift.com/',
+                                    'Connection': 'keep-alive',
+                                    'Cache-Control': 'max-age=0'
+                                }
+                                
+                                logger.debug(f"Downloading image: attempt {attempt+1}/{max_retries}: {current_url}")
+                                
+                                async with session.get(current_url, timeout=30, headers=headers) as response:
+                                    if response.status != 200:
+                                        logger.warning(f"HTTP error {response.status} downloading image (attempt {attempt+1}/{max_retries}): {current_url}")
+                                        if attempt < max_retries - 1:
+                                            await asyncio.sleep(1 * (attempt + 1))
+                                            continue
+                                        break
+                                        
+                                    # Check content type
+                                    content_type = response.headers.get('Content-Type', '')
+                                    if not content_type.startswith('image/'):
+                                        logger.warning(f"Non-image content type: {content_type} for URL: {current_url}")
+                                        # For kogift, sometimes they return text/plain for images, so continue
+                                        
+                                    # Download image data
+                                    data = await response.read()
+                                    if len(data) < 100:  # Too small to be a valid image
+                                        logger.warning(f"Downloaded image too small: {len(data)} bytes from URL: {current_url}")
+                                        if attempt < max_retries - 1:
+                                            await asyncio.sleep(1 * (attempt + 1))
+                                            continue
+                                        break
+                                        
+                                    # Save to temporary file
+                                    try:
+                                        with open(temp_path, 'wb') as f:
+                                            f.write(data)
+                                    except Exception as write_err:
+                                        logger.error(f"Error writing temp file {temp_path}: {write_err}")
+                                        if attempt < max_retries - 1:
+                                            await asyncio.sleep(1 * (attempt + 1))
+                                            continue
+                                        break
+                                    
+                                    # Validate image
+                                    try:
+                                        from PIL import Image
+                                        with Image.open(temp_path) as img:
+                                            img.verify()
+                                            # Re-open to check dimensions
+                                            img = Image.open(temp_path)
+                                            if img.width < 10 or img.height < 10:
+                                                logger.warning(f"Image dimensions too small: {img.width}x{img.height}")
+                                                if os.path.exists(temp_path):
+                                                    os.remove(temp_path)
+                                                if attempt < max_retries - 1:
+                                                    await asyncio.sleep(1 * (attempt + 1))
+                                                    continue
+                                                break
+                                            
+                                        # Atomic move: temp file to final location
+                                        # Check one more time if final file was created by another process
+                                        if not os.path.exists(local_path):
+                                            try:
+                                                # Use os.rename for atomic operation on same filesystem
+                                                os.rename(temp_path, local_path)
+                                                logger.debug(f"✅ 이미지 다운로드 성공: {local_path}")
+                                                download_success = True
+                                                break  # Success!
+                                            except OSError as rename_err:
+                                                logger.warning(f"Error renaming temp file to final path: {rename_err}")
+                                                # Clean up temp file
+                                                if os.path.exists(temp_path):
+                                                    try:
+                                                        os.remove(temp_path)
+                                                    except:
+                                                        pass
+                                                # Check if another process created the file
+                                                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                                                    logger.debug(f"File was created by another process: {local_path}")
+                                                    download_success = True
+                                                    break
+                                                if attempt < max_retries - 1:
+                                                    await asyncio.sleep(1 * (attempt + 1))
+                                                    continue
+                                                break
+                                        else:
+                                            # Another process downloaded the file while we were working
+                                            logger.debug(f"File created by another process during download: {local_path}")
+                                            if os.path.exists(temp_path):
+                                                try:
+                                                    os.remove(temp_path)
+                                                except:
+                                                    pass
+                                            download_success = True
+                                            break
+                                            
+                                    except Exception as img_err:
+                                        logger.warning(f"Invalid image file: {img_err}")
+                                        if os.path.exists(temp_path):
+                                            try:
+                                                os.remove(temp_path)
+                                            except:
+                                                pass
+                                        if attempt < max_retries - 1:
+                                            await asyncio.sleep(1 * (attempt + 1))
+                                            continue
+                                        break
+                                    
+                            except Exception as e:
+                                logger.warning(f"Error downloading image (attempt {attempt+1}/{max_retries}): {e}")
+                                if os.path.exists(temp_path):
+                                    try:
+                                        os.remove(temp_path)
+                                    except:
+                                        pass
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(1 * (attempt + 1))
+                                    continue
+                                break
+                        
+                        if download_success:
+                            break  # Don't try other URL variants if successful
+                    
+                    if not download_success:
+                        logger.error(f"❌ 모든 시도 실패: {url}")
+                        return None
+                        
+            except Exception as e:
+                logger.error(f"❌ 예상치 못한 오류 발생: {e}")
+                # Clean up temp file
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
+                return None
         
-        # Background removal if enabled
+        # Background removal if enabled (outside the main file lock)
         if use_bg_removal and os.path.exists(local_path):
             try:
                 bg_removed_path = local_path.replace('.', '_nobg.', 1)
                 if bg_removed_path.endswith('_nobg.jpg'):
                     bg_removed_path = bg_removed_path.replace('_nobg.jpg', '_nobg.png')
                 
-                from image_utils import remove_background
-                if remove_background(local_path, bg_removed_path):
-                    final_image_path = bg_removed_path
-                    logger.debug(f"Background removed successfully: {final_image_path}")
-                else:
-                    logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
-                    final_image_path = local_path
+                # Use a separate lock for background removal to avoid blocking downloads
+                bg_lock = get_file_lock(bg_removed_path)
+                with bg_lock:
+                    # Check if bg removed version already exists
+                    if not (os.path.exists(bg_removed_path) and os.path.getsize(bg_removed_path) > 0):
+                        from image_utils import remove_background
+                        if remove_background(local_path, bg_removed_path):
+                            final_image_path = bg_removed_path
+                            logger.debug(f"Background removed successfully: {final_image_path}")
+                        else:
+                            logger.warning(f"Failed to remove background for Kogift image {local_path}. Using original.")
+                            final_image_path = local_path
+                    else:
+                        final_image_path = bg_removed_path
+                        logger.debug(f"Using existing background-removed image: {final_image_path}")
             except Exception as bg_err:
                 logger.warning(f"Error during background removal: {bg_err}. Using original image.")
                 final_image_path = local_path
@@ -1364,6 +1477,13 @@ async def scrape_data(browser: Browser, original_keyword1: str, original_keyword
         if not images_dir or not os.path.exists(images_dir):
             logger.error("Invalid image_main_dir in config")
             return pd.DataFrame()
+        
+        # Clean up old temporary files from image directories before starting
+        kogift_image_dir = os.path.join(images_dir, 'kogift')
+        if os.path.exists(kogift_image_dir):
+            logger.info("🧹 Cleaning up old temporary files before starting...")
+            cleanup_temp_files(kogift_image_dir, max_age_minutes=5)  # Clean files older than 5 minutes
+        
     except Exception as e:
         logger.error(f"Error getting image directory from config: {e}")
         return pd.DataFrame()
