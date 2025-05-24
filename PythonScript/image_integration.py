@@ -1722,18 +1722,34 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     """
     logger.info("Filtering images based on similarity scores...")
     
-    # Get similarity threshold from config
+    # Get similarity thresholds from config
     try:
+        # General threshold for all images
         similarity_threshold = config.getfloat('ImageFiltering', 'similarity_threshold', fallback=0.4)
+        
+        # Specific threshold for Naver images (more lenient)
+        naver_similarity_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.1)
+        
+        # Specific threshold for Kogift images
+        kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.4)
+        
+        # Specific threshold for Haereum images
+        haereum_similarity_threshold = config.getfloat('ImageFiltering', 'haereum_similarity_threshold', fallback=0.3)
+        
     except (configparser.NoSectionError, configparser.NoOptionError):
-        similarity_threshold = 0.4  # Default threshold
+        similarity_threshold = 0.4
+        naver_similarity_threshold = 0.1  # Very lenient for Naver
+        kogift_similarity_threshold = 0.4
+        haereum_similarity_threshold = 0.3
+    
+    logger.info(f"Using similarity thresholds - General: {similarity_threshold}, Naver: {naver_similarity_threshold}, Kogift: {kogift_similarity_threshold}, Haereum: {haereum_similarity_threshold}")
     
     # Create a copy of the DataFrame to avoid modifying the original
     filtered_df = df.copy()
     
     # Process each row
     for idx in range(len(filtered_df)):
-        # Check each image source
+        # Check each image source with specific thresholds
         for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
             if col_name in filtered_df.columns:
                 image_data = filtered_df.at[idx, col_name]
@@ -1745,10 +1761,40 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 # Get similarity score - check both 'similarity' and 'score' keys
                 score = image_data.get('similarity', image_data.get('score', 0.0))
                 
+                # Convert to float if it's a string
+                if isinstance(score, str):
+                    try:
+                        score = float(score)
+                    except ValueError:
+                        logger.warning(f"Invalid similarity score format for {col_name} at row {idx}: {score}")
+                        score = 0.0
+                
+                # Determine the appropriate threshold for this image type
+                if '네이버' in col_name:
+                    threshold = naver_similarity_threshold
+                    # Special handling for Naver images
+                    if score == 0.0:
+                        # If Naver image has 0.0 score, check if it has a valid local_path
+                        local_path = image_data.get('local_path')
+                        if local_path and os.path.exists(str(local_path)):
+                            # If the image file exists, give it a minimal score to keep it
+                            score = 0.05  # Minimal but above threshold
+                            image_data['similarity'] = score
+                            filtered_df.at[idx, col_name] = image_data
+                            logger.info(f"Row {idx}: Boosting Naver image score from 0.0 to {score} due to valid local file")
+                elif '고려기프트' in col_name:
+                    threshold = kogift_similarity_threshold
+                elif '본사' in col_name:
+                    threshold = haereum_similarity_threshold
+                else:
+                    threshold = similarity_threshold
+                
                 # Filter out low similarity scores
-                if score < similarity_threshold:
-                    logger.info(f"Filtering out {col_name} for row {idx} due to low similarity score: {score:.3f}")
+                if score < threshold:
+                    logger.info(f"Filtering out {col_name} for row {idx} due to low similarity score: {score:.3f} < {threshold:.3f}")
                     filtered_df.at[idx, col_name] = None
+                else:
+                    logger.debug(f"Keeping {col_name} for row {idx} with similarity score: {score:.3f} >= {threshold:.3f}")
     
     return filtered_df
 

@@ -1518,7 +1518,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'original_path': abs_local_path,
         'source': 'naver',
         'product_name': product_name,
-        'similarity': similarity,
+        'similarity': max(similarity, 0.1),  # 최소 유사도 보장 (필터링 방지)
         'type': 'naver',
         'product_id': first_item.get('productId')
     }
@@ -1542,6 +1542,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'local_path': abs_local_path,
         'source': 'naver',
         'score': similarity,
+        'similarity': max(similarity, 0.1),  # 최소 유사도 보장 (필터링 방지)
         'product_id': first_item.get('productId'),
         'original_path': abs_local_path
     }
