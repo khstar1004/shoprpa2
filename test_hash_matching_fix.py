@@ -58,38 +58,54 @@ def test_metadata_preparation():
     """Test metadata preparation with hash extraction"""
     logging.info("\n=== Testing Metadata Preparation ===")
     
-    # Create test directory structure
-    test_dir = Path("test_images")
-    test_dir.mkdir(exist_ok=True)
+    # Create unique test directory to avoid conflicts
+    import tempfile
+    import shutil
     
-    # Create test image files
-    test_files = [
-        "haereum_0792f8d36850a88b_6e3684b1.jpg",
-        "haereum_241b288d9114ccab_e11fdfca.jpg",
-        "haereum_5acb0fbf5b7af799_2664ee24.jpg"
-    ]
-    
-    for filename in test_files:
-        (test_dir / filename).touch()
-    
-    # Prepare metadata
-    metadata = prepare_image_metadata(test_dir, 'haereum_')
-    
-    # Check if hash is extracted
-    success = True
-    for path, info in metadata.items():
-        hash_value = info.get('product_hash')
-        if hash_value:
-            logging.info(f"✅ File: {info['filename']} -> Hash: {hash_value}")
-        else:
-            logging.error(f"❌ File: {info['filename']} -> Hash not found!")
-            success = False
-    
-    # Cleanup
-    for filename in test_files:
-        (test_dir / filename).unlink()
-    test_dir.rmdir()
-    
+    # Create temporary directory
+    with tempfile.TemporaryDirectory(prefix="test_images_") as test_dir:
+        test_dir_path = Path(test_dir)
+        
+        # Create test image files with different hash patterns
+        test_files = [
+            "haereum_0792f8d36850a88b_6e3684b1.jpg",      # 16-char hex
+            "kogift_241b288d9114ccab_e11fdfca.jpg",        # 16-char hex
+            "naver_5acb0fbf5b7af799_2664ee24.jpg",         # 16-char hex
+            "kogift_1912824fba_2061e0f04f.jpg",            # 10-char hex
+            "shop_1707873892937710_0.jpg"                  # shop pattern
+        ]
+        
+        for filename in test_files:
+            (test_dir_path / filename).touch()
+        
+        # Prepare metadata
+        metadata = prepare_image_metadata(test_dir_path, 'test_')
+        
+        # Check if hash is extracted
+        success = True
+        expected_hashes = {
+            "haereum_0792f8d36850a88b_6e3684b1.jpg": "0792f8d36850a88b",
+            "kogift_241b288d9114ccab_e11fdfca.jpg": "241b288d9114ccab", 
+            "naver_5acb0fbf5b7af799_2664ee24.jpg": "5acb0fbf5b7af799",
+            "kogift_1912824fba_2061e0f04f.jpg": "1912824fba",
+            "shop_1707873892937710_0.jpg": "1707873892937710"
+        }
+        
+        for path, info in metadata.items():
+            filename = info['filename']
+            hash_value = info.get('product_hash')
+            expected_hash = expected_hashes.get(filename)
+            
+            if expected_hash and hash_value == expected_hash:
+                logging.info(f"✅ File: {filename} -> Hash: {hash_value}")
+            elif expected_hash:
+                logging.error(f"❌ File: {filename} -> Expected: {expected_hash}, Got: {hash_value}")
+                success = False
+            else:
+                logging.warning(f"⚠️ File: {filename} -> No expected hash defined")
+        
+        # Cleanup is automatic with TemporaryDirectory
+        
     return success
 
 def test_hash_matching():

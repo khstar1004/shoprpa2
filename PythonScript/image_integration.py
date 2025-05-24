@@ -1913,17 +1913,19 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
 
 def extract_product_hash_from_filename(filename: str) -> Optional[str]:
     """
-    파일명에서 16자리 상품명 해시값을 추출합니다.
+    파일명에서 상품명 해시값을 추출합니다.
         
     파일명 패턴:
     - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
+    - prefix_[10자해시]_[10자랜덤].jpg (예: kogift_1912824fba_2061e0f04f.jpg)
     - prefix_[16자해시].jpg
+    - shop_[16자숫자]_0.jpg (예: shop_1707873892937710_0.jpg)
         
     Args:
         filename: 이미지 파일명
             
     Returns:
-        16자리 상품명 해시값 또는 None
+        해시값 또는 None
     """
     try:
         # 확장자 제거
@@ -1932,15 +1934,34 @@ def extract_product_hash_from_filename(filename: str) -> Optional[str]:
         # '_'로 분리
         parts = name_without_ext.split('_')
         
-        # prefix_hash_random 또는 prefix_hash 패턴 확인
-        if len(parts) >= 2:
-            # prefix를 제거하고 두 번째 부분이 16자리 해시인지 확인
+        # shop_[숫자]_0 패턴 확인 (고려기프트 특별 패턴)
+        if len(parts) >= 3 and parts[0] == 'shop' and parts[2] == '0':
             potential_hash = parts[1]
-            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+            if len(potential_hash) >= 10 and potential_hash.isdigit():
                 return potential_hash.lower()
         
-        # 전체가 16자리 해시인 경우도 확인 (prefix가 없는 경우)
+        # prefix_hash_random 또는 prefix_hash 패턴 확인
+        if len(parts) >= 2:
+            # prefix를 제거하고 두 번째 부분이 해시인지 확인
+            potential_hash = parts[1]
+            
+            # 16자리 16진수 해시 확인
+            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                return potential_hash.lower()
+            
+            # 10자리 16진수 해시 확인 (kogift 패턴)
+            if len(potential_hash) == 10 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
+                return potential_hash.lower()
+            
+            # 16자리 숫자 해시 확인 (일부 특별한 경우)
+            if len(potential_hash) == 16 and potential_hash.isdigit():
+                return potential_hash.lower()
+        
+        # 전체가 해시인 경우도 확인 (prefix가 없는 경우)
         if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
+            return name_without_ext.lower()
+        
+        if len(name_without_ext) == 10 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
             return name_without_ext.lower()
                     
         return None
