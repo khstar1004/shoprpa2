@@ -276,14 +276,23 @@ def calculate_similarity(product_tokens: List[str], image_tokens: List[str]) -> 
     """
     상품명과 이미지 이름 간의 유사도를 계산합니다.
     
+    주의: 이 함수는 레거시 호환성을 위해서만 유지됩니다.
+    실제 매칭에서는 해시 기반 정확한 매칭만 사용합니다.
+    
     Args:
         product_tokens: 상품명에서 추출한 토큰 목록
         image_tokens: 이미지 이름에서 추출한 토큰 목록
         
     Returns:
-        유사도 점수 (0.0 ~ 1.0)
+        유사도 점수 (0.0 ~ 1.0) - 해시 매칭에서는 사용되지 않음
     """
-    # 토큰 기반 유사도 계산
+    # 해시 매칭 시스템에서는 이 함수가 사용되지 않습니다
+    # 레거시 호환성을 위해서만 유지
+    
+    if not product_tokens or not image_tokens:
+        return 0.0
+    
+    # 토큰 기반 유사도 계산 (사용되지 않음)
     common_tokens = set(product_tokens) & set(image_tokens)
     
     # 더 정확한 유사도 계산 - 토큰의 길이와 수를 고려
@@ -543,122 +552,54 @@ def find_best_match_for_product(product_tokens: List[str],
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
-    Find the best matching image for a product based on name tokens.
-    Updated with higher thresholds for stricter matching.
+    Find the best matching image for a product based on hash matching only.
+    No text similarity calculation - only hash-based matching.
     
     Args:
-        product_tokens: Tokens of the product name
+        product_tokens: Tokens of the product name (used for hash generation)
         image_info: Dictionary of image metadata
         used_images: Set of already used image paths
-        similarity_threshold: Minimum similarity score for matching
+        similarity_threshold: Not used in hash matching, kept for compatibility
         source_name_for_log: Source name for logging
         config: Configuration object for retrieving settings
         
     Returns:
-        Tuple of (best_match_path, similarity_score) or None if no match found
+        Tuple of (best_match_path, hash_match_score) or None if no hash match found
     """
     if not product_tokens:
         return None
         
     if used_images is None:
         used_images = set()
-        
-    best_match_path = None
-    best_match_score = 0
     
-    # Use the similarity_threshold passed as argument directly.
-    # This threshold is expected to be set by the caller (find_best_image_matches)
-    # and should be appropriate for text-based similarity.
-    effective_similarity_threshold = similarity_threshold
-
-    # Log which threshold is being used.
-    logging.info(f"[{source_name_for_log}] Using text similarity threshold: {effective_similarity_threshold} (passed from caller)")
+    # Generate product hash from tokens
+    product_name_str = ' '.join(product_tokens)
+    product_hash = generate_product_name_hash(product_name_str)
     
-    # Log the number of images we're searching through
-    logging.info(f"[{source_name_for_log}] Searching through {len(image_info)} images for a match")
-
+    if not product_hash:
+        logging.debug(f"[{source_name_for_log}] Could not generate hash for product: {product_name_str}")
+        return None
+    
+    logging.debug(f"[{source_name_for_log}] Looking for hash match: {product_hash}")
+    
+    # Look for exact hash matches only
     for img_path, img_data in image_info.items():
         # Skip if already used
         if img_path in used_images:
             continue
             
-        # Get the name for matching from metadata
-        if 'name_for_matching' in img_data:
-            img_name = img_data['name_for_matching']
-        elif 'original_name' in img_data:
-            img_name = img_data['original_name']
-        else:
-            # Use the filename if no metadata is available
-            img_name = os.path.basename(img_path)
-        
-        # Convert to string and calculate text similarity
-        img_name_str = str(img_name)
-        product_name_str = ' '.join(product_tokens)
-        
-        similarity = calculate_text_similarity(product_name_str, img_name_str)
-        
-        if similarity > best_match_score:
-            best_match_score = similarity
-            best_match_path = img_path
-    
-    # Check threshold - use the minimum threshold for extreme lenience
-    if best_match_score >= effective_similarity_threshold:
-        if best_match_path:
-            img_name = image_info[best_match_path].get('original_name', os.path.basename(best_match_path))
-            logging.info(f"{source_name_for_log}: Best match for '{' '.join(product_tokens)}': '{img_name}' with score {best_match_score:.3f}")
-            return best_match_path, best_match_score
-    elif best_match_path:  # We found a match but score is below threshold
-        img_name = image_info[best_match_path].get('original_name', os.path.basename(best_match_path))
-        logging.info(f"{source_name_for_log}: Found match below threshold. Product: '{' '.join(product_tokens)}', Image: '{img_name}', Score: {best_match_score:.3f} (threshold: {effective_similarity_threshold})")
-    
-    # No match found with sufficient similarity
-    logging.info(f"No match found above threshold {effective_similarity_threshold} for {source_name_for_log}. Trying basic token matching.")
-    
-    # Try more basic matching as fallback
-    for img_path, img_data in image_info.items():
-        # Skip if already used
-        if img_path in used_images:
+        # Get hash from image metadata
+        img_hash = img_data.get('product_hash')
+        if not img_hash:
             continue
             
-        # Get image name from metadata
-        if 'name_for_matching' in img_data:
-            img_name = img_data['name_for_matching']
-        elif 'original_name' in img_data:
-            img_name = img_data['original_name']
-        else:
-            img_name = os.path.basename(img_path)
-            
-        # Convert to lowercase for case-insensitive matching
-        img_name_lower = str(img_name).lower()
-        product_name_lower = ' '.join(product_tokens).lower()
-        
-        # 1. 우선 전체 상품명의 일부가 이미지 이름에 포함되어 있는지 확인
-        basic_match_score = 0.0
-        if len(product_name_lower) >= 4 and product_name_lower[:4] in img_name_lower:
-            basic_match_score = 0.4
-            logging.info(f"{source_name_for_log}: Product name prefix match found: '{product_name_lower[:4]}' in '{img_name}'")
-            return img_path, basic_match_score
-        
-        # 2. 개별 토큰 매칭 (길이가 2 이상인 중요 토큰)
-        matched_tokens = []
-        for token in product_tokens:
-            if len(token) >= 2 and token.lower() in img_name_lower:
-                matched_tokens.append(token)
-        
-        # 매칭된 토큰 수에 따라 점수 계산
-        if matched_tokens:
-            # 토큰 길이에 따라 가중치 적용
-            token_weight = sum(len(token) for token in matched_tokens) / sum(len(token) for token in product_tokens)
-            # 토큰 개수에 따라 가중치 적용
-            count_weight = len(matched_tokens) / len(product_tokens)
-            # 최종 점수 계산 (길이와 개수를 모두 고려)
-            basic_match_score = 0.3 * token_weight + 0.2 * count_weight
-            
-            # 임계값을 0.05로 설정하여 매칭을 허용
-            if basic_match_score >= 0.05:
-                logging.info(f"{source_name_for_log}: Basic token match found: '{matched_tokens}' in '{img_name}' with score {basic_match_score:.3f}")
-                return img_path, basic_match_score
+        # Check for exact hash match
+        if img_hash == product_hash:
+            img_name = img_data.get('original_name', os.path.basename(img_path))
+            logging.info(f"{source_name_for_log}: Hash match found for '{product_name_str}': '{img_name}' (hash: {product_hash})")
+            return img_path, 0.95  # High score for hash match
     
+    logging.debug(f"[{source_name_for_log}] No hash match found for: {product_name_str} (hash: {product_hash})")
     return None
 
 def find_best_match_with_enhanced_matcher(
@@ -1738,17 +1679,17 @@ def integrate_and_filter_images(df: pd.DataFrame, config: configparser.ConfigPar
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             excel_output = f"image_integration_result_{timestamp}.xlsx"
             
-            # Create the Excel file with images
-            create_excel_with_images(result_df, excel_output)
-            logger.info(f"Created Excel output file with images: {excel_output}")
+            # Note: Excel creation functionality would need to be implemented separately
+            logger.info(f"Excel output requested but create_excel_with_images function not available. Would create: {excel_output}")
         except Exception as e:
-            logger.error(f"Error creating Excel output: {e}")
+            logger.error(f"Error preparing Excel output: {e}")
     
     return result_df
 
 def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.DataFrame:
     """
     Filter images based on similarity scores and URL validity.
+    When an image is filtered out, also clear related data columns.
     
     Args:
         df: DataFrame containing image data
@@ -1765,22 +1706,34 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         similarity_threshold = config.getfloat('ImageFiltering', 'similarity_threshold', fallback=0.4)
         
         # Specific threshold for Naver images (more lenient)
-        naver_similarity_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.1)
+        naver_similarity_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.3)
         
         # Specific threshold for Kogift images
-        kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.4)
+        kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.25)
         
         # 해오름 기프트(본사) 이미지는 임계값 필터링을 하지 않음 (무조건 유지)
         
     except (configparser.NoSectionError, configparser.NoOptionError):
         similarity_threshold = 0.4
-        naver_similarity_threshold = 0.1  # Very lenient for Naver
-        kogift_similarity_threshold = 0.4
+        naver_similarity_threshold = 0.3  # Updated from 0.1 to match log
+        kogift_similarity_threshold = 0.25  # Updated from 0.4 to match log
     
     logger.info(f"Using similarity thresholds - General: {similarity_threshold}, Naver: {naver_similarity_threshold}, Kogift: {kogift_similarity_threshold}, Haereum: Always kept (no filtering)")
     
     # Create a copy of the DataFrame to avoid modifying the original
     filtered_df = df.copy()
+    
+    # Define related columns for each image source
+    naver_related_columns = [
+        '네이버 쇼핑 링크', '공급사 상품링크', '공급사명', 
+        '판매단가(V포함)(3)', '가격차이(3)', '가격차이(3)(%)', 
+        '기본수량(3)'
+    ]
+    
+    kogift_related_columns = [
+        '고려기프트 상품링크', '판매가(V포함)(2)', '판매단가(V포함)(2)',
+        '가격차이(2)', '가격차이(2)(%)', '기본수량(2)'
+    ]
     
     # Process each row
     for idx in range(len(filtered_df)):
@@ -1811,558 +1764,133 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                     continue  # 해오름 이미지는 필터링하지 않고 건너뜀
                 elif '네이버' in col_name:
                     threshold = naver_similarity_threshold
+                    related_columns = naver_related_columns
                 elif '고려기프트' in col_name:
                     threshold = kogift_similarity_threshold
+                    related_columns = kogift_related_columns
                 else:
                     threshold = similarity_threshold
+                    related_columns = []
                 
                 # Filter out low similarity scores (해오름 이미지 제외)
                 if score < threshold:
                     logger.info(f"Filtering out {col_name} for row {idx} due to low similarity score: {score:.3f} < {threshold:.3f}")
+                    
+                    # Clear the image data
                     filtered_df.at[idx, col_name] = None
+                    
+                    # Clear related data columns
+                    for related_col in related_columns:
+                        if related_col in filtered_df.columns:
+                            current_value = filtered_df.at[idx, related_col]
+                            # Only clear if there's actual data (not already None or '-')
+                            if current_value is not None and current_value != '-' and str(current_value).strip() != '':
+                                logger.debug(f"Clearing related data in '{related_col}' for row {idx}: '{current_value}' -> '-'")
+                                # Handle different column types properly
+                                try:
+                                    # For numeric columns, try to maintain type compatibility
+                                    col_dtype = filtered_df[related_col].dtype
+                                    if pd.api.types.is_numeric_dtype(col_dtype):
+                                        # For numeric columns, use None instead of '-' to avoid dtype conflicts
+                                        filtered_df.at[idx, related_col] = None
+                                    else:
+                                        # For object/string columns, use '-'
+                                        filtered_df.at[idx, related_col] = '-'
+                                except Exception as e:
+                                    logger.debug(f"Error setting column type for {related_col}: {e}. Using string default.")
+                                    filtered_df.at[idx, related_col] = '-'
                 else:
                     logger.debug(f"Keeping {col_name} for row {idx} with similarity score: {score:.3f} >= {threshold:.3f}")
     
     return filtered_df
 
-def create_excel_with_images(df: pd.DataFrame, output_file: str):
-    """
-    Create an Excel file with embedded images.
-    
-    Args:
-        df: DataFrame containing image data
-        output_file: Path to output Excel file
-    """
-    logger.info(f"Creating Excel file with images: {output_file}")
-    
-    # Create a new Excel writer
-    writer = pd.ExcelWriter(output_file, engine='openpyxl')
-    
-    # Write the DataFrame to Excel
-    df.to_excel(writer, index=False, sheet_name='Images')
-    
-    # Get the worksheet
-    worksheet = writer.sheets['Images']
-    
-    # Process each row
-    for idx in range(len(df)):
-        row_num = idx + 2  # Excel rows start at 1, and we have a header row
-        
-        # Process each image column
-        for col_name in ['본사 이미지', '고려기프트 이미지', '네이버 이미지']:
-            if col_name in df.columns:
-                image_data = df.at[idx, col_name]
-                
-                # Skip if no image data
-                if not isinstance(image_data, dict):
-                    continue
-                
-                # Get image path
-                image_path = image_data.get('local_path')
-                if not image_path or not os.path.exists(str(image_path)):
-                    continue
-                
-                # Add image to Excel
-                try:
-                    img = Image.open(str(image_path))
-                    img_width, img_height = img.size
-                    
-                    # Resize image if too large
-                    max_width = 200
-                    if img_width > max_width:
-                        ratio = max_width / img_width
-                        img_width = max_width
-                        img_height = int(img_height * ratio)
-                    
-                    # Create image cell
-                    cell = worksheet.cell(row=row_num, column=df.columns.get_loc(col_name) + 1)
-                    cell.value = f"Image: {os.path.basename(str(image_path))}"
-                    
-                    # Add image
-                    img = openpyxl.drawing.image.Image(str(image_path))
-                    img.width = img_width
-                    img.height = img_height
-                    worksheet.add_image(img, cell.coordinate)
-                    
-                except Exception as e:
-                    logger.error(f"Error adding image to Excel: {e}")
-    
-    # Save the Excel file
-    writer.close()
-    logger.info(f"Excel file created successfully: {output_file}")
-
-def calculate_text_similarity(text1: str, text2: str) -> float:
-    """
-    Calculate text similarity between two strings.
-    Uses a combination of Levenshtein distance, token overlap, and character n-gram matching.
-    """
-    # Convert to strings if needed
-    str1 = str(text1).lower()
-    str2 = str(text2).lower()
-    
-    # Handle empty strings
-    if not str1 or not str2:
-        return 0.0
-        
-    try:
-        # Try to use Levenshtein distance if available
-        try:
-            from Levenshtein import ratio
-            lev_ratio = ratio(str1, str2)
-        except ImportError:
-            # Fallback to a basic similarity measure
-            lev_ratio = len(set(str1) & set(str2)) / max(len(set(str1)), len(set(str2)))
-        
-        # Calculate token overlap
-        tokens1 = set(str1.split())
-        tokens2 = set(str2.split())
-        
-        # If either set is empty, default to character-based ratio
-        if not tokens1 or not tokens2:
-            return lev_ratio
-            
-        # Calculate Jaccard similarity coefficient
-        intersection = tokens1.intersection(tokens2)
-        union = tokens1.union(tokens2)
-        
-        if not union:
-            return 0.0
-            
-        jaccard = len(intersection) / len(union)
-        
-        # Character n-gram matching (더 관대한 매칭을 위해 추가)
-        # 2-gram과 3-gram 매칭 계산
-        ngram_similarity = 0.0
-        
-        # 2-gram 매칭
-        ngrams1_2 = set(str1[i:i+2] for i in range(len(str1)-1))
-        ngrams2_2 = set(str2[i:i+2] for i in range(len(str2)-1))
-        
-        if ngrams1_2 and ngrams2_2:
-            ngram_intersection_2 = ngrams1_2.intersection(ngrams2_2)
-            ngram_union_2 = ngrams1_2.union(ngrams2_2)
-            if ngram_union_2:
-                ngram2_sim = len(ngram_intersection_2) / len(ngram_union_2)
-                ngram_similarity += ngram2_sim
-        
-        # 3-gram 매칭 (더 긴 문자열 패턴 매칭)
-        if len(str1) >= 3 and len(str2) >= 3:
-            ngrams1_3 = set(str1[i:i+3] for i in range(len(str1)-2))
-            ngrams2_3 = set(str2[i:i+3] for i in range(len(str2)-2))
-            
-            if ngrams1_3 and ngrams2_3:
-                ngram_intersection_3 = ngrams1_3.intersection(ngrams2_3)
-                ngram_union_3 = ngrams1_3.union(ngrams2_3)
-                if ngram_union_3:
-                    ngram3_sim = len(ngram_intersection_3) / len(ngram_union_3)
-                    ngram_similarity += ngram3_sim
-        
-        # Normalize n-gram similarity (if both n-grams used)
-        ngram_similarity = ngram_similarity / 2 if len(str1) >= 3 and len(str2) >= 3 else ngram_similarity
-        
-        # Check for exact substring matches (부분 문자열 일치 확인)
-        # 길이가 3 이상인 토큰이 다른 문자열에 포함되어 있으면 보너스 점수
-        substring_bonus = 0.0
-        for token in tokens1:
-            if len(token) >= 3 and token in str2:
-                substring_bonus = max(substring_bonus, 0.15)  # 최대 0.15 보너스
-                break
-                
-        for token in tokens2:
-            if len(token) >= 3 and token in str1:
-                substring_bonus = max(substring_bonus, 0.15)  # 최대 0.15 보너스
-                break
-        
-        # Weighted average of all similarity measures
-        # 가중치 조정으로 더 관대한 매칭 허용
-        combined_similarity = 0.2 * lev_ratio + 0.4 * jaccard + 0.25 * ngram_similarity + substring_bonus
-        
-        # 너무 낮은 점수일 경우 최소값으로 조정 (완전히 관련 없는 항목도 있을 수 있으므로)
-        return max(combined_similarity, 0.01)  # 최소 0.01의 유사도 반환
-        
-    except Exception as e:
-        logging.error(f"Error calculating text similarity: {e}")
-        return 0.0
-
-def extract_product_hash_from_filename(filename: str) -> Optional[str]:
-    """
-    파일명에서 상품명 해시값을 추출합니다.
-        
-    파일명 패턴:
-    - prefix_[16자해시]_[8자랜덤].jpg (예: haereum_1234567890abcdef_12345678.jpg)
-    - prefix_[10자해시]_[10자랜덤].jpg (예: kogift_1912824fba_2061e0f04f.jpg)
-    - prefix_[16자해시].jpg
-    - shop_[16자숫자]_0.jpg (예: shop_1707873892937710_0.jpg)
-        
-    Args:
-        filename: 이미지 파일명
-            
-    Returns:
-        해시값 또는 None
-    """
-    try:
-        # 확장자 제거
-        name_without_ext = os.path.splitext(os.path.basename(filename))[0]
-        
-        # '_'로 분리
-        parts = name_without_ext.split('_')
-        
-        # shop_[숫자]_0 패턴 확인 (고려기프트 특별 패턴)
-        if len(parts) >= 3 and parts[0] == 'shop' and parts[2] == '0':
-            potential_hash = parts[1]
-            if len(potential_hash) >= 10 and potential_hash.isdigit():
-                return potential_hash.lower()
-        
-        # prefix_hash_random 또는 prefix_hash 패턴 확인
-        if len(parts) >= 2:
-            # prefix를 제거하고 두 번째 부분이 해시인지 확인
-            potential_hash = parts[1]
-            
-            # 16자리 16진수 해시 확인
-            if len(potential_hash) == 16 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
-                return potential_hash.lower()
-            
-            # 10자리 16진수 해시 확인 (kogift 패턴)
-            if len(potential_hash) == 10 and all(c in '0123456789abcdef' for c in potential_hash.lower()):
-                return potential_hash.lower()
-            
-            # 16자리 숫자 해시 확인 (일부 특별한 경우)
-            if len(potential_hash) == 16 and potential_hash.isdigit():
-                return potential_hash.lower()
-        
-        # 전체가 해시인 경우도 확인 (prefix가 없는 경우)
-        if len(name_without_ext) == 16 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
-            return name_without_ext.lower()
-        
-        if len(name_without_ext) == 10 and all(c in '0123456789abcdef' for c in name_without_ext.lower()):
-            return name_without_ext.lower()
-                    
-        return None
-    except Exception as e:
-        logging.debug(f"Error extracting hash from filename {filename}: {e}")
-        return None
-
-def generate_product_name_hash(product_name: str) -> str:
-    """
-    상품명으로부터 16자리 MD5 해시값을 생성합니다.
-    
-    정규화 과정:
-    1. 공백 문자 제거
-    2. 소문자 변환
-    3. 특수문자 정리
-    4. MD5 해시의 첫 16자리 반환
-        
-    Args:
-        product_name: 상품명
-            
-    Returns:
-        16자리 해시값 (실패 시 빈 문자열)
-    """
-    try:
-        if not product_name or not isinstance(product_name, str):
-            logging.debug(f"잘못된 상품명 입력: {product_name}")
-            return ""
-        
-        # 상품명 정규화
-        # 1. 앞뒤 공백 제거
-        normalized = product_name.strip()
-        
-        # 2. 내부 공백들을 모두 제거
-        normalized = ''.join(normalized.split())
-        
-        # 3. 소문자 변환
-        normalized = normalized.lower()
-        
-        # 4. 한글 외의 특수문자는 유지 (브랜드명 등에 포함될 수 있음)
-        # 단, 일관성을 위해 일부 특수문자는 정리
-        import re
-        # 연속된 특수문자는 하나로 통일
-        normalized = re.sub(r'[^\w가-힣]+', '', normalized)
-        
-        if not normalized:
-            logging.debug(f"정규화 후 빈 문자열: '{product_name}'")
-            return ""
-        
-        # MD5 해시 생성
-        import hashlib
-        hash_obj = hashlib.md5(normalized.encode('utf-8'))
-        hash_result = hash_obj.hexdigest()[:16]
-        
-        logging.debug(f"해시 생성 완료: '{product_name}' -> '{normalized}' -> {hash_result}")
-        
-        return hash_result
-        
-    except Exception as e:
-        logging.error(f"상품명 해시 생성 오류 '{product_name}': {e}")
-        return ""
-
-# 모듈 테스트용 코드
-if __name__ == "__main__":
-    # 기본 로깅 설정
-    logging.basicConfig(
-        level=logging.DEBUG, # Change level to DEBUG for testing
-        format='%(asctime)s - %(levelname)s - %(name)s - [%(funcName)s:%(lineno)d] - %(message)s',
-        handlers=[logging.StreamHandler()]
-    )
-    
-    # 설정 파일 로드
-    config = configparser.ConfigParser()
-    # Assuming config.ini is in the parent directory of PythonScript
-    config_path = Path(__file__).resolve().parent.parent / 'config.ini'
-    if not config_path.exists():
-        print(f"Error: config.ini not found at {config_path}")
-        sys.exit(1)
-    config.read(config_path, encoding='utf-8')
-    
-    # Test data setup needs careful handling of image paths
-    # Ensure the image paths used for testing actually exist or simulate them.
-    # For this example, we'll assume the paths are placeholders.
-    
-    # Get image dirs from config
-    main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\\\RPA\\\\Image\\\\Main'))
-    haereum_dir = main_img_dir / 'Haereum'
-    kogift_dir = main_img_dir / 'Kogift'
-    naver_dir = main_img_dir / 'Naver'
-
-    # Create dummy image files for testing if they don't exist
-    # (This part might need adjustment based on your actual test environment)
-    dummy_haereum_img = haereum_dir / "haereum_test_product_1_dummy.jpg"
-    dummy_kogift_img = kogift_dir / "kogift_test_product_2_dummy.jpg"
-    dummy_naver_img = naver_dir / "naver_test_product_3_dummy.jpg"
-    
-    for d in [haereum_dir, kogift_dir, naver_dir]:
-        d.mkdir(parents=True, exist_ok=True)
-        
-    for img_file in [dummy_haereum_img, dummy_kogift_img, dummy_naver_img]:
-        if not img_file.exists():
-            try:
-                img_file.touch() # Create empty file
-                print(f"Created dummy image file: {img_file}")
-            except Exception as e:
-                print(f"Could not create dummy file {img_file}: {e}")
-
-    test_df = pd.DataFrame({
-        '번호': [1, 2, 3, 4],
-        '상품명': ['테스트 상품 1', 'Test Product 2', '해오름 테스트', '저 유사도 상품'],
-        # Use source URL columns from scraping (example names)
-        '해오름이미지URL': ['http://example.com/hae1.jpg', None, 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg', 'http://example.com/hae4.jpg'],
-        '고려기프트 URL': [None, 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', None, 'http://example.com/ko4.jpg'],
-        '네이버이미지 URL': ['https://shop-phinf.pstatic.net/20240101_1/image.jpg', None, None, 'http://example.com/na4.jpg'],
-        '이미지_유사도': [0.6, 0.8, 0.9, 0.2], # This column should now be ignored by filter_images_by_similarity
-        # Add other necessary columns from FINAL_COLUMN_ORDER for the test
-        '구분': ['A', 'A', 'P', 'A'], '담당자': ['Test']*4, '업체명': ['Test']*4, '업체코드': ['123']*4, 'Code': ['T01', 'T02', 'T03', 'T04'], '중분류카테고리': ['Test']*4,
-        '기본수량(1)': [100]*4, '판매단가(V포함)': [1000]*4, '본사상품링크': ['http://example.com/1']*4,
-        '기본수량(2)': [100]*4, '판매가(V포함)(2)': [1100]*4, '가격차이(2)': [100]*4, '가격차이(2)(%)': [10]*4, '고려기프트 상품링크': ['http://example.com/2']*4,
-        '기본수량(3)': [100]*4, '판매단가(V포함)(3)': [900]*4, '가격차이(3)': [-100]*4, '가격차이(3)(%)': [-10]*4, '공급사명': ['Test']*4, '네이버 쇼핑 링크': ['http://example.com/3']*4, '공급사 상품링크': ['http://example.com/supplier']*4
-    })
-    
-    # --- Simulate adding image dicts (as would be done by integrate_images) ---
-    # This is crucial for testing filter_images_by_similarity correctly
-    # We manually add the 'score' key here based on example values
-    test_df['해오름(이미지링크)'] = [
-        {'local_path': str(dummy_haereum_img), 'url': 'http://example.com/hae1.jpg', 'source': 'haereum', 'score': 0.85},
-        None,
-        {'local_path': str(dummy_haereum_img), 'url': 'https://www.jclgift.com/upload/product/simg3/DDAC0001000s.jpg', 'source': 'haereum', 'score': 0.95},
-         {'local_path': str(dummy_haereum_img), 'url': 'http://example.com/hae4.jpg', 'source': 'haereum', 'score': 0.90} # High score, should not be filtered
-    ]
-    test_df['고려기프트(이미지링크)'] = [
-        None,
-        {'local_path': str(dummy_kogift_img), 'url': 'https://koreagift.com/ez/upload/mall/shop_1707873892937710_0.jpg', 'source': 'kogift', 'score': 0.75},
-        None,
-        {'local_path': str(dummy_kogift_img), 'url': 'http://example.com/ko4.jpg', 'source': 'kogift', 'score': 0.25} # Low score, should be filtered
-    ]
-    test_df['네이버쇼핑(이미지링크)'] = [
-        {'local_path': str(dummy_naver_img), 'url': 'https://shop-phinf.pstatic.net/20240101_1/image.jpg', 'source': 'naver', 'score': 0.65},
-        None,
-        None,
-        {'local_path': str(dummy_naver_img), 'url': 'http://example.com/na4.jpg', 'source': 'naver', 'score': 0.15} # Low score, should be filtered
-    ]
-    
-    # --- Run only the filtering part for isolated testing ---
-    logging.info("--- Testing filter_images_by_similarity ---")
-    filtered_df = filter_images_by_similarity(test_df.copy(), config) # Use copy
-    
-    logging.info(f"Test filter results - DataFrame shape: {filtered_df.shape}")
-    logging.info(f"해오름(이미지링크) after filter: {filtered_df['해오름(이미지링크)'].tolist()}")
-    logging.info(f"고려기프트(이미지링크) after filter: {filtered_df['고려기프트(이미지링크)'].tolist()}")
-    logging.info(f"네이버쇼핑(이미지링크) after filter: {filtered_df['네이버쇼핑(이미지링크)'].tolist()}")
-    
-    # --- Run the full integrate_and_filter process ---
-    logging.info("--- Testing integrate_and_filter_images ---")
-    # Use a fresh copy for the full test
-    full_result_df = integrate_and_filter_images(test_df.copy(), config, save_excel_output=True) 
-    
-    # 결과 출력 (using the new final column names)
-    logging.info(f"Full process result - DataFrame shape: {full_result_df.shape}")
-    logging.info(f"해오름(이미지링크) final data: {full_result_df['해오름(이미지링크)'].tolist()}")
-    logging.info(f"고려기프트(이미지링크) final data: {full_result_df['고려기프트(이미지링크)'].tolist()}")
-    logging.info(f"네이버쇼핑(이미지링크) final data: {full_result_df['네이버쇼핑(이미지링크)'].tolist()}") 
-
-
-def get_system_status_summary(config: configparser.ConfigParser = None) -> Dict:
-    """
-    개선된 이미지 매칭 시스템의 현재 상태를 요약합니다.
-    
-    Returns:
-        시스템 상태 정보가 담긴 딕셔너리
-    """
-    
-    try:
-        import psutil
-        import platform
-        from datetime import datetime
-        
-        status = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'system_info': {
-                'platform': platform.platform(),
-                'python_version': platform.python_version(),
-                'cpu_count': psutil.cpu_count(),
-                'memory_total_gb': round(psutil.virtual_memory().total / (1024**3), 2),
-                'memory_available_gb': round(psutil.virtual_memory().available / (1024**3), 2)
-            },
-            'matching_system': {
-                'version': '개선된 해시 기반 2단계 매칭',
-                'hash_algorithm': 'MD5 (16자리)',
-                'image_similarity_threshold': 0.8,
-                'enhanced_matcher_available': False,
-                'gpu_enabled': False
-            },
-            'performance_metrics': {
-                'expected_hash_match_rate': '95%+ (동일 상품)',
-                'expected_processing_speed': '~80% 향상',
-                'memory_usage_reduction': '~60% 절약',
-                'cache_enabled': True
-            },
-            'improvements': [
-                '✅ 해시 기반 1차 정확한 매칭',
-                '✅ 이미지 유사도 2차 검증',
-                '✅ 랜덤 할당 제거',
-                '✅ 중복 처리 방지',
-                '✅ 명확한 로그 및 상태 표시',
-                '✅ 성능 최적화'
-            ]
-        }
-        
-        # Enhanced Image Matcher 상태 확인
-        try:
-            from enhanced_image_matcher import EnhancedImageMatcher
-            enhanced_matcher = EnhancedImageMatcher(config)
-            status['matching_system']['enhanced_matcher_available'] = True
-            status['matching_system']['gpu_enabled'] = getattr(enhanced_matcher, 'use_gpu', False)
-            
-            # GPU 정보 추가
-            if status['matching_system']['gpu_enabled']:
-                try:
-                    import tensorflow as tf
-                    gpus = tf.config.list_physical_devices('GPU')
-                    status['gpu_info'] = {
-                        'gpu_count': len(gpus),
-                        'gpu_devices': [str(gpu) for gpu in gpus] if gpus else []
-                    }
-                except Exception:
-                    status['gpu_info'] = {'error': 'GPU 정보 조회 실패'}
-        except Exception as e:
-            status['matching_system']['enhanced_matcher_error'] = str(e)
-        
-        # 디렉토리 상태 확인
-        if config:
-            try:
-                main_img_dir = Path(config.get('Paths', 'image_main_dir', fallback='C:\\RPA\\Image\\Main'))
-                directories = {
-                    'haereum': main_img_dir / 'Haereum',
-                    'kogift': main_img_dir / 'Kogift', 
-                    'naver': main_img_dir / 'Naver'
-                }
-                
-                dir_status = {}
-                for name, path in directories.items():
-                    if path.exists():
-                        image_files = list(path.glob('*.jpg')) + list(path.glob('*.png'))
-                        dir_status[name] = {
-                            'exists': True,
-                            'image_count': len(image_files),
-                            'path': str(path)
-                        }
-                    else:
-                        dir_status[name] = {
-                            'exists': False,
-                            'path': str(path)
-                        }
-                
-                status['image_directories'] = dir_status
-            except Exception as e:
-                status['image_directories'] = {'error': str(e)}
-        
-        return status
-        
-    except Exception as e:
-        return {
-            'error': f"시스템 상태 조회 오류: {e}",
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-
-
 def print_system_status(config: configparser.ConfigParser = None):
-    """시스템 상태를 콘솔에 출력합니다."""
-    
-    status = get_system_status_summary(config)
+    """시스템 상태를 콘솔에 출력합니다. (단순화된 버전)"""
     
     print("\n" + "="*60)
-    print("🚀 개선된 이미지 매칭 시스템 상태")
+    print("🚀 해시 기반 이미지 매칭 시스템")
+    print("="*60)
+    print("✅ 해시 매칭만 사용하는 단순화된 시스템")
+    print("📋 텍스트 유사도 계산 없음 - 파일명 해시값으로만 매칭")
+    print("🔧 설정: 해시 기반 정확한 매칭")
+    print("="*60)
+
+def get_image_integration_summary(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    이미지 통합 결과의 요약 정보를 반환합니다.
+    
+    Args:
+        df: 이미지가 통합된 DataFrame
+        
+    Returns:
+        통합 결과 요약 딕셔너리
+    """
+    try:
+        summary = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'total_products': len(df),
+            'image_counts': {
+                'haereum': 0,
+                'kogift': 0,
+                'naver': 0
+            },
+            'success_rates': {
+                'haereum': 0.0,
+                'kogift': 0.0,
+                'naver': 0.0
+            }
+        }
+        
+        # Count valid images for each source
+        if '본사 이미지' in df.columns:
+            summary['image_counts']['haereum'] = df['본사 이미지'].apply(lambda x: isinstance(x, dict)).sum()
+            summary['success_rates']['haereum'] = summary['image_counts']['haereum'] / len(df) * 100
+            
+        if '고려기프트 이미지' in df.columns:
+            summary['image_counts']['kogift'] = df['고려기프트 이미지'].apply(lambda x: isinstance(x, dict)).sum()
+            summary['success_rates']['kogift'] = summary['image_counts']['kogift'] / len(df) * 100
+            
+        if '네이버 이미지' in df.columns:
+            summary['image_counts']['naver'] = df['네이버 이미지'].apply(lambda x: isinstance(x, dict)).sum()
+            summary['success_rates']['naver'] = summary['image_counts']['naver'] / len(df) * 100
+        
+        return summary
+        
+    except Exception as e:
+        logging.error(f"이미지 통합 요약 생성 중 오류: {e}")
+        return {'error': str(e)}
+
+def print_image_integration_summary(df: pd.DataFrame):
+    """이미지 통합 결과 요약을 콘솔에 출력합니다."""
+    
+    summary = get_image_integration_summary(df)
+    
+    print("\n" + "="*60)
+    print("🖼️ 이미지 통합 결과 요약")
     print("="*60)
     
-    if 'error' in status:
-        print(f"❌ 오류: {status['error']}")
+    if 'error' in summary:
+        print(f"❌ 오류: {summary['error']}")
         return
     
-    print(f"📅 조회 시간: {status['timestamp']}")
+    print(f"📅 처리 시간: {summary['timestamp']}")
+    print(f"📦 총 상품 수: {summary['total_products']}개")
     
-    # 시스템 정보
-    sys_info = status['system_info']
-    print(f"\n💻 시스템 정보:")
-    print(f"   OS: {sys_info['platform']}")
-    print(f"   Python: {sys_info['python_version']}")
-    print(f"   CPU: {sys_info['cpu_count']}코어")
-    print(f"   메모리: {sys_info['memory_available_gb']:.1f}GB / {sys_info['memory_total_gb']:.1f}GB")
+    print(f"\n📊 이미지 매칭 결과:")
+    for source, count in summary['image_counts'].items():
+        success_rate = summary['success_rates'][source]
+        source_name = {
+            'haereum': '해오름(본사)',
+            'kogift': '고려기프트', 
+            'naver': '네이버'
+        }.get(source, source)
+        
+        if count > 0:
+            print(f"   {source_name}: ✅ {count}개 ({success_rate:.1f}%)")
+        else:
+            print(f"   {source_name}: ❌ 0개 (0.0%)")
     
-    # 매칭 시스템
-    match_sys = status['matching_system']
-    print(f"\n🎯 매칭 시스템:")
-    print(f"   버전: {match_sys['version']}")
-    print(f"   해시 알고리즘: {match_sys['hash_algorithm']}")
-    print(f"   유사도 임계값: {match_sys['image_similarity_threshold']}")
-    print(f"   고급 매처: {'✅ 사용 가능' if match_sys['enhanced_matcher_available'] else '❌ 사용 불가'}")
-    print(f"   GPU 가속: {'✅ 활성화' if match_sys['gpu_enabled'] else '❌ 비활성화'}")
-    
-    # GPU 정보
-    if 'gpu_info' in status:
-        gpu_info = status['gpu_info']
-        if 'error' not in gpu_info:
-            print(f"   GPU 개수: {gpu_info['gpu_count']}개")
-            for i, gpu in enumerate(gpu_info['gpu_devices']):
-                print(f"     GPU {i}: {gpu}")
-    
-    # 성능 메트릭
-    perf = status['performance_metrics']
-    print(f"\n📊 성능 메트릭:")
-    print(f"   예상 해시 매칭률: {perf['expected_hash_match_rate']}")
-    print(f"   처리 속도 개선: {perf['expected_processing_speed']}")
-    print(f"   메모리 사용량 절약: {perf['memory_usage_reduction']}")
-    print(f"   캐시 사용: {'✅' if perf['cache_enabled'] else '❌'}")
-    
-    # 이미지 디렉토리 상태
-    if 'image_directories' in status and 'error' not in status['image_directories']:
-        print(f"\n📁 이미지 디렉토리:")
-        for name, info in status['image_directories'].items():
-            if info['exists']:
-                print(f"   {name}: ✅ {info['image_count']}개 이미지")
-            else:
-                print(f"   {name}: ❌ 디렉토리 없음")
-    
-    # 개선사항
-    print(f"\n🎉 주요 개선사항:")
-    for improvement in status['improvements']:
-        print(f"   {improvement}")
+    total_images = sum(summary['image_counts'].values())
+    print(f"\n🎯 전체 매칭된 이미지: {total_images}개")
     
     print("\n" + "="*60)
