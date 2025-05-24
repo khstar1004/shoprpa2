@@ -691,7 +691,7 @@ class EnhancedImageMatcher:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "sift_similarity")
             if cached_result is not None:
-                return cached_result
+                return float(cached_result)  # Ensure cached result is converted to float
             
             # Load images
             _, gray1 = self._load_and_prepare_image(img_path1)
@@ -761,7 +761,7 @@ class EnhancedImageMatcher:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "akaze_similarity")
             if cached_result is not None:
-                return cached_result
+                return float(cached_result)  # Ensure cached result is converted to float
             
             # Load images
             _, gray1 = self._load_and_prepare_image(img_path1)
@@ -833,7 +833,7 @@ class EnhancedImageMatcher:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "orb_similarity")
             if cached_result is not None:
-                return cached_result
+                return float(cached_result)  # Ensure cached result is converted to float
             
             # Load images
             _, gray1 = self._load_and_prepare_image(img_path1)
@@ -911,7 +911,7 @@ class EnhancedImageMatcher:
             # Try to get from cache first
             cached_result = self.feature_cache.get(f"{img_path1}|{img_path2}", "deep_similarity")
             if cached_result is not None:
-                return cached_result
+                return float(cached_result)  # Ensure cached result is converted to float
                 
             # Check if model is available
             if self.model is None:
@@ -1094,12 +1094,12 @@ class EnhancedImageMatcher:
                     for k in remaining_keys:
                         weights[k] = remaining_weight / len(remaining_keys)
         
-        # Store individual scores
+        # Store individual scores - ensure all scores are float to avoid numpy format errors
         scores = {
-            'sift': sift_score,
-            'akaze': akaze_score,
-            'deep': deep_score,
-            'orb': orb_score
+            'sift': float(sift_score) if not isinstance(sift_score, (type(None))) else 0.0,
+            'akaze': float(akaze_score) if not isinstance(akaze_score, (type(None))) else 0.0,
+            'deep': float(deep_score) if not isinstance(deep_score, (type(None))) else 0.0,
+            'orb': float(orb_score) if not isinstance(orb_score, (type(None))) else 0.0
         }
         
         # Calculate weighted sum
@@ -1147,8 +1147,8 @@ class EnhancedImageMatcher:
             logger.debug(f"Low confidence match: {low_scores} methods with score >= 0.1")
             
         # Increase confidence if SIFT and AKAZE agree strongly (traditional CV validation)
-        if sift_score >= 0.4 and akaze_score >= 0.4:
-            logger.debug(f"Strong agreement between SIFT and AKAZE: {sift_score:.2f}, {akaze_score:.2f}")
+        if scores['sift'] >= 0.4 and scores['akaze'] >= 0.4:
+            logger.debug(f"Strong agreement between SIFT and AKAZE: {scores['sift']:.2f}, {scores['akaze']:.2f}")
             combined_score = min(1.0, combined_score * 1.15)  # 15% boost when traditional methods agree
             
         # Calculate a consensus score based on standard deviation (lower std = higher consensus)
@@ -1162,7 +1162,7 @@ class EnhancedImageMatcher:
             combined_score = min(1.0, combined_score * (1 + consensus_boost))
             logger.debug(f"Consensus boost: {consensus_boost:.2f} (std={score_std:.2f})")
             
-        logger.debug(f"Combined similarity: {float(combined_score):.4f} (SIFT={float(sift_score):.2f}, AKAZE={float(akaze_score):.2f}, Deep={float(deep_score):.2f}, ORB={float(orb_score):.2f})")
+        logger.debug(f"Combined similarity: {float(combined_score):.4f} (SIFT={scores['sift']:.2f}, AKAZE={scores['akaze']:.2f}, Deep={scores['deep']:.2f}, ORB={scores['orb']:.2f})")
         
         return float(combined_score), scores
     
@@ -1213,9 +1213,10 @@ class EnhancedImageMatcher:
                 cached_result = self.feature_cache.get(cache_key, "similarity")
                 if cached_result is not None:
                     elapsed = time.time() - start_time
-                    logging.debug(f"💾 캐시에서 유사도 반환: {cached_result:.3f} ({elapsed*1000:.1f}ms) "
+                    cached_float = float(cached_result)  # Ensure cached result is converted to float
+                    logging.debug(f"💾 캐시에서 유사도 반환: {cached_float:.3f} ({elapsed*1000:.1f}ms) "
                                 f"for {os.path.basename(img_path1)} vs {os.path.basename(img_path2)}")
-                    return float(cached_result)
+                    return cached_float
             
             # === 유사도 계산 ===
             similarity_score, method_scores = self.calculate_combined_similarity(img_path1, img_path2, weights)
@@ -1234,7 +1235,7 @@ class EnhancedImageMatcher:
             # === 향상된 로깅 ===
             if similarity_score >= 0.7:
                 # 높은 유사도 매치에 대한 상세 로깅
-                method_details = ", ".join([f"{method}: {score:.3f}" for method, score in method_scores.items()])
+                method_details = ", ".join([f"{method}: {float(score):.3f}" for method, score in method_scores.items()])
                 logging.info(f"🎯 높은 유사도 매치 발견: {similarity_score:.3f} "
                             f"({elapsed*1000:.1f}ms) - {os.path.basename(img_path1)} vs {os.path.basename(img_path2)}")
                 logging.info(f"    세부 점수: {method_details}")
