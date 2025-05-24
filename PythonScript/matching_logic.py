@@ -859,13 +859,38 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
             
         logging.debug(f"Matching product index {i}: {product_name}")
         
-        # --- Get Haoreum specific data ---
+        # --- Get Haereum specific data ---
         haoreum_scraped_image_url = haoreum_row_dict.get('본사이미지URL')
+        
+        # Try alternative column names if primary is missing
+        if not haoreum_scraped_image_url:
+            alternative_columns = ['해오름이미지URL', '본사 이미지URL', '해오름 이미지 URL', 'haereum_image_url']
+            for alt_col in alternative_columns:
+                haoreum_scraped_image_url = haoreum_row_dict.get(alt_col)
+                if haoreum_scraped_image_url:
+                    logging.debug(f"Found Haereum image URL in alternative column: {alt_col}")
+                    break
+        
         # Add logging to check the fetched URL
         logging.debug(f"Index {i}: Fetched Haereum scraped URL: {haoreum_scraped_image_url}") 
-        if not haoreum_scraped_image_url or not isinstance(haoreum_scraped_image_url, str) or not haoreum_scraped_image_url.startswith(('http://', 'https://')):
-            logging.warning(f"Row {i} ('{product_name}'): Invalid or missing scraped Haereum image URL: '{haoreum_scraped_image_url}'. Attempting fallback or proceeding without URL.")
-            haoreum_scraped_image_url = None # Set URL to None if invalid
+        
+        # Validate URL
+        if haoreum_scraped_image_url and isinstance(haoreum_scraped_image_url, str):
+            # Clean up URL (remove whitespace, etc)
+            haoreum_scraped_image_url = haoreum_scraped_image_url.strip()
+            
+            if not haoreum_scraped_image_url.startswith(('http://', 'https://')):
+                # Check if it's a relative URL that needs a base
+                if haoreum_scraped_image_url.startswith('/'):
+                    # Could prepend a base URL if known
+                    logging.warning(f"Row {i} ('{product_name}'): Haereum image URL appears to be relative: '{haoreum_scraped_image_url}'")
+                else:
+                    logging.debug(f"Row {i} ('{product_name}'): Haereum image URL doesn't start with http(s): '{haoreum_scraped_image_url}'")
+                    haoreum_scraped_image_url = None
+        else:
+            if haoreum_scraped_image_url is not None:
+                logging.debug(f"Row {i} ('{product_name}'): Haereum image URL is not a valid string: type={type(haoreum_scraped_image_url)}")
+            haoreum_scraped_image_url = None
 
         # Prepare Haoreum product data structure for matching logic
         haoreum_product_for_match = {
@@ -886,9 +911,31 @@ def _match_single_product(i: int, haoreum_row_dict: Dict, kogift_data: List[Dict
         if naver_data:  
             best_naver_match = _find_best_match(haoreum_product_for_match, naver_data, matcher, 'naver')
 
+        # Determine which match to use (prefer higher score)
+        selected_match = None
+        match_source = None
+        
+        if best_kogift_match and best_naver_match:
+            # Both matches exist, choose the one with higher combined score
+            if best_kogift_match.get('combined_score', 0) >= best_naver_match.get('combined_score', 0):
+                selected_match = best_kogift_match
+                match_source = 'Kogift'
+            else:
+                selected_match = best_naver_match
+                match_source = 'Naver'
+        elif best_kogift_match:
+            selected_match = best_kogift_match
+            match_source = 'Kogift'
+        elif best_naver_match:
+            selected_match = best_naver_match
+            match_source = 'Naver'
+
         # --- Combine results into the final structure --- 
         # Start with the original Haoreum row data
         result = {**haoreum_row_dict} 
+
+        # Always set the match source explicitly
+        result['매칭_사이트'] = match_source
 
         # --- Add/Overwrite Haoreum Image Data --- 
         # Ensure the scraped URL is prioritized

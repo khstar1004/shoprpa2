@@ -245,47 +245,55 @@ else:
     # Force TensorFlow to use CPU only
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-# Complete GPU status check after TensorFlow initialization
+# Check GPU availability once and update settings
+GPU_STATUS_CHECKED = False
+
 def check_tf_gpu_status():
-    """Check GPU status after TensorFlow has been imported"""
+    """Check if TensorFlow can use GPU"""
+    global GPU_STATUS_CHECKED
+    
+    if GPU_STATUS_CHECKED:
+        # Already checked, return cached result
+        return SETTINGS.get('_gpu_available', False)
+    
     try:
-        logger.info("=== TensorFlow GPU Status ===")
-        
-        # List physical GPUs
+        import tensorflow as tf
+        # Check GPU availability
         gpus = tf.config.list_physical_devices('GPU')
-        logger.info(f"Physical GPUs detected by TensorFlow: {len(gpus)}")
-        for i, gpu in enumerate(gpus):
-            logger.info(f"  GPU {i}: {gpu}")
-            
-        # List logical GPUs
-        logical_gpus = tf.config.list_logical_devices('GPU')
-        logger.info(f"Logical GPUs available: {len(logical_gpus)}")
+        gpu_available = len(gpus) > 0
         
-        # Run a simple GPU test if available
-        if len(gpus) > 0:
-            try:
-                with tf.device('/GPU:0'):
-                    a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
-                    b = tf.constant([[1.0, 1.0], [1.0, 1.0]])
-                    c = tf.matmul(a, b)
-                    logger.info(f"Simple GPU test succeeded: {c.numpy()}")
-            except Exception as e:
-                logger.warning(f"Simple GPU test failed: {e}")
-                
-        logger.info("=== End TensorFlow GPU Status ===")
-        return len(gpus) > 0
+        if gpu_available:
+            logger.info(f"✅ TensorFlow detected {len(gpus)} GPU device(s)")
+            # Try to set memory growth
+            for gpu in gpus:
+                try:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                    logger.info(f"Set memory growth for GPU: {gpu}")
+                except RuntimeError as e:
+                    logger.warning(f"Cannot set memory growth: {e}")
+        else:
+            logger.info("ℹ️ No GPU devices detected by TensorFlow")
+            
+        # Cache the result
+        SETTINGS['_gpu_available'] = gpu_available
+        GPU_STATUS_CHECKED = True
+        
+        return gpu_available
+        
     except Exception as e:
         logger.error(f"Error checking TensorFlow GPU status: {e}")
+        SETTINGS['_gpu_available'] = False
+        GPU_STATUS_CHECKED = True
         return False
 
 # Run the TensorFlow GPU status check
 tf_gpu_available = check_tf_gpu_status()
 
-# Update the global settings if needed
+# Update the global settings if needed - only log once
 if tf_gpu_available and not SETTINGS.get('USE_GPU', False):
     logger.info("GPU is available but was disabled in settings - consider enabling it")
 elif not tf_gpu_available and SETTINGS.get('USE_GPU', False):
-    logger.warning("GPU was enabled in settings but is not available - updating setting")
+    logger.info("GPU was enabled in settings but is not available - disabling GPU mode")
     SETTINGS['USE_GPU'] = False
 
 # Check if GPU is available (compatible with all TF versions)

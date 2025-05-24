@@ -228,109 +228,163 @@ def parse_complex_value(value):
 
 def extract_quantity_prices_from_row(row, temp_kogift_col='_temp_kogift_quantity_prices'):
     """
-    Extract quantity-price information from a DataFrame row.
-    It should primarily look for '고려기프트_실제가격티어'.
-    
-    Args:
-        row: DataFrame row
-        
-    Returns:
-        dict: Dictionary of quantity prices or None if not found or parse error
+    Extract quantity-based pricing information from a row.
+    Returns dict {quantity: {'price': price, 'price_with_vat': price_with_vat}} or None.
     """
-    # Dedicated column for actual crawled price tiers
-    actual_tiers_col_name = '고려기프트_실제가격티어'
-    row_identifier = f"Row {row.name if hasattr(row, 'name') else 'N/A'} (Product: '{row.get('상품명', 'Unknown')}')"
-
-    if actual_tiers_col_name in row and pd.notna(row[actual_tiers_col_name]) and row[actual_tiers_col_name] != '-':
+    # First, check the primary column for actual crawled price tiers
+    actual_tiers_col = '고려기프트_실제가격티어'
+    if actual_tiers_col in row and pd.notna(row[actual_tiers_col]) and row[actual_tiers_col] != '-':
         try:
-            data_str = row[actual_tiers_col_name]
+            data_str = row[actual_tiers_col]
             if isinstance(data_str, str):
-                # Ensure keys are integers after parsing
+                # Parse the string representation of dict
                 parsed_data = ast.literal_eval(data_str)
                 if isinstance(parsed_data, dict):
-                    # Convert string keys to int keys if necessary, as ast.literal_eval might keep them as strings
-                    # e.g., {'100': {...}} -> {100: {...}}
-                    int_key_parsed_data = {}
-                    all_keys_valid = True
+                    # Convert string keys to integers
+                    result = {}
                     for k, v in parsed_data.items():
                         try:
-                            int_key = int(k)
-                            int_key_parsed_data[int_key] = v
+                            result[int(k)] = v
                         except ValueError:
-                            logger.warning(f"{row_identifier}: Invalid key '{k}' in {actual_tiers_col_name} data. Skipping this key.")
-                            all_keys_valid = False # Mark if any key is problematic
+                            logger.warning(f"Invalid quantity key '{k}' in {actual_tiers_col}, skipping")
                     
-                    if not int_key_parsed_data: # If all keys were invalid or dict was empty
-                        logger.warning(f"{row_identifier}: No valid integer keys found in {actual_tiers_col_name} after parsing: {data_str}")
-                        return None
-                    
-                    logger.info(f"{row_identifier}: Successfully parsed quantity_prices from '{actual_tiers_col_name}'")
-                    return int_key_parsed_data
-                else:
-                    logger.warning(f"{row_identifier}: Parsed data from '{actual_tiers_col_name}' is not a dict: {type(parsed_data)}")    
-            elif isinstance(data_str, dict): # If it's already a dict (e.g. if DataFrame wasn't purely from Excel)
-                logger.info(f"{row_identifier}: Directly using dict quantity_prices from '{actual_tiers_col_name}'")
-                # Ensure keys are integers for consistency
-                int_key_data = {int(k): v for k, v in data_str.items() if str(k).isdigit()} # simple conversion for already dict case
-                if not int_key_data:
-                     logger.warning(f"{row_identifier}: No valid integer keys in already dict data from '{actual_tiers_col_name}': {data_str}")
-                     return None
-                return int_key_data
+                    if result:
+                        logger.info(f"Successfully parsed {len(result)} price tiers from '{actual_tiers_col}'")
+                        return result
+            elif isinstance(data_str, dict):
+                # Already a dict
+                logger.info(f"Using dict data directly from '{actual_tiers_col}'")
+                return {int(k): v for k, v in data_str.items() if str(k).isdigit()}
         except Exception as e:
-            logger.warning(f"{row_identifier}: Error parsing quantity_prices from '{actual_tiers_col_name}': {e}. Value: {str(row.get(actual_tiers_col_name, ''))[:200]}")
-            return None
-    else:
-        # Check if there is a Kogift link, if so, it *should* have tier data.
-        kogift_link_columns = ['고려기프트 상품링크', '고려 링크', '고려기프트링크', '고려 상품링크']
-        has_kogift_link = False
-        for col_variant in kogift_link_columns:
-            actual_col_name = None
-            if col_variant in row.index:
-                 actual_col_name = col_variant
-            elif col_variant.replace(" ", "") in row.index: # try with spaces removed
-                 actual_col_name = col_variant.replace(" ", "")
-            
-            if actual_col_name and pd.notna(row[actual_col_name]) and row[actual_col_name] != '-':
-                has_kogift_link = True
-                break
-        
-        if has_kogift_link:
-            logger.warning(f"{row_identifier}: Column '{actual_tiers_col_name}' is missing or empty, but a Kogift link exists. Crawled tier data might be missing.")
-        else:
-            logger.debug(f"{row_identifier}: Column '{actual_tiers_col_name}' is missing or empty, and no Kogift link found. Likely not a Kogift item or no data.")
+            logger.warning(f"Error parsing '{actual_tiers_col}': {e}")
+    
+    # Then check the temp column
+    if temp_kogift_col in row and pd.notna(row[temp_kogift_col]) and row[temp_kogift_col] != '-':
+        data = parse_complex_value(row[temp_kogift_col])
+        if isinstance(data, dict) and data:
+            logger.info(f"Found quantity_prices data in temp column: {list(data.keys())} tiers")
+            # Convert string keys to integers
+            return {int(k): v for k, v in data.items() if str(k).isdigit()}
 
-    # Fallback to trying other columns if the main one isn't there - this is a legacy check and should ideally not be needed.
-    possible_data_columns = [
-        'kogift_data', 'kogift_price_data', 'kogift_product_data', 
-        'quantity_prices', 'kogift_quantity_prices', # temp_kogift_col is already passed
-        '고려기프트_데이터', '고려기프트_가격정보', '고려기프트_수량가격'
+    # Check standard column names
+    standard_cols = [
+        'kogift_quantity_prices', 'kogift_data', 'kogift_price_data', 
+        'kogift_product_data', 'quantity_prices', 
+        '고려기프트_데이터', '고려기프트_가격정보', '고려기프트_수량가격',
+        '수량별가격', '가격정보', 'price_data', 'pricing_info',
+        # 추가 칼럼
+        '고려기프트_가격티어', '고려기프트_가격', '고려기프트_수량별가격정보',
+        '고려_가격티어', '고려_수량별가격', '판매단가2_티어',
+        'kogift_price_tiers', 'kogift_prices', 'quantity_price_data',
+        '고려가격', '고려수량가격'
     ]
-
-    for col in possible_data_columns:
+    
+    for col in standard_cols:
         if col in row and pd.notna(row[col]) and row[col] != '-':
-            data = parse_complex_value(row[col])
-            if isinstance(data, dict):
-                # Check for quantity_prices within this potentially complex dict
-                if 'quantity_prices' in data and isinstance(data['quantity_prices'], dict):
-                    logger.info(f"{row_identifier}: Found quantity_prices in nested structure under column '{col}'")
-                    # Ensure keys are integers
-                    return {int(k): v for k, v in data['quantity_prices'].items() if str(k).isdigit()}
-                # Sometimes the dict itself is the quantity_prices table
-                # Check if keys look like quantities and values look like price info
-                is_likely_tier_table = True
-                temp_tier_table = {}
-                if not data: is_likely_tier_table = False
-                for k, v_dict in data.items():
-                    if not (str(k).isdigit() and isinstance(v_dict, dict) and ('price' in v_dict or 'price_with_vat' in v_dict)):
-                        is_likely_tier_table = False
-                        break
-                    temp_tier_table[int(k)] = v_dict
-                if is_likely_tier_table:
-                    logger.info(f"{row_identifier}: Found quantity_prices directly in column '{col}'")
-                    return temp_tier_table
+            raw_value = row[col]
+            logger.debug(f"Checking column '{col}' with value type: {type(raw_value)}")
+            
+            # Try to parse the value
+            data = parse_complex_value(raw_value)
+            
+            if isinstance(data, dict) and data:
+                # Check if it's a direct quantity-price mapping
+                if all(str(k).isdigit() for k in data.keys()):
+                    logger.info(f"Found direct quantity-price mapping in column '{col}'")
+                    return {int(k): v for k, v in data.items()}
+                
+                # Check for nested structure
+                if 'quantity_prices' in data:
+                    nested_data = data['quantity_prices']
+                    if isinstance(nested_data, dict):
+                        logger.info(f"Found nested quantity_prices in column '{col}'")
+                        return {int(k): v for k, v in nested_data.items() if str(k).isdigit()}
+                
+                # Check if values are price dictionaries
+                first_value = next(iter(data.values()), None)
+                if isinstance(first_value, dict) and ('price' in first_value or 'price_with_vat' in first_value):
+                    logger.info(f"Found price dictionary structure in column '{col}'")
+                    return {int(k): v for k, v in data.items() if str(k).isdigit()}
+            
+            # Try to parse as string representation of dict
+            elif isinstance(raw_value, str):
+                try:
+                    # Remove any BOM or special characters
+                    cleaned_value = raw_value.strip().strip('\ufeff')
+                    if cleaned_value.startswith('{') and cleaned_value.endswith('}'):
+                        parsed_data = ast.literal_eval(cleaned_value)
+                        if isinstance(parsed_data, dict):
+                            logger.info(f"Parsed string representation of dict in column '{col}'")
+                            return {int(k): v for k, v in parsed_data.items() if str(k).isdigit()}
+                except Exception as e:
+                    logger.debug(f"Failed to parse string as dict in column '{col}': {e}")
+            
+            # 추가: 단일 가격/수량 정보만 있는 경우 처리
+            elif isinstance(raw_value, (int, float)) and '기본수량(2)' in row and pd.notna(row['기본수량(2)']):
+                try:
+                    quantity = int(row['기본수량(2)'])
+                    price = float(raw_value)
+                    logger.info(f"Found single price {price} for quantity {quantity} in column '{col}'")
+                    return {quantity: {'price': price, 'price_with_vat': price}}
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Failed to parse single price/quantity: {e}")
 
-    logger.warning(f"{row_identifier}: Could not find or parse any valid quantity-price tier data from any known column.")
-    return None # Explicitly return None if no valid data is found
+    # 추가: 직접 수량-가격 조합 검색
+    # 열 이름에서 숫자 패턴 (예: '수량_100', '수량_300') 검색
+    quantity_price_pairs = {}
+    quantity_pattern = re.compile(r'(수량|개수|갯수|qty|quantity)_(\d+)', re.IGNORECASE)
+    price_pattern = re.compile(r'(가격|단가|price)_(\d+)', re.IGNORECASE)
+    
+    # 수량 패턴 먼저 찾기
+    quantity_cols = {}
+    for col_name in row.index:
+        if isinstance(col_name, str):
+            qty_match = quantity_pattern.search(col_name)
+            if qty_match:
+                try:
+                    qty = int(qty_match.group(2))
+                    quantity_cols[qty] = col_name
+                except ValueError:
+                    continue
+    
+    # 각 수량에 맞는 가격 찾기
+    for qty, qty_col in quantity_cols.items():
+        # 1. 같은 숫자를 가진 가격 열 찾기 (예: '수량_100'에 대한 '가격_100')
+        price_col = None
+        for col_name in row.index:
+            if isinstance(col_name, str):
+                price_match = price_pattern.search(col_name)
+                if price_match and price_match.group(2) == str(qty):
+                    price_col = col_name
+                    break
+        
+        # 2. 가격 열이 있으면 값 추출
+        if price_col and pd.notna(row[price_col]) and row[price_col] != '-':
+            try:
+                price = float(row[price_col])
+                quantity_price_pairs[qty] = {'price': price, 'price_with_vat': price}
+            except (ValueError, TypeError):
+                logger.debug(f"Failed to parse price from column '{price_col}'")
+    
+    if quantity_price_pairs:
+        logger.info(f"Found {len(quantity_price_pairs)} quantity-price pairs from pattern matching")
+        return quantity_price_pairs
+
+    # Check if there's a link but no data - provide more helpful message
+    kogift_link_cols = ['고려기프트 상품링크', '고려기프트상품링크', '고려기프트 링크', 'kogift_link', '고려 링크']
+    has_kogift_link = False
+    for link_col in kogift_link_cols:
+        if link_col in row and pd.notna(row[link_col]) and row[link_col] != '-':
+            has_kogift_link = True
+            break
+    
+    if has_kogift_link:
+        product_name = row.get('상품명', 'Unknown')
+        logger.warning(f"Product '{product_name}': Has Kogift link but no quantity-price data found. Data might not have been crawled properly.")
+    else:
+        logger.debug("No Kogift link found, likely not a Kogift product.")
+    
+    return None
 
 def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
     """
@@ -397,14 +451,32 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
         
         # Map column names (accounting for variations in column names)
         column_mapping = {
-            '기본수량(1)': ['기본수량(1)', '기본수량', '수량', '본사 기본수량'],
-            '판매단가(V포함)': ['판매단가(V포함)', '판매단가1(VAT포함)'],
-            '고려기프트 상품링크': ['고려기프트 상품링크', '고려기프트상품링크', '고려기프트 링크', '고려 링크'],
-            '기본수량(2)': ['기본수량(2)', '고려 기본수량', '고려기프트 기본수량'],
-            '판매가(V포함)(2)': ['판매가(V포함)(2)', '판매단가(V포함)(2)', '고려 판매가(V포함)', '고려기프트 판매가', '판매단가2(VAT포함)'],
-            '가격차이(2)': ['가격차이(2)', '고려 가격차이'],
-            '가격차이(2)(%)': ['가격차이(2)(%)', '고려 가격차이(%)', '고려 가격 차이(%)'],
-            '고려기프트 이미지': ['고려기프트 이미지', '고려기프트이미지', '고려 이미지', 'kogift_image']
+            # 기본 수량 및 가격 칼럼
+            '기본수량(1)': ['기본수량(1)', '기본수량', '수량', '본사 기본수량', '본사수량'],
+            '판매단가(V포함)': ['판매단가(V포함)', '판매단가1(VAT포함)', '판매단가(VAT포함)', '본사 판매단가'],
+            
+            # 링크 관련 칼럼
+            '본사상품링크': ['본사상품링크', '본사링크', '해오름링크', '본사 링크'],
+            '고려기프트 상품링크': ['고려기프트 상품링크', '고려기프트상품링크', '고려기프트 링크', '고려 링크', 'kogift_link'],
+            '네이버 쇼핑 링크': ['네이버 쇼핑 링크', '네이버 링크', '네이버쇼핑링크', '네이버 링크'],
+            
+            # 고려기프트 관련 칼럼
+            '기본수량(2)': ['기본수량(2)', '고려 기본수량', '고려기프트 기본수량', '고려기프트수량'],
+            '판매가(V포함)(2)': ['판매가(V포함)(2)', '판매단가(V포함)(2)', '고려 판매가(V포함)', '고려기프트 판매가', '판매단가2(VAT포함)', '고려기프트 판매단가'],
+            '가격차이(2)': ['가격차이(2)', '고려 가격차이', '고려기프트 가격차이'],
+            '가격차이(2)(%)': ['가격차이(2)(%)', '고려 가격차이(%)', '고려 가격 차이(%)', '가격차이(2) %'],
+            
+            # 네이버 관련 칼럼
+            '기본수량(3)': ['기본수량(3)', '네이버 기본수량'],
+            '판매단가(V포함)(3)': ['판매단가(V포함)(3)', '판매단가3 (VAT포함)', '네이버 판매단가'],
+            '가격차이(3)': ['가격차이(3)', '네이버 가격차이'],
+            '가격차이(3)(%)': ['가격차이(3)(%)', '네이버가격차이(%)', '네이버 가격차이(%)'],
+            '공급사명': ['공급사명', '네이버 공급사명'],
+            
+            # 이미지 관련 칼럼
+            '본사 이미지': ['본사 이미지', '해오름(이미지링크)', '해오름이미지', '본사이미지URL', '해오름 이미지 URL'],
+            '고려기프트 이미지': ['고려기프트 이미지', '고려기프트이미지', '고려 이미지', 'kogift_image', '고려기프트(이미지링크)'],
+            '네이버 이미지': ['네이버 이미지', '네이버쇼핑(이미지링크)', '네이버이미지']
         }
         
         # Find which variant of each column exists in the DataFrame
@@ -413,28 +485,53 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
             for variant in variants:
                 if variant in df.columns:
                     columns_found[key] = variant
+                    logger.debug(f"Found column '{variant}' for key '{key}'")
                     break
+            if key not in columns_found:
+                logger.warning(f"Could not find any variant for column '{key}'")
         
         # Log found columns
         logger.info(f"Found column mappings: {columns_found}")
+        logger.info(f"Total columns in DataFrame: {len(df.columns)}")
+        logger.debug(f"All DataFrame columns: {list(df.columns)}")
         
         # For upload files, the structure may be different and may not have all required columns
         required_columns_by_type = {
-            'result': ['기본수량(1)', '고려기프트 상품링크'],
-            'upload': ['기본수량(1)', '고려기프트 상품링크']  # 업로드 파일에서도 동일한 칼럼 찾기 (매핑된 이름)
+            'result': ['기본수량(1)', '고려기프트 상품링크', '고려기프트 이미지'],
+            'upload': ['본사 기본수량', '고려 링크', '고려기프트(이미지링크)']  # upload 파일의 실제 칼럼명 사용
         }
         
         # Get required columns for this file type
         required_columns = required_columns_by_type.get(file_type, ['기본수량(1)', '고려기프트 상품링크'])
         
-        # Check for required columns
-        missing_columns = [col for col in required_columns if col not in columns_found]
-        if missing_columns:
-            # 파일 타입에 따라 다른 경고 메시지 표시
-            if file_type == 'result':
-                logger.warning(f"result 파일에서 필요한 칼럼이 없습니다: {missing_columns}. 가능한 칼럼으로 진행합니다.")
-            else:
-                logger.warning(f"upload 파일에서 필요한 칼럼이 없습니다: {missing_columns}. 가능한 칼럼으로 진행합니다.")
+        # Check for required columns based on file type
+        missing_columns = []
+        if file_type == 'result':
+            # result 파일의 경우 매핑된 표준 칼럼명으로 체크
+            missing_columns = [col for col in required_columns_by_type['result'] if col not in columns_found]
+            if missing_columns:
+                logger.warning(f"Result 파일에서 필요한 칼럼이 없습니다: {missing_columns}. 가능한 칼럼으로 진행합니다.")
+        elif file_type == 'upload':
+            # upload 파일의 경우 실제 칼럼명으로 체크 (엑셀에 있는 그대로)
+            upload_columns = required_columns_by_type['upload']
+            missing_upload_columns = []
+            for col in upload_columns:
+                found = False
+                for variants in column_mapping.values():
+                    if col in variants and any(variant in df.columns for variant in variants):
+                        found = True
+                        break
+                if not found:
+                    missing_upload_columns.append(col)
+            
+            if missing_upload_columns:
+                logger.warning(f"Upload 파일에서 필요한 칼럼이 없습니다: {missing_upload_columns}. 가능한 칼럼으로 진행합니다.")
+            missing_columns = missing_upload_columns
+        else:
+            logger.warning(f"알 수 없는 파일 타입: {file_type}. 기본 칼럼 요구사항으로 진행합니다.")
+            missing_columns = [col for col in required_columns if col not in columns_found]
+            if missing_columns:
+                logger.warning(f"필요한 칼럼이 없습니다: {missing_columns}. 가능한 칼럼으로 진행합니다.")
         
         # Find column indices for updating (1-indexed for openpyxl)
         column_indices = {}
@@ -539,7 +636,16 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
             # 이미지 데이터 검증
             if kogift_image_col and kogift_image_col in row:
                 image_data = parse_complex_value(row[kogift_image_col])
-                if isinstance(image_data, dict):
+                
+                # Upload 파일 형식 처리 (이미지 링크 문자열)
+                if is_upload_file and isinstance(image_data, str) and (image_data.startswith('http') or '/' in image_data):
+                    # Upload 파일의 경우 이미지 링크 문자열을 그대로 유지
+                    logger.debug(f"Row {idx+1}: Upload file image link preserved: {image_data[:50]}...")
+                    # 이미지 처리 필요 없음 - 링크 형식 유지
+                    correct_path_found = True  # 처리 완료로 표시
+                
+                # Result 파일 형식 처리 (이미지 데이터 딕셔너리)
+                elif isinstance(image_data, dict):
                     local_path = image_data.get('local_path') or image_data.get('image_path')
                     image_url = image_data.get('url')
                     
@@ -561,20 +667,42 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
                             logger.info(f"Row {idx+1}: Found replacement Kogift image path: {new_local_path}")
                             image_data['local_path'] = new_local_path
                             image_data['original_path'] = new_local_path # Update original_path too
+                            
+                            # Excel 셀 업데이트 (1-indexed row, 칼럼 인덱스)
+                            kogift_image_idx = real_column_indices.get('고려기프트 이미지')
+                            if kogift_image_idx:
+                                if is_result_file:
+                                    # Result 파일의 경우 딕셔너리를 JSON 문자열로 변환
+                                    try:
+                                        json_str = json.dumps(image_data, ensure_ascii=False)
+                                        sheet.cell(row=idx+2, column=kogift_image_idx).value = json_str
+                                        logger.debug(f"Updated Excel cell with new image data: {new_local_path}")
+                                    except Exception as e:
+                                        logger.error(f"Error updating Excel cell: {e}")
+                                else:
+                                    # Upload 파일의 경우 URL만 사용
+                                    sheet.cell(row=idx+2, column=kogift_image_idx).value = image_url or new_local_path
+                            
                             correct_path_found = True 
-                            # If you need to update the df for subsequent saves:
-                            # df.at[idx, kogift_image_col] = image_data 
                         else:
                             logger.warning(f"Row {idx+1}: Could not find a valid local Kogift image. Will use URL only.")
                             wrong_image_count += 1
-                            # Instead of clearing the cell, keep the URL at least
-                            # Only create a warning but don't clear data
                             
-                    # Keep processing even if image path wasn't found
-                    # Remove this check to allow price processing even with image issues
-                    # if not correct_path_found and (local_path and isinstance(local_path, str)): 
-                    #     logger.warning(f"Row {idx+1}: Skipping price update for Kogift item due to unresolved image path issue: {local_path}")
-                    #     continue
+                            # URL만 있는 경우, 파일 형식에 따라 다르게 처리
+                            if image_url:
+                                kogift_image_idx = real_column_indices.get('고려기프트 이미지')
+                                if kogift_image_idx:
+                                    if is_upload_file:
+                                        # Upload 파일의 경우 URL 문자열만 저장
+                                        sheet.cell(row=idx+2, column=kogift_image_idx).value = image_url
+                                    else:
+                                        # Result 파일의 경우 URL만 포함된 딕셔너리 저장
+                                        image_data = {'url': image_url, 'source': 'kogift'}
+                                        try:
+                                            json_str = json.dumps(image_data, ensure_ascii=False)
+                                            sheet.cell(row=idx+2, column=kogift_image_idx).value = json_str
+                                        except Exception as e:
+                                            logger.error(f"Error updating Excel cell with URL: {e}")
 
             # 기본수량 확인
             base_quantity = None
