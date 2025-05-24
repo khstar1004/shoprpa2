@@ -1162,10 +1162,10 @@ class EnhancedImageMatcher:
             combined_score = min(1.0, combined_score * (1 + consensus_boost))
             logger.debug(f"Consensus boost: {consensus_boost:.2f} (std={score_std:.2f})")
             
-        logger.debug(f"Combined similarity: {combined_score:.4f} (SIFT={sift_score:.2f}, AKAZE={akaze_score:.2f}, Deep={deep_score:.2f}, ORB={orb_score:.2f})")
+        logger.debug(f"Combined similarity: {float(combined_score):.4f} (SIFT={float(sift_score):.2f}, AKAZE={float(akaze_score):.2f}, Deep={float(deep_score):.2f}, ORB={float(orb_score):.2f})")
         
-        return combined_score, scores
-        
+        return float(combined_score), scores
+    
     def calculate_similarity(self, img_path1: str, img_path2: str, 
                            weights: Optional[Dict[str, float]] = None) -> float:
         """
@@ -1248,7 +1248,7 @@ class EnhancedImageMatcher:
             
         except Exception as e:
             elapsed = time.time() - start_time
-            logging.error(f"이미지 유사도 계산 오류 ({elapsed*1000:.1f}ms): {e}")
+            logging.error(f"이미지 유사도 계산 오류 ({elapsed*1000:.1f}ms): {str(e)}")
             logging.debug(f"오류 상세 - 이미지1: {img_path1}, 이미지2: {img_path2}")
             return 0.0
             
