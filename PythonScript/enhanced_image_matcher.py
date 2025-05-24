@@ -1222,7 +1222,12 @@ class EnhancedImageMatcher:
             
             # === 캐시에 저장 ===
             if self.feature_cache.enabled:
-                self.feature_cache.put(cache_key, "similarity", np.array([similarity_score]))
+                try:
+                    # Ensure similarity_score is a scalar value before caching
+                    cache_value = float(similarity_score) if not isinstance(similarity_score, (list, tuple, np.ndarray)) else float(similarity_score[0])
+                    self.feature_cache.put(cache_key, "similarity", cache_value)
+                except Exception as cache_error:
+                    logging.debug(f"Failed to cache similarity result: {cache_error}")
             
             elapsed = time.time() - start_time
             

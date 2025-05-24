@@ -18,7 +18,7 @@ python_script_dir = os.path.join(script_dir, 'PythonScript')
 sys.path.insert(0, python_script_dir)
 
 try:
-    from image_integration import filter_images_by_similarity
+    from PythonScript.image_integration import filter_images_by_similarity
 except ImportError as e:
     print(f"Import error: {e}")
     print("Please make sure you're running this from the correct directory")
@@ -34,7 +34,7 @@ def test_naver_filtering():
     config.set('ImageFiltering', 'similarity_threshold', '0.4')
     config.set('ImageFiltering', 'naver_similarity_threshold', '0.01')
     config.set('ImageFiltering', 'kogift_similarity_threshold', '0.4')
-    config.set('ImageFiltering', 'haereum_similarity_threshold', '0.3')
+    # 해오름 이미지는 무조건 유지됨 (임계값 설정 불필요)
     
     # 테스트용 DataFrame 생성
     test_data = {
@@ -103,6 +103,8 @@ def test_naver_filtering():
         print("=== 필터링 후 데이터 ===")
         naver_count_before = sum(1 for i in range(len(df)) if isinstance(df.at[i, '네이버 이미지'], dict))
         naver_count_after = sum(1 for i in range(len(filtered_df)) if isinstance(filtered_df.at[i, '네이버 이미지'], dict))
+        haereum_count_before = sum(1 for i in range(len(df)) if isinstance(df.at[i, '본사 이미지'], dict))
+        haereum_count_after = sum(1 for i in range(len(filtered_df)) if isinstance(filtered_df.at[i, '본사 이미지'], dict))
         
         for idx, row in filtered_df.iterrows():
             print(f"상품 {idx+1}: {row['상품명'][:30]}...")
@@ -115,9 +117,16 @@ def test_naver_filtering():
             print()
         
         print("=== 결과 요약 ===")
+        print(f"해오름 이미지 - 필터링 전: {haereum_count_before}개")
+        print(f"해오름 이미지 - 필터링 후: {haereum_count_after}개")
         print(f"네이버 이미지 - 필터링 전: {naver_count_before}개")
         print(f"네이버 이미지 - 필터링 후: {naver_count_after}개")
         
+        if haereum_count_after == haereum_count_before:
+            print("✅ 성공: 해오름 이미지가 필터링되지 않고 모두 유지되었습니다!")
+        else:
+            print("❌ 실패: 해오름 이미지가 필터링되었습니다.")
+            
         if naver_count_after > 0:
             print("✅ 성공: 네이버 이미지가 필터링되지 않고 유지되었습니다!")
             print("   0.0 유사도를 가진 네이버 이미지도 보존되어 엑셀에 표시될 것입니다.")
@@ -146,12 +155,11 @@ def test_config_reading():
         if 'ImageFiltering' in config:
             print("✅ ImageFiltering 섹션이 존재합니다")
             
-            # 각 설정값 확인
+            # 각 설정값 확인 (haereum_similarity_threshold 제외)
             settings = [
                 ('similarity_threshold', '0.4'),
                 ('naver_similarity_threshold', '0.01'),
-                ('kogift_similarity_threshold', '0.4'), 
-                ('haereum_similarity_threshold', '0.3')
+                ('kogift_similarity_threshold', '0.4')
             ]
             
             for key, expected in settings:
@@ -162,6 +170,12 @@ def test_config_reading():
                         print(f"    ✅ 네이버 임계값이 매우 낮게 설정됨 (필터링 방지)")
                 else:
                     print(f"  ❌ {key} 설정이 없습니다")
+                    
+            # haereum_similarity_threshold가 제거되었는지 확인
+            if not config.has_option('ImageFiltering', 'haereum_similarity_threshold'):
+                print("  ✅ haereum_similarity_threshold 설정이 제거됨 (해오름 이미지는 무조건 유지)")
+            else:
+                print("  ⚠️ haereum_similarity_threshold 설정이 아직 존재함")
         else:
             print("❌ ImageFiltering 섹션이 없습니다")
             
@@ -185,7 +199,7 @@ def main():
     test_naver_filtering()
     
     print("\n=== 테스트 완료 ===")
-    print("실제 RPA 실행 시 네이버 이미지가 엑셀에 표시되는지 확인하세요.")
+    print("실제 RPA 실행 시 해오름 이미지가 무조건 유지되고 네이버 이미지가 엑셀에 표시되는지 확인하세요.")
 
 if __name__ == "__main__":
     main() 

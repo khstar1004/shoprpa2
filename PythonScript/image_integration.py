@@ -1055,6 +1055,17 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         
         logging.info(f"이미지 매칭 유사도 임계값 (for find_best_image_matches): {initial_matching_threshold}")
         
+        # Initialize enhanced matcher for image similarity calculations
+        enhanced_matcher = None
+        try:
+            if ENHANCED_MATCHER_AVAILABLE:
+                enhanced_matcher = EnhancedImageMatcher(config)
+                use_gpu = getattr(enhanced_matcher, 'use_gpu', False)
+                logging.info(f"✅ 고급 이미지 매처 초기화 완료 (GPU: {use_gpu})")
+        except Exception as e:
+            logging.warning(f"⚠️ 고급 이미지 매처 초기화 실패: {e}")
+            logging.warning("기본 매칭 방식을 사용합니다.")
+
         # 최적 매치 찾기 (일관성 보장)
         best_matches = find_best_image_matches(
             product_names,
@@ -1299,12 +1310,38 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
                             if isinstance(meta_prod_page_url, str) and meta_prod_page_url.startswith(('http://', 'https://')) and not (('phinf.pstatic.net' in meta_prod_page_url) or any(meta_prod_page_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
                                 product_page_url_for_dict = meta_prod_page_url
                         
+                        # Calculate actual image similarity for Naver images if needed
+                        final_naver_score = naver_score
+                        needs_recalc = naver_image_info_from_metadata.get('needs_image_similarity_calc', False)
+                        
+                        if needs_recalc and config.getboolean('ImageFiltering', 'enable_naver_image_similarity', fallback=True):
+                            # Use enhanced image matcher to calculate real similarity
+                            if enhanced_matcher and hasattr(enhanced_matcher, 'calculate_similarity') and os.path.exists(haereum_path):
+                                naver_local_path = naver_image_info_from_metadata.get('path', naver_path)
+                                if naver_local_path and os.path.exists(naver_local_path):
+                                    try:
+                                        image_similarity = enhanced_matcher.calculate_similarity(haereum_path, naver_local_path)
+                                        logger.info(f"🔍 실제 이미지 유사도 계산 - {product_name}: {image_similarity:.3f} (기존 텍스트 기반: {naver_score:.3f})")
+                                        final_naver_score = image_similarity
+                                    except Exception as e:
+                                        logger.warning(f"네이버 이미지 유사도 계산 실패 - {product_name}: {e}")
+                                        final_naver_score = naver_score  # Keep original score on error
+                                else:
+                                    logger.warning(f"네이버 이미지 파일 없음 - {product_name}: {naver_local_path}")
+                                    final_naver_score = naver_score  # Keep original score if file missing
+                            else:
+                                logger.debug(f"Enhanced matcher 사용 불가 - {product_name}: 텍스트 유사도 유지")
+                                final_naver_score = naver_score  # Keep original score if enhanced matcher unavailable
+                        else:
+                            # Use original score if recalculation not needed or disabled
+                            final_naver_score = naver_score
+                        
                         image_data = {
                             'url': current_naver_image_url, 
                             'local_path': naver_image_info_from_metadata.get('path', naver_path),
                             'source': 'naver',
                             'product_name': product_name,
-                            'similarity': naver_score,  
+                            'similarity': final_naver_score,  # Use calculated similarity
                             'original_path': naver_path,
                             'product_page_url': product_page_url_for_dict
                         }
@@ -1733,16 +1770,14 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
         # Specific threshold for Kogift images
         kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.4)
         
-        # Specific threshold for Haereum images
-        haereum_similarity_threshold = config.getfloat('ImageFiltering', 'haereum_similarity_threshold', fallback=0.3)
+        # 해오름 기프트(본사) 이미지는 임계값 필터링을 하지 않음 (무조건 유지)
         
     except (configparser.NoSectionError, configparser.NoOptionError):
         similarity_threshold = 0.4
         naver_similarity_threshold = 0.1  # Very lenient for Naver
         kogift_similarity_threshold = 0.4
-        haereum_similarity_threshold = 0.3
     
-    logger.info(f"Using similarity thresholds - General: {similarity_threshold}, Naver: {naver_similarity_threshold}, Kogift: {kogift_similarity_threshold}, Haereum: {haereum_similarity_threshold}")
+    logger.info(f"Using similarity thresholds - General: {similarity_threshold}, Naver: {naver_similarity_threshold}, Kogift: {kogift_similarity_threshold}, Haereum: Always kept (no filtering)")
     
     # Create a copy of the DataFrame to avoid modifying the original
     filtered_df = df.copy()
@@ -1770,26 +1805,18 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                         score = 0.0
                 
                 # Determine the appropriate threshold for this image type
-                if '네이버' in col_name:
+                # 해오름 기프트(본사) 이미지는 무조건 유지 (필터링하지 않음)
+                if '본사' in col_name:
+                    logger.debug(f"Keeping {col_name} for row {idx} - Haereum images are always kept (score: {score:.3f})")
+                    continue  # 해오름 이미지는 필터링하지 않고 건너뜀
+                elif '네이버' in col_name:
                     threshold = naver_similarity_threshold
-                    # Special handling for Naver images
-                    if score == 0.0:
-                        # If Naver image has 0.0 score, check if it has a valid local_path
-                        local_path = image_data.get('local_path')
-                        if local_path and os.path.exists(str(local_path)):
-                            # If the image file exists, give it a minimal score to keep it
-                            score = 0.05  # Minimal but above threshold
-                            image_data['similarity'] = score
-                            filtered_df.at[idx, col_name] = image_data
-                            logger.info(f"Row {idx}: Boosting Naver image score from 0.0 to {score} due to valid local file")
                 elif '고려기프트' in col_name:
                     threshold = kogift_similarity_threshold
-                elif '본사' in col_name:
-                    threshold = haereum_similarity_threshold
                 else:
                     threshold = similarity_threshold
                 
-                # Filter out low similarity scores
+                # Filter out low similarity scores (해오름 이미지 제외)
                 if score < threshold:
                     logger.info(f"Filtering out {col_name} for row {idx} due to low similarity score: {score:.3f} < {threshold:.3f}")
                     filtered_df.at[idx, col_name] = None

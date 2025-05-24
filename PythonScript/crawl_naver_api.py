@@ -24,17 +24,17 @@ import sys
 # Import based on how the file is run
 try:
     # When imported as module
-    from utils import (
+    from .utils import (
         download_image_async, get_async_httpx_client, generate_keyword_variations, 
-        load_config, tokenize_korean, jaccard_similarity, generate_product_name_hash
+        load_config, tokenize_korean, generate_product_name_hash
     )
-    from image_utils import remove_background_async
-    from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
+    from .image_utils import remove_background_async
+    from .crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
 except ImportError:
     # When run directly as script
     from utils import (
         download_image_async, get_async_httpx_client, generate_keyword_variations, 
-        load_config, tokenize_korean, jaccard_similarity
+        load_config, tokenize_korean, generate_product_name_hash
     )
     from image_utils import remove_background_async
     from crawling_UPrice_v2_naver import extract_quantity_prices, get_quantities_from_excel
@@ -305,44 +305,25 @@ async def crawl_naver(original_query: str, client: httpx.AsyncClient, config: co
                         logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to zero/invalid price: '{title}' (Price String: '{price_str}')")
                         continue
 
-                    # --- Enhanced Similarity Check ---
+                    # --- Basic Filtering Check ---
+                    # Since we use hash-based and image-based matching,
+                    # just do basic filtering to avoid obviously irrelevant results
                     title_tokens = tokenize_korean(title)
-                    similarity = jaccard_similarity(original_query_tokens, title_tokens)
-                    
-                    # FIXED: Improved similarity calculation with more weight on exact matches
-                    # Enhanced weighting based on token length and exact matches
-                    weight = 1.0
                     common_tokens = set(original_query_tokens) & set(title_tokens)
                     
-                    # Add weight for longer common tokens (more significant matches)
-                    for token in common_tokens:
-                        if len(token) >= 4:  # 4+ character tokens get more weight
-                            weight += 0.15
-                        elif len(token) >= 3: # 3 character tokens get some weight
-                            weight += 0.1
-                            
-                    # Check for exact word matches (higher confidence)
-                    original_words = ' '.join(original_query_tokens).split()
-                    title_words = ' '.join(title_tokens).split()
-                    exact_word_matches = set(original_words) & set(title_words)
+                    # Simple check: at least one token in common or exact word match
+                    has_common_token = len(common_tokens) > 0
+                    original_words = set(' '.join(original_query_tokens).split())
+                    title_words = set(' '.join(title_tokens).split())
+                    has_exact_word = len(original_words & title_words) > 0
                     
-                    # Add weight for exact word matches
-                    weight += len(exact_word_matches) * 0.2
-                    
-                    # Apply weight to similarity
-                    weighted_similarity = similarity * weight
-                    
-                    # FIXED: Log more useful information about similarity calculation
-                    if weighted_similarity >= initial_sim_threshold * 0.8:  # Log near-matches too
-                        logger.debug(f"🟢 Item #{item_idx+1} similarity: Jaccard={similarity:.2f}, Weight={weight:.2f}, " +
-                                   f"Final={weighted_similarity:.2f}, Threshold={initial_sim_threshold:.2f}, " +
-                                   f"Common={len(common_tokens)}, ExactWords={len(exact_word_matches)}")
-                    
-                    # FIXED: Use stricter threshold
-                    if weighted_similarity < initial_sim_threshold:
-                        logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') due to low weighted similarity ({weighted_similarity:.2f} < {initial_sim_threshold}): '{title}'")
+                    if not (has_common_token or has_exact_word):
+                        logger.debug(f"🟢 Skipping item #{item_idx+1} (Keyword: '{query}') - no common tokens: '{title}'")
                         continue
-                    # --- End Enhanced Similarity Check ---
+                    
+                    # Assign a placeholder similarity - will be recalculated by image matcher
+                    weighted_similarity = 0.5  # Neutral score for all passed items
+                    # --- End Basic Filtering Check ---
 
                     seller = item.get("mallName", "")
                     link = item.get("link", "")
@@ -1293,13 +1274,9 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     except:
         min_similarity = 0.15
     
-    # Check the first item's similarity
+    # Get the first item (no longer filtering by text similarity since we use image matching)
     first_item = naver_data[0]
-    similarity = first_item.get('initial_similarity', 0)
-    
-    if similarity < min_similarity:
-        logger.warning(f"🟢 Skipping Naver result for '{product_name}' due to low similarity score: {similarity:.3f} < {min_similarity:.3f}")
-        return None
+    initial_similarity = first_item.get('initial_similarity', 0.5)  # Use neutral score from basic filtering
     
     # Return the first Naver result with the original product name
     result_data = {
@@ -1310,7 +1287,7 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         'link': first_item.get('link'),
         'seller_link': first_item.get('mallProductUrl'),
         'source': 'naver',
-        'initial_similarity': similarity,
+        'initial_similarity': initial_similarity,
         'is_naver_site': False,
         'has_quantity_pricing': False,  # Default values for when we skip crawling
         'quantity_prices': {},
@@ -1512,13 +1489,16 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
         logger.error(f"Error processing image for '{product_name}': {e}")
     
     # Always include image information in result data, even if download failed
+    # Note: similarity will be calculated later by enhanced image matcher
     image_data_for_df = {
         'url': image_api_url,
         'local_path': abs_local_path,
         'original_path': abs_local_path,
         'source': 'naver',
         'product_name': product_name,
-        'similarity': max(similarity, 0.1),  # 최소 유사도 보장 (필터링 방지)
+        'similarity': 0.0,  # Will be recalculated by image matcher based on actual image similarity
+        'text_similarity': None,  # No longer using text-based similarity
+        'needs_image_similarity_calc': True,  # Flag to indicate this needs recalculation
         'type': 'naver',
         'product_id': first_item.get('productId')
     }
@@ -1536,13 +1516,15 @@ async def _process_single_naver_row(idx, row, config, client, api_semaphore, nav
     # Add 공급사명 (supplier name) explicitly to ensure it's properly propagated
     result_data['공급사명'] = first_item.get('mallName', first_item.get('seller_name', ''))
     
-    # Create 네이버 이미지 entry
+    # Create 네이버 이미지 entry - similarity will be recalculated by image matcher
     result_data['네이버 이미지'] = {
         'url': image_api_url,
         'local_path': abs_local_path,
         'source': 'naver',
-        'score': similarity,
-        'similarity': max(similarity, 0.1),  # 최소 유사도 보장 (필터링 방지)
+        'score': 0.0,  # No longer using text-based scoring
+        'similarity': 0.0,  # Will be recalculated by enhanced image matcher
+        'text_similarity': None,  # No longer using text-based similarity
+        'needs_image_similarity_calc': True,  # Flag to indicate this needs recalculation
         'product_id': first_item.get('productId'),
         'original_path': abs_local_path
     }
