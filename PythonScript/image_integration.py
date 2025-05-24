@@ -220,6 +220,11 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                 filename = os.path.basename(img_path)
                 file_root, file_ext = os.path.splitext(filename)
                 
+                # Extract product hash from filename
+                product_hash = extract_product_hash_from_filename(filename)
+                if product_hash:
+                    logging.debug(f"Extracted hash '{product_hash}' from filename '{filename}'")
+                
                 # Create metadata dictionary
                 metadata = {
                     'path': img_path,
@@ -231,7 +236,8 @@ def prepare_image_metadata(image_dir: Path, prefix: str, prefer_original: bool =
                     'nobg_jpg_path': nobg_jpg_path,
                     'nobg_png_path': nobg_png_path,
                     'source': prefix.rstrip('_'),
-                    'base_name': base_name
+                    'base_name': base_name,
+                    'product_hash': product_hash  # Add product hash to metadata
                 }
                 
                 # Store metadata in image_info dictionary
@@ -401,8 +407,12 @@ def find_best_image_matches(product_names: List[str],
             # === 단계 2: 이미지 유사도 검증 (해시 매칭 후보가 있을 때만) ===
             final_matches = {'haereum': None, 'kogift': None, 'naver': None}
             
-            if total_hash_candidates > 0 and enhanced_matcher:
-                logging.debug(f"🔍 이미지 유사도 검증 시작 (임계값: {similarity_threshold})")
+            if total_hash_candidates > 0:
+                # enhanced_matcher가 없어도 해시 매칭은 수행
+                if enhanced_matcher:
+                    logging.debug(f"🔍 이미지 유사도 검증 시작 (임계값: {similarity_threshold})")
+                else:
+                    logging.debug(f"🔍 Enhanced matcher 없음 - 해시 매칭만으로 진행")
                 
                 # 기준 이미지 선택 (해오름 > 고려기프트 > 네이버 순)
                 reference_path = None
@@ -421,7 +431,22 @@ def find_best_image_matches(product_names: List[str],
                     reference_path = ref_info.get('path', ref_path)
                     reference_source = 'naver'
                 
-                if reference_path and os.path.exists(reference_path):
+                # Enhanced matcher가 없으면 해시 매칭만으로 확정
+                if not enhanced_matcher:
+                    # 해시가 일치하는 모든 이미지를 매칭으로 확정
+                    for source in ['haereum', 'kogift', 'naver']:
+                        if hash_candidates[source]:
+                            path, info = hash_candidates[source][0]
+                            final_matches[source] = (path, info)
+                            if source == 'haereum':
+                                used_haereum.add(path)
+                            elif source == 'kogift':
+                                used_kogift.add(path)
+                            elif source == 'naver':
+                                used_naver.add(path)
+                            logging.info(f"✅ {source} 해시 매칭 성공: {os.path.basename(path)}")
+                
+                elif reference_path and os.path.exists(reference_path):
                     logging.debug(f"📍 기준 이미지: {reference_source} - {os.path.basename(reference_path)}")
                     
                     # 기준 이미지의 매칭 확정
@@ -1717,8 +1742,8 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
                 if not isinstance(image_data, dict):
                     continue
                 
-                # Get similarity score
-                score = image_data.get('score', 0.0)
+                # Get similarity score - check both 'similarity' and 'score' keys
+                score = image_data.get('similarity', image_data.get('score', 0.0))
                 
                 # Filter out low similarity scores
                 if score < similarity_threshold:
