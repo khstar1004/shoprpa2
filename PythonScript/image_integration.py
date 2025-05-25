@@ -1322,16 +1322,24 @@ def integrate_images(df: pd.DataFrame, config: configparser.ConfigParser) -> pd.
         if not available_haereum and haereum_images:
             # If all images are used but we still need more, reset and use them again
             available_haereum = list(haereum_images.keys())
-            logging.warning(f"All Haereum images have been used. Reusing images for remaining rows.")
+            remaining_rows = sum(1 for i in range(len(result_df)) if not isinstance(result_df.at[i, '본사 이미지'], dict))
+            logging.info(f"All {len(haereum_images)} Haereum images have been used. Reusing images for {remaining_rows} remaining rows to ensure complete coverage.")
         
         for idx in range(len(result_df)):
             if idx >= len(result_df):
                 continue
                 
             # Check if this row is missing a Haereum image
-            if not isinstance(result_df.at[idx, '본사 이미지'], dict):
-                product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Row {idx+1}"
-                logging.warning(f"Row {idx} ('{product_name}'): Missing Haereum image. Assigning random image.")
+            try:
+                haereum_img_value = result_df.at[idx, '본사 이미지']
+                if not isinstance(haereum_img_value, dict):
+                    product_name = result_df.at[idx, '상품명'] if '상품명' in result_df.columns else f"Row {idx+1}"
+                    logging.info(f"Row {idx} ('{product_name}'): Missing Haereum image. Assigning available image for complete coverage.")
+                else:
+                    continue  # Already has a valid image, skip to next row
+            except Exception as e:
+                logging.error(f"Error checking Haereum image for row {idx}: {e}")
+                product_name = f"Row {idx+1}"
                 
                 # Assign a random Haereum image
                 if available_haereum:

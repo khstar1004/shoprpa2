@@ -165,9 +165,18 @@ def filter_by_price_difference(file_path, config=None):
         # This means removing rows where ANY price difference is >= -1
         filter_conditions = []
         for col in price_diff_columns:
-            # Create condition for each column: values must be < -1 to keep
-            # Note: pd.NA and NaN values will be preserved (not filtered out)
-            filter_conditions.append((df[col] < -1) | df[col].isna())
+            # Convert column to numeric, handling string values safely
+            try:
+                # Convert to numeric, coercing errors to NaN
+                numeric_col = pd.to_numeric(df[col], errors='coerce')
+                # Create condition for each column: values must be < -1 to keep
+                # Note: pd.NA and NaN values will be preserved (not filtered out)
+                filter_conditions.append((numeric_col < -1) | numeric_col.isna())
+                logging.debug(f"Successfully converted column '{col}' to numeric for filtering")
+            except Exception as e:
+                logging.warning(f"Error converting column '{col}' to numeric: {e}. Treating all values as valid.")
+                # If conversion fails, keep all rows for this column
+                filter_conditions.append(pd.Series([True] * len(df), index=df.index))
         
         # Combine all conditions with logical AND
         if filter_conditions:

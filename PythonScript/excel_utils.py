@@ -2841,11 +2841,13 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.
                     # If no valid URL found, clear the value
                     if not url_found:
                         result_df.at[idx, naver_img_col] = ""
-                        logger.warning(f"Row {idx}: No valid Naver image URL found. Clearing value.")
+                        product_name = df_with_image_urls.at[idx, '상품명'] if '상품명' in df_with_image_urls.columns else 'Unknown'
+                        logger.info(f"Row {idx} (Product: '{product_name}'): No valid Naver image URL found. Clearing value to maintain data integrity.")
                 else:
                     # If no original data column, just clear the value
                     result_df.at[idx, naver_img_col] = ""
-                    logger.warning(f"Row {idx}: No Naver image data column. Clearing value.")
+                    product_name = df_with_image_urls.at[idx, '상품명'] if '상품명' in df_with_image_urls.columns else 'Unknown'
+                    logger.info(f"Row {idx} (Product: '{product_name}'): No Naver image data column available. Clearing value.")
             
             # For non-placeholder URLs that are already valid, keep them only if they're actual image URLs
             elif isinstance(img_url, str) and img_url.startswith(('http://', 'https://')):
@@ -2855,16 +2857,23 @@ def prepare_naver_image_urls_for_upload(df_with_image_urls: pd.DataFrame) -> pd.
                 else:
                     # It's a shopping link or other non-image URL, clear it
                     result_df.at[idx, naver_img_col] = ""
-                    logger.warning(f"Row {idx}: URL is not a Naver image URL. Clearing value: {img_url[:50]}...")
+                    product_name = df_with_image_urls.at[idx, '상품명'] if '상품명' in df_with_image_urls.columns else 'Unknown'
+                    logger.info(f"Row {idx} (Product: '{product_name}'): URL is not a valid Naver image URL. Clearing value: {img_url[:50]}...")
             else:
                 # Any other non-string or invalid value
                 result_df.at[idx, naver_img_col] = ""
-                logger.warning(f"Row {idx}: Invalid Naver image value. Clearing.")
+                product_name = df_with_image_urls.at[idx, '상품명'] if '상품명' in df_with_image_urls.columns else 'Unknown'
+                logger.info(f"Row {idx} (Product: '{product_name}'): Invalid Naver image value type. Clearing for data consistency.")
         
         except Exception as e:
             logger.error(f"Error processing row {idx} in prepare_naver_image_urls_for_upload: {e}")
             # On error, clear the value rather than keeping potentially bad data
-            result_df.at[idx, naver_img_col] = ""
+            try:
+                result_df.at[idx, naver_img_col] = ""
+                product_name = df_with_image_urls.at[idx, '상품명'] if '상품명' in df_with_image_urls.columns else 'Unknown'
+                logger.info(f"Row {idx} (Product: '{product_name}'): Cleared Naver image value due to processing error.")
+            except Exception as clear_error:
+                logger.error(f"Additional error while clearing row {idx}: {clear_error}")
     
     logger.info(f"Processed {processed_count} Naver image URLs for upload file. Fixed {placeholder_fixed} placeholder URLs.")
     return result_df

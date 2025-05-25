@@ -709,13 +709,14 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
             if quantity_col and quantity_col in row and pd.notna(row[quantity_col]):
                 try:
                     # 수량을 정수로 변환
-                    base_quantity = int(row[quantity_col])
+                    base_quantity = int(float(str(row[quantity_col]).strip()))  # 문자열 처리 강화
                     logger.info(f"Processing row {idx+1}: Product name: {row.get('상품명', 'Unknown')} with quantity {base_quantity}")
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid base quantity in row {idx+1}: {row.get(quantity_col)}")
+                except (ValueError, TypeError) as e:
+                    product_name = row.get('상품명', 'Unknown')
+                    logger.info(f"Row {idx+1} (Product: '{product_name}'): Invalid quantity format '{row.get(quantity_col)}'. Skipping quantity-price processing.")
                     continue
             else:
-                logger.debug(f"No base quantity found for row {idx+1}")
+                logger.debug(f"Row {idx+1}: No base quantity data available")
                 continue
             
             # 특별히 주시하는 경우: 수량이 100과 같이 작은 경우
@@ -725,10 +726,15 @@ def fix_excel_kogift_images(input_file, output_file=None, config_obj=None):
             quantity_prices = extract_quantity_prices_from_row(row.copy()) # Pass a copy to avoid SettingWithCopyWarning if row is a slice
             
             if not quantity_prices:
-                logger.warning(f"Row {idx+1} (Product: '{row.get('상품명', 'Unknown')}'): No valid crawled quantity-price data found. Continuing with available data.")
-                # Don't skip - continue with any available data
-                # continue
-                # Just continue to the next row, but don't exit the loop entirely
+                product_name = row.get('상품명', 'Unknown')
+                logger.info(f"Row {idx+1} (Product: '{product_name}'): No crawled quantity-price data available. Using existing price data if present.")
+                # Check if there's existing price data to preserve
+                existing_price = None
+                price2_idx = real_column_indices.get('판매가(V포함)(2)')
+                if price2_idx:
+                    existing_price = sheet.cell(row=idx+2, column=price2_idx).value
+                    if existing_price and str(existing_price).strip() not in ['', '-', 'None']:
+                        logger.info(f"Row {idx+1}: Preserving existing price data: {existing_price}")
                 continue
             
             # 로그 출력
