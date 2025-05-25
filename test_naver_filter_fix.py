@@ -34,14 +34,14 @@ def create_test_dataframe():
             {'url': 'http://test3.jpg', 'similarity': 0.85, 'source': 'haereum'}
         ],
         '고려기프트 이미지': [
-            {'url': 'http://kogift1.jpg', 'similarity': 0.60, 'source': 'kogift'},
-            {'url': 'http://kogift2.jpg', 'similarity': 0.20, 'source': 'kogift'},  # Low similarity - should be filtered
+            {'url': 'http://kogift1.jpg', 'similarity': 0.75, 'source': 'kogift'},  # 높은 유사도 - 유지됨
+            {'url': 'http://kogift2.jpg', 'similarity': 0.40, 'source': 'kogift'},  # 낮은 유사도 - 필터링됨 (0.65 미만)
             None
         ],
         '네이버 이미지': [
-            {'url': 'http://naver1.jpg', 'similarity': 0.50, 'source': 'naver'},
-            {'url': 'http://naver2.jpg', 'similarity': 0.10, 'source': 'naver'},  # Low similarity - should be filtered
-            {'url': 'http://naver3.jpg', 'similarity': 0.00, 'source': 'naver'}   # Very low similarity - should be filtered
+            {'url': 'http://naver1.jpg', 'similarity': 0.80, 'source': 'naver'},  # 높은 유사도 - 유지됨
+            {'url': 'http://naver2.jpg', 'similarity': 0.50, 'source': 'naver'},  # 중간 유사도 - 필터링됨 (0.70 미만)
+            {'url': 'http://naver3.jpg', 'similarity': 0.10, 'source': 'naver'}   # 낮은 유사도 - 필터링됨
         ],
         # Naver related columns
         '네이버 쇼핑 링크': [
@@ -100,12 +100,12 @@ def create_test_dataframe():
     return pd.DataFrame(test_data)
 
 def create_test_config():
-    """Create a test configuration"""
+    """Create a test configuration for production-level strict filtering"""
     config = configparser.ConfigParser()
     config.add_section('ImageFiltering')
-    config.set('ImageFiltering', 'similarity_threshold', '0.4')
-    config.set('ImageFiltering', 'naver_similarity_threshold', '0.3')
-    config.set('ImageFiltering', 'kogift_similarity_threshold', '0.25')
+    config.set('ImageFiltering', 'similarity_threshold', '0.75')  # 프로덕션 수준 임계값
+    config.set('ImageFiltering', 'naver_similarity_threshold', '0.70')  # 네이버 엄격한 기준
+    config.set('ImageFiltering', 'kogift_similarity_threshold', '0.65')  # 고려기프트 엄격한 기준
     
     return config
 
@@ -144,37 +144,37 @@ def test_naver_filter_fix():
     # Verify results
     print("\n--- VERIFICATION ---")
     
-    # Check row 0 (should keep Naver data - similarity 0.50 >= 0.3)
+    # Check row 0 (should keep Naver data - similarity 0.80 >= 0.70)
     naver_img_0 = filtered_df.at[0, '네이버 이미지']
     naver_link_0 = filtered_df.at[0, '네이버 쇼핑 링크']
-    print(f"Row 0 - Naver image kept: {naver_img_0 is not None}")
+    print(f"Row 0 - Naver image kept: {naver_img_0 is not None} (similarity 0.80 >= 0.70)")
     print(f"Row 0 - Naver link kept: {naver_link_0 != '-'}")
     
-    # Check row 1 (should clear Naver data - similarity 0.10 < 0.3)
+    # Check row 1 (should clear Naver data - similarity 0.50 < 0.70)
     naver_img_1 = filtered_df.at[1, '네이버 이미지']
     naver_link_1 = filtered_df.at[1, '네이버 쇼핑 링크']
     supplier_1 = filtered_df.at[1, '공급사명']
     price_1 = filtered_df.at[1, '판매단가(V포함)(3)']
     
-    print(f"Row 1 - Naver image filtered: {naver_img_1 is None}")
+    print(f"Row 1 - Naver image filtered: {naver_img_1 is None} (similarity 0.50 < 0.70)")
     print(f"Row 1 - Naver link cleared: {naver_link_1 == '-'}")
     print(f"Row 1 - Supplier cleared: {supplier_1 == '-'}")
     print(f"Row 1 - Price cleared: {price_1 == '-'}")
     
-    # Check row 2 (should clear Naver data - similarity 0.00 < 0.3)
+    # Check row 2 (should clear Naver data - similarity 0.10 < 0.70)
     naver_img_2 = filtered_df.at[2, '네이버 이미지']
     naver_link_2 = filtered_df.at[2, '네이버 쇼핑 링크']
     supplier_2 = filtered_df.at[2, '공급사명']
     
-    print(f"Row 2 - Naver image filtered: {naver_img_2 is None}")
+    print(f"Row 2 - Naver image filtered: {naver_img_2 is None} (similarity 0.10 < 0.70)")
     print(f"Row 2 - Naver link cleared: {naver_link_2 == '-'}")
     print(f"Row 2 - Supplier cleared: {supplier_2 == '-'}")
     
-    # Check Kogift filtering (row 1 should be filtered - similarity 0.20 < 0.25)
+    # Check Kogift filtering (row 1 should be filtered - similarity 0.40 < 0.65)
     kogift_img_1 = filtered_df.at[1, '고려기프트 이미지']
     kogift_link_1 = filtered_df.at[1, '고려기프트 상품링크']
     
-    print(f"Row 1 - Kogift image filtered: {kogift_img_1 is None}")
+    print(f"Row 1 - Kogift image filtered: {kogift_img_1 is None} (similarity 0.40 < 0.65)")
     print(f"Row 1 - Kogift link cleared: {kogift_link_1 == '-'}")
     
     # Summary

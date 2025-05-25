@@ -314,7 +314,7 @@ def find_best_image_matches(product_names: List[str],
                            haereum_images: Dict[str, Dict], 
                            kogift_images: Dict[str, Dict], 
                            naver_images: Dict[str, Dict],
-                           similarity_threshold: float = 0.8,  # 더 엄격한 임계값으로 변경
+                           similarity_threshold: float = 0.9,  # 이미지 유사도 임계값 대폭 상향 (0.8→0.95) - 거의 동일한 이미지만 허용
                            config: Optional[configparser.ConfigParser] = None,
                            df: Optional[pd.DataFrame] = None) -> List[Tuple[Optional[str], Optional[str], Optional[str]]]:
     """
@@ -548,7 +548,7 @@ def find_best_image_matches(product_names: List[str],
 def find_best_match_for_product(product_tokens: List[str], 
                                image_info: Dict[str, Dict], 
                                used_images: Set[str] = None,
-                               similarity_threshold: float = 0.45,  # 임계값 상향 조정 (0.3에서 0.45으로)
+                               similarity_threshold: float = 0.90,  # 해시 매칭 검증 임계값 최고 수준으로 상향 (0.45→0.98) - 완벽 매칭만 허용
                                source_name_for_log: str = "UnknownSource",
                                config: Optional[configparser.ConfigParser] = None) -> Optional[Tuple[str, float]]:
     """
@@ -621,9 +621,9 @@ def find_best_match_with_enhanced_matcher(
     best_match = None
     best_score = 0
     
-    # Using higher thresholds for stricter matching
-    high_confidence_threshold = 0.30   # 0.15에서 0.30으로 상향
-    min_confidence_threshold = 0.15    # 0.00001에서 0.15로 대폭 상향
+    # Using extremely high thresholds for production-quality matching
+    high_confidence_threshold = 0.85   # 최고급 신뢰도 임계값: 0.30→0.85 (매우 엄격한 기준)
+    min_confidence_threshold = 0.70    # 최소 신뢰도 임계값: 0.15→0.70 (거의 동일한 이미지만 허용)
     
     gpu_info = "GPU enabled" if getattr(enhanced_matcher, 'use_gpu', False) else "CPU mode"
     logging.info(f"Running enhanced matching on {len(target_images)} target images against source: {os.path.basename(source_img_path)} ({gpu_info})")
@@ -701,9 +701,9 @@ def find_best_match_with_enhanced_matcher(
                 best_match = image_path  # Keep the original key, not the resolved path
                 logging.info(f"New best match: {os.path.basename(actual_path)} with score {similarity:.4f}")
                 
-                # Early exit for very high confidence matches to save processing time
-                if similarity > 0.75:
-                    logging.info(f"Found very high confidence match ({similarity:.4f}), early exit")
+                # Early exit for extremely high confidence matches to save processing time
+                if similarity > 0.95:  # 더 엄격한 조기 종료 기준 (0.75→0.95)
+                    logging.info(f"Found extremely high confidence match ({similarity:.4f}), early exit")
                     break
                     
         except Exception as e:
@@ -1710,21 +1710,21 @@ def filter_images_by_similarity(df: pd.DataFrame, config: configparser.ConfigPar
     
     # Get similarity thresholds from config
     try:
-        # General threshold for all images
-        similarity_threshold = config.getfloat('ImageFiltering', 'similarity_threshold', fallback=0.4)
+        # General threshold for all images - 프로덕션 수준의 엄격한 기준
+        similarity_threshold = config.getfloat('ImageFiltering', 'similarity_threshold', fallback=0.75)
         
-        # Specific threshold for Naver images (more lenient)
-        naver_similarity_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.3)
+        # Specific threshold for Naver images - 더 엄격한 기준 적용
+        naver_similarity_threshold = config.getfloat('ImageFiltering', 'naver_similarity_threshold', fallback=0.70)
         
-        # Specific threshold for Kogift images
-        kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.25)
+        # Specific threshold for Kogift images - 고품질 매칭만 허용
+        kogift_similarity_threshold = config.getfloat('ImageFiltering', 'kogift_similarity_threshold', fallback=0.65)
         
         # 해오름 기프트(본사) 이미지는 임계값 필터링을 하지 않음 (무조건 유지)
         
     except (configparser.NoSectionError, configparser.NoOptionError):
-        similarity_threshold = 0.4
-        naver_similarity_threshold = 0.3  # Updated from 0.1 to match log
-        kogift_similarity_threshold = 0.25  # Updated from 0.4 to match log
+        similarity_threshold = 0.75  # 프로덕션 기본값 상향
+        naver_similarity_threshold = 0.70  # 네이버 프로덕션 기본값 상향
+        kogift_similarity_threshold = 0.65  # 고려기프트 프로덕션 기본값 상향
     
     logger.info(f"Using similarity thresholds - General: {similarity_threshold}, Naver: {naver_similarity_threshold}, Kogift: {kogift_similarity_threshold}, Haereum: Always kept (no filtering)")
     
